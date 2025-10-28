@@ -1,0 +1,17 @@
+FROM continuumio/anaconda3
+RUN conda config --add channels conda-forge
+RUN conda install -y parallel
+RUN conda install -y -c bioconda samtools
+RUN conda install -y -c bioconda bowtie2
+RUN pip install pyarrow
+ADD gene_profiler.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/gene_profiler.sh
+ADD zipstrain /zipstrain
+RUN pip install /zipstrain
+RUN pip install loguru
+ADD fastprofiler.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/fastprofiler.sh
+RUN wget --output-document sratoolkit.tar.gz https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.2.0/sratoolkit.3.2.0-ubuntu64.tar.gz && \
+    tar -xzf sratoolkit.tar.gz && \
+    rm sratoolkit.tar.gz
+ENV PATH="/sratoolkit.3.2.0-ubuntu64/bin:${PATH}"

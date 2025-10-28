@@ -1,0 +1,17 @@
+site_name: ZipStrain
+
+
+
+
+theme:
+  name: "material"
+
+nav:
+  - index.md
+  - installation.md
+  - cli.md
+  - api.md
+
+
+plugins:
+  - mkdocstrings
