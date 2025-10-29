@@ -29,6 +29,23 @@ class PolarsANIExpressions:
                        (pl.col("T")==max_base_1) & (pl.col("T_2")==max_base_2) | 
                        (pl.col("C")==max_base_1) & (pl.col("C_2")==max_base_2) | 
                        (pl.col("G")==max_base_1) & (pl.col("G_2")==max_base_2)).then(1).otherwise(0)
+    
+    def generalized_cos_ani(self,threshold:float=0.4):
+        dot_product = pl.col("A")*pl.col("A_2") + pl.col("C")*pl.col("C_2") + pl.col("G")*pl.col("G_2") + pl.col("T")*pl.col("T_2")
+        magnitude_1 = pl.sqrt(pl.col("A")**2 + pl.col("C")**2 + pl.col("G")**2 + pl.col("T")**2)
+        magnitude_2 = pl.sqrt(pl.col("A_2")**2 + pl.col("C_2")**2 + pl.col("G_2")**2 + pl.col("T_2")**2)
+        cos_sim = dot_product / (magnitude_1 * magnitude_2)
+        return pl.when(cos_sim >= threshold).then(1).otherwise(0)
+
+    def __getattribute__(self, name):
+        if name.startswith("cosani_"):
+            try:
+                threshold = float(name.split("_")[1])
+            except ValueError:
+                raise AttributeError(f"Invalid threshold in method name: {name}")
+            return lambda: self.generalized_cos_ani(threshold)
+        else:
+            return super().__getattribute__(name)
 
 def coverage_filter(mpile_frame:pl.LazyFrame, min_cov:int,engine:str)-> pl.LazyFrame:
     """

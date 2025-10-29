@@ -640,11 +640,9 @@ class LocalBatch(Batch):
                 for task in self.tasks:
                     if task.status == Status.NOT_STARTED.value or task.status == Status.FAILED.value:
                         await f.write(task.pre_run + "\n" + task.command + "\n" + task.post_run + "\n")
-            
-            self._status = Status.RUNNING.value ## Update status to running
-            
-            # async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-            #     await f.write(self._status) # Update status file
+
+            async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
+                await f.write(self._status) # Update status file
 
             proc = await asyncio.create_subprocess_exec(
                 "bash", f"{self.id}.sh",
@@ -653,14 +651,12 @@ class LocalBatch(Batch):
                 cwd=self.batch_dir,
             )
             await proc.wait()
-
             async with aiofiles.open(self.batch_dir / f"{self.id}.log", mode="w") as f:
                 out_bytes, err_bytes = await proc.communicate()
                 if out_bytes:
                     await f.write(out_bytes.decode())
                 if err_bytes:
                     await f.write(err_bytes.decode())
-
             if proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
@@ -1179,7 +1175,7 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    fast_profile compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
+    zipstrain compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
     --scaffolds-1 <scaffold_1_file> \
     --scaffolds-2 <scaffold_2_file> \
@@ -1205,7 +1201,7 @@ class CollectComps(Task):
     TEMPLATE_CMD="""
     mkdir -p comps
     cp */*_comparison.parquet comps/
-    fast_profile utilities merge_parquet --input-dir comps --output-file <output-file>
+    zipstrain utilities merge_parquet --input-dir comps --output-file <output-file>
     rm -rf comps
     """
     
@@ -1220,7 +1216,7 @@ class PrepareCompareGenomeRunOutputs(Task):
     TEMPLATE_CMD="""
     mkdir -p <output-dir>/comps
     find "$(pwd)" -type f -name "Merged_batch_*.parquet" -print0 | xargs -0 -I {} ln -s {} <output-dir>/comps/
-    fast_profile utilities merge_parquet --input-dir <output-dir>/comps --output-file <output-dir>/all_comparisons.parquet
+    zipstrain utilities merge_parquet --input-dir <output-dir>/comps --output-file <output-dir>/all_comparisons.parquet
     rm -rf <output-dir>/comps
     """
     
