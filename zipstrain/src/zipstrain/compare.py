@@ -72,16 +72,11 @@ def get_shared_locs(mpile_contig_1:pl.LazyFrame, mpile_contig_2:pl.LazyFrame,ani
     mpile_contig_1 (pl.LazyFrame): The first mpileup LazyFrame.
     mpile_contig_2 (pl.LazyFrame): The second mpileup LazyFrame.
     ani_method (str): The ANI calculation method to use. Default is "popani".
-    ani_treshold (float): 
     Returns:
     pl.LazyFrame: Merged LazyFrame containing shared scaffolds and positions with ATCG information.
     """
-    match ani_method:
-        case "popani":
-            ani_expr = PolarsANIExpressions().popani()
-        case "conani":
-            ani_expr = PolarsANIExpressions().conani()
-    
+    ani_expr=getattr(PolarsANIExpressions(), ani_method)()
+
     mpile_contig= mpile_contig_1.join(
         mpile_contig_2,
         on=["chrom", "pos"],
