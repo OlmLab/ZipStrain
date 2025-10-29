@@ -1,26 +1,44 @@
 # API
 ZipStrain provides a Python API for programmatic access, enabling integration into larger bioinformatics pipelines and workflows. The API also allows for downstream analyses and visualizations.
+
 ---------------------
-## zipstrain.database
+
+## Database
+
 :::zipstrain.database
 
 ---------------------
-## zipstrain.profile
+
+## Profile
+
 :::zipstrain.profile
 
 ---------------------
-## zipstrain.compare
+
+## Comparison
+
 :::zipstrain.compare
+
 ---------------------
-## zipstrain.utils
+
+## Utilities
+
 :::zipstrain.utils
+
 ---------------------
-## zipstrain.visualize
+
+## Visualization
+
 :::zipstrain.visualize
+
 ---------------------
+
 For more advanced users, new workflows can be developed using the task_manager module to create custom pipelines tailored to specific research needs.
+
 ---------------------
-## zipstrain.task_manager
+
+## Task Manager
+
 :::zipstrain.task_manager
 
 

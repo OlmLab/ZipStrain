@@ -3,7 +3,32 @@
 This module provides all comparison functions for zipstrain.
 
 """
+
 import polars as pl
+
+class PolarsANIExpressions:
+    """ 
+    Any kind of ANI calculation based on two profiles should be implemented as a method of this class.
+    In defining this method, the following rules should be followed:
+    -   The method returns a Polars expression (pl.Expr).
+    -   When applied to a row, the method returns a zero if that position is a SNV. Otherwise it should return a number greater than zero.
+    -   A, T, C, G columns in the first profile are named "A", "T", "C", "G" and in the second profile they are named "A_2", "T_2", "C_2", "G_2".
+    1. popani: Population ANI based on the shared alleles between two profiles.
+    2. conani: Consensus ANI based on the consensus alleles between two profiles.
+    """
+    MPILE_1_BASES = ["A", "T", "C", "G"]
+    MPILE_2_BASES = ["A_2", "T_2", "C_2", "G_2"]
+
+    def popani(self):
+        return pl.col("A")*pl.col("A_2") + pl.col("C")*pl.col("C_2") + pl.col("G")*pl.col("G_2") + pl.col("T")*pl.col("T_2")
+    
+    def conani(self):
+        max_base_1=pl.max_horizontal(*[pl.col(base) for base in self.MPILE_1_BASES])
+        max_base_2=pl.max_horizontal(*[pl.col(base) for base in self.MPILE_2_BASES])
+        return pl.when((pl.col("A")==max_base_1) & (pl.col("A_2")==max_base_2) | 
+                       (pl.col("T")==max_base_1) & (pl.col("T_2")==max_base_2) | 
+                       (pl.col("C")==max_base_1) & (pl.col("C_2")==max_base_2) | 
+                       (pl.col("G")==max_base_1) & (pl.col("G_2")==max_base_2)).then(1).otherwise(0)
 
 def coverage_filter(mpile_frame:pl.LazyFrame, min_cov:int,engine:str)-> pl.LazyFrame:
     """
@@ -40,22 +65,32 @@ def adjust_for_sequence_errors(mpile_frame:pl.LazyFrame, null_model:pl.LazyFrame
         for base in ["A", "T", "C", "G"]
     ]).drop("max_error_count")
 
-def get_shared_locs(mpile_contig_1:pl.LazyFrame, mpile_contig_2:pl.LazyFrame) -> pl.LazyFrame:
+def get_shared_locs(mpile_contig_1:pl.LazyFrame, mpile_contig_2:pl.LazyFrame,ani_method:str="popani") -> pl.LazyFrame:
     """
     Retuerns a lazyframe with ATCG information for shared scaffolds and positions between two mpileup files.
     Parameters:
     mpile_contig_1 (pl.LazyFrame): The first mpileup LazyFrame.
     mpile_contig_2 (pl.LazyFrame): The second mpileup LazyFrame.
+    ani_method (str): The ANI calculation method to use. Default is "popani".
+    ani_treshold (float): 
     Returns:
     pl.LazyFrame: Merged LazyFrame containing shared scaffolds and positions with ATCG information.
     """
+    match ani_method:
+        case "popani":
+            ani_expr = PolarsANIExpressions().popani()
+        case "conani":
+            ani_expr = PolarsANIExpressions().conani()
+    
     mpile_contig= mpile_contig_1.join(
         mpile_contig_2,
         on=["chrom", "pos"],
         how="inner",
         suffix="_2"  # To distinguish lf2 columns
+    ).with_columns(
+        ani_expr.alias("surr")
     ).select(
-        surr=pl.col("A") * pl.col("A_2") + pl.col("C") * pl.col("C_2") + pl.col("G") * pl.col("G_2") + pl.col("T") * pl.col("T_2"),
+        pl.col("surr"),
         scaffold=pl.col("chrom"),
         pos=pl.col("pos"),
         gene=pl.col("gene")
@@ -97,7 +132,7 @@ def add_genome_info(mpile_contig:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame) 
 def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     """
     Calculates the population ANI (Average Nucleotide Identity) for the given mpileup LazyFrame.
-    ###NOTE### Remember that this function should be applied to the merged mpileup using get_shared_locs.
+    NOTE: Remember that this function should be applied to the merged mpileup using get_shared_locs.
 
     Parameters:
     mpile_contig (pl.LazyFrame): The input LazyFrame containing mpileup data.
