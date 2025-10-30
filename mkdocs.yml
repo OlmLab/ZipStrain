@@ -9,6 +9,7 @@ theme:
 nav:
   - index.md
   - installation.md
+  - Tutorial.md
   - cli.md
   - api.md
 
