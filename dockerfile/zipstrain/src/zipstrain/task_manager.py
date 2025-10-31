@@ -98,6 +98,16 @@ class SlurmConfig(BaseModel):
             raise FileNotFoundError(f"Slurm config file {json_path} does not exist.")
         return cls.model_validate_json(path.read_text())
 
+async def write_file(path: pathlib.Path, text: str, file_semaphore: asyncio.Semaphore) -> None:
+    async with file_semaphore:
+        async with aiofiles.open(path, "w") as f:
+            await f.write(text)
+
+async def read_file(path: pathlib.Path, file_semaphore: asyncio.Semaphore) -> str:
+    async with file_semaphore:
+        async with aiofiles.open(path, "r") as f:
+            content = await f.read()
+    return content
 
 class Status(StrEnum):
     """Enumeration of possible task and batch statuses."""
@@ -304,6 +314,7 @@ class Task(ABC):
         expected_outputs: dict[str, Output] ,
         engine: Engine,
         batch_obj: Batch | None = None,
+        file_semaphore: asyncio.Semaphore | None = None
     ) -> None:
         self.id = id
         self.inputs = inputs
@@ -311,6 +322,7 @@ class Task(ABC):
         self._batch_obj = batch_obj
         self.engine = engine
         self._status = self._get_initial_status()
+        self.file_semaphore = file_semaphore
 
     def map_io(self) -> None:
         """Maps inputs and expected outputs to the command template. Note that when this method is called,
@@ -369,9 +381,8 @@ class Task(ABC):
         status_path = self.task_dir / ".status"
         # read the status file if it exists
         if status_path.exists():
-            async with aiofiles.open(status_path, mode="r") as f:
-                raw = await f.read()
-                self._status = raw.strip()
+            raw = await read_file(status_path, self.file_semaphore)
+            self._status = raw.strip()
 
             # if task reported 'done', check outputs to decide success/failure
             if self._status == Status.DONE.value:
@@ -386,12 +397,10 @@ class Task(ABC):
 
                 if all_ready:
                     self._status = Status.SUCCESS.value
-                    async with aiofiles.open(status_path, mode="w") as f:
-                        await f.write(Status.SUCCESS.value)
+                    await write_file(status_path, Status.SUCCESS.value, self.file_semaphore)
                 else:
                     self._status = Status.FAILED.value
-                    async with aiofiles.open(status_path, mode="w") as f:
-                        await f.write(Status.FAILED.value)
+                    await write_file(status_path, Status.FAILED.value, self.file_semaphore)
                     raise ValueError(f"Task {self.id} reported done but outputs are not ready or invalid. {self.expected_outputs['output-file'].expected_file.absolute()}")
 
         return self._status
@@ -525,19 +534,22 @@ class Batch(ABC):
     def __init__(self, tasks: list[Task],
                  id: str,
                  run_dir: pathlib.Path,
-                 expected_outputs: list[Output]
+                 expected_outputs: list[Output],
+                 file_semaphore: asyncio.Semaphore| None = None
                  ) -> None:
         self.id = id
         self.tasks = tasks
         self.run_dir = pathlib.Path(run_dir)
         self.batch_dir = self.run_dir / self.id
         self.expected_outputs = expected_outputs
+        self.file_semaphore = file_semaphore
         for output in self.expected_outputs:
             if isinstance(output, BatchFileOutput):
                 output.register_batch(self)
         self._status = self._get_initial_status()
         for task in self.tasks:
             task._batch_obj = self
+            task.file_semaphore = self.file_semaphore
             for output in task.expected_outputs.values():
                 output.register_task(task)
             task._status= task._get_initial_status()
@@ -609,6 +621,10 @@ class Batch(ABC):
     async def update_status(self) -> str:
         """Updates the status of the batch by collecting the status of all tasks."""
         await self._collect_task_status()
+    def _set_file_semaphore(self, file_semaphore: asyncio.Semaphore) -> None:
+        self.file_semaphore = file_semaphore
+        for task in self.tasks:
+            task.file_semaphore = file_semaphore
 
 class LocalBatch(Batch):
     """Batch that runs tasks locally in a single shell script."""
@@ -624,28 +640,26 @@ class LocalBatch(Batch):
         if self.status != Status.SUCCESS and self.status != Status.FAILED.value:
             self.batch_dir.mkdir(parents=True, exist_ok=True)
             self._status = Status.RUNNING.value
-            
-            async with aiofiles.open(self.batch_dir / ".status", mode="w") as f: #Status file for the batch
-                await f.write(self._status)
+
+
+            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
             for task in self.tasks:
                 if task.status == Status.NOT_STARTED.value:
                     task.task_dir.mkdir(parents=True, exist_ok=True)  # Create task directory
-                    with open(task.task_dir / ".status", mode="w") as f: #Status file for each task
-                        f.write(Status.NOT_STARTED.value)
+                    await write_file(task.task_dir / ".status", Status.NOT_STARTED.value, self.file_semaphore)
 
             script_path = self.batch_dir / f"{self.id}.sh" # Path to the shell script for the batch
-            async with aiofiles.open(script_path, mode="w") as f:
-                await f.write(self._script + "\n")
-                for task in self.tasks:
-                    if task.status == Status.NOT_STARTED.value or task.status == Status.FAILED.value:
-                        await f.write(task.pre_run + "\n" + task.command + "\n" + task.post_run + "\n")
-            
-            self._status = Status.RUNNING.value ## Update status to running
-            
-            # async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-            #     await f.write(self._status) # Update status file
 
+            script = self._script
+            for task in self.tasks:
+                if task.status == Status.NOT_STARTED.value or task.status == Status.FAILED.value:
+                    script += f"\n{task.pre_run}\n{task.command}\n{task.post_run}\n"
+            
+            await write_file(script_path, script, self.file_semaphore)
+
+            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+            
             proc = await asyncio.create_subprocess_exec(
                 "bash", f"{self.id}.sh",
                 stdout=asyncio.subprocess.PIPE,
@@ -653,24 +667,19 @@ class LocalBatch(Batch):
                 cwd=self.batch_dir,
             )
             await proc.wait()
-
-            async with aiofiles.open(self.batch_dir / f"{self.id}.log", mode="w") as f:
-                out_bytes, err_bytes = await proc.communicate()
-                if out_bytes:
-                    await f.write(out_bytes.decode())
-                if err_bytes:
-                    await f.write(err_bytes.decode())
-
+            out_bytes, err_bytes = await proc.communicate()
+            
+            await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
+            await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
+            
             if proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
-                async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-                    await f.write(self._status)
+                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
             else:
                 self._status = Status.FAILED.value
-                async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-                    await f.write(self._status)
-
+                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+        
         elif self.status == Status.SUCCESS.value and self.outputs_ready():
             self._status = Status.SUCCESS.value
         else:
@@ -720,23 +729,22 @@ class SlurmBatch(Batch):
         if self.status != Status.SUCCESS and self.status != Status.FAILED.value:
             self.batch_dir.mkdir(parents=True, exist_ok=True)
             self._status = Status.RUNNING.value
-            async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-                await f.write(self._status)
+            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
             # create task directories and initialize .status if needed
             
             for task in self.tasks:
                 if task.status == Status.NOT_STARTED.value:
                     task.task_dir.mkdir(parents=True, exist_ok=True)
-                    async with aiofiles.open(task.task_dir / ".status", mode="w") as f:
-                        await f.write(Status.NOT_STARTED.value)
+                    await write_file(task.task_dir / ".status", Status.NOT_STARTED.value, self.file_semaphore)
             # write the batch script (all tasks included)
             
             batch_path = self.batch_dir / f"{self.id}.batch"
-            async with aiofiles.open(batch_path, mode="w") as f:
-                await f.write(self._script + "\n")
-                for task in self.tasks:
-                    if task.status == Status.NOT_STARTED.value:
-                        await f.write(task.pre_run + "\n" + task.command + "\n" + task.post_run + "\n")
+            script=self._script
+            for task in self.tasks:
+                if task.status == Status.NOT_STARTED.value:
+                    script += f"\n{task.pre_run}\n{task.command}\n{task.post_run}\n"
+            
+            await write_file(batch_path, script, self.file_semaphore)
 
             proc = await asyncio.create_subprocess_exec(
                 "sbatch","--parsable", batch_path.name,
@@ -759,13 +767,10 @@ class SlurmBatch(Batch):
             if self._status == Status.SUCCESS.value and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
-                async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-                    await f.write(self._status)
+                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
             else:
                 self._status = Status.FAILED.value
-                async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-                    await f.write(self._status)
-            # optionally log err somewhere (left for user)
+                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
             
         else:
             if self.status == Status.SUCCESS.value and self.outputs_ready():
@@ -805,8 +810,7 @@ class SlurmBatch(Batch):
                     self._status = Status.SUCCESS.value
                 else:
                     self._status = Status.PENDING.value
-                async with aiofiles.open(self.batch_dir / ".status", mode="w") as f:
-                    await f.write(self._status)
+                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
 console = Console()
 
@@ -894,7 +898,7 @@ class Runner(ABC):
         asyncio.create_task(self._batcher())
         asyncio.create_task(self._refill_tasks())
         semaphore = asyncio.Semaphore(self.max_concurrent_batches)
-
+        file_semaphore = asyncio.Semaphore(20)
         async def run_batch(batch: Batch):
             async with semaphore:
                 await batch.run()
@@ -946,6 +950,7 @@ class Runner(ABC):
                 while len(self._active_batches) < self.max_concurrent_batches and not self.batches_queue.empty():
                     batch = await self.batches_queue.get()
                     if batch is not None:
+                        batch._set_file_semaphore(file_semaphore)
                         self._active_batches.append(batch)
                         asyncio.create_task(run_batch(batch))
                 # Update overall progress fields
@@ -1179,7 +1184,7 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    fast_profile compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
+    zipstrain compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
     --scaffolds-1 <scaffold_1_file> \
     --scaffolds-2 <scaffold_2_file> \
@@ -1205,7 +1210,7 @@ class CollectComps(Task):
     TEMPLATE_CMD="""
     mkdir -p comps
     cp */*_comparison.parquet comps/
-    fast_profile utilities merge_parquet --input-dir comps --output-file <output-file>
+    zipstrain utilities merge_parquet --input-dir comps --output-file <output-file>
     rm -rf comps
     """
     
@@ -1220,7 +1225,7 @@ class PrepareCompareGenomeRunOutputs(Task):
     TEMPLATE_CMD="""
     mkdir -p <output-dir>/comps
     find "$(pwd)" -type f -name "Merged_batch_*.parquet" -print0 | xargs -0 -I {} ln -s {} <output-dir>/comps/
-    fast_profile utilities merge_parquet --input-dir <output-dir>/comps --output-file <output-dir>/all_comparisons.parquet
+    zipstrain utilities merge_parquet --input-dir <output-dir>/comps --output-file <output-dir>/all_comparisons.parquet
     rm -rf <output-dir>/comps
     """
     

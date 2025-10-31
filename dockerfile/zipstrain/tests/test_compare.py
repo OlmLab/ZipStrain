@@ -1,6 +1,6 @@
 import pytest
 import polars as pl
-from fastprofile import compare
+from zipstrain import compare
 from click.testing import CliRunner
 import json
 
@@ -129,6 +129,39 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,stb,null_model
     if "genome2" in res_dict:
         assert res_dict["genome2"]["perc_id_genes"]==100.0 if "genome2" in covered_gene_counts else -1
 
-
-
-
+def test_con_ani_expression():
+    profile_1=pl.DataFrame({
+        "chrom": ["chr1"]*3,
+        "pos":[0,1,2],
+        "gene": ["gene1","gene1","gene1"],
+        "A": [10,0,5],
+        "T": [0,10,0],
+        "C": [0,0,0],
+        "G": [0,0,5],
+    }).lazy()
+    profile_2=pl.DataFrame({
+        "chrom": ["chr1"]*3,
+        "pos":[0,1,2],
+        "gene": ["gene1","gene1","gene1"],
+        "A": [5,0,5],
+        "T": [0,10,0],
+        "C": [0,0,0],
+        "G": [5,0,5],
+    }).lazy()
+    profile_3=pl.DataFrame({
+        "chrom": ["chr1"]*3,
+        "pos":[0,1,2],
+        "gene": ["gene1","gene1","gene1"],
+        "A": [0,0,0],
+        "T": [10,10,0],
+        "C": [0,0,0],
+        "G": [0,0,10],
+    }).lazy()
+    mpile_contig=profile_1.join(
+        profile_2,
+        on=["chrom","pos","gene"],
+        how="inner",
+        suffix="_2"
+    )
+    assert compare.get_shared_locs(profile_1, profile_2, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==3
+    assert compare.get_shared_locs(profile_3, profile_2, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==2

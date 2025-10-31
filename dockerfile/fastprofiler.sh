@@ -28,6 +28,6 @@ split -n l/$threads  "$bedfile" "$tmpdir"/scaffold_table_part_
 ls "$tmpdir"/scaffold_table_part_* | \
 parallel -j$threads --tmpdir "$tmpdir" --colsep ' ' --no-run-if-empty --halt now,fail=1 '
   batch={1}
-  samtools mpileup -A -l "$batch" '"$bam"' | fast_profile utilities process_mpileup --gene-range-table-loc '"$gene_range_table"' --batch-bed "$batch" --output-file "$batch".parquet
+  samtools mpileup -A -l "$batch" '"$bam"' | zipstrain utilities process_mpileup --gene-range-table-loc '"$gene_range_table"' --batch-bed "$batch" --output-file "$batch".parquet
 '
-fast_profile utilities merge_parquet --input-dir "$tmpdir"  --output-file "$output_pileup".parquet
+zipstrain utilities merge_parquet --input-dir "$tmpdir"  --output-file "$output_pileup".parquet

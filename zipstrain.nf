@@ -184,7 +184,7 @@ process prepare_gene_location_table {
     path "gene_location_table.parquet", emit: gene_location_table
     script:
     """
-    fast_profile gene_tools gene-loc-table --gene-file "${gene_file}" \
+    zipstrain gene_tools gene-loc-table --gene-file "${gene_file}" \
                         --scaffold-list "${scaffold_table}" \
                         --output-file gene_location_table.parquet
     """
@@ -241,7 +241,7 @@ process compare_fast_profiles_single {
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
     """
-compare_fast_profiles single_compare \
+    zipstrain compare single_compare_genome  \
                         --mpileup-contig-1 ${mpileup_file1} \
                         --mpileup-contig-2 ${mpileup_file2} \
                         --scaffolds-1 ${scaffold_file1} \
@@ -268,7 +268,7 @@ process make_bed_file{
     path "${reference_genome.name}.bed", emit: bed_file
     script:
     """
-    fast_profile utilities make_bed \
+    zipstrain utilities make_bed \
             --db-fasta-dir "${reference_genome}" \
             --max-scaffold-length ${params.bed_max_scaffold_length} \
             --output-file "${reference_genome.name}.bed"
@@ -288,8 +288,8 @@ process get_genome_breadth {
     path "${profile.baseName}_breadth.parquet", emit: genome_breadth
     script:
     """
-    fast_profile utilities get_genome_lengths --stb-file ${stb_file} --bed-file ${bed_file} --output-file genome_length.parquet 
-    fast_profile utilities genome_breadth_matrix --profile ${profile} \
+    zipstrain utilities get_genome_lengths --stb-file ${stb_file} --bed-file ${bed_file} --output-file genome_length.parquet 
+    zipstrain utilities genome_breadth_matrix --profile ${profile} \
                         --genome-length genome_length.parquet \
                         --stb ${stb_file} \
                         --min-cov ${params.breadth_min_cov} \
@@ -324,7 +324,7 @@ process compare_fast_profiles_batched {
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
     """
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'fast_profile compare single_compare_genome \
+    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain compare single_compare_genome \
                         --mpileup-contig-1 {1} \
                         --mpileup-contig-2 {2} \
                         --scaffolds-1 {1}.scaffolds \
@@ -339,7 +339,7 @@ process compare_fast_profiles_batched {
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
     mv *_comparison.parquet comps/
-    fast_profile utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
+    zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
     rm -rf comps
     rm -f pairs.txt
     rm -f ${remove_mpiles}
@@ -362,7 +362,7 @@ process merge_tables {
     path "merged_comparisons.parquet", emit: merged_comparisons
     script:
     """
-    fast_profile utilities merge_parquet --input-dir . --output-file merged_comparisons.parquet
+    zipstrain utilities merge_parquet --input-dir . --output-file merged_comparisons.parquet
     """
 }
 process merge_breadth_tables {
@@ -379,7 +379,7 @@ process merge_breadth_tables {
     """
     mkdir -p breadth_tables
     mv ${breadth_files} breadth_tables/
-    fast_profile utilities collect_breadth_tables --breadth-tables-dir breadth_tables --output-file merged_breadth.parquet
+    zipstrain utilities collect_breadth_tables --breadth-tables-dir breadth_tables --output-file merged_breadth.parquet
     """
 }
 
@@ -393,7 +393,7 @@ publishDir "${params.output_dir}", mode: 'link'
     path "null_model.parquet", emit: model
     script:
     """
-    fast_profile utilities build-null-model \
+    zipstrain utilities build-null-model \
                       --error-rate ${params.error_rate} \
                       --max-total-reads ${params.max_total_reads} \
                       --p-threshold ${params.p_threshold} \

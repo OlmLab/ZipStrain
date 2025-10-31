@@ -1,4 +1,4 @@
-from fastprofile import task_manager
+from zipstrain import task_manager
 import pytest
 
 def test_create_new_input_type():

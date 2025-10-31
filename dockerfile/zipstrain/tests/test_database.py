@@ -1,4 +1,4 @@
-from fastprofile import database,compare
+from zipstrain import database,compare
 import polars as pl
 import pytest
 import pathlib 
