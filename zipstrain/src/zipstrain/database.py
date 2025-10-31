@@ -13,6 +13,8 @@ import tempfile
 import json
 import copy
 from pydantic import BaseModel, Field, field_validator,ConfigDict
+
+
 class ProfileItem(BaseModel):
     """
     This class describes all necessary attributes of a profile and makes sure they comply with the necessary formating.
@@ -42,11 +44,20 @@ class ProfileDatabase:
     """
     The profile database simply holds profile information. Does not need to be specific to a comparison database.
     The data behind a profile is stored in a parquet file. It is basically a table with the following columns:
+    
     - profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
+    
     - profile_location: The location of the profile
+    
     - scaffold_location: The location of the scaffold
+    
     - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
+    
     - gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.
+    
+    Args:
+        db_loc (str|None): The location of the profile database parquet file. If None, an empty database is created.
+        
     """
     def __init__(self,
                  db_loc: str|None = None,
@@ -103,6 +114,7 @@ class ProfileDatabase:
                     data: dict
                     ) -> None:
         """Add a profile to the database.
+        
         Args:
             data (dict): The profile data to add.
         """
@@ -123,6 +135,7 @@ class ProfileDatabase:
 
     def add_database(self, profile_database: ProfileDatabase) -> None:
         """Merge the provided profile database into the current database.
+        
         Args:
             profile_database (ProfileDatabase): The profile database to merge.
         """
@@ -137,6 +150,7 @@ class ProfileDatabase:
 
     def save_as_new_database(self, output_path: str) -> None:
         """Save the database to a parquet file.
+        
         Args:
             database (pl.LazyFrame): The database to save.
             output_path (str): The path to save the database to.
@@ -167,8 +181,10 @@ class ProfileDatabase:
     @classmethod
     def from_csv(cls, csv_path: str) -> ProfileDatabase:
         """Create a ProfileDatabase instance from a CSV file with exactly same columns as the required columns for a profile database.
+        
         Args:
             csv_path (str): The path to the CSV file.
+            
         Returns:
             ProfileDatabase: The created ProfileDatabase instance.
         """
@@ -180,8 +196,10 @@ class ProfileDatabase:
     
     def to_csv(self,output_dir:str)->None:
         """Writes the the current database object to a csv file"
+        
         Args:
             output_dir (str): The path to save the CSV file.
+            
         Returns:
             None
         """
@@ -195,14 +213,16 @@ class GenomeComparisonConfig(BaseModel):
     """
     This class defines object which have all necessary options to describe 
     Parameters used to compare profiles:
-    - gene_db_id (str): The ID of the gene fasta database to use for the comparison. The file name is perfect.
-    - reference_id (str): The ID of the reference fasta database to use for the comparison. The file name is perfect.
-    - scope (str): The scope of the comparison- 'all' if all covered positions are desired. Otherwise, a bunch of genome names separated by commas.
-    - min_cov (int): Minimum coverage a base on the reference fasta that must have in order to be compared.
-    - null_model_p_value(float): P_value above which a base call is counted as sequencing error
-    - min_gene_compare_len (int): Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations
-    - stb_file_loc (str): The location of the scaffold to bin file.
-    - null_model_loc (str): The location of the null model file.
+    
+    Args:
+        gene_db_id (str): The ID of the gene fasta database to use for the comparison. The file name is perfect.
+        reference_id (str): The ID of the reference fasta database to use for the comparison. The file name is perfect.
+        scope (str): The scope of the comparison- 'all' if all covered positions are desired. Otherwise, a bunch of genome names separated by commas.
+        min_cov (int): Minimum coverage a base on the reference fasta that must have in order to be compared.
+        null_model_p_value(float): P_value above which a base call is counted as sequencing error
+        min_gene_compare_len (int): Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations
+        stb_file_loc (str): The location of the scaffold to bin file.
+        null_model_loc (str): The location of the null model file.
     """
     model_config = ConfigDict(extra="forbid")
     gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
@@ -284,16 +304,34 @@ class GenomeComparisonDatabase:
     functionality for working with the comparison data in an easy and efficient manner.
     The comparison parquet file the result of running compare, and optionally concatenating multiple compare parquet file from single comparisons.
     This parquet file must contain the following columns:
+    
+    
     - genome
+    
     - total_positions
+    
     - share_allele_pos
+    
     - genome_pop_ani
+    
     - max_consecutive_length
+    
     - shared_genes_count
+    
     - identical_gene_count
+    
     - sample_1
+    
     - sample_2
+    
     A ComparisonDatabase object needs a ComparisonConfig object to specify the parameters used for the comparison.
+    
+    Args:
+        profile_db (ProfileDatabase): The profile database used for the comparison.
+        config (GenomeComparisonConfig): The comparison configuration used for the comparison.
+        comp_db_loc (str|None): The location of the comparison database parquet file. If
+            None, an empty comparison database is created.
+            
     """
     COLUMN_NAMES = [
         "genome",
@@ -386,6 +424,7 @@ class GenomeComparisonDatabase:
 
     def add_comp_database(self, comp_database: GenomeComparisonDatabase) -> None:
         """Merge the provided comparison database into the current database.
+        
         Args:
             comp_database (ComparisonDatabase): The comparison database to merge.
         """
@@ -429,6 +468,7 @@ class GenomeComparisonDatabase:
     
     def dump_obj(self, output_path: str) -> None:
         """Dump the current object to a json file.
+        
         Args:
             output_path (str): The path to save the json file to.
         """
@@ -443,8 +483,10 @@ class GenomeComparisonDatabase:
     @classmethod
     def load_obj(cls, json_path: str) -> GenomeComparisonDatabase:
         """Load a GenomeComparisonDatabase object from a json file.
+        
         Args:
             json_path (str): The path to the json file.
+            
         Returns:
             GenomeComparisonDatabase: The loaded GenomeComparisonDatabase object.
         """
@@ -458,12 +500,19 @@ class GenomeComparisonDatabase:
     
     def to_complete_input_table(self)->pl.LazyFrame:
         """This method gives a table of all pairwise comparisons that is needed to make the comparison database complete. The table contains the following columns:
+        
         - sample_name_1
+        
         - sample_name_2
+        
         - profile_location_1
+        
         - scaffold_location_1
+        
         - profile_location_2
+        
         - scaffold_location_2
+        
         Returns:
             pl.LazyFrame: The table of all pairwise comparisons needed to complete the comparison database.
         """

@@ -29,9 +29,18 @@ This step will generate BAM files for each of your samples in the specified outp
 In this step, you will generate profiles from the mapped reads using ZipStrain. A profile is simply a table in parquet format that contains the 
 following columns:
 
+```
+
 |chrom|pos|gene|A|C|G|T|
 
-The information will be generated for every position in the reference genomes that has at least one read mapped to it. There are two ways to generate profiles using ZipStrain: Using ZipStrain as a command-line tool or using the nextflow pipeline.
+```
+
+Where `chrom` is the scaffold, `pos` is the position in the reference genome, `gene` is the gene name (if a gene file is provided), and `A`, `C`, `G`, and `T` are the counts of each nucleotide at that position based on the mapped reads.
+
+The information will be generated for every position in the reference genomes that has at least one read mapped to it. There are two ways to generate profiles using ZipStrain: 
+
+- ZipStrain as a command-line tool
+- ZipStrain Nextflow pipeline.
 
 #### Using ZipStrain as a Command-Line Tool
 
