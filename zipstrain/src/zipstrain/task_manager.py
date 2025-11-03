@@ -51,6 +51,8 @@ from rich.columns import Columns
 import polars as pl
 import psutil
 import shutil
+import signal 
+
 
 class SlurmConfig(BaseModel):
     """Configuration model for Slurm batch jobs.
@@ -65,7 +67,6 @@ class SlurmConfig(BaseModel):
     "#SBATCH --cpus-per-task=4" to the sbatch script.
     
     """
-    partition: str = Field(description="Slurm partition to use.")
     time: str = Field(description="Time limit for the job.")
     tasks: int = Field(default=1, description="Number of tasks.")
     mem: int = Field(default=4, description="Memory in GB.")
@@ -81,7 +82,6 @@ class SlurmConfig(BaseModel):
     def to_slurm_args(self) -> str:
         """Generates the slurm batch file header form the configuration object"""
         args = [
-            f"#SBATCH --partition={self.partition}",
             f"#SBATCH --time={self.time}",
             f"#SBATCH --ntasks={self.tasks}",
             f"#SBATCH --mem={self.mem}G",
@@ -541,6 +541,7 @@ class Batch(ABC):
         self.tasks = tasks
         self.run_dir = pathlib.Path(run_dir)
         self.batch_dir = self.run_dir / self.id
+        self.retry_count = 0
         self.expected_outputs = expected_outputs
         self.file_semaphore = file_semaphore
         for output in self.expected_outputs:
@@ -584,6 +585,11 @@ class Batch(ABC):
         """The base class defines if any cleanup is needed after batch success. By default, it does nothing."""
         return None
 
+    @abstractmethod
+    async def cancel(self) -> None:
+        """Cancels the batch. This method should be implemented by subclasses."""
+        ...
+        
     def outputs_ready(self) -> bool:
         """Check if all BATCH-LEVEL expected outputs are ready."""
         try:
@@ -633,6 +639,7 @@ class LocalBatch(Batch):
     def __init__(self, tasks, id, run_dir, expected_outputs) -> None:
         super().__init__(tasks, id, run_dir, expected_outputs)
         self._script = self.TEMPLATE_CMD + "\nset -o pipefail\n"
+        self._proc: asyncio.subprocess.Process | None = None 
 
 
     async def run(self) -> None:
@@ -659,20 +666,24 @@ class LocalBatch(Batch):
             await write_file(script_path, script, self.file_semaphore)
 
             await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
-            
-            proc = await asyncio.create_subprocess_exec(
+
+            self._proc = await asyncio.create_subprocess_exec(
                 "bash", f"{self.id}.sh",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.batch_dir,
             )
-            await proc.wait()
-            out_bytes, err_bytes = await proc.communicate()
-            
+            try:
+                out_bytes, err_bytes = await self._proc.communicate()
+            except asyncio.CancelledError:
+                if self._proc and self._proc.returncode is None:
+                    self._proc.terminate()
+                raise
+
             await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
             await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
-            
-            if proc.returncode == 0 and self.outputs_ready():
+
+            if self._proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
                 await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
@@ -691,7 +702,17 @@ class LocalBatch(Batch):
     def cleanup(self) -> None:
         super().cleanup()
 
-
+    async def cancel(self) -> None:
+        """Cancels the local batch by terminating the subprocess if it's running."""
+        if self._proc and self._proc.returncode is None:
+            self._proc.terminate()
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self._proc.kill()
+                await self._proc.wait()
+            self._status = Status.FAILED.value
+            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
 
 class SlurmBatch(Batch):
@@ -720,7 +741,19 @@ class SlurmBatch(Batch):
         except:
             raise EnvironmentError("Slurm does not seem to be available or configured properly on this system.")
 
+    async def cancel(self) -> None:
+        """Cancel a running or submitted Slurm job."""
+        if self._job_id:
+            proc = await asyncio.create_subprocess_exec(
+                "scancel", self._job_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.wait()
 
+        self._status = Status.FAILED.value
+        await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+        
     async def run(self) -> None:
         """This method submits the batch to Slurm by creating a batch script and using sbatch command. It also monitors the job status until completion.
         This method is unavoidably different from LocalBatch.run() because of the nature of Slurm job submission.
@@ -852,6 +885,7 @@ class Runner(ABC):
                     tasks_per_batch: int = 10,
                     batch_type: str = "local",
                     slurm_config: SlurmConfig | None = None,
+                    max_retries: int = 3,
                     ) -> None:
         self.run_dir = pathlib.Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -873,6 +907,12 @@ class Runner(ABC):
         self._final_batch_created = False
         self.batch_factory = batch_factory
         self.final_batch_factory = final_batch_factory
+        self._failed_batches_count = 0
+        self.max_retries = max_retries
+        self.total_expected_tasks = self.task_generator.get_total_tasks()
+        self.total_expected_batches = (self.total_expected_tasks + tasks_per_batch - 1) // tasks_per_batch
+        self._shutdown_event = asyncio.Event()
+        self._shutdown_initiated = False
     
     async def _refill_tasks(self):
         """Repeatedly call task_generator until it returns an empty list. This feeds tasks into the tasks_queue and waits for the queue to have space if it's full in an async manner."""
@@ -885,7 +925,23 @@ class Runner(ABC):
     @abstractmethod
     async def _batcher(self):
         ...
-    
+
+    async def _shutdown(self):
+        """Cancel all active batches and signal shutdown."""
+        if self._shutdown_initiated:
+            return
+        self._shutdown_initiated = True
+        console.print("[yellow]Shutdown requested. Cancelling active jobs...[/]")
+
+        for batch in list(self._active_batches):
+            try:
+                await batch.cancel()  
+            except Exception as e:
+                console.print(f"[red]Error cancelling batch {batch.id}: {e}[/]")
+
+        # Signal the main loop to stop
+        self._shutdown_event.set()
+
     async def run(self):
         """
         Run the producer, batcher and worker coroutines and present a live UI while working.
@@ -901,22 +957,35 @@ class Runner(ABC):
         file_semaphore = asyncio.Semaphore(20)
         async def run_batch(batch: Batch):
             async with semaphore:
-                await batch.run()
+                while batch.status != Status.SUCCESS.value and batch.retry_count < self.max_retries:
+                    await batch.run()
+                    if batch.status == Status.SUCCESS.value:
+                        break
+                    else:
+                        batch.retry_count += 1
+                
                 self._finished_batches_count += 1
+                
                 if batch.status == Status.SUCCESS.value:
                     self._success_batches_count += 1
+                
+                elif batch.status == Status.FAILED.value:
+                    self._failed_batches_count += 1
+
                 if batch in self._active_batches:
                     self._active_batches.remove(batch)
 
         # Rich progress objects
+        
         overall_progress = Progress(
             TextColumn(f"[bold white]{type(self).__name__}[/]"),
             BarColumn(),
-            TextColumn("{task.fields[produced_tasks]} tasks produced • {task.fields[finished_batches]} batches finished"),
+            TextColumn("• {task.fields[produced_tasks]}/{task.fields[total_expected_tasks]} tasks produced"),
+            TextColumn("• {task.fields[finished_batches]}/{task.fields[total_expected_batches]} batches finished • {task.fields[failed_batches]} batches failed"),
             TimeElapsedColumn(),
             expand=True,
         )
-        overall_task = overall_progress.add_task("overall", produced_tasks=0, finished_batches=0)
+        overall_task = overall_progress.add_task("overall", produced_tasks=0, total_expected_tasks=self.total_expected_tasks, finished_batches=0, total_expected_batches=self.total_expected_batches, failed_batches=0)
 
         batch_progress = Progress(
             TextColumn("[bold white]{task.fields[batch_id]}[/]"),
@@ -936,9 +1005,13 @@ class Runner(ABC):
             Panel(batch_progress, title="Active Batches", height=10),
             Panel(self._make_system_stats_panel(), title="System Stats", expand=True),
         ), border_style="magenta")
-
+        
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._shutdown()))
+            
         with Live(body, console=console, refresh_per_second=2) as live:
-            while True:
+            while not self._shutdown_event.is_set():
                 await self._update_statuses()
                 if self._batcher_done and self.batches_queue.empty() and len(self._active_batches) == 0:
                     if not self._final_batch_created:
@@ -954,7 +1027,7 @@ class Runner(ABC):
                         self._active_batches.append(batch)
                         asyncio.create_task(run_batch(batch))
                 # Update overall progress fields
-                overall_progress.update(overall_task, produced_tasks=self._produced_tasks_count, finished_batches=self._finished_batches_count)
+                overall_progress.update(overall_task, produced_tasks=self._produced_tasks_count, finished_batches=self._finished_batches_count, failed_batches=self._failed_batches_count)  
                 # Add newly queued batches into UI
                 for batch in list(self._active_batches):
                     if batch not in batch_to_progress_id and batch.status not in self.TERMINAL_BATCH_STATES:
