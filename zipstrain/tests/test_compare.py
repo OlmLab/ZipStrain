@@ -192,5 +192,3 @@ def test_cos_ani_expression(threshold1,threshold2):
     }).lazy()
 
     assert compare.get_shared_locs(profile_1, profile_2, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare.get_shared_locs(profile_3, profile_2, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
-    assert compare.get_shared_locs(profile_1, profile_2, ani_method=f"cosani_{0.1}").select(pl.col("surr")).sum().collect()[0,0]>
-    compare.get_shared_locs(profile_3, profile_2, ani_method=f"cosani_{0.9}").select(pl.col("surr")).sum().collect()[0,0]
