@@ -4,7 +4,7 @@ ZipStrain provides a comprehensive command-line interface for strain-level analy
 
 ## Installation
 
-First, ensure ZipStrain is installed (see [Installation.md](Installation.md) for details).
+First, ensure ZipStrain is installed (see [Installation.md](installation.md) for details).
 
 ## Usage
 

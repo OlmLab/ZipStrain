@@ -10,8 +10,10 @@ nav:
   - index.md
   - installation.md
   - Tutorial.md
+  - NextflowPipeline.md
   - cli.md
   - api.md
+  
 
 
 plugins:

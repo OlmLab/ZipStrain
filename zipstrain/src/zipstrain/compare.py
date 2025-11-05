@@ -32,8 +32,8 @@ class PolarsANIExpressions:
     
     def generalized_cos_ani(self,threshold:float=0.4):
         dot_product = pl.col("A")*pl.col("A_2") + pl.col("C")*pl.col("C_2") + pl.col("G")*pl.col("G_2") + pl.col("T")*pl.col("T_2")
-        magnitude_1 = pl.sqrt(pl.col("A")**2 + pl.col("C")**2 + pl.col("G")**2 + pl.col("T")**2)
-        magnitude_2 = pl.sqrt(pl.col("A_2")**2 + pl.col("C_2")**2 + pl.col("G_2")**2 + pl.col("T_2")**2)
+        magnitude_1 = (pl.col("A")**2 + pl.col("C")**2 + pl.col("G")**2 + pl.col("T")**2)**0.5
+        magnitude_2 = (pl.col("A_2")**2 + pl.col("C_2")**2 + pl.col("G_2")**2 + pl.col("T_2")**2)**0.5
         cos_sim = dot_product / (magnitude_1 * magnitude_2)
         return pl.when(cos_sim >= threshold).then(1).otherwise(0)
 

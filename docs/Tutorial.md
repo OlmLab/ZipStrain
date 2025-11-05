@@ -2,7 +2,9 @@
 This tutorial will guide you through the basics of using ZipStrain.
 
 ## Introduction to ZipStrain
-ZipStrain is a tool for profiling a metagenomics sample against a database of reference genomes and performing comparisons between the profiles as well as downstream analyses. The typical workflow consists of the following steps:
+ZipStrain is a tool for profiling a metagenomics sample against a database of reference genomes and performing comparisons between the profiles as well as downstream analyses. 
+
+The typical workflow consists of the following steps:
 
 1- Mapping reads to a reference database using any read mapper of your choice (e.g., BWA, Bowtie2, Minimap2).
 
@@ -40,6 +42,7 @@ Where `chrom` is the scaffold, `pos` is the position in the reference genome, `g
 The information will be generated for every position in the reference genomes that has at least one read mapped to it. There are two ways to generate profiles using ZipStrain: 
 
 - ZipStrain as a command-line tool
+
 - ZipStrain Nextflow pipeline.
 
 #### Using ZipStrain as a Command-Line Tool
@@ -61,3 +64,40 @@ NOTE: fast_profile mode requires a gene file and a STB file. The gene file MUST 
 
 If you have trouble generating the STB file, you can simply make one using a custom script. The STB file is a tab-separated file with two columns: scaffold name and genome file name. 
 
+### Comparing Profiles 
+In this step, you compare each profile at nucleotide level against another profile and aggregate the comparison results at genome level. There are two ways to perform comparisons using ZipStrain:
+
+- ZipStrain as a command-line tool
+
+- ZipStrain Nextflow pipeline.
+
+#### Using ZipStrain as a Command-Line Tool
+
+UNDER CONSTRUCTION
+
+#### Using the Nextflow Pipeline
+
+You can also use the nextflow pipeline to perform comparisons. Here is an example command:
+
+```
+nextflow run zipstrain.nf --mode "fast_compare" --input_table all_profiles.csv  --null_model <path/to/null_model.parquet> --stb <path/to/stbfile>   --output_dir <path/to/output/dir>  --reference_genome <path/to/your/reference_db.fasta> -c conf.config -profile <your_profile> -resume
+``` 
+This step will generate comparison parquet files for a every batch of profile pairs as well as a merged comparison parquet file in the specified output directory. For more information about the Nextflow pipeline, please refer to the [Nextflow Pipeline Documentation](./NextflowPipeline.md).
+
+### Downstream Analyses
+
+In this step, you can use the perform statiscal analyses on the comparison results generated in the previous step and visualize them using ZipStrain's Python API. All of the functionalities in the visualization module are explained below:
+
+#### Strain Sharing Analysis
+
+Definition of strain sharing is somewhat losely defined in the literature. In ZipStrain, we use the following steps to define strainsharing:
+
+-   For each genome in the reference fasta for which the profiling is done, popANI is calculated between each pair of samples in the comparison step.
+
+-   If the popANI between two samples for a given genome is above a certain threshold (default: 99.9%), and the breadth of coverage for that genome in both samples is above a certain threshold (default: 0.5), then the two samples are considered to share a strain for that genome.
+
+-  The strain sharing is checked for all genomes in the reference fasta.
+
+-  Each sample is mapped to a group using a sample to population mapping file provided by the user (See the example below). 
+
+-  Finally, the strain sharing between group A,B is calculated as the number of genome strains shared between samples in group A and samples in group B divided by the total number of genomes in group A. As a result the order of the groups matters here. The main justification for this definition is that in many cases this ordering is biologically relevant. For example, when looking at mother-infant pairs, if only 3 genomes are present in infants, but 100 genomes are present in mothers, and they share all 3 genomes in the infants, we would like to see that the infants have 100% of their strains shared with mothers, while mothers only have 3% of their strains shared with infants.

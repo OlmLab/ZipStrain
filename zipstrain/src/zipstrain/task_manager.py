@@ -13,22 +13,28 @@ Each batch can have an optional finalization step that runs after all tasks are 
 
 Key concepts
 ------------
+
 - Inputs and Outputs:
     These classes encapsulate task inputs and outputs with validation logics.
     By default, Input and output classes for files, strings, and integers are provided.
     If needed, new types can be defined by subclassing Input or Output.
+    
 - Engines:
     Any task object can use a container engine (Docker or Apptainer) or run natively (LocalEngine).
+    
 - Task 
     Each task runs a unit of bash script with defined inputs and expected outputs. If an engine is provided,
     the command will be wrapped accordingly to run inside the container.
+    
 - Batches:
     A batch is a collection of tasks to be executed together. Batches can be run locally or submitted to Slurm.
     Each batch monitors the status of its tasks and updates its own status accordingly. A batch can also have
     expected outputs that are checked after all tasks are complete. Additionally, a batch can have a finalization step that runs after all tasks are complete.
+    
 - Runner:
     The Runner class orchestrates task generation, batching, and execution. It manages concurrent batch execution,
     monitors progress, and provides a live terminal UI using the rich library.
+    
 """
 
 
@@ -56,12 +62,13 @@ import signal
 
 class SlurmConfig(BaseModel):
     """Configuration model for Slurm batch jobs.
+    
     Attributes:
-        partition (str): Slurm partition to use.
         time (str): Time limit for the job in HH:MM:SS format.
         tasks (int): Number of tasks.
         mem (int): Memory in GB.
         additional_params (dict): Additional SLURM parameters as key-value pairs.
+        
     NOTE: Additional paramters for slurm should be provided in the additional_params dict in the form
     of {"param-name": "param-value"}, e.g., {"cpus-per-task": "4"} will result in the addition of
     "#SBATCH --cpus-per-task=4" to the sbatch script.
@@ -197,6 +204,7 @@ class Output(ABC):
 
     def register_task(self, task: Task) -> None:
         """Registers the task that produces this output. In most cases, you won't need to override this.
+        
         Args:
         task (Task): The task that produces this output.
         """
@@ -204,6 +212,7 @@ class Output(ABC):
 
 class FileOutput(Output):
     """This is used when the output is a file path.
+    
     Args:
         expected_file (str): The expected output file name relative to the task directory.
     """
@@ -216,6 +225,7 @@ class FileOutput(Output):
 
     def register_task(self, task: Task) -> None:
         """Registers the task that produces this output and sets the expected file path.
+        
         Args:
         task (Task): The task that produces this output.
         """
@@ -236,6 +246,7 @@ class BatchFileOutput(Output):
 
     def register_batch(self, batch: Batch) -> None:
         """Registers the batch that produces this output and sets the expected file path.
+        
         Args:
         batch (Batch): The batch that produces this output and sets the expected file path.
         """
@@ -433,10 +444,12 @@ class TaskGenerator(ABC):
     """Abstract base class for task generators. DO NOT INSTANTIATE DIRECTLY. A subclass of this class 
     should provide an async generator method called generate_tasks() that yields lists of Task objects in an async manner.
     Some important concepts:
-    - generate_tasks() is an async generator that yields lists of Task objects.
-    - yield_size determines how many tasks are generated and yielded at a time.
-    - get_total_tasks() returns the total number of tasks that can be generated.
     
+    - generate_tasks() is an async generator that yields lists of Task objects.
+    
+    - yield_size determines how many tasks are generated and yielded at a time.
+    
+    - get_total_tasks() returns the total number of tasks that can be generated.
 
     """
     def __init__(self,
@@ -459,6 +472,7 @@ class TaskGenerator(ABC):
 class CompareTaskGenerator(TaskGenerator):
     """This TaskGenerator generates FastCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genomes functionality in
     zipstrain.compare module.
+    
     Args:
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
@@ -520,9 +534,16 @@ class CompareTaskGenerator(TaskGenerator):
                 tasks.append(task)
             yield tasks
 
+class ProfileTaskGenerator(TaskGenerator):
+    pass
+
+class MapReadsTaskGenerator(TaskGenerator):
+    pass
+
 class Batch(ABC):
     """Batch is a collection of tasks to be executed as a group. This is a base class and should not be instantiated directly.
     A batch is the unit of execution meaning that the enitre batch is either run locally or submitted to a job scheduler like Slurm.
+    
     Args:
         tasks (list[Task]): List of Task objects to be included in the batch.
         id (str): Unique identifier for the batch.
@@ -858,6 +879,7 @@ def get_memory_usage():
 
 class Runner(ABC):
     """Base Runner class to manage task generation, batching, and execution.
+    
     Args:
         run_dir (str | pathlib.Path): Directory where the runner will operate.
         task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
@@ -1077,6 +1099,7 @@ class Runner(ABC):
 class CompareRunner(Runner):
     """
     Creates and schedules batches of FastCompareTask tasks using either local or Slurm batches.
+    
     Args:
         run_dir (str | pathlib.Path): Directory where the runner will operate.
         task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
@@ -1247,9 +1270,20 @@ class CompareRunner(Runner):
 
 
 ##### Here on we can have prebuilt tasks and Batches
+class PrepareForProfileTask(Task):
+    """A Task that prepares inputs for profiling a BAM file using the fast_profile profile_bam command.
+    
+    Args:
+        id (str): Unique identifier for the task.
+        inputs (dict[str, Input]): Dictionary of input parameters for the task.
+        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
+        engine (Engine): Container engine to wrap the command.
+        """
+    ### TODO: Implement this task properly to prepare inputs for profiling
 
 class FastCompareTask(Task):
     """A Task that performs a fast genome comparison using the fast_profile compare single_compare_genome command.
+    
     Args:
         id (str): Unique identifier for the task.
         inputs (dict[str, Input]): Dictionary of input parameters for the task.
@@ -1272,9 +1306,29 @@ class FastCompareTask(Task):
     --engine <engine> 
     """
 
+class ProfileBamTask(Task):
+    """A Task that generates a mpileup file and genome breadth file in parquet format for a given BAM file using the fast_profile profile_bam command.
 
+    Args:
+        id (str): Unique identifier for the task.
+        inputs (dict[str, Input]): Dictionary of input parameters for the task.
+        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
+        engine (Engine): Container engine to wrap the command."""
+    
+    TEMPLATE_CMD="""
+    samtools index <bam-file>
+    fastprofiler.sh <bed-file> <bam-file> <sample-name> <gene-range-table> <num-threads> 
+    samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
+    zipstrain utilities genome_breadth_matrix --profile <sample-name>.parquet \
+        --genome-length <genome-length-file> \
+        --stb <stb-file> \
+        --min-cov <breadth-min-cov> \
+        --output-file <sample-name>_breadth.parquet
+    """
+    
 class CollectComps(Task):
     """A Task that collects and merges comparison parquet files from multiple FastCompareTask tasks into a single parquet file.
+    
     Args:
         id (str): Unique identifier for the task.
         inputs (dict[str, Input]): Dictionary of input parameters for the task.
@@ -1348,6 +1402,7 @@ def lazy_run_compares(
     polars_engine: str = "streaming"
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
+    
     Args:
         run_dir (str | pathlib.Path): Directory where the runner will operate.
         container_engine (Engine): An instance of Engine to wrap task commands.

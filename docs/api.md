@@ -3,31 +3,21 @@ ZipStrain provides a Python API for programmatic access, enabling integration in
 
 ---------------------
 
-## Database
-
 :::zipstrain.database
 
 ---------------------
-
-## Profile
 
 :::zipstrain.profile
 
 ---------------------
 
-## Comparison
-
 :::zipstrain.compare
 
 ---------------------
 
-## Utilities
-
 :::zipstrain.utils
 
 ---------------------
-
-## Visualization
 
 :::zipstrain.visualize
 
@@ -36,8 +26,6 @@ ZipStrain provides a Python API for programmatic access, enabling integration in
 For more advanced users, new workflows can be developed using the task_manager module to create custom pipelines tailored to specific research needs.
 
 ---------------------
-
-## Task Manager
 
 :::zipstrain.task_manager
 

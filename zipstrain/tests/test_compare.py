@@ -157,11 +157,40 @@ def test_con_ani_expression():
         "C": [0,0,0],
         "G": [0,0,10],
     }).lazy()
-    mpile_contig=profile_1.join(
-        profile_2,
-        on=["chrom","pos","gene"],
-        how="inner",
-        suffix="_2"
-    )
+
     assert compare.get_shared_locs(profile_1, profile_2, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==3
     assert compare.get_shared_locs(profile_3, profile_2, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==2
+
+@pytest.mark.parametrize("threshold1,threshold2", [(0.1,0.8),(0.2,0.9),(0.3,0.95),(0.4,0.99),(0.1,0.2),(0.5,0.6),(0.7,0.8),(0,1)])
+def test_cos_ani_expression(threshold1,threshold2):
+    profile_1=pl.DataFrame({
+        "chrom": ["chr1"]*3,
+        "pos":[0,1,2],
+        "gene": ["gene1","gene1","gene1"],
+        "A": [10,0,5],
+        "T": [0,10,0],
+        "C": [0,0,0],
+        "G": [0,0,5],
+    }).lazy()
+    profile_2=pl.DataFrame({
+        "chrom": ["chr1"]*3,
+        "pos":[0,1,2],
+        "gene": ["gene1","gene1","gene1"],
+        "A": [5,0,5],
+        "T": [0,10,0],
+        "C": [0,0,0],
+        "G": [5,0,5],
+    }).lazy()
+    profile_3=pl.DataFrame({
+        "chrom": ["chr1"]*3,
+        "pos":[0,1,2],
+        "gene": ["gene1","gene1","gene1"],
+        "A": [0,0,0],
+        "T": [10,10,0],
+        "C": [0,0,0],
+        "G": [0,0,10],
+    }).lazy()
+
+    assert compare.get_shared_locs(profile_1, profile_2, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare.get_shared_locs(profile_3, profile_2, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
+    assert compare.get_shared_locs(profile_1, profile_2, ani_method=f"cosani_{0.1}").select(pl.col("surr")).sum().collect()[0,0]>
+    compare.get_shared_locs(profile_3, profile_2, ani_method=f"cosani_{0.9}").select(pl.col("surr")).sum().collect()[0,0]
