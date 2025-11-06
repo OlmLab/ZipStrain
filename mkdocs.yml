@@ -17,4 +17,9 @@ nav:
 
 
 plugins:
-  - mkdocstrings
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            heading_level: 4
+            show_root_toc_entry: true
