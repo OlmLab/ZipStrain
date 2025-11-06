@@ -469,6 +469,61 @@ class TaskGenerator(ABC):
     def get_total_tasks(self) -> int:
         pass
 
+class ProfileTaskGenerator(TaskGenerator):
+    """This TaskGenerator generates FastProfileTask objects from a polars DataFrame. Each task profiles a BAM file."""
+    def __init__(
+        self,
+        data: pl.LazyFrame,
+        yield_size: int,
+        container_engine: Engine,
+        stb_file: str,
+        profile_bed_file: str,
+        gene_range_file: str,
+        genome_length_file: str,
+        num_procs: int = 4,
+        polars_engine: str = "streaming",
+    ) -> None:
+        super().__init__(data, yield_size)
+        self.stb_file = stb_file
+        self.profile_bed_file = profile_bed_file
+        self.gene_range_file = gene_range_file
+        self.genome_length_file = genome_length_file
+        self.num_procs = num_procs
+        self.engine = container_engine
+        self.polars_engine = polars_engine
+        if type(self.data) is not pl.LazyFrame:
+            raise ValueError("data must be a polars LazyFrame.")
+    
+    
+    def get_total_tasks(self) -> int:
+        """Returns total number of profiles to be generated."""
+        return self.data.select(size=pl.len()).collect(engine="streaming")["size"][0]
+    
+    async def generate_tasks(self) -> list[Task]:
+        """Yeilds lists of FastProfileTask objects based on the data in batches of yield_size. This method yields the control back to the event loop
+        while polars is collecting data to avoid blocking.
+        """
+        for offset in range(0, self._total_tasks, self.yield_size):
+            batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
+            tasks = []
+            for row in batch_df.iter_rows(named=True):
+                inputs = {
+                "bam-file": FileInput(row["bamfile"]),
+                "sample-name": StringInput(row["sample_name"]),
+                "stb-file": FileInput(self.stb_file),
+                "bed-file": FileInput(self.profile_bed_file),
+                "gene-range-table": FileInput(self.gene_range_file),
+                "genome-length-file": FileInput(self.genome_length_file),
+                "num-threads": IntInput(self.num_procs),
+                }
+                expected_outputs ={
+                "profile":  FileOutput(row["sample_name"]+".parquet" ),
+                "breadth":  FileOutput(row["sample_name"]+".breadth.parquet" ),
+                }
+                task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
+                tasks.append(task)
+            yield tasks
+
 class CompareTaskGenerator(TaskGenerator):
     """This TaskGenerator generates FastCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genomes functionality in
     zipstrain.compare module.
@@ -534,8 +589,8 @@ class CompareTaskGenerator(TaskGenerator):
                 tasks.append(task)
             yield tasks
 
-class ProfileTaskGenerator(TaskGenerator):
-    pass
+
+    
 
 class MapReadsTaskGenerator(TaskGenerator):
     pass
@@ -1271,7 +1326,13 @@ class CompareRunner(Runner):
 
 ##### Here on we can have prebuilt tasks and Batches
 class PrepareForProfileTask(Task):
-    """A Task that prepares inputs for profiling a BAM file using the fast_profile profile_bam command.
+    """This task prepares files needed to profile BAM files against a reference using fast_profile:
+
+    - bed-file: A default BED file covering the whole reference fasta.
+
+    - gene-range-table: A BED file specifying gene ranges for the reference using a gene fasta file made by Prodigal.
+    
+    - genome-length-file: A file containing lengths of genomes in the reference fasta.
     
     Args:
         id (str): Unique identifier for the task.
@@ -1279,8 +1340,45 @@ class PrepareForProfileTask(Task):
         expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
         engine (Engine): Container engine to wrap the command.
         """
-    ### TODO: Implement this task properly to prepare inputs for profiling
+    TEMPLATE_CMD="""
 
+    """
+
+class ProfileBamTask(Task):
+    """A Task that generates a mpileup file and genome breadth file in parquet format for a given BAM file using the fast_profile profile_bam command.
+    The inputs to this task includes:
+
+        - bam-file: The input BAM file to be profiled.
+
+        - bed-file: The BED file specifying the regions to profile.
+        
+        - sample-name: The name of the sample being processed.
+
+        - gene-range-table: A BED file specifying the gene ranges for the sample.
+
+        - num-threads: The number of threads to use for processing.
+
+        - genome-length-file: A file containing the lengths of the genomes in the reference fasta.
+
+        - stb-file: The STB file used for profiling.
+
+    Args:
+        id (str): Unique identifier for the task.
+        inputs (dict[str, Input]): Dictionary of input parameters for the task.
+        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
+        engine (Engine): Container engine to wrap the command."""
+    
+    TEMPLATE_CMD="""
+    samtools index <bam-file>
+    fastprofiler.sh <bed-file> <bam-file> <sample-name> <gene-range-table> <num-threads> 
+    samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
+    zipstrain utilities genome_breadth_matrix --profile <sample-name>.parquet \
+        --genome-length <genome-length-file> \
+        --stb <stb-file> \
+        --min-cov <breadth-min-cov> \
+        --output-file <sample-name>_breadth.parquet
+    """
+    
 class FastCompareTask(Task):
     """A Task that performs a fast genome comparison using the fast_profile compare single_compare_genome command.
     
@@ -1306,26 +1404,7 @@ class FastCompareTask(Task):
     --engine <engine> 
     """
 
-class ProfileBamTask(Task):
-    """A Task that generates a mpileup file and genome breadth file in parquet format for a given BAM file using the fast_profile profile_bam command.
 
-    Args:
-        id (str): Unique identifier for the task.
-        inputs (dict[str, Input]): Dictionary of input parameters for the task.
-        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
-        engine (Engine): Container engine to wrap the command."""
-    
-    TEMPLATE_CMD="""
-    samtools index <bam-file>
-    fastprofiler.sh <bed-file> <bam-file> <sample-name> <gene-range-table> <num-threads> 
-    samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
-    zipstrain utilities genome_breadth_matrix --profile <sample-name>.parquet \
-        --genome-length <genome-length-file> \
-        --stb <stb-file> \
-        --min-cov <breadth-min-cov> \
-        --output-file <sample-name>_breadth.parquet
-    """
-    
 class CollectComps(Task):
     """A Task that collects and merges comparison parquet files from multiple FastCompareTask tasks into a single parquet file.
     
