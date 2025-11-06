@@ -484,17 +484,24 @@ class ProfileTaskGenerator(TaskGenerator):
         polars_engine: str = "streaming",
     ) -> None:
         super().__init__(data, yield_size)
-        self.stb_file = stb_file
-        self.profile_bed_file = profile_bed_file
-        self.gene_range_file = gene_range_file
-        self.genome_length_file = genome_length_file
+        self.stb_file = pathlib.Path(stb_file)
+        self.profile_bed_file = pathlib.Path(profile_bed_file)
+        self.gene_range_file = pathlib.Path(gene_range_file)
+        self.genome_length_file = pathlib.Path(genome_length_file)
         self.num_procs = num_procs
         self.engine = container_engine
         self.polars_engine = polars_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
-    
-    
+        for path_attr in [
+            self.stb_file,
+            self.profile_bed_file,
+            self.gene_range_file,
+            self.genome_length_file,
+        ]:
+            if not path_attr.exists():
+                raise FileNotFoundError(f"File {path_attr} does not exist.")
+
     def get_total_tasks(self) -> int:
         """Returns total number of profiles to be generated."""
         return self.data.select(size=pl.len()).collect(engine="streaming")["size"][0]
@@ -1331,7 +1338,7 @@ class PrepareForProfileTask(Task):
     - bed-file: A default BED file covering the whole reference fasta.
 
     - gene-range-table: A BED file specifying gene ranges for the reference using a gene fasta file made by Prodigal.
-    
+
     - genome-length-file: A file containing lengths of genomes in the reference fasta.
     
     Args:
