@@ -1331,26 +1331,6 @@ class CompareRunner(Runner):
             
 
 
-##### Here on we can have prebuilt tasks and Batches
-class PrepareForProfileTask(Task):
-    """This task prepares files needed to profile BAM files against a reference using fast_profile:
-
-    - bed-file: A default BED file covering the whole reference fasta.
-
-    - gene-range-table: A BED file specifying gene ranges for the reference using a gene fasta file made by Prodigal.
-
-    - genome-length-file: A file containing lengths of genomes in the reference fasta.
-    
-    Args:
-        id (str): Unique identifier for the task.
-        inputs (dict[str, Input]): Dictionary of input parameters for the task.
-        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
-        engine (Engine): Container engine to wrap the command.
-        """
-    TEMPLATE_CMD="""
-
-    """
-
 class ProfileBamTask(Task):
     """A Task that generates a mpileup file and genome breadth file in parquet format for a given BAM file using the fast_profile profile_bam command.
     The inputs to this task includes:

@@ -114,7 +114,18 @@ class ProfileDatabase:
                     data: dict
                     ) -> None:
         """Add a profile to the database.
+        The data dictionary must contain the following and only the following keys:
         
+        - profile_name
+        
+        - profile_location
+        
+        - scaffold_location
+        
+        - reference_db_id
+
+        - gene_db_id
+
         Args:
             data (dict): The profile data to add.
         """

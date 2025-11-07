@@ -7,6 +7,8 @@ This is a fundamental step for downstream analysis in zipstrain.
 import pathlib
 import polars as pl
 from typing import Generator
+
+
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
     Extract gene locations from a FASTA assuming it is from prodigal yield gene info.
@@ -56,7 +58,7 @@ def build_gene_loc_table(fasta_file:pathlib.Path,scaffold:set)->pl.DataFrame:
         "pos":pos
     })
     
-def build_gene_range_table(fasta_file:pathlib.Path,genes:set)->pl.LazyFrame:
+def build_gene_range_table(fasta_file:pathlib.Path)->pl.LazyFrame:
     """
     Build a gene location table in the form of <gene scaffold start end> from a FASTA file.
     Parameters:
@@ -67,9 +69,11 @@ def build_gene_range_table(fasta_file:pathlib.Path,genes:set)->pl.LazyFrame:
     """
     out=[]
     for parsed_annot in parse_gene_loc_table(fasta_file):
-        if parsed_annot[0] in genes:
-            out.append(parsed_annot)
+        out.append(parsed_annot)
     return pl.DataFrame(out, schema=["gene", "scaffold", "start", "end"],orient='row')
+
+
+
 def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.DataFrame)->pl.DataFrame:
     mpileup_df=mpileup_df.with_columns(pl.col("gene").fill_null("NA"))
     for gene, scaffold, start, end in gene_range.iter_rows():

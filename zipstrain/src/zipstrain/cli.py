@@ -3,7 +3,7 @@ zipstrain.utils
 ========================
 This module contains the command-line interface (CLI) implementation for the zipstrain application.
 """
-import click
+import rich_click as click
 import zipstrain.utils as ut
 import zipstrain.compare as cp
 import zipstrain.profile as pf
@@ -179,9 +179,8 @@ def gene_tools():
 
 @gene_tools.command("gene-range-table")
 @click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
-@click.option('--gene-list', '-l', required=True, help="location of gene list. A text file with each line containing a gene name.")
 @click.option('--output-file', '-o', required=True, help="location to save output tsv file")
-def get_gene_range_table(gene_file, gene_list, output_file):
+def get_gene_range_table(gene_file, output_file):
     """
     Main function to build and save the gene location table.
 
@@ -189,9 +188,8 @@ def get_gene_range_table(gene_file, gene_list, output_file):
     gene_file (str): Path to the gene FASTA file.
     output_file (str): Path to save the output TSV file.
     """
-    genes=set(pl.read_csv(pathlib.Path(gene_list), has_header=False,separator="\t").select(pl.col("column_1")).to_series().to_list())
-    gene_locs=pf.build_gene_range_table(pathlib.Path(gene_file), genes)
-    gene_locs.write_csv(pathlib.Path(output_file), separator="\t", include_header=False)
+    gene_locs=pf.build_gene_range_table(pathlib.Path(gene_file))
+    gene_locs.sink_csv(pathlib.Path(output_file), separator="\t", include_header=False)
 
 
 @gene_tools.command("gene-loc-table")
@@ -301,6 +299,35 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
 @cli.group()
 def run():
     pass
+
+@run.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
+@click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
+@click.option('--gene-fasta', '-g', required=True, help="Path to the gene annotations in FASTA format.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--output-dir', '-o', required=True, help="Directory to save the profiling database.")
+def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
+    """
+    Prepare the files needed for profiling bam files and save them in the specified output directory.
+    """
+    output_dir=pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bed_df = ut.make_the_bed(reference_fasta)
+    bed_df.write_csv(output_dir / "genomes_bed_file.bed", separator='\t', include_header=False,engine="streaming")
+    gene_range_table = pf.build_gene_range_table(pathlib.Path(gene_fasta))
+    gene_range_table.sink_csv(output_dir / "gene_range_table.tsv", separator='\t', include_header=False,engine="streaming")
+    
+    stb = pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("genome")
+    )
+
+    bed_df = bed_df.with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").cast(pl.Int64).alias("start"),
+        pl.col("column_3").cast(pl.Int64).alias("end")
+    ).select(["scaffold", "start", "end"])
+    genome_length = ut.extract_genome_length(stb, bed_df)
+    genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
 
 @run.command("compare_genomes")
 @click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
