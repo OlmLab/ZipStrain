@@ -58,7 +58,7 @@ def build_gene_loc_table(fasta_file:pathlib.Path,scaffold:set)->pl.DataFrame:
         "pos":pos
     })
     
-def build_gene_range_table(fasta_file:pathlib.Path)->pl.LazyFrame:
+def build_gene_range_table(fasta_file:pathlib.Path)->pl.DataFrame:
     """
     Build a gene location table in the form of <gene scaffold start end> from a FASTA file.
     Parameters:

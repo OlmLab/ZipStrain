@@ -312,20 +312,16 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
     output_dir=pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     bed_df = ut.make_the_bed(reference_fasta)
-    bed_df.write_csv(output_dir / "genomes_bed_file.bed", separator='\t', include_header=False,engine="streaming")
+    bed_df.write_csv(output_dir / "genomes_bed_file.bed", separator='\t', include_header=False)
     gene_range_table = pf.build_gene_range_table(pathlib.Path(gene_fasta))
-    gene_range_table.sink_csv(output_dir / "gene_range_table.tsv", separator='\t', include_header=False,engine="streaming")
+    gene_range_table.write_csv(output_dir / "gene_range_table.tsv", separator='\t', include_header=False)
     
     stb = pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
         pl.col("column_1").alias("scaffold"),
         pl.col("column_2").alias("genome")
     )
 
-    bed_df = bed_df.with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").cast(pl.Int64).alias("start"),
-        pl.col("column_3").cast(pl.Int64).alias("end")
-    ).select(["scaffold", "start", "end"])
+    bed_df = bed_df.lazy()
     genome_length = ut.extract_genome_length(stb, bed_df)
     genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
 
