@@ -86,6 +86,41 @@ def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.DataFrame)->
     return mpileup_df
 
 
+def get_strain_hetrogeneity(profile:pl.LazyFrame,
+                            stb:pl.LazyFrame, 
+                            min_cov=5,
+                            freq_threshold=0.8)->pl.LazyFrame:
+    """
+    Calculate strain heterogeneity for each genome based on nucleotide frequencies.
+    The definition of strain heterogeneity here is the fraction of sites that have enough coverage
+    (min_cov) and have a dominant nucleotide with frequency less than freq_threshold.
+
+    Args:
+        profile (pl.LazyFrame): The profile LazyFrame containing nucleotide counts.
+        stb (pl.LazyFrame): The scaffold-to-bin mapping LazyFrame. First column is 'scaffold', second column is 'bin'.
+        min_cov (int): The minimum coverage threshold.
+        freq_threshold (float): The frequency threshold for dominant nucleotides.
+
+    Returns:
+    pl.LazyFrame: A LazyFrame containing strain heterogeneity information grouped by genome.
+    """
+    # Calculate the total number of sites with sufficient coverage
+    profile = profile.with_columns(
+        (pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")).alias("coverage")
+    ).filter(pl.col("coverage") >= min_cov)
     
-
-
+    profile = profile.with_columns(
+        (pl.max_horizontal(["A", "T", "C", "G"])/pl.col("coverage") < freq_threshold)
+        .cast(pl.Int8)
+        .alias("heterogeneous_site")
+    )
+    
+    profile = profile.join(stb, left_on="chrom", right_on="scaffold", how="left").group_by("genome").agg([
+        pl.len().alias(f"total_sites_at_{min_cov}_coverage"),
+        pl.sum("heterogeneous_site").alias("heterogeneous_sites")
+    ])
+    
+    strain_heterogeneity = profile.with_columns(
+        (pl.col("heterogeneous_sites")/pl.col(f"total_sites_at_{min_cov}_coverage")).alias("strain_heterogeneity")
+    )
+    return strain_heterogeneity
