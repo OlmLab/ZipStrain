@@ -325,6 +325,83 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
     genome_length = ut.extract_genome_length(stb, bed_df)
     genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
 
+
+@run.command("profile")
+@click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table file.")
+@click.option('--bed-file', '-b', required=True, help="Path to the BED file for profiling regions.")
+@click.option('--genome-length-file', '-l', required=True, help="Path to the genome length file.")
+@click.option('--run-dir', '-r', required=True, help="Directory to save the run data.")
+@click.option('--num-procs', '-n', default=8, help="Number of processors to use for each profiling task.")
+@click.option('--max-concurrent-batches', '-m', default=5, help="Maximum number of concurrent batches to run.")
+@click.option('--poll-interval', '-p', default=1, help="Polling interval in seconds to check the status of batches.")
+@click.option('--execution-mode', '-e', default="local", help="Execution mode: 'local' or 'slurm'.")
+@click.option('--slurm-config', '-c', default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
+@click.option('--container-engine', '-o', default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option('--task-per-batch', '-t', default=10, help="Number of tasks to include in each batch.")
+def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch):
+    """
+    Run BAM file profiling in batches using the specified execution mode and container engine.
+
+    Args:
+    input_table (str): Path to the input table in TSV format containing sample names and BAM file paths.
+    stb_file (str): Path to the scaffold-to-genome mapping file.
+    gene_range_table (str): Path to the gene range table file.
+    bed_file (str): Path to the BED file for profiling regions.
+    genome_length_file (str): Path to the genome length file.
+    run_dir (str): Directory to save the run data.
+    num_procs (int): Number of processors to use for each profiling task.
+    max_concurrent_batches (int): Maximum number of concurrent batches to run.
+    poll_interval (int): Polling interval in seconds to check the status of batches.
+    execution_mode (str): Execution mode: 'local' or 'slurm'.
+    slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
+    container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
+    task_per_batch (int): Number of tasks to include in each batch.
+    """
+    # Load the BAM files table
+    bams_lf = pl.scan_csv(input_table, separator='\t')
+    
+    # Validate required columns exist
+    required_columns = {"sample_name", "bamfile"}
+    actual_columns = set(bams_lf.collect_schema().names())
+    if not required_columns.issubset(actual_columns):
+        missing = required_columns - actual_columns
+        raise ValueError(f"Input table missing required columns: {missing}")
+    
+    run_dir = pathlib.Path(run_dir)
+    slurm_conf = None
+    if execution_mode == "slurm":
+        if slurm_config is None:
+            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+    
+    if container_engine == "local":
+        container_engine_obj = tm.LocalEngine(address="")
+    elif container_engine == "docker":
+        container_engine_obj = tm.DockerEngine(address="parsaghadermazi/zipstrain:amd64")
+    elif container_engine == "apptainer":
+        container_engine_obj = tm.ApptainerEngine(address="docker://parsaghadermazi/zipstrain:amd64")
+    else:
+        raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
+    
+    tm.lazy_run_profile(
+        run_dir=run_dir,
+        container_engine=container_engine_obj,
+        bams_lf=bams_lf,
+        stb_file=pathlib.Path(stb_file),
+        gene_range_table=pathlib.Path(gene_range_table),
+        bed_file=pathlib.Path(bed_file),
+        genome_length_file=pathlib.Path(genome_length_file),
+        num_procs=num_procs,
+        tasks_per_batch=task_per_batch,
+        max_concurrent_batches=max_concurrent_batches,
+        poll_interval=poll_interval,
+        execution_mode=execution_mode,
+        slurm_config=slurm_conf,
+    )
+
+
 @run.command("compare_genomes")
 @click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")

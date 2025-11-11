@@ -481,7 +481,6 @@ class ProfileTaskGenerator(TaskGenerator):
         gene_range_file: str,
         genome_length_file: str,
         num_procs: int = 4,
-        polars_engine: str = "streaming",
     ) -> None:
         super().__init__(data, yield_size)
         self.stb_file = pathlib.Path(stb_file)
@@ -490,7 +489,6 @@ class ProfileTaskGenerator(TaskGenerator):
         self.genome_length_file = pathlib.Path(genome_length_file)
         self.num_procs = num_procs
         self.engine = container_engine
-        self.polars_engine = polars_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         for path_attr in [
@@ -596,11 +594,6 @@ class CompareTaskGenerator(TaskGenerator):
                 tasks.append(task)
             yield tasks
 
-
-    
-
-class MapReadsTaskGenerator(TaskGenerator):
-    pass
 
 class Batch(ABC):
     """Batch is a collection of tasks to be executed as a group. This is a base class and should not be instantiated directly.
@@ -1009,6 +1002,11 @@ class Runner(ABC):
     @abstractmethod
     async def _batcher(self):
         ...
+    
+    def _create_final_batch(self) -> Batch|None:
+        """Creates the final batch using the final_batch_factory callable."""
+        return None
+        
 
     async def _shutdown(self):
         """Cancel all active batches and signal shutdown."""
@@ -1100,9 +1098,11 @@ class Runner(ABC):
                 if self._batcher_done and self.batches_queue.empty() and len(self._active_batches) == 0:
                     if not self._final_batch_created:
                         final_batch = self._create_final_batch()
-                        await self.batches_queue.put(final_batch)
-                        self._final_batch_created = True
+                        if final_batch is not None:
+                            await self.batches_queue.put(final_batch)
+                            self._final_batch_created = True
                     else:
+                        self._final_batch_created = True
                         break
                 while len(self._active_batches) < self.max_concurrent_batches and not self.batches_queue.empty():
                     batch = await self.batches_queue.get()
@@ -1157,7 +1157,126 @@ class Runner(ABC):
     
     async def _update_statuses(self):
         await asyncio.gather(*[batch.update_status() for batch in self._active_batches if batch.status not in self.TERMINAL_BATCH_STATES])
+    
+    def _make_system_stats_panel(self):
+        """helpers to create a system stats panel for the live UI."""
+        def usage_bar(label: str, percent: float, color: str):
+            p = Progress(
+                TextColumn(f"[bold]{label}[/]"),
+                BarColumn(bar_width=None, complete_style=color),
+                TextColumn(f"{percent:.1f}%"),
+                expand=True,
+            )
+            p.add_task("", total=100, completed=percent)
+            return Panel(p, expand=True, width=30)
 
+        cpu = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory().percent
+        cpu_panel = usage_bar("CPU", cpu, "cyan")
+        ram_panel = usage_bar("RAM", ram, "magenta")
+        return Columns([cpu_panel, ram_panel], expand=True, equal=True, align="center")
+
+class ProfileRunner:
+    """
+    Creates and schedules batches of ProfileBamTask tasks using either local or Slurm batches.
+    
+    Args:
+        run_dir (str | pathlib.Path): Directory where the runner will operate.
+        task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
+        container_engine (Engine): An instance of Engine to wrap task commands.
+        max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
+        poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 1.0.
+        tasks_per_batch (int): Number of tasks to include in each batch. Default is 10.
+        batch_type (str): Type of batch to use ("local" or "slurm"). Default is "local".
+        slurm_config (SlurmConfig | None): Configuration for Slurm batches if batch_type
+            is "slurm". Default is None.
+    """
+    def __init__(
+        self,
+        run_dir: str | pathlib.Path,
+        task_generator: TaskGenerator,
+        container_engine: Engine,
+        max_concurrent_batches: int = 1,
+        poll_interval: float = 1.0,
+        tasks_per_batch: int = 10,
+        batch_type: str = "local",
+        slurm_config: SlurmConfig | None = None,
+    ) -> None:
+        if batch_type == "slurm":
+            if slurm_config is None:
+                raise ValueError("Slurm config must be provided for slurm batch type.")
+            batch_factory = SlurmBatch
+            final_batch_factory = None
+        else:
+            batch_factory = LocalBatch
+            final_batch_factory = None
+        super().__init__(
+            run_dir=run_dir,
+            task_generator=task_generator,
+            container_engine=container_engine,
+            batch_factory=batch_factory,
+            final_batch_factory=final_batch_factory,
+            max_concurrent_batches=max_concurrent_batches,
+            poll_interval=poll_interval,
+            tasks_per_batch=tasks_per_batch,
+            batch_type=batch_type,
+            slurm_config=slurm_config,
+        )
+    
+    async def _batcher(self):
+        """
+        Defines the batcher coroutine that collects tasks from the tasks_queue, groups them into batches,
+        and puts the batches into the batches_queue.
+        """
+        buffer: list[Task] = []
+        while True:
+            task = await self.tasks_queue.get()
+            if task is None:
+                if buffer:
+                    batch_id = f"batch_{self._batch_counter}"
+                    self._batch_counter += 1
+                    if self.batch_type == "slurm":
+                        batch = self.batch_factory(
+                            tasks=buffer,
+                            id=batch_id,
+                            run_dir=self.run_dir,
+                            expected_outputs=[],
+                            slurm_config=self.slurm_config,
+                        )
+                    else:
+                        batch = self.batch_factory(
+                            tasks=buffer,
+                            id=batch_id,
+                            run_dir=self.run_dir,
+                            expected_outputs=[],
+                        )
+                    await self.batches_queue.put(batch)
+                await self.batches_queue.put(None)
+                self._batcher_done = True
+                break
+            buffer.append(task)
+            if len(buffer) == self.tasks_per_batch:
+                batch_id = f"batch_{self._batch_counter}"
+                self._batch_counter += 1
+                if self.batch_type == "slurm":
+                    batch = self.batch_factory(
+                        tasks=buffer,
+                        id=batch_id,
+                        run_dir=self.run_dir,
+                        expected_outputs=[],
+                        slurm_config=self.slurm_config,
+                    )
+                else:
+                    batch = self.batch_factory(
+                        tasks=buffer,
+                        id=batch_id,
+                        run_dir=self.run_dir,
+                        expected_outputs=[],
+                    )
+                await self.batches_queue.put(batch)
+                buffer = []
+
+    
 class CompareRunner(Runner):
     """
     Creates and schedules batches of FastCompareTask tasks using either local or Slurm batches.
@@ -1281,24 +1400,6 @@ class CompareRunner(Runner):
                 buffer = []
 
 
-
-    def _make_system_stats_panel(self):
-        """helpers to create a system stats panel for the live UI."""
-        def usage_bar(label: str, percent: float, color: str):
-            p = Progress(
-                TextColumn(f"[bold]{label}[/]"),
-                BarColumn(bar_width=None, complete_style=color),
-                TextColumn(f"{percent:.1f}%"),
-                expand=True,
-            )
-            p.add_task("", total=100, completed=percent)
-            return Panel(p, expand=True, width=30)
-
-        cpu = psutil.cpu_percent(interval=None)
-        ram = psutil.virtual_memory().percent
-        cpu_panel = usage_bar("CPU", cpu, "cyan")
-        ram_panel = usage_bar("RAM", ram, "magenta")
-        return Columns([cpu_panel, ram_panel], expand=True, equal=True, align="center")
 
     def _create_final_batch(self) -> Batch:
         """Creates the final batch that prepares the overall outputs after all comparison batches are done."""
@@ -1453,6 +1554,51 @@ class PrepareCompareGenomeRunOutputsLocalBatch(LocalBatch):
 class PrepareCompareGenomeRunOutputsSlurmBatch(SlurmBatch):
     pass
 
+
+def lazy_run_profile(
+    run_dir: str | pathlib.Path,
+    container_engine: Engine,
+    bams_lf:pl.LazyFrame,
+    stb_file:pathlib.Path,
+    gene_range_table:pathlib.Path,
+    bed_file:pathlib.Path,
+    genome_length_file:pathlib.Path,
+    num_procs:int=8,
+    tasks_per_batch: int = 10,
+    max_concurrent_batches: int = 1,
+    poll_interval: float = 5.0,
+    execution_mode: str = "local",
+    slurm_config: SlurmConfig | None = None,
+)->None:
+    profile_task_generator=ProfileTaskGenerator(
+        data=bams_lf,
+        yield_size=tasks_per_batch,
+        container_engine=container_engine,
+        stb_file=stb_file,
+        profile_bed_file=bed_file,
+        gene_range_file=gene_range_table,
+        genome_length_file=genome_length_file,
+        num_procs=num_procs
+    )
+    if execution_mode=="local":
+        batch_type="local"
+    elif execution_mode=="slurm":
+        batch_type="slurm"
+    else:
+        raise ValueError(f"Unknown execution mode: {execution_mode}")
+    
+    runner = ProfileRunner(
+        run_dir=pathlib.Path(run_dir),
+        task_generator=profile_task_generator,
+        container_engine=container_engine,
+        max_concurrent_batches=max_concurrent_batches,
+        poll_interval=poll_interval,
+        tasks_per_batch=tasks_per_batch,
+        batch_type=batch_type,
+        slurm_config=slurm_config,
+    )
+    asyncio.run(runner.run())
+    
     
 def lazy_run_compares(
     run_dir: str | pathlib.Path,
