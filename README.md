@@ -1,9 +1,8 @@
 # ZipStrain
 
-Official Repository for ZipStrain python package. ZipStrain is a bioinformatics tool designed for rapid profiling of metagenomic samples as well as comparative analysis of strain-level variations within microbial communities. 
+Official Repository for ZipStrain python package. ZipStrain is a bioinformatics tool designed for rapid profiling of metagenomic samples as well as comparative analysis of strain-level variations within microbial communities.
 
 ![ZipStrain Logo](docs/Zipstrain.svg)
-![ZipStrain cli](docs/zipstrain_cli.png)
 
 ## Quick Start
 
