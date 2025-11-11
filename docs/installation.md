@@ -1,42 +1,12 @@
 # Installation
 Welcome to the installation guide! Follow the steps below to set up ZipStrain on your system
 
-## Install using Conda
-To install ZipStrain using Conda, follow these steps:
-
-1- Make sure you have Conda installed on your system. If you don't have it yet, you can download and install Miniconda from [here](https://docs.conda.io/en/latest/miniconda.html).
-
-2- Open your terminal and create a new Conda environment for ZipStrain:
-
-```
-conda create -n zipstrain_env python=3.13
-```
-
-3- Activate the newly created environment:
-
-```
-conda activate zipstrain_env
-```
-
-4- Install ZipStrain using Conda:
-
-```
-conda install -c bioconda zipstrain
-```
-
-This will install all the necessary dependencies along with ZipStrain.
-
-5- Make sure the installation was successful by checking the version of ZipStrain:
-
-```
-zipstrain test
-```
 
 ## Install using pip
 
 To install ZipStrain using pip, follow these steps:
 
-1- Make sure you have Python 3.13 or higher installed in your Python environment and activate it.
+1- Make sure you have Python 3.12 or higher installed in your Python environment and activate it.
 
 2- Open your terminal and run the following command to install ZipStrain:
 

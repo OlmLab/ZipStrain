@@ -13,10 +13,9 @@ import polars as pl
 import pathlib
 
 
-
 @click.group()
 def cli():
-    """Main CLI app"""
+    """ZipStrain CLI"""
     pass
 
 @cli.group()
@@ -360,7 +359,7 @@ def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_fil
     task_per_batch (int): Number of tasks to include in each batch.
     """
     # Load the BAM files table
-    bams_lf = pl.scan_csv(input_table, separator='\t')
+    bams_lf = pl.scan_csv(input_table)
     
     # Validate required columns exist
     required_columns = {"sample_name", "bamfile"}
@@ -501,7 +500,14 @@ def to_complete_table(genome_comparison_object, output_file):
     completed_pairs.sink_parquet(pathlib.Path(output_file), compression='zstd', engine="streaming")
         
         
-    
+@cli.command("test")
+def test():
+    """Run basic tests to ensure ZipStrain is setup correctly."""
+    ### Check samtools installation
+    if all([ut.check_samtools()]):
+        click.echo("ZipStrain setup looks good!")
+    else:
+        click.echo("There are issues with the ZipStrain setup. Please check the above messages.")
 
 if __name__ == "__main__":
     cli()

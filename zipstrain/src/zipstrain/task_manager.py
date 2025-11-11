@@ -481,6 +481,7 @@ class ProfileTaskGenerator(TaskGenerator):
         gene_range_file: str,
         genome_length_file: str,
         num_procs: int = 4,
+        breadth_min_cov: int = 1,
     ) -> None:
         super().__init__(data, yield_size)
         self.stb_file = pathlib.Path(stb_file)
@@ -488,6 +489,7 @@ class ProfileTaskGenerator(TaskGenerator):
         self.gene_range_file = pathlib.Path(gene_range_file)
         self.genome_length_file = pathlib.Path(genome_length_file)
         self.num_procs = num_procs
+        self.breadth_min_cov = breadth_min_cov
         self.engine = container_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
@@ -520,10 +522,12 @@ class ProfileTaskGenerator(TaskGenerator):
                 "gene-range-table": FileInput(self.gene_range_file),
                 "genome-length-file": FileInput(self.genome_length_file),
                 "num-threads": IntInput(self.num_procs),
+                "breadth-min-cov": IntInput(self.breadth_min_cov),
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+".parquet" ),
-                "breadth":  FileOutput(row["sample_name"]+".breadth.parquet" ),
+                "breadth":  FileOutput(row["sample_name"]+"_breadth.parquet" ),
+                "scaffold": FileOutput(row["sample_name"]+".parquet.scaffolds" ),
                 }
                 task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
                 tasks.append(task)
@@ -952,7 +956,6 @@ class Runner(ABC):
     TERMINAL_BATCH_STATES = {Status.SUCCESS.value, Status.FAILED.value}
     def __init__(self,
                     run_dir: str | pathlib.Path,
-                    
                     task_generator: TaskGenerator,
                     container_engine: Engine,
                     batch_factory: Batch,
@@ -1176,7 +1179,7 @@ class Runner(ABC):
         ram_panel = usage_bar("RAM", ram, "magenta")
         return Columns([cpu_panel, ram_panel], expand=True, equal=True, align="center")
 
-class ProfileRunner:
+class ProfileRunner(Runner):
     """
     Creates and schedules batches of ProfileBamTask tasks using either local or Slurm batches.
     
@@ -1210,6 +1213,7 @@ class ProfileRunner:
         else:
             batch_factory = LocalBatch
             final_batch_factory = None
+        
         super().__init__(
             run_dir=run_dir,
             task_generator=task_generator,
@@ -1457,6 +1461,7 @@ class ProfileBamTask(Task):
         engine (Engine): Container engine to wrap the command."""
     
     TEMPLATE_CMD="""
+    ln -s <bam-file> input.bam
     samtools index <bam-file>
     fastprofiler.sh <bed-file> <bam-file> <sample-name> <gene-range-table> <num-threads> 
     samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds

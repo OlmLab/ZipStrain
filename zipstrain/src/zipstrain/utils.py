@@ -14,6 +14,7 @@ from intervaltree import IntervalTree
 from collections import defaultdict,Counter
 from functools import reduce
 from scipy.stats import poisson
+import subprocess
 
 def build_null_poisson(error_rate:float=0.001,
                        max_total_reads:int=10000,
@@ -92,7 +93,12 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
     output_file (str): Path to save the output Parquet file.
     """
     indel_re = re.compile(r'\^.|[\$]|[+-](\d+)')
-    gene_ranges_pl = pl.scan_csv(gene_range_table_loc,separator='\t')
+    gene_ranges_pl = pl.scan_csv(gene_range_table_loc,separator='\t', has_header=False).rename({
+        "column_1": "scaffold",
+        "column_2": "start",
+        "column_3": "end",
+        "column_4": "gene"
+    })
     scaffolds = pl.read_csv(batch_bed, separator='\t', has_header=False)["column_1"].unique().to_list()
     gene_ranges_pl = gene_ranges_pl.filter(pl.col("scaffold").is_in(scaffolds)).collect()
     gene_ranges = defaultdict(IntervalTree)
@@ -250,7 +256,7 @@ def make_the_bed(db_fasta_dir: str | pathlib.Path, max_scaffold_length: int = 50
                 end = min(start + max_scaffold_length, len(seq))
                 records.append((scaffold, start, end))
 
-    return pl.DataFrame(records, schema=["scaffold", "start", "end"])
+    return pl.DataFrame(records, schema=["scaffold", "start", "end"], orient="row")
 
 
 def get_genome_breadth_matrix(
@@ -308,3 +314,16 @@ def collect_breadth_tables(
         raise ValueError("No breadth tables provided.")
 
     return reduce(lambda x, y: x.join(y, on="genome", how="outer", coalesce=True), breadth_tables)
+
+def check_samtools():
+    try:
+        result = subprocess.run(
+            ["samtools", "--version"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return True
+    except:
+        print("Samtools is not installed or not found in PATH. Please install samtools to use all of the ZipStrain's functionalities.")
+        return False
