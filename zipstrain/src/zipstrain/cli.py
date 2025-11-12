@@ -169,6 +169,32 @@ def collect_breadth(breadth_tables_dir, extension, output_file):
     lazy_frames = [pl.scan_parquet(str(pf)) for pf in breadth_tables]
     combined_lf = ut.collect_breadth_tables(lazy_frames)
     combined_lf.sink_parquet(output_file, compression='zstd')
+    
+@utilities.command("strain_heterogeneity")
+@click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
+@click.option('--freq-threshold', '-f', default=0.8, help="Frequency threshold to define dominant nucleotide.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
+def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output_file):
+    """
+    Calculate strain heterogeneity for each genome based on nucleotide frequencies.
+
+    Args:
+    profile_file (str): Path to the profile Parquet file.
+    stb_file (str): Path to the scaffold-to-genome mapping file.
+    min_cov (int): Minimum coverage to consider a position.
+    freq_threshold (float): Frequency threshold to define dominant nucleotide.
+    output_file (str): Path to save the output Parquet file.
+    """
+    profile = pl.scan_parquet(profile_file)
+    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("genome")
+    ).select(["scaffold", "genome"])
+    
+    het_profile = pf.get_strain_hetrogeneity(profile, stb, min_cov=min_cov, freq_threshold=freq_threshold)
+    het_profile.sink_parquet(output_file, compression='zstd')
 
 
 @cli.group()
