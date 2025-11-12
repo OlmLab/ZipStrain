@@ -28,6 +28,8 @@ zipstrain test
 
 ```
 
+----------
+
 ### Profile multiple bam files
 
 You can profile multiple BAM files using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods.
@@ -72,6 +74,30 @@ nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv> 
 ```
 
 **Note**  With the nextflow pipeline, you don't need the preparation step and those will be made along the way.
+
+#### Output files
+
+Profiling each sample creates three main files regardless of the execution workflow (ZipStrain CLI or Nextflow):
+
+- ##### profile (sample_name.parquet by default)
+
+    This is a parquet file that has the nucleotide count for each poition on the reference fasta that is covered by at least one base. It is a table with the following columns:
+    |chrom|pos|gene|A|T|C|G|
+    |-----|---|----|-|-|-|-|
+
+- ##### Breadth (sample_name_breadth.parquet by default)
+
+    This is parquet file that has the fraction of each genome that has been mapped at least min_breadth_cov times. It is a parquet
+    file like the follwing:
+
+    |genome|breadth|
+    |------|-------|
+
+- ##### Scaffolds (sample_name.parquet.scaffolds by default)
+
+    Just a simple text file that has the name of any scaffold in the reference fasta that has been covered at least by a single base. This might be helpful in the comparison space if you run it in light memory mode
+
+--------------
 
 ### Compare multiple profiled samples
 
