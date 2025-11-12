@@ -1104,10 +1104,10 @@ class Runner(ABC):
                         if final_batch is not None:
                             await self.batches_queue.put(final_batch)
                             self._final_batch_created = True
-                    else:
-                        self._final_batch_created = True
-                        break
-                while len(self._active_batches) < self.max_concurrent_batches and not self.batches_queue.empty():
+                        else:
+                            self._final_batch_created = True
+                            break
+                while len(self._active_batches) < self.max_concurrent_batches and not self.batches_queue.empty(): 
                     batch = await self.batches_queue.get()
                     if batch is not None:
                         batch._set_file_semaphore(file_semaphore)
@@ -1116,6 +1116,8 @@ class Runner(ABC):
                 # Update overall progress fields
                 overall_progress.update(overall_task, produced_tasks=self._produced_tasks_count, finished_batches=self._finished_batches_count, failed_batches=self._failed_batches_count)  
                 # Add newly queued batches into UI
+                
+
                 for batch in list(self._active_batches):
                     if batch not in batch_to_progress_id and batch.status not in self.TERMINAL_BATCH_STATES:
                         total = len(batch.tasks) if batch.tasks else 1
@@ -1149,7 +1151,7 @@ class Runner(ABC):
 
         # final UI summary
         console.clear()
-        total_batches = self._batch_counter + (1 if self._final_batch_created else 0)
+        total_batches = self._batch_counter + (1 if self._final_batch_created and self.final_batch_factory is not None else 0)
         summary = Panel(
             f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{total_batches} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
             expand=True,
