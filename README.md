@@ -1,8 +1,10 @@
 # ZipStrain
 
-Official Repository for ZipStrain python package. ZipStrain is a bioinformatics tool designed for rapid profiling of metagenomic samples as well as comparative analysis of strain-level variations within microbial communities.
+Official Repository for ZipStrain python package. ZipStrain is a bioinformatics tool designed for rapid profiling of metagenomic samples as well as comparative analysis of strain-level variations within microbial communities. For a detailed description of the tool, please refer to the documentation website [here](https://zipstrain.readthedocs.io/en/latest/).
 
 ![ZipStrain Logo](docs/Zipstrain.svg)
+
+Zipstrain is developed by Parsa Ghadermazi and team at the Olm Lab at University of Colorado Boulder.
 
 ## Quick Start
 
@@ -99,31 +101,117 @@ Profiling each sample creates three main files regardless of the execution workf
 
 --------------
 
-### Compare multiple profiled samples
+### Compare genomes in multiple profiled samples 
 
-To compare multiple profiled samples, you can use either the ZipStrain CLI or the Nextflow Pipeline. Below are examples of both methods.
+You can compare multiple profiled samples using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods. The two approaches are slightly different in terms of input requirements. First let's see how this is done using the ZipStrain CLI.
 
 #### ZipStrain CLI
-To compare multiple profiled samples using the ZipStrain CLI, you can use the following command:
+To compare multiple profiled samples using the ZipStrain CLI, first you need to build a profile database that contains all the profiled samples you want to compare. You can do this by running the following command:
 
 ```bash
-zipstrain run compare blah
-
+zipstrain utilities build-profile-db --profile-db-csv <path/to/profiles/csv> --output-db <path/to/save/profile/db>
 ```
+The input CSV file should have the following columns:
+
+    
+    - profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
+    
+    - profile_location: The location of the profile
+    
+    - scaffold_location: The location of the scaffold
+    
+    - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
+    
+    - gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.
+
+Running this command will perform the necessary checks and if successful, it will create a profile database in parquet format at the specified output location.
+
+Next, You use this profile database build a configuration json file that will be used to calculate the pairs that need to be compared. In this step you need to define the required parameters for comparison such as min_coverage, etc. You can make the configuration file by running the following command:
+
+```bash
+zipstrain utilities build-comparison-config \
+--profile-db <path/to/profile/db> \
+--gene-db-id <gene_db_id_used_in_profile_db> \
+--reference-db-id <reference_db_id_used_in_profile_db> \
+--scope "all" \
+--min-cov 5 \
+--min-gene-compare-len 200 \
+--null-model-p-value 0.05 \
+--stb-file-loc <path/to/stb/file> \
+--null-model-loc <path/to/null/model/file> \
+--current-comp-table <path/to/current/comparison/table.parquet> \
+--output-file <path/to/save/comparison/config.json>
+```
+Note that providing current-comp-table is optional. If provided, the comparison config will only include pairs that are not already compared in the current comparison table.
+
+Finally, you can run the comparison using the generated configuration file and the profile database:
+
+```bash
+zipstrain run compare_genomes \
+--genome-comparison-object <path/to/comparison/config.json> \
+--run-dir <path/to/save/comparison/outputs> \
+--max-concurrent-batches 1
+```
+
+This command take some more arguments and for more information about them please refer to the [Tutorial](docs/Tutorial.md).
+
 #### Nextflow Workflow
-To compare multiple profiled samples using Nextflow, you can create a Nextflow script as follows
-```nextflow
-// Nextflow script to compare multiple profiled samples
+
+There are two ways you can run the comparison workflow in ZipStrain Nextflow pipeline. 
+
+1- I have a comparison config file already made using the ZipStrain CLI as explained above.
+
+In this case you obtain a table of remaining pairs to be compared from the comparison config file and run the comparison as follows:
 
 ```
-
-### Downstream Analysis and Visualization
-
-ZipStrain provides a Python API that allows for basic downstream analysis and visualization of the profiling and comparison results. Here's an example of how to use the API for visualization:
-
-```python
-import zipstrain as zs  
-blah
+zipstrain utilities to-complete-table --genome-comparison-object <path/to/comparison/config.json> --output-file <path/to/output/remaining_pairs.csv>
 ```
 
-For more detailed examples and documentation, please refer to Tutorials section in the [Documentation](docs/tutorials.md) or visit the documentation website [here](https://zipstrain.readthedocs.io/en/latest/).
+Then you can run the comparison using the following command:
+
+```
+nextflow run zipstrain.nf --mode fast_compare \
+ --input_table <path/to/output/remaining_pairs.csv> \
+ --input_type "pair_table" --gene_file <path/to/gene/fasta/file> \
+ --reference_genome <path/to/reference/genome.fasta> \  
+ --stb <path/to/stb/file.stb> -c conf.config \
+ --output_dir "<path/to/output/directory>" \
+ --compare_genome_scope "all" \
+ --compare_memory_mode "heavy" \
+ --parallel_mode "batched" \
+ --batch_size 2000 -profile <profile_name> \
+ --batch_compare_n_parallel 3 -qs 200 -resume
+```
+
+2- I don't have a comparison config file and I want to run the comparison directly from the profile lists.
+
+In this case, the nextflow pipeline will run all non-redundant pairwise comparisons between the provided profiles. Here is an example command:
+
+```
+nextflow run zipstrain.nf --mode fast_compare \
+ --input_table <path/to/profiles/csv> \
+ --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
+ --reference_genome <path/to/reference/genome.fasta> \
+ --stb <path/to/stb/file.stb> -c conf.config \
+ --output_dir "<path/to/output/directory>" \
+ --compare_genome_scope "all" \
+ --compare_memory_mode "heavy" \
+ --parallel_mode "batched" \
+ --batch_size 2000 -profile <profile_name> \
+ --batch_compare_n_parallel 3 -qs 200 -resume
+```
+
+For more information, refer to the [Nextflow Pipeline Documentation](./NextflowPipeline.md).
+
+#### Output files
+
+Regardless of the execution workflow (ZipStrain CLI or Nextflow), comparing profiles yields a single table "merged_comparison.parquet" that contains the comparison results for all compared profile pairs. The table has the following columns:
+
+|genome|total_positions|share_allele_pos|genome_pop_ani|max_consecutive_length|shared_genes_count|identical_gene_count|perc_id_genes|sample_1|sample_2|
+|-----|---------------|----------------|--------------|---------------------|------------------|--------------------|-------------|--------|--------|
+
+For more information about the columns, please refer to the [Tutorial](docs/Tutorial.md).
+
+### Downstream Analysis
+
+TODO

@@ -20,6 +20,7 @@ def cli():
 
 @cli.group()
 def utilities():
+    """The commands in this group are related to various utility functions that mainly prepare input files for profiling and comparison."""
     pass
 
 @utilities.command("build-null-model")
@@ -196,11 +197,88 @@ def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output
     het_profile = pf.get_strain_hetrogeneity(profile, stb, min_cov=min_cov, freq_threshold=freq_threshold)
     het_profile.sink_parquet(output_file, compression='zstd')
 
+@utilities.command("build-profile-db")
+@click.option('--profile-db-csv', '-p', required=True, help="Path to the profile database CSV file.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
+def build_profile_db(profile_db_csv, output_file):
+    """
+    Build a profile database from the given CSV file.
+
+    Args:
+    profile_db_csv (str): Path to the profile database CSV file.
+    """
+    profile_db = db.ProfileDatabase.from_csv(pathlib.Path(profile_db_csv))
+    profile_db.save_as_new_database(pathlib.Path(output_file))
+
+
+@utilities.command("build-comparison-config")
+@click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
+@click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
+@click.option('--reference-db-id', '-r', required=True, help="Reference fasta ID.")
+@click.option('--scope', '-s', default="all", help="Genome scope for comparison.")
+@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
+@click.option('--null-model-p-value', '-n', default=0.05, help="P-value threshold for the null model to detect sequencing error.")
+@click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--null-model-loc', '-m', required=True, help="Path to the null model Parquet file.")
+@click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")    
+def build_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
+    """
+    Build a comparison configuration JSON file from the given parameters.
+
+    Args:
+    profile_db (str): Path to the profile database Parquet file.
+    gene_db_id (str): Gene database ID.
+    reference_genome_id (str): Reference genome ID.
+    scope (str): Genome scope for comparison.
+    min_cov (int): Minimum coverage to consider a position.
+    min_gene_compare_len (int): Minimum gene length to consider for comparison.
+    null_model_p_value (float): P-value threshold for the null model to detect sequencing error.
+    stb_file_loc (str): Path to the scaffold-to-genome mapping file.
+    null_model_loc (str): Path to the null model Parquet file.
+    current_comp_table (str): Path to the current comparison table in Parquet format.
+    output_file (str): Path to save the output configuration JSON file.
+    """
+    conf_obj=db.GenomeComparisonConfig(
+        gene_db_id=gene_db_id,
+        reference_id=reference_genome_id,
+        scope=scope,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        null_model_p_value=null_model_p_value,
+        stb_file_loc=stb_file_loc,
+        null_model_loc=null_model_loc,
+    )
+    comp_obj=db.GenomeComparisonDatabase(
+        profile_db=profile_db,
+        config=conf_obj,
+        comp_db_loc=current_comp_table
+    )
+    comp_obj.dump_obj(pathlib.Path(output_file))
+
+
+@utilities.command("to-complete-table")
+@click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
+@click.option("--output-file", "-o", required=True, help="Path to save the completed pairs csv file.")
+def to_complete_table(genome_comparison_object, output_file):
+    """
+    Generate a table of completed genome comparison pairs and save it to a csv file.
+
+    Parameters:
+    genome_comparison_object (str): Path to the genome comparison object in json format.
+    output_file (str): Path to save the completed pairs Parquet file.
+    """
+    genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
+    completed_pairs=genome_comp_db.to_complete_input_table()
+    completed_pairs.sink_csv(pathlib.Path(output_file), compression='zstd', engine="streaming")
+
 
 @cli.group()
 def gene_tools():
-    """Utility commands for various tasks."""
+    """Holds anything related to gene analysis."""
     pass
+
 
 @gene_tools.command("gene-range-table")
 @click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
@@ -238,6 +316,7 @@ def get_gene_loc_table(gene_file, scaffold_list, output_file):
 
 @cli.group()
 def compare():
+    """The commands in this group are related to comparing profiled samples."""
     pass
 
 @compare.command("single_compare_genome")
@@ -323,6 +402,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
 
 @cli.group()
 def run():
+    """The commands in this group are related to running zipstrain workflows."""
     pass
 
 @run.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
@@ -510,20 +590,7 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
     )
     obj.dump_obj(pathlib.Path(output_dir))
 
-@run.command("to-complete-table")
-@click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
-@click.option("--output-file", "-o", required=True, help="Path to save the completed pairs Parquet file.")
-def to_complete_table(genome_comparison_object, output_file):
-    """
-    Generate a table of completed genome comparison pairs and save it to a Parquet file.
 
-    Parameters:
-    genome_comparison_object (str): Path to the genome comparison object in json format.
-    output_file (str): Path to save the completed pairs Parquet file.
-    """
-    genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
-    completed_pairs=genome_comp_db.to_complete_input_table()
-    completed_pairs.sink_parquet(pathlib.Path(output_file), compression='zstd', engine="streaming")
         
         
 @cli.command("test")
