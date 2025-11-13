@@ -214,4 +214,20 @@ For more information about the columns, please refer to the [Tutorial](docs/Tuto
 
 ### Downstream Analysis
 
-TODO
+ZipStrain offers visualization module that allows you to perform statistical analyses on the comparison results and visualize them. All of the functionalities require the merged comparison table made in the last step. Here we list the available functionalities in the visualization module and provide links to their respective documentation pages for more details:
+
+- [Strain Sharing Analysis](docs/Visualization/StrainSharing.md)
+  Strain sharing analysis helps identify strains that are shared between different samples based on the comparison results. This analysis can provide insights into the transmission and distribution of strains across different environments or hosts.
+
+  
+
+- [Genome Similarity Analysis](docs/Visualization/GenomeSimilarity.md)
+    You can build clustermaps and dendograms based on ANI calculated for any genome that exists in your comparison results.
+
+    <img src="docs/sandpiper.png" alt="sandpiper" width="400"/>
+
+
+- [Evolutionary Analysis](docs/Visualization/EvolutionaryAnalysis.md)
+    You can perform evolutionary analysis on any genome that exists in your comparison results. This includes comparing the distribution of longest identical tracts for within and between two populations.
+
+    <img src="docs/ovatus.png" alt="ovatus" width="400"/>
