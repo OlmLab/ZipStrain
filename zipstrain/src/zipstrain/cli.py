@@ -366,6 +366,8 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
             pl.col("column_1").alias("scaffold").cast(pl.Categorical),
             pl.col("column_2").alias("genome").cast(pl.Categorical)
         ).select(["scaffold", "genome"])
+        if genome != "all":
+            stb = stb.filter(pl.col("genome") == genome)
 
     null_model = pl.scan_parquet(null_model)
     mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
@@ -396,8 +398,16 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
                      shared_scaffolds=shared_scaffolds, 
                      scaffold_scope=scaffold_scope, 
                      engine=engine)
+    comp=comp.join(
+        stb.select("genome").unique(),
+        left_on=pl.col("genome"),
+        right_on=pl.col("genome"),
+        how="full",
+        coalesce=True
+    ).fill_null(0)
 
     comp=comp.with_columns(pl.lit(mpile_contig_1_name).alias("sample_1"), pl.lit(mpile_contig_2_name).alias("sample_2")).fill_null(0)
+    
     comp.sink_parquet(output_file,engine=engine)
 
 @cli.group()
