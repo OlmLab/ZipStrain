@@ -219,7 +219,7 @@ ZipStrain offers visualization module that allows you to perform statistical ana
 - [Strain Sharing Analysis](docs/Visualization/StrainSharing.md)
   Strain sharing analysis helps identify strains that are shared between different samples based on the comparison results. This analysis can provide insights into the transmission and distribution of strains across different environments or hosts.
 
-  
+  <img src="docs/strainsharing.png" alt="sandpiper" width="400"/>
 
 - [Genome Similarity Analysis](docs/Visualization/GenomeSimilarity.md)
     You can build clustermaps and dendograms based on ANI calculated for any genome that exists in your comparison results.
