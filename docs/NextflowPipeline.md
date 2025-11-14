@@ -33,7 +33,7 @@ cd zipstrain_nextflow
 ```
 You can then download the `zipstrain.nf` file and the `conf.config` file from the ZipStrain GitHub repository into this directory.
 
-## Deciding on the execution environment
+## Deciding on the Execution Environment
 
 ZipStrain is provieded as a containerized application using Docker and can be run using Apptainer as well. For this to work, you need to have either Docker or Apptainer installed on your system. You can run all the nextflow commands by using the config file provided in the ZipStrain GitHub repository (conf.config).
 
