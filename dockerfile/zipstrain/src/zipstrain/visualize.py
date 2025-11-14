@@ -45,7 +45,7 @@ def calculate_strainsharing(
     Args:
         comps_lf (pl.LazyFrame): LazyFrame containing the gene profiles of the samples.
         breadth_lf (pl.LazyFrame): LazyFrame containing the genome breadth information.
-        sample_grouping (pl.LazyFrame): LazyFrame containing the sample grouping information.
+        sample_to_population (pl.LazyFrame): LazyFrame containing the sample to population mapping.
         min_breadth (float, optional): Minimum genome breadth to consider a genome for strain sharing. Defaults to 0.5.
         strain_similarity_threshold (float, optional): Threshold for strain similarity. Defaults to 0.99.
         min_total_positions (int, optional): Minimum total positions to consider a genome for strain sharing. Defaults to 10000.

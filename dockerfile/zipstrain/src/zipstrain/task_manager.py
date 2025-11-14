@@ -13,22 +13,28 @@ Each batch can have an optional finalization step that runs after all tasks are 
 
 Key concepts
 ------------
+
 - Inputs and Outputs:
     These classes encapsulate task inputs and outputs with validation logics.
     By default, Input and output classes for files, strings, and integers are provided.
     If needed, new types can be defined by subclassing Input or Output.
+    
 - Engines:
     Any task object can use a container engine (Docker or Apptainer) or run natively (LocalEngine).
+    
 - Task 
     Each task runs a unit of bash script with defined inputs and expected outputs. If an engine is provided,
     the command will be wrapped accordingly to run inside the container.
+    
 - Batches:
     A batch is a collection of tasks to be executed together. Batches can be run locally or submitted to Slurm.
     Each batch monitors the status of its tasks and updates its own status accordingly. A batch can also have
     expected outputs that are checked after all tasks are complete. Additionally, a batch can have a finalization step that runs after all tasks are complete.
+    
 - Runner:
     The Runner class orchestrates task generation, batching, and execution. It manages concurrent batch execution,
     monitors progress, and provides a live terminal UI using the rich library.
+    
 """
 
 
@@ -51,21 +57,23 @@ from rich.columns import Columns
 import polars as pl
 import psutil
 import shutil
+import signal 
+
 
 class SlurmConfig(BaseModel):
     """Configuration model for Slurm batch jobs.
+    
     Attributes:
-        partition (str): Slurm partition to use.
         time (str): Time limit for the job in HH:MM:SS format.
         tasks (int): Number of tasks.
         mem (int): Memory in GB.
         additional_params (dict): Additional SLURM parameters as key-value pairs.
+        
     NOTE: Additional paramters for slurm should be provided in the additional_params dict in the form
     of {"param-name": "param-value"}, e.g., {"cpus-per-task": "4"} will result in the addition of
     "#SBATCH --cpus-per-task=4" to the sbatch script.
     
     """
-    partition: str = Field(description="Slurm partition to use.")
     time: str = Field(description="Time limit for the job.")
     tasks: int = Field(default=1, description="Number of tasks.")
     mem: int = Field(default=4, description="Memory in GB.")
@@ -81,7 +89,6 @@ class SlurmConfig(BaseModel):
     def to_slurm_args(self) -> str:
         """Generates the slurm batch file header form the configuration object"""
         args = [
-            f"#SBATCH --partition={self.partition}",
             f"#SBATCH --time={self.time}",
             f"#SBATCH --ntasks={self.tasks}",
             f"#SBATCH --mem={self.mem}G",
@@ -197,6 +204,7 @@ class Output(ABC):
 
     def register_task(self, task: Task) -> None:
         """Registers the task that produces this output. In most cases, you won't need to override this.
+        
         Args:
         task (Task): The task that produces this output.
         """
@@ -204,6 +212,7 @@ class Output(ABC):
 
 class FileOutput(Output):
     """This is used when the output is a file path.
+    
     Args:
         expected_file (str): The expected output file name relative to the task directory.
     """
@@ -216,6 +225,7 @@ class FileOutput(Output):
 
     def register_task(self, task: Task) -> None:
         """Registers the task that produces this output and sets the expected file path.
+        
         Args:
         task (Task): The task that produces this output.
         """
@@ -236,6 +246,7 @@ class BatchFileOutput(Output):
 
     def register_batch(self, batch: Batch) -> None:
         """Registers the batch that produces this output and sets the expected file path.
+        
         Args:
         batch (Batch): The batch that produces this output and sets the expected file path.
         """
@@ -433,10 +444,12 @@ class TaskGenerator(ABC):
     """Abstract base class for task generators. DO NOT INSTANTIATE DIRECTLY. A subclass of this class 
     should provide an async generator method called generate_tasks() that yields lists of Task objects in an async manner.
     Some important concepts:
-    - generate_tasks() is an async generator that yields lists of Task objects.
-    - yield_size determines how many tasks are generated and yielded at a time.
-    - get_total_tasks() returns the total number of tasks that can be generated.
     
+    - generate_tasks() is an async generator that yields lists of Task objects.
+    
+    - yield_size determines how many tasks are generated and yielded at a time.
+    
+    - get_total_tasks() returns the total number of tasks that can be generated.
 
     """
     def __init__(self,
@@ -456,9 +469,74 @@ class TaskGenerator(ABC):
     def get_total_tasks(self) -> int:
         pass
 
+class ProfileTaskGenerator(TaskGenerator):
+    """This TaskGenerator generates FastProfileTask objects from a polars DataFrame. Each task profiles a BAM file."""
+    def __init__(
+        self,
+        data: pl.LazyFrame,
+        yield_size: int,
+        container_engine: Engine,
+        stb_file: str,
+        profile_bed_file: str,
+        gene_range_file: str,
+        genome_length_file: str,
+        num_procs: int = 4,
+        breadth_min_cov: int = 1,
+    ) -> None:
+        super().__init__(data, yield_size)
+        self.stb_file = pathlib.Path(stb_file)
+        self.profile_bed_file = pathlib.Path(profile_bed_file)
+        self.gene_range_file = pathlib.Path(gene_range_file)
+        self.genome_length_file = pathlib.Path(genome_length_file)
+        self.num_procs = num_procs
+        self.breadth_min_cov = breadth_min_cov
+        self.engine = container_engine
+        if type(self.data) is not pl.LazyFrame:
+            raise ValueError("data must be a polars LazyFrame.")
+        for path_attr in [
+            self.stb_file,
+            self.profile_bed_file,
+            self.gene_range_file,
+            self.genome_length_file,
+        ]:
+            if not path_attr.exists():
+                raise FileNotFoundError(f"File {path_attr} does not exist.")
+
+    def get_total_tasks(self) -> int:
+        """Returns total number of profiles to be generated."""
+        return self.data.select(size=pl.len()).collect(engine="streaming")["size"][0]
+    
+    async def generate_tasks(self) -> list[Task]:
+        """Yeilds lists of FastProfileTask objects based on the data in batches of yield_size. This method yields the control back to the event loop
+        while polars is collecting data to avoid blocking.
+        """
+        for offset in range(0, self._total_tasks, self.yield_size):
+            batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
+            tasks = []
+            for row in batch_df.iter_rows(named=True):
+                inputs = {
+                "bam-file": FileInput(row["bamfile"]),
+                "sample-name": StringInput(row["sample_name"]),
+                "stb-file": FileInput(self.stb_file),
+                "bed-file": FileInput(self.profile_bed_file),
+                "gene-range-table": FileInput(self.gene_range_file),
+                "genome-length-file": FileInput(self.genome_length_file),
+                "num-threads": IntInput(self.num_procs),
+                "breadth-min-cov": IntInput(self.breadth_min_cov),
+                }
+                expected_outputs ={
+                "profile":  FileOutput(row["sample_name"]+".parquet" ),
+                "breadth":  FileOutput(row["sample_name"]+"_breadth.parquet" ),
+                "scaffold": FileOutput(row["sample_name"]+".parquet.scaffolds" ),
+                }
+                task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
+                tasks.append(task)
+            yield tasks
+
 class CompareTaskGenerator(TaskGenerator):
     """This TaskGenerator generates FastCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genomes functionality in
     zipstrain.compare module.
+    
     Args:
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
@@ -520,9 +598,11 @@ class CompareTaskGenerator(TaskGenerator):
                 tasks.append(task)
             yield tasks
 
+
 class Batch(ABC):
     """Batch is a collection of tasks to be executed as a group. This is a base class and should not be instantiated directly.
     A batch is the unit of execution meaning that the enitre batch is either run locally or submitted to a job scheduler like Slurm.
+    
     Args:
         tasks (list[Task]): List of Task objects to be included in the batch.
         id (str): Unique identifier for the batch.
@@ -541,6 +621,7 @@ class Batch(ABC):
         self.tasks = tasks
         self.run_dir = pathlib.Path(run_dir)
         self.batch_dir = self.run_dir / self.id
+        self.retry_count = 0
         self.expected_outputs = expected_outputs
         self.file_semaphore = file_semaphore
         for output in self.expected_outputs:
@@ -584,6 +665,11 @@ class Batch(ABC):
         """The base class defines if any cleanup is needed after batch success. By default, it does nothing."""
         return None
 
+    @abstractmethod
+    async def cancel(self) -> None:
+        """Cancels the batch. This method should be implemented by subclasses."""
+        ...
+        
     def outputs_ready(self) -> bool:
         """Check if all BATCH-LEVEL expected outputs are ready."""
         try:
@@ -633,6 +719,7 @@ class LocalBatch(Batch):
     def __init__(self, tasks, id, run_dir, expected_outputs) -> None:
         super().__init__(tasks, id, run_dir, expected_outputs)
         self._script = self.TEMPLATE_CMD + "\nset -o pipefail\n"
+        self._proc: asyncio.subprocess.Process | None = None 
 
 
     async def run(self) -> None:
@@ -659,20 +746,24 @@ class LocalBatch(Batch):
             await write_file(script_path, script, self.file_semaphore)
 
             await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
-            
-            proc = await asyncio.create_subprocess_exec(
+
+            self._proc = await asyncio.create_subprocess_exec(
                 "bash", f"{self.id}.sh",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.batch_dir,
             )
-            await proc.wait()
-            out_bytes, err_bytes = await proc.communicate()
-            
+            try:
+                out_bytes, err_bytes = await self._proc.communicate()
+            except asyncio.CancelledError:
+                if self._proc and self._proc.returncode is None:
+                    self._proc.terminate()
+                raise
+
             await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
             await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
-            
-            if proc.returncode == 0 and self.outputs_ready():
+
+            if self._proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
                 await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
@@ -691,7 +782,17 @@ class LocalBatch(Batch):
     def cleanup(self) -> None:
         super().cleanup()
 
-
+    async def cancel(self) -> None:
+        """Cancels the local batch by terminating the subprocess if it's running."""
+        if self._proc and self._proc.returncode is None:
+            self._proc.terminate()
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self._proc.kill()
+                await self._proc.wait()
+            self._status = Status.FAILED.value
+            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
 
 class SlurmBatch(Batch):
@@ -720,7 +821,19 @@ class SlurmBatch(Batch):
         except:
             raise EnvironmentError("Slurm does not seem to be available or configured properly on this system.")
 
+    async def cancel(self) -> None:
+        """Cancel a running or submitted Slurm job."""
+        if self._job_id:
+            proc = await asyncio.create_subprocess_exec(
+                "scancel", self._job_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.wait()
 
+        self._status = Status.FAILED.value
+        await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+        
     async def run(self) -> None:
         """This method submits the batch to Slurm by creating a batch script and using sbatch command. It also monitors the job status until completion.
         This method is unavoidably different from LocalBatch.run() because of the nature of Slurm job submission.
@@ -825,6 +938,7 @@ def get_memory_usage():
 
 class Runner(ABC):
     """Base Runner class to manage task generation, batching, and execution.
+    
     Args:
         run_dir (str | pathlib.Path): Directory where the runner will operate.
         task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
@@ -842,7 +956,6 @@ class Runner(ABC):
     TERMINAL_BATCH_STATES = {Status.SUCCESS.value, Status.FAILED.value}
     def __init__(self,
                     run_dir: str | pathlib.Path,
-                    
                     task_generator: TaskGenerator,
                     container_engine: Engine,
                     batch_factory: Batch,
@@ -852,6 +965,7 @@ class Runner(ABC):
                     tasks_per_batch: int = 10,
                     batch_type: str = "local",
                     slurm_config: SlurmConfig | None = None,
+                    max_retries: int = 3,
                     ) -> None:
         self.run_dir = pathlib.Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -873,6 +987,12 @@ class Runner(ABC):
         self._final_batch_created = False
         self.batch_factory = batch_factory
         self.final_batch_factory = final_batch_factory
+        self._failed_batches_count = 0
+        self.max_retries = max_retries
+        self.total_expected_tasks = self.task_generator.get_total_tasks()
+        self.total_expected_batches = (self.total_expected_tasks + tasks_per_batch - 1) // tasks_per_batch
+        self._shutdown_event = asyncio.Event()
+        self._shutdown_initiated = False
     
     async def _refill_tasks(self):
         """Repeatedly call task_generator until it returns an empty list. This feeds tasks into the tasks_queue and waits for the queue to have space if it's full in an async manner."""
@@ -886,6 +1006,27 @@ class Runner(ABC):
     async def _batcher(self):
         ...
     
+    def _create_final_batch(self) -> Batch|None:
+        """Creates the final batch using the final_batch_factory callable."""
+        return None
+        
+
+    async def _shutdown(self):
+        """Cancel all active batches and signal shutdown."""
+        if self._shutdown_initiated:
+            return
+        self._shutdown_initiated = True
+        console.print("[yellow]Shutdown requested. Cancelling active jobs...[/]")
+
+        for batch in list(self._active_batches):
+            try:
+                await batch.cancel()  
+            except Exception as e:
+                console.print(f"[red]Error cancelling batch {batch.id}: {e}[/]")
+
+        # Signal the main loop to stop
+        self._shutdown_event.set()
+
     async def run(self):
         """
         Run the producer, batcher and worker coroutines and present a live UI while working.
@@ -901,22 +1042,35 @@ class Runner(ABC):
         file_semaphore = asyncio.Semaphore(20)
         async def run_batch(batch: Batch):
             async with semaphore:
-                await batch.run()
+                while batch.status != Status.SUCCESS.value and batch.retry_count < self.max_retries:
+                    await batch.run()
+                    if batch.status == Status.SUCCESS.value:
+                        break
+                    else:
+                        batch.retry_count += 1
+                
                 self._finished_batches_count += 1
+                
                 if batch.status == Status.SUCCESS.value:
                     self._success_batches_count += 1
+                
+                elif batch.status == Status.FAILED.value:
+                    self._failed_batches_count += 1
+
                 if batch in self._active_batches:
                     self._active_batches.remove(batch)
 
         # Rich progress objects
+        
         overall_progress = Progress(
             TextColumn(f"[bold white]{type(self).__name__}[/]"),
             BarColumn(),
-            TextColumn("{task.fields[produced_tasks]} tasks produced • {task.fields[finished_batches]} batches finished"),
+            TextColumn("• {task.fields[produced_tasks]}/{task.fields[total_expected_tasks]} tasks produced"),
+            TextColumn("• {task.fields[finished_batches]}/{task.fields[total_expected_batches]} batches finished • {task.fields[failed_batches]} batches failed"),
             TimeElapsedColumn(),
             expand=True,
         )
-        overall_task = overall_progress.add_task("overall", produced_tasks=0, finished_batches=0)
+        overall_task = overall_progress.add_task("overall", produced_tasks=0, total_expected_tasks=self.total_expected_tasks, finished_batches=0, total_expected_batches=self.total_expected_batches, failed_batches=0)
 
         batch_progress = Progress(
             TextColumn("[bold white]{task.fields[batch_id]}[/]"),
@@ -936,26 +1090,34 @@ class Runner(ABC):
             Panel(batch_progress, title="Active Batches", height=10),
             Panel(self._make_system_stats_panel(), title="System Stats", expand=True),
         ), border_style="magenta")
-
+        
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._shutdown()))
+            
         with Live(body, console=console, refresh_per_second=2) as live:
-            while True:
+            while not self._shutdown_event.is_set():
                 await self._update_statuses()
                 if self._batcher_done and self.batches_queue.empty() and len(self._active_batches) == 0:
                     if not self._final_batch_created:
                         final_batch = self._create_final_batch()
-                        await self.batches_queue.put(final_batch)
-                        self._final_batch_created = True
-                    else:
-                        break
-                while len(self._active_batches) < self.max_concurrent_batches and not self.batches_queue.empty():
+                        if final_batch is not None:
+                            await self.batches_queue.put(final_batch)
+                            self._final_batch_created = True
+                        else:
+                            self._final_batch_created = True
+                            break
+                while len(self._active_batches) < self.max_concurrent_batches and not self.batches_queue.empty(): 
                     batch = await self.batches_queue.get()
                     if batch is not None:
                         batch._set_file_semaphore(file_semaphore)
                         self._active_batches.append(batch)
                         asyncio.create_task(run_batch(batch))
                 # Update overall progress fields
-                overall_progress.update(overall_task, produced_tasks=self._produced_tasks_count, finished_batches=self._finished_batches_count)
+                overall_progress.update(overall_task, produced_tasks=self._produced_tasks_count, finished_batches=self._finished_batches_count, failed_batches=self._failed_batches_count)  
                 # Add newly queued batches into UI
+                
+
                 for batch in list(self._active_batches):
                     if batch not in batch_to_progress_id and batch.status not in self.TERMINAL_BATCH_STATES:
                         total = len(batch.tasks) if batch.tasks else 1
@@ -989,7 +1151,7 @@ class Runner(ABC):
 
         # final UI summary
         console.clear()
-        total_batches = self._batch_counter + (1 if self._final_batch_created else 0)
+        total_batches = self._batch_counter + (1 if self._final_batch_created and self.final_batch_factory is not None else 0)
         summary = Panel(
             f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{total_batches} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
             expand=True,
@@ -1000,10 +1162,131 @@ class Runner(ABC):
     
     async def _update_statuses(self):
         await asyncio.gather(*[batch.update_status() for batch in self._active_batches if batch.status not in self.TERMINAL_BATCH_STATES])
+    
+    def _make_system_stats_panel(self):
+        """helpers to create a system stats panel for the live UI."""
+        def usage_bar(label: str, percent: float, color: str):
+            p = Progress(
+                TextColumn(f"[bold]{label}[/]"),
+                BarColumn(bar_width=None, complete_style=color),
+                TextColumn(f"{percent:.1f}%"),
+                expand=True,
+            )
+            p.add_task("", total=100, completed=percent)
+            return Panel(p, expand=True, width=30)
 
+        cpu = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory().percent
+        cpu_panel = usage_bar("CPU", cpu, "cyan")
+        ram_panel = usage_bar("RAM", ram, "magenta")
+        return Columns([cpu_panel, ram_panel], expand=True, equal=True, align="center")
+
+class ProfileRunner(Runner):
+    """
+    Creates and schedules batches of ProfileBamTask tasks using either local or Slurm batches.
+    
+    Args:
+        run_dir (str | pathlib.Path): Directory where the runner will operate.
+        task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
+        container_engine (Engine): An instance of Engine to wrap task commands.
+        max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
+        poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 1.0.
+        tasks_per_batch (int): Number of tasks to include in each batch. Default is 10.
+        batch_type (str): Type of batch to use ("local" or "slurm"). Default is "local".
+        slurm_config (SlurmConfig | None): Configuration for Slurm batches if batch_type
+            is "slurm". Default is None.
+    """
+    def __init__(
+        self,
+        run_dir: str | pathlib.Path,
+        task_generator: TaskGenerator,
+        container_engine: Engine,
+        max_concurrent_batches: int = 1,
+        poll_interval: float = 1.0,
+        tasks_per_batch: int = 10,
+        batch_type: str = "local",
+        slurm_config: SlurmConfig | None = None,
+    ) -> None:
+        if batch_type == "slurm":
+            if slurm_config is None:
+                raise ValueError("Slurm config must be provided for slurm batch type.")
+            batch_factory = SlurmBatch
+            final_batch_factory = None
+        else:
+            batch_factory = LocalBatch
+            final_batch_factory = None
+        
+        super().__init__(
+            run_dir=run_dir,
+            task_generator=task_generator,
+            container_engine=container_engine,
+            batch_factory=batch_factory,
+            final_batch_factory=final_batch_factory,
+            max_concurrent_batches=max_concurrent_batches,
+            poll_interval=poll_interval,
+            tasks_per_batch=tasks_per_batch,
+            batch_type=batch_type,
+            slurm_config=slurm_config,
+        )
+    
+    async def _batcher(self):
+        """
+        Defines the batcher coroutine that collects tasks from the tasks_queue, groups them into batches,
+        and puts the batches into the batches_queue.
+        """
+        buffer: list[Task] = []
+        while True:
+            task = await self.tasks_queue.get()
+            if task is None:
+                if buffer:
+                    batch_id = f"batch_{self._batch_counter}"
+                    self._batch_counter += 1
+                    if self.batch_type == "slurm":
+                        batch = self.batch_factory(
+                            tasks=buffer,
+                            id=batch_id,
+                            run_dir=self.run_dir,
+                            expected_outputs=[],
+                            slurm_config=self.slurm_config,
+                        )
+                    else:
+                        batch = self.batch_factory(
+                            tasks=buffer,
+                            id=batch_id,
+                            run_dir=self.run_dir,
+                            expected_outputs=[],
+                        )
+                    await self.batches_queue.put(batch)
+                await self.batches_queue.put(None)
+                self._batcher_done = True
+                break
+            buffer.append(task)
+            if len(buffer) == self.tasks_per_batch:
+                batch_id = f"batch_{self._batch_counter}"
+                self._batch_counter += 1
+                if self.batch_type == "slurm":
+                    batch = self.batch_factory(
+                        tasks=buffer,
+                        id=batch_id,
+                        run_dir=self.run_dir,
+                        expected_outputs=[],
+                        slurm_config=self.slurm_config,
+                    )
+                else:
+                    batch = self.batch_factory(
+                        tasks=buffer,
+                        id=batch_id,
+                        run_dir=self.run_dir,
+                        expected_outputs=[],
+                    )
+                await self.batches_queue.put(batch)
+                buffer = []
+
+    
 class CompareRunner(Runner):
     """
     Creates and schedules batches of FastCompareTask tasks using either local or Slurm batches.
+    
     Args:
         run_dir (str | pathlib.Path): Directory where the runner will operate.
         task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
@@ -1124,24 +1407,6 @@ class CompareRunner(Runner):
 
 
 
-    def _make_system_stats_panel(self):
-        """helpers to create a system stats panel for the live UI."""
-        def usage_bar(label: str, percent: float, color: str):
-            p = Progress(
-                TextColumn(f"[bold]{label}[/]"),
-                BarColumn(bar_width=None, complete_style=color),
-                TextColumn(f"{percent:.1f}%"),
-                expand=True,
-            )
-            p.add_task("", total=100, completed=percent)
-            return Panel(p, expand=True, width=30)
-
-        cpu = psutil.cpu_percent(interval=None)
-        ram = psutil.virtual_memory().percent
-        cpu_panel = usage_bar("CPU", cpu, "cyan")
-        ram_panel = usage_bar("RAM", ram, "magenta")
-        return Columns([cpu_panel, ram_panel], expand=True, equal=True, align="center")
-
     def _create_final_batch(self) -> Batch:
         """Creates the final batch that prepares the overall outputs after all comparison batches are done."""
         final_task = PrepareCompareGenomeRunOutputs(
@@ -1173,10 +1438,45 @@ class CompareRunner(Runner):
             
 
 
-##### Here on we can have prebuilt tasks and Batches
+class ProfileBamTask(Task):
+    """A Task that generates a mpileup file and genome breadth file in parquet format for a given BAM file using the fast_profile profile_bam command.
+    The inputs to this task includes:
 
+        - bam-file: The input BAM file to be profiled.
+
+        - bed-file: The BED file specifying the regions to profile.
+        
+        - sample-name: The name of the sample being processed.
+
+        - gene-range-table: A BED file specifying the gene ranges for the sample.
+
+        - num-threads: The number of threads to use for processing.
+
+        - genome-length-file: A file containing the lengths of the genomes in the reference fasta.
+
+        - stb-file: The STB file used for profiling.
+
+    Args:
+        id (str): Unique identifier for the task.
+        inputs (dict[str, Input]): Dictionary of input parameters for the task.
+        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
+        engine (Engine): Container engine to wrap the command."""
+    
+    TEMPLATE_CMD="""
+    ln -s <bam-file> input.bam
+    samtools index <bam-file>
+    fastprofiler.sh <bed-file> <bam-file> <sample-name> <gene-range-table> <num-threads> 
+    samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
+    zipstrain utilities genome_breadth_matrix --profile <sample-name>.parquet \
+        --genome-length <genome-length-file> \
+        --stb <stb-file> \
+        --min-cov <breadth-min-cov> \
+        --output-file <sample-name>_breadth.parquet
+    """
+    
 class FastCompareTask(Task):
     """A Task that performs a fast genome comparison using the fast_profile compare single_compare_genome command.
+    
     Args:
         id (str): Unique identifier for the task.
         inputs (dict[str, Input]): Dictionary of input parameters for the task.
@@ -1202,6 +1502,7 @@ class FastCompareTask(Task):
 
 class CollectComps(Task):
     """A Task that collects and merges comparison parquet files from multiple FastCompareTask tasks into a single parquet file.
+    
     Args:
         id (str): Unique identifier for the task.
         inputs (dict[str, Input]): Dictionary of input parameters for the task.
@@ -1260,6 +1561,51 @@ class PrepareCompareGenomeRunOutputsLocalBatch(LocalBatch):
 class PrepareCompareGenomeRunOutputsSlurmBatch(SlurmBatch):
     pass
 
+
+def lazy_run_profile(
+    run_dir: str | pathlib.Path,
+    container_engine: Engine,
+    bams_lf:pl.LazyFrame,
+    stb_file:pathlib.Path,
+    gene_range_table:pathlib.Path,
+    bed_file:pathlib.Path,
+    genome_length_file:pathlib.Path,
+    num_procs:int=8,
+    tasks_per_batch: int = 10,
+    max_concurrent_batches: int = 1,
+    poll_interval: float = 5.0,
+    execution_mode: str = "local",
+    slurm_config: SlurmConfig | None = None,
+)->None:
+    profile_task_generator=ProfileTaskGenerator(
+        data=bams_lf,
+        yield_size=tasks_per_batch,
+        container_engine=container_engine,
+        stb_file=stb_file,
+        profile_bed_file=bed_file,
+        gene_range_file=gene_range_table,
+        genome_length_file=genome_length_file,
+        num_procs=num_procs
+    )
+    if execution_mode=="local":
+        batch_type="local"
+    elif execution_mode=="slurm":
+        batch_type="slurm"
+    else:
+        raise ValueError(f"Unknown execution mode: {execution_mode}")
+    
+    runner = ProfileRunner(
+        run_dir=pathlib.Path(run_dir),
+        task_generator=profile_task_generator,
+        container_engine=container_engine,
+        max_concurrent_batches=max_concurrent_batches,
+        poll_interval=poll_interval,
+        tasks_per_batch=tasks_per_batch,
+        batch_type=batch_type,
+        slurm_config=slurm_config,
+    )
+    asyncio.run(runner.run())
+    
     
 def lazy_run_compares(
     run_dir: str | pathlib.Path,
@@ -1275,6 +1621,7 @@ def lazy_run_compares(
     polars_engine: str = "streaming"
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
+    
     Args:
         run_dir (str | pathlib.Path): Directory where the runner will operate.
         container_engine (Engine): An instance of Engine to wrap task commands.

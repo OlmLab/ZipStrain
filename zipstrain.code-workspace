@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "zipstrain/src/zipstrain"
+		},
+		{
+			"path": "zipstrain/tests"
+		}
+	],
+	"settings": {}
+}

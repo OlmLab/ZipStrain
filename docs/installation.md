@@ -40,12 +40,3 @@ docker run -it parsaghadermazi/zipstrain:latest zipstrain test
 apptainer run docker://parsaghadermazi/zipstrain:latest zipstrain test
 ```
 
-## Setting up Nextflow (Optional)
-
-You can use Conda to install Nextflow:
-
-```
-conda install -c bioconda nextflow
-```
-
-For more installation options, refer to the Nextflow installation guide: https://www.nextflow.io/docs/latest/getstarted.html#installation

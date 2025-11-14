@@ -114,7 +114,18 @@ class ProfileDatabase:
                     data: dict
                     ) -> None:
         """Add a profile to the database.
+        The data dictionary must contain the following and only the following keys:
         
+        - profile_name
+        
+        - profile_location
+        
+        - scaffold_location
+        
+        - reference_db_id
+
+        - gene_db_id
+
         Args:
             data (dict): The profile data to add.
         """
@@ -152,7 +163,6 @@ class ProfileDatabase:
         """Save the database to a parquet file.
         
         Args:
-            database (pl.LazyFrame): The database to save.
             output_path (str): The path to save the database to.
         """
         #The new database must be written to a new location
@@ -214,7 +224,7 @@ class GenomeComparisonConfig(BaseModel):
     This class defines object which have all necessary options to describe 
     Parameters used to compare profiles:
     
-    Args:
+    Attributes:
         gene_db_id (str): The ID of the gene fasta database to use for the comparison. The file name is perfect.
         reference_id (str): The ID of the reference fasta database to use for the comparison. The file name is perfect.
         scope (str): The scope of the comparison- 'all' if all covered positions are desired. Otherwise, a bunch of genome names separated by commas.
