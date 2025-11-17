@@ -1464,8 +1464,15 @@ class ProfileBamTask(Task):
     
     TEMPLATE_CMD="""
     ln -s <bam-file> input.bam
+    ln -s <bed-file> bed_file.bed
+    ln -s <gene-range-table> gene-range-table.bed
     samtools index <bam-file>
-    fastprofiler.sh <bed-file> <bam-file> <sample-name> <gene-range-table> <num-threads> 
+    zipstrain profile profile-single --bam-file input.bam \
+    --bed-file bed_file.bed \
+    --gene-range-table gene-range-table.bed \
+    --num-workers <num-workers> \
+    --output-dir .
+    mv input.bam.parquet <sample-name>.parquet
     samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
     zipstrain utilities genome_breadth_matrix --profile <sample-name>.parquet \
         --genome-length <genome-length-file> \
