@@ -327,3 +327,24 @@ def check_samtools():
     except:
         print("Samtools is not installed or not found in PATH. Please install samtools to use all of the ZipStrain's functionalities.")
         return False
+
+def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
+    """
+    Split a Polars LazyFrame into smaller chunks.
+
+    Parameters:
+    lf (pl.LazyFrame): The input LazyFrame to be split.
+    num_chunks (int): The number of chunks to split the LazyFrame into.
+
+    Returns:
+    list[pl.LazyFrame]: A list of smaller LazyFrames.
+    """
+    total_rows = lf.select(pl.count()).collect().item()
+    chunk_size = total_rows // num_chunks
+    chunks = []
+    for i in range(num_chunks):
+        start = i * chunk_size
+        end = (i + 1) * chunk_size if i < num_chunks - 1 else total_rows
+        chunk = lf.slice(start, end - start)
+        chunks.append(chunk)
+    return chunks

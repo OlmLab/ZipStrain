@@ -7,7 +7,9 @@ This is a fundamental step for downstream analysis in zipstrain.
 import pathlib
 import polars as pl
 from typing import Generator
-
+from zipstrain import utils
+import asyncio
+import os
 
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
@@ -124,3 +126,96 @@ def get_strain_hetrogeneity(profile:pl.LazyFrame,
         (pl.col("heterogeneous_sites")/pl.col(f"total_sites_at_{min_cov}_coverage")).alias("strain_heterogeneity")
     )
     return strain_heterogeneity
+
+
+
+async def _profile_chunk_task(
+    bed_file:pathlib.Path,
+    bam_file:pathlib.Path,
+    gene_range_table:pathlib.Path,
+    output_dir:pathlib.Path,
+    chunk_id:int
+)->None:
+    cmd=["samtools", "mpileup", "-A", "-l", str(bed_file.absolute()), str(bam_file.absolute())]
+    cmd += ["|", "zipstrain", "utilities", "process_mpileup", "--gene-range-table-loc", str(gene_range_table.absolute()), "--batch-bed", str(bed_file.absolute()), "--output-file", f"{bam_file.stem}_{chunk_id}.parquet"]
+    proc = await asyncio.create_subprocess_shell(
+                " ".join(cmd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=output_dir
+            )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+
+async def profile_bam_in_chunks(
+    bed_file:str,
+    bam_file:str,
+    gene_range_table:str,
+    output_dir:str,
+    num_workers:int=4
+)->None:
+    """
+    Profile a BAM file in chunks using provided BED files.
+
+    Parameters:
+    bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
+    bam_file (pathlib.Path): Path to the BAM file.
+    gene_range_table (pathlib.Path): Path to the gene range table.
+    output_dir (pathlib.Path): Directory to save output files.
+    num_workers (int): Number of concurrent workers to use.
+    """
+    
+    output_dir=pathlib.Path(output_dir)
+    bam_file=pathlib.Path(bam_file)
+    bed_file=pathlib.Path(bed_file)
+    gene_range_table=pathlib.Path(gene_range_table)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir/"tmp").mkdir(exist_ok=True)
+    bed_lf=pl.scan_csv(bed_file,has_header=False,separator="\t")
+    bed_chunks=utils.split_lf_to_chunks(bed_lf,num_workers)
+    bed_chunk_files=[]
+    for chunk_id, bed_file in enumerate(bed_chunks):
+        bed_file.sink_csv(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
+        bed_chunk_files.append(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed")
+    tasks = []
+    for chunk_id, bed_chunk_file in enumerate(bed_chunk_files):
+        tasks.append(_profile_chunk_task(
+            bed_file=bed_chunk_file,
+            bam_file=bam_file,
+            gene_range_table=gene_range_table,
+            output_dir=output_dir/"tmp",
+            chunk_id=chunk_id
+        ))
+    await asyncio.gather(*tasks) 
+    pfs=[output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet" for chunk_id in range(len(bed_chunk_files))]
+    mpileup_df = pl.concat([pl.scan_parquet(pf) for pf in pfs])
+    mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}.parquet", compression='zstd')
+    os.system(f"rm -r {output_dir}/tmp")
+
+def profile_bam(
+    bed_file:str,
+    bam_file:str,
+    gene_range_table:str,
+    output_dir:str,
+    num_workers:int=4
+)->None:
+    """
+    Profile a BAM file in chunks using provided BED files.
+
+    Parameters:
+    bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
+    bam_file (pathlib.Path): Path to the BAM file.
+    gene_range_table (pathlib.Path): Path to the gene range table.
+    output_dir (pathlib.Path): Directory to save output files.
+    num_workers (int): Number of concurrent workers to use.
+    """
+    asyncio.run(profile_bam_in_chunks(
+        bed_file=bed_file,
+        bam_file=bam_file,
+        gene_range_table=gene_range_table,
+        output_dir=output_dir,
+        num_workers=num_workers
+    ))
+
