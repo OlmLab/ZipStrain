@@ -64,7 +64,7 @@ Now you can profile your bam files:
 zipstrain run profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
 
 ```
-![Profiling Command](docs/profile_cli.png)
+
 
 #### Nextflow Pipeline
 
@@ -156,7 +156,6 @@ zipstrain run compare_genomes \
 
 This command take some more arguments and for more information about them please refer to the [Tutorial](docs/Tutorial.md).
 
-![Comparison Command](docs/compare_cli.png)
 
 #### Nextflow Workflow
 

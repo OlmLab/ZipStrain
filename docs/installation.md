@@ -1,7 +1,6 @@
 # Installation
 Welcome to the installation guide! Follow the steps below to set up ZipStrain on your system
 
-
 ## Install using pip
 
 To install ZipStrain using pip, follow these steps:
@@ -14,13 +13,21 @@ To install ZipStrain using pip, follow these steps:
 pip install zipstrain
 ```
 
-This will install all the necessary dependencies along with ZipStrain except samtools. Refer to samtools website for installation instructions: http://www.htslib.org/download/
+This will install all the necessary dependencies along with ZipStrain **except samtools**. Refer to samtools website for installation instructions: http://www.htslib.org/download/
 
 3- Make sure the installation was successful by testing ZipStrain:
 
 ```
 zipstrain test
 ```
+
+## Install using Conda
+To install ZipStrain using Conda, run the following command in your conda environment with Python 3.12 or higher:
+
+```
+conda install -c bioconda zipstrain
+```
+This will install all the necessary dependencies along with ZipStrain **including samtools**.
 
 ## Use Docker
 

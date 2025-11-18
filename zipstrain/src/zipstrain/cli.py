@@ -3,7 +3,7 @@ zipstrain.utils
 ========================
 This module contains the command-line interface (CLI) implementation for the zipstrain application.
 """
-import rich_click as click
+import click as click
 import zipstrain.utils as ut
 import zipstrain.compare as cp
 import zipstrain.profile as pf
@@ -11,7 +11,6 @@ import zipstrain.task_manager as tm
 import zipstrain.database as db
 import polars as pl
 import pathlib
-import asyncio
 
 @click.group()
 def cli():
