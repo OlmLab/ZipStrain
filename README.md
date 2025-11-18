@@ -20,7 +20,7 @@ To install ZipStrain using pip, follow these steps:
 pip install zipstrain
 ```
 
-For more information about installation and usage instructions, please refer to the [installation manual](docs/installation.md) or the documentation website [here](https://zipstrain.readthedocs.io/en/latest/).
+For more information about installation and usage instructions, please refer to the [installation manual](docs/installation.md) or the documentation website [here](https://OlmLab.github.io/ZipStrain/).
 
 check installation by:
 
