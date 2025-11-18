@@ -1,0 +1,700 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+      
+        <link rel="prev" href="../Tutorial/">
+      
+      
+        <link rel="next" href="../cli/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.22">
+    
+    
+      
+        <title>Nextflow Pipeline for ZipStrain - ZipStrain</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.84d31ad4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#nextflow-pipeline-for-zipstrain" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ZipStrain" class="md-header__button md-logo" aria-label="ZipStrain" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ZipStrain
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Nextflow Pipeline for ZipStrain
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ZipStrain" class="md-nav__button md-logo" aria-label="ZipStrain" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ZipStrain
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Welcome to ZipStrain
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Tutorial/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tutorial
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Nextflow Pipeline for ZipStrain
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Nextflow Pipeline for ZipStrain
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#installation-of-nextflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Installation of Nextflow
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deciding-on-the-execution-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deciding on the Execution Environment
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mapping-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Mapping Reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#profile-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Profile Generation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#from-sra-to-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      From SRA to profiles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#comparing-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing Profiles
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Comparing Profiles">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#comparing-a-list-of-profile-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing a list of profile pairs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparing-all-profiles-against-each-other" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing all profiles against each other
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    ZipStrain Command Line Interface
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#installation-of-nextflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Installation of Nextflow
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deciding-on-the-execution-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deciding on the Execution Environment
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mapping-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Mapping Reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#profile-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Profile Generation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#from-sra-to-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      From SRA to profiles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#comparing-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing Profiles
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Comparing Profiles">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#comparing-a-list-of-profile-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing a list of profile pairs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparing-all-profiles-against-each-other" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing all profiles against each other
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="nextflow-pipeline-for-zipstrain">Nextflow Pipeline for ZipStrain</h1>
+<p>The nextflow pipeline for ZipStrain supports:</p>
+<ul>
+<li>
+<p>Mapping metagenomics reads to a reference fasta file using Bowtie2.</p>
+</li>
+<li>
+<p>Generating ZipStrain profiles from the mapped reads (BAM files).</p>
+</li>
+<li>
+<p>Comparing ZipStrain profiles with each other and generating a merged comparison file.</p>
+</li>
+</ul>
+<p>In the following sections, we will describe how to use the nextflow pipeline to perform each of these steps.</p>
+<h2 id="installation-of-nextflow">Installation of Nextflow</h2>
+<p>You can install Nextflow by following the instructions on the <a href="https://www.nextflow.io/docs/latest/getstarted.html#installation">Nextflow website</a>.</p>
+<p>An easy way to install Nextflow creating a conda environment and installing Nextflow using conda:</p>
+<pre><code>conda create -n nextflow -c bioconda nextflow
+</code></pre>
+<p>Activate the environment using:</p>
+<pre><code>conda activate nextflow
+</code></pre>
+<p>Now create a directory for your Nextflow pipeline and navigate to it:</p>
+<pre><code>mkdir zipstrain_nextflow
+cd zipstrain_nextflow
+</code></pre>
+<p>You can then download the <code>zipstrain.nf</code> file and the <code>conf.config</code> file from the ZipStrain GitHub repository into this directory.</p>
+<h2 id="deciding-on-the-execution-environment">Deciding on the Execution Environment</h2>
+<p>ZipStrain is provieded as a containerized application using Docker and can be run using Apptainer as well. For this to work, you need to have either Docker or Apptainer installed on your system. You can run all the nextflow commands by using the config file provided in the ZipStrain GitHub repository (conf.config).</p>
+<pre><code>Nextflow run zipstrain.nf &lt;command&gt; -c conf.config -profile &lt;docker|apptainer&gt; -resume
+</code></pre>
+<p>Nextflow also supports running on various cloud platforms. Please refer to the Nextflow documentation for more details on setting up your execution environment.
+Once you build a profile for your execution environment, you can put that in another config file and  use the commands above with adding that config file to ZipStrain's config file.</p>
+<pre><code>Nextflow run zipstrain.nf &lt;command&gt; -c conf.config,&lt;your_config_file&gt; -profile &lt;your_profile_defined_in_&lt;your_config_file&gt;&gt; -resume
+</code></pre>
+<h2 id="mapping-reads">Mapping Reads</h2>
+<p>ZipStrain Nextflow pipeline supports mapping reads using Bowtie2. Here is an example command to map reads:</p>
+<pre><code>nextflow run zipstrain.nf --mode &quot;map_reads&quot; --input_table &lt;input_table.csv&gt; --input_type &lt;&quot;local&quot;|&quot;sra&quot;&gt; --reference_genome &lt;reference_genomes.fasta&gt; -c conf.config,&lt;your_config_file&gt; -profile &lt;your_profile_defined_in_&lt;your_config_file&gt;&gt; -resume
+</code></pre>
+<p>If you have your reads, in this command, replace <code>&lt;input_table.csv&gt;</code> with the path to your input table file. This will be a table in CSV format with three columns: <code>sample_id</code>, <code>reads1</code>, and <code>reads2</code>. The <code>reads1</code> and <code>reads2</code> columns should contain the paths to the FASTQ files for each sample. In this case <code>&lt;input_type&gt;</code> should be set to <code>local</code>. Alternatively, if you have SRA accessions, you can provide those in a table that must have a "Run" column containing the SRA accessions (In complience with SRA metadata). In this case, set <code>&lt;input_type&gt;</code> to <code>sra</code>.</p>
+<p>Reference genomes should be the result of concatenating all the reference genome FASTA files into a single FASTA file. </p>
+<p>Running this command will generate BAM files for each of your samples in the specified output directory.</p>
+<h2 id="profile-generation">Profile Generation</h2>
+<p>Once you have your BAM files, you can generate profiles using the nextflow pipeline. For this, you need to prepare a simple input table in CSV format as follows:</p>
+<pre><code class="language-csv">sample_name,bamfile
+sample1,/path/to/sample1.bam
+sample2,/path/to/sample2.bam
+sample3,/path/to/sample3.bam
+</code></pre>
+<p>Now you can run the following command to generate profiles:
+nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv>  --gene_file <path/to/reference/fasta/genes> --stb <path/to/stb/file>  --output_dir <path/to/save/generated/files> --reference_genome <path/to/reference/fasta> -c conf.config,<your_config_file> -profile <your_profile_defined_in_\<your_config_file>> -resume</p>
+<pre><code>
+- `--gene_file`: Path to the gene file in Prodigal NUCLEOTIDE format.
+- `--stb`: Path to the STB file. This is a tab-separated file with two columns: scaffold name and genome file name. This table should not have a header line.
+</code></pre>
+<p>This command will generate profile, breadth, and scaffols files for each of your samples in the specified output directory.</p>
+<h2 id="from-sra-to-profiles">From SRA to profiles</h2>
+<p>To save some time and space, you can directly go from SRA accessions to profiles using the following command:</p>
+<pre><code>
+nextflow run instrain2.nf --mode &quot;from_sra_to_profile&quot; --input_table &lt;path/to/sra/csv&gt; --gene_file &lt;path/to/reference/fasta/genes&gt;  --reference_genome &lt;path/to/reference/fasta&gt;   --stb &lt;path/to/stb/file&gt; -c conf.config,&lt;your_config_file&gt;   -profile &lt;your_profile_defined_in_&lt;your_config_file&gt;&gt; --output_dir &lt;path/to/save/generated/files&gt;   -resume
+
+</code></pre>
+<p>This command will download the SRA files, map the reads to the reference genome, and generate profiles in one step and then DELETEs all the intermediate files to save space.</p>
+<h2 id="comparing-profiles">Comparing Profiles</h2>
+<p>Once you have generated profiles, you have two options to compare them using the nextflow pipeline.</p>
+<h3 id="comparing-a-list-of-profile-pairs">Comparing a list of profile pairs</h3>
+<p>First, you have a CSV file that includes the pairs of profiles to compare. The table must have the following columns:</p>
+<ul>
+<li>
+<p>sample_name_1</p>
+</li>
+<li>
+<p>sample_name_2</p>
+</li>
+<li>
+<p>profile_location_1</p>
+</li>
+<li>
+<p>scaffold_location_1</p>
+</li>
+<li>
+<p>profile_location_2</p>
+</li>
+<li>
+<p>scaffold_location_2</p>
+</li>
+</ul>
+<pre><code>nextflow run zipstrain.nf --mode fast_compare \
+ --input_table &lt;path/to/output/remaining_pairs.csv&gt; \
+ --input_type &quot;pair_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
+ --reference_genome &lt;path/to/reference/genome.fasta&gt; \
+ --stb &lt;path/to/stb/file.stb&gt; -c conf.config,&lt;your_config_file&gt; \
+ --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
+ --compare_genome_scope &quot;all&quot; \
+ --compare_memory_mode &quot;heavy&quot; \
+ --parallel_mode &quot;batched&quot; \
+ --batch_size &lt;batch_size&gt; -profile &lt;profile_name&gt; \
+ -resume
+
+</code></pre>
+<p>If you want to perform the comparison for a specific genome only, you can use the <code>--compare_genome_scope</code> and give the genome name as follows:</p>
+<pre><code>--compare_genome_scope &quot;&lt;genome_name&gt;&quot;
+</code></pre>
+<p><genome_name> should be the exact name of the genome as it appears in the STB file.</p>
+<p>If your reference database is very big, you might hit memory issues during comparison. In that case, you can use the <code>--compare_memory_mode</code> option to reduce memory usage. There are two modes available: "light" and "heavy". The "light" mode uses less memory but is slower. If this still happens you can provide also --compare_chrom_batch_size parameter to limit the number of scaffolds loaded into memory at once.</p>
+<p>Finally, you can also control the parallelization of the comparison step using the <code>--parallel_mode</code> option. There are two modes available: "single" and "batched". In batched mode, multiple number of pairs will be processed in a single task controlled by <code>--batch_size</code> parameter. "single" mode submits one comparison per task. When performin huge number of comparisons, batched mode is recommended to reduce the overhead of task submission as well as number of small output files generated.</p>
+<h3 id="comparing-all-profiles-against-each-other">Comparing all profiles against each other</h3>
+<p>In this case, you provide a CSV file that has all the profiles you want to compare and nextflow will do every possible non-redundant pairwise comparison.</p>
+<pre><code>nextflow run zipstrain.nf --mode fast_compare \
+ --input_table &lt;path/to/profiles/csv&gt; \
+ --input_type &quot;profile_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
+ --reference_genome &lt;path/to/reference/genome.fasta&gt; \
+ --stb &lt;path/to/stb/file.stb&gt; -c conf.config \
+ --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
+ --compare_genome_scope &quot;all&quot; \
+ --compare_memory_mode &quot;heavy&quot; \
+ --parallel_mode &quot;batched&quot; \
+ --batch_size &lt;batch_size&gt; -profile &lt;profile_name&gt; \
+ -resume
+
+</code></pre>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": [], "search": "../assets/javascripts/workers/search.973d3a69.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.f55a23d4.min.js"></script>
+      
+    
+  </body>
+</html>

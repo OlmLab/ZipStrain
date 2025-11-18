@@ -1,0 +1,1149 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+      
+        <link rel="prev" href="../NextflowPipeline/">
+      
+      
+        <link rel="next" href="../api/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.22">
+    
+    
+      
+        <title>ZipStrain Command Line Interface - ZipStrain</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.84d31ad4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#zipstrain-command-line-interface" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ZipStrain" class="md-header__button md-logo" aria-label="ZipStrain" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ZipStrain
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ZipStrain Command Line Interface
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ZipStrain" class="md-nav__button md-logo" aria-label="ZipStrain" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ZipStrain
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Welcome to ZipStrain
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Tutorial/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tutorial
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../NextflowPipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Nextflow Pipeline for ZipStrain
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    ZipStrain Command Line Interface
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    ZipStrain Command Line Interface
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Installation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      Usage
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      Command Groups
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Command Groups">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-utilities-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Utilities (utilities)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Utilities (utilities)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#build-null-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build Null Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#merge-parquet-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      Merge Parquet Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#process-mpileup" class="md-nav__link">
+    <span class="md-ellipsis">
+      Process Mpileup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make-bed-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      Make BED File
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-genome-lengths" class="md-nav__link">
+    <span class="md-ellipsis">
+      Get Genome Lengths
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#genome-breadth-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      Genome Breadth Matrix
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#collect-breadth-tables" class="md-nav__link">
+    <span class="md-ellipsis">
+      Collect Breadth Tables
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-gene-tools-gene_tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Gene Tools (gene_tools)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Gene Tools (gene_tools)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gene-range-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      Gene Range Table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gene-location-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      Gene Location Table
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-compare-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Compare (compare)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Compare (compare)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-genome-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Single Genome Compare
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-run-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Run (run)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Run (run)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#compare-genomes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compare Genomes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-comparison-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build Comparison Database
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#to-complete-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      To Complete Table
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Installation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      Usage
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      Command Groups
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Command Groups">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-utilities-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Utilities (utilities)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Utilities (utilities)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#build-null-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build Null Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#merge-parquet-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      Merge Parquet Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#process-mpileup" class="md-nav__link">
+    <span class="md-ellipsis">
+      Process Mpileup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make-bed-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      Make BED File
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-genome-lengths" class="md-nav__link">
+    <span class="md-ellipsis">
+      Get Genome Lengths
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#genome-breadth-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      Genome Breadth Matrix
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#collect-breadth-tables" class="md-nav__link">
+    <span class="md-ellipsis">
+      Collect Breadth Tables
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-gene-tools-gene_tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Gene Tools (gene_tools)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Gene Tools (gene_tools)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gene-range-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      Gene Range Table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gene-location-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      Gene Location Table
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-compare-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Compare (compare)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Compare (compare)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-genome-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Single Genome Compare
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-run-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Run (run)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Run (run)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#compare-genomes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compare Genomes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-comparison-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build Comparison Database
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#to-complete-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      To Complete Table
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="zipstrain-command-line-interface">ZipStrain Command Line Interface</h1>
+<p>ZipStrain provides a comprehensive command-line interface for strain-level analysis of metagenomic data. The CLI is organized into several command groups for different functionalities.</p>
+<h2 id="installation">Installation</h2>
+<p>First, ensure ZipStrain is installed (see <a href="../installation/">Installation.md</a> for details).</p>
+<h2 id="usage">Usage</h2>
+<p>The main CLI command is <code>zipstrain</code> with various subcommands organized into functional groups:</p>
+<pre><code class="language-bash">zipstrain [GROUP] [COMMAND] [OPTIONS]
+</code></pre>
+<h2 id="command-groups">Command Groups</h2>
+<h3 id="1-utilities-utilities">1. Utilities (<code>utilities</code>)</h3>
+<p>General utility commands for data processing and preparation.</p>
+<h4 id="build-null-model">Build Null Model</h4>
+<p>Create a null model for sequencing errors based on statistical distributions:</p>
+<pre><code class="language-bash">zipstrain utilities build-null-model [OPTIONS]
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-e, --error-rate FLOAT</code>: Error rate for the sequencing technology (default: 0.001)</p>
+</li>
+<li>
+<p><code>-m, --max-total-reads INTEGER</code>: Maximum coverage to consider for a base (default: 10000)</p>
+</li>
+<li>
+<p><code>-p, --p-threshold FLOAT</code>: Significance threshold for the Poisson distribution (default: 0.05)</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the output Parquet file [required]</p>
+</li>
+<li>
+<p><code>-t, --model-type [poisson]</code>: Type of null model to build (default: poisson)</p>
+</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code>zipstrain utilities build-null-model -e 0.001 -m 10000 -p 0.05 -o null_model.parquet
+</code></pre>
+<h4 id="merge-parquet-files">Merge Parquet Files</h4>
+<p>Merge multiple Parquet files into a single file:</p>
+<pre><code>zipstrain utilities merge_parquet -i INPUT_DIR -o OUTPUT_FILE
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-i, --input-dir TEXT</code>: Directory containing Parquet files to merge[required]</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the merged Parquet file [required]</p>
+</li>
+</ul>
+<h4 id="process-mpileup">Process Mpileup</h4>
+<p>Process mpileup files and save results in Parquet format:</p>
+<pre><code>zipstrain utilities process_mpileup [OPTIONS]
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-g, --gene-range-table-loc TEXT</code>: Location of the gene range table in TSV format [required]</p>
+</li>
+<li>
+<p><code>-b, --batch-bed TEXT</code>: Location of the batch BED file [required]</p>
+</li>
+<li>
+<p><code>-s, --batch-size INTEGER</code>: Buffer size for processing stdin from samtools (default: 10000)</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Location to save the output Parquet file [required]</p>
+</li>
+</ul>
+<h4 id="make-bed-file">Make BED File</h4>
+<p>Create a BED file from a FASTA database:</p>
+<pre><code>zipstrain utilities make_bed -d DB_FASTA_DIR -o OUTPUT_FILE
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-d, --db-fasta-dir TEXT</code>: Path to the database in FASTA format [required]</p>
+</li>
+<li>
+<p><code>-m, --max-scaffold-length INTEGER</code>: Maximum scaffold length to split into multiple entries (default: 500000)</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the output BED file [required]</p>
+</li>
+</ul>
+<h4 id="get-genome-lengths">Get Genome Lengths</h4>
+<p>Extract genome length information from scaffold-to-genome mapping:</p>
+<pre><code>zipstrain utilities get_genome_lengths -s STB_FILE -b BED_FILE -o OUTPUT_FILE
+</code></pre>
+<p><strong>Options:</strong>
+- <code>-s, --stb-file TEXT</code>: Path to the scaffold-to-genome mapping file [required]</p>
+<ul>
+<li>
+<p><code>-b, --bed-file TEXT</code>: Path to the BED file [required]</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the output Parquet file [required]</p>
+</li>
+</ul>
+<h4 id="genome-breadth-matrix">Genome Breadth Matrix</h4>
+<p>Generate a genome breadth matrix from profiles:</p>
+<pre><code>zipstrain utilities genome_breadth_matrix [OPTIONS]
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-p, --profile TEXT</code>: Path to the profile Parquet file [required]</p>
+</li>
+<li>
+<p><code>-g, --genome-length TEXT</code>: Path to the genome length Parquet file [required]</p>
+</li>
+<li>
+<p><code>-s, --stb TEXT</code>: Path to the scaffold-to-genome mapping file [required]</p>
+</li>
+<li>
+<p><code>-c, --min-cov INTEGER</code>: Minimum coverage to consider a position (default: 1)</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the output Parquet file [required]</p>
+</li>
+</ul>
+<h4 id="collect-breadth-tables">Collect Breadth Tables</h4>
+<p>Collect multiple genome breadth tables into a single file:</p>
+<pre><code>zipstrain utilities collect_breadth_tables -d BREADTH_TABLES_DIR -o OUTPUT_FILE
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-d, --breadth-tables-dir TEXT</code>: Directory containing breadth tables in Parquet format [required]</p>
+</li>
+<li>
+<p><code>-e, --extension TEXT</code>: File extension of the breadth tables (default: parquet)</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the collected breadth tables [required]</p>
+</li>
+</ul>
+<h3 id="2-gene-tools-gene_tools">2. Gene Tools (<code>gene_tools</code>)</h3>
+<p>Commands for working with gene annotations and locations.</p>
+<h4 id="gene-range-table">Gene Range Table</h4>
+<p>Build a gene range table from gene files:</p>
+<pre><code>zipstrain gene_tools gene-range-table -g GENE_FILE -l GENE_LIST -o OUTPUT_FILE
+</code></pre>
+<p><strong>Options:</strong>
+- <code>-g, --gene-file TEXT</code>: Location of gene file (Prodigal's nucleotide FASTA output) [required]</p>
+<ul>
+<li>
+<p><code>-l, --gene-list TEXT</code>: Location of gene list (text file with gene names) [required]</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Location to save output TSV file [required]</p>
+</li>
+</ul>
+<h4 id="gene-location-table">Gene Location Table</h4>
+<p>Build a gene location table for specified scaffolds:</p>
+<pre><code>zipstrain gene_tools gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-g, --gene-file TEXT</code>: Location of gene file (Prodigal's nucleotide FASTA output) [required]</p>
+</li>
+<li>
+<p><code>-s, --scaffold-list TEXT</code>: Location of scaffold list (text file with scaffold names) [required]</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Location to save output Parquet file [required]</p>
+</li>
+</ul>
+<h3 id="3-compare-compare">3. Compare (<code>compare</code>)</h3>
+<p>Commands for comparing genomes and samples.</p>
+<h4 id="single-genome-compare">Single Genome Compare</h4>
+<p>Compare two mpileup files for genome analysis:</p>
+<pre><code>zipstrain compare single_compare_genome [OPTIONS]
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-m1, --mpileup-contig-1 TEXT</code>: Path to the first mpileup file [required]</p>
+</li>
+<li>
+<p><code>-m2, --mpileup-contig-2 TEXT</code>: Path to the second mpileup file [required]</p>
+</li>
+<li>
+<p><code>-s1, --scaffolds-1 TEXT</code>: Path to the list of scaffolds for the first 
+mpileup file [required]</p>
+</li>
+<li>
+<p><code>-s2, --scaffolds-2 TEXT</code>: Path to the list of scaffolds for the second 
+mpileup file [required]</p>
+</li>
+<li>
+<p><code>-n, --null-model TEXT</code>: Path to the null model Parquet file [required]</p>
+</li>
+<li>
+<p><code>-s, --stb-file TEXT</code>: Path to the scaffold to genome mapping file 
+[required]</p>
+</li>
+<li>
+<p><code>-c, --min-cov INTEGER</code>: Minimum coverage to consider a position (default: 
+5)</p>
+</li>
+<li>
+<p><code>-l, --min-gene-compare-len INTEGER</code>: Minimum gene length to consider for 
+comparison (default: 100)</p>
+</li>
+<li>
+<p><code>-m, --memory-mode [heavy|light]</code>: Memory mode for processing (default: 
+heavy)</p>
+</li>
+<li>
+<p><code>-b, --chrom-batch-size INTEGER</code>: Batch size for processing chromosomes 
+(default: 10000)</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the parquet file [required]</p>
+</li>
+<li>
+<p><code>-g, --genome TEXT</code>: If provided, do comparison only for the specified 
+genome (default: all)</p>
+</li>
+<li>
+<p><code>-e, --engine [streaming|gpu|auto]</code>: Engine to use for processing (default: 
+streaming)</p>
+</li>
+</ul>
+<h3 id="4-run-run">4. Run (<code>run</code>)</h3>
+<p>Commands for running large-scale analyses and managing workflows.</p>
+<h4 id="compare-genomes">Compare Genomes</h4>
+<p>Run genome comparisons in batches:</p>
+<pre><code>zipstrain run compare_genomes [OPTIONS]
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-g, --genome-comparison-object TEXT</code>: Path to the genome comparison object in JSON format [required]</p>
+</li>
+<li>
+<p><code>-r, --run-dir TEXT</code>: Directory to save the run data [required]</p>
+</li>
+<li>
+<p><code>-m, --max-concurrent-batches INTEGER</code>: Maximum number of concurrent batches to run (default: 5)</p>
+</li>
+<li>
+<p><code>-p, --poll-interval INTEGER</code>: Polling interval in seconds to check batch status (default: 1)</p>
+</li>
+<li>
+<p><code>-e, --execution-mode TEXT</code>: Execution mode: 'local' or 'slurm' (default:<br />
+local)</p>
+</li>
+<li>
+<p><code>-s, --slurm-config TEXT</code>: Path to the SLURM configuration file in JSON<br />
+format (required if execution mode is 'slurm')</p>
+</li>
+<li>
+<p><code>-c, --container-engine TEXT</code>: Container engine to use: 'local', 'docker'<br />
+or 'apptainer' (default: local)</p>
+</li>
+<li>
+<p><code>-t, --task-per-batch INTEGER</code>: Number of tasks to include in each batch 
+(default: 10)</p>
+</li>
+<li>
+<p><code>-a, --polars-engine [streaming|gpu|auto]</code>: Polars engine to use (default: 
+streaming)</p>
+</li>
+<li>
+<p><code>-b, --chrom-batch-size INTEGER</code>: Batch size for processing chromosomes<br />
+(default: 10000)</p>
+</li>
+<li>
+<p><code>-h, --memory-mode [heavy|light]</code>: Memory mode for processing (default:<br />
+heavy)</p>
+</li>
+</ul>
+<h4 id="build-comparison-database">Build Comparison Database</h4>
+<p>Build a genome comparison database from profiles:</p>
+<pre><code>zipstrain run build-comp-database [OPTIONS]
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-p, --profile-db-dir TEXT</code>: Directory containing profile in Parquet format [required]</p>
+</li>
+<li>
+<p><code>-c, --config-file TEXT</code>: Path to the genome comparison database config file in JSON format [required]</p>
+</li>
+<li>
+<p><code>-o, --output-dir TEXT</code>: Directory to genome comparison database object [required]</p>
+</li>
+<li>
+<p><code>-f, --comp-db-file TEXT</code>: The initial database file (optional)</p>
+</li>
+</ul>
+<h4 id="to-complete-table">To Complete Table</h4>
+<p>Generate  a table of pairs that are needed to complete the genome comparison database for a given profile database:</p>
+<pre><code class="language-bash">zipstrain run to-complete-table -g GENOME_COMPARISON_OBJECT -o OUTPUT_FILE
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li>
+<p><code>-g, --genome-comparison-object TEXT</code>: Path to the genome comparison object in JSON format [required]</p>
+</li>
+<li>
+<p><code>-o, --output-file TEXT</code>: Path to save the completed pairs Parquet file [required]</p>
+</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": [], "search": "../assets/javascripts/workers/search.973d3a69.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.f55a23d4.min.js"></script>
+      
+    
+  </body>
+</html>
