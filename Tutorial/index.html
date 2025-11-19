@@ -279,18 +279,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#using-zipstrain-as-a-command-line-tool" class="md-nav__link">
+  <a href="#zipstrain-cli" class="md-nav__link">
     <span class="md-ellipsis">
-      Using ZipStrain as a Command-Line Tool
+      ZipStrain CLI
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#using-the-nextflow-pipeline" class="md-nav__link">
+  <a href="#nextflow-pipeline" class="md-nav__link">
     <span class="md-ellipsis">
-      Using the Nextflow Pipeline
+      Nextflow Pipeline
     </span>
   </a>
   
@@ -302,28 +302,37 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#comparing-profiles" class="md-nav__link">
+  <a href="#compare-genomes-in-multiple-profiled-samples" class="md-nav__link">
     <span class="md-ellipsis">
-      Comparing Profiles
+      Compare genomes in multiple profiled samples
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Comparing Profiles">
+    <nav class="md-nav" aria-label="Compare genomes in multiple profiled samples">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#using-zipstrain-as-a-command-line-tool_1" class="md-nav__link">
+  <a href="#zipstrain-cli_1" class="md-nav__link">
     <span class="md-ellipsis">
-      Using ZipStrain as a Command-Line Tool
+      ZipStrain CLI
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#using-the-nextflow-pipeline_1" class="md-nav__link">
+  <a href="#nextflow-workflow" class="md-nav__link">
     <span class="md-ellipsis">
-      Using the Nextflow Pipeline
+      Nextflow Workflow
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      Output files
     </span>
   </a>
   
@@ -517,18 +526,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#using-zipstrain-as-a-command-line-tool" class="md-nav__link">
+  <a href="#zipstrain-cli" class="md-nav__link">
     <span class="md-ellipsis">
-      Using ZipStrain as a Command-Line Tool
+      ZipStrain CLI
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#using-the-nextflow-pipeline" class="md-nav__link">
+  <a href="#nextflow-pipeline" class="md-nav__link">
     <span class="md-ellipsis">
-      Using the Nextflow Pipeline
+      Nextflow Pipeline
     </span>
   </a>
   
@@ -540,28 +549,37 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#comparing-profiles" class="md-nav__link">
+  <a href="#compare-genomes-in-multiple-profiled-samples" class="md-nav__link">
     <span class="md-ellipsis">
-      Comparing Profiles
+      Compare genomes in multiple profiled samples
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Comparing Profiles">
+    <nav class="md-nav" aria-label="Compare genomes in multiple profiled samples">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#using-zipstrain-as-a-command-line-tool_1" class="md-nav__link">
+  <a href="#zipstrain-cli_1" class="md-nav__link">
     <span class="md-ellipsis">
-      Using ZipStrain as a Command-Line Tool
+      ZipStrain CLI
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#using-the-nextflow-pipeline_1" class="md-nav__link">
+  <a href="#nextflow-workflow" class="md-nav__link">
     <span class="md-ellipsis">
-      Using the Nextflow Pipeline
+      Nextflow Workflow
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      Output files
     </span>
   </a>
   
@@ -675,33 +693,142 @@ following columns:</p>
 <p>ZipStrain Nextflow pipeline.</p>
 </li>
 </ul>
-<h4 id="using-zipstrain-as-a-command-line-tool">Using ZipStrain as a Command-Line Tool</h4>
-<p>UNDER CONSTRUCTION</p>
-<h4 id="using-the-nextflow-pipeline">Using the Nextflow Pipeline</h4>
-<p>You can also use the nextflow pipeline to generate profiles. Here is an example command:</p>
-<pre><code>nextflow run zipstrain.nf --mode &quot;fast_profile&quot; --input_table all_bams.csv  --gene_file &lt;path/to/genefile&gt; --stb &lt;path/to/stbfile&gt;   --output_dir &lt;path/to/output/dir&gt;  --reference_genome &lt;path/to/your/reference_db.fasta&gt; -c conf.config -profile &lt;your_profile&gt; -resume
+<p>You can profile multiple BAM files using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods.
+For both you need to prepare a csv file containing the paths to the bam files to be profiled and the sample names. Example of such a csv file:</p>
+<pre><code class="language-csv">sample_name,bamfile
+sample1,/path/to/sample1.bam
+sample2,/path/to/sample2.bam
+sample3,/path/to/sample3.bam
 </code></pre>
-<p>This step will generate parquet files for each of your samples in the specified output directory.</p>
-<p>NOTE: fast_profile mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:</p>
+<h4 id="zipstrain-cli">ZipStrain CLI</h4>
+<p>To profile multiple BAM files using the ZipStrain CLI, you should first prepare some files:</p>
+<pre><code class="language-bash">zipstrain run prepare-profiling  --reference-fasta &lt;path/to/reference/fasta&gt; --gene-fasta &lt;path/to/reference/fasta/genes&gt; --stb-file  &lt;path/to/stb/file&gt; --output-dir &lt;directory/to/save/outputs&gt;
+</code></pre>
+<p>Your output directory should contain the following files:</p>
+<ul>
+<li>genomes_bed_file.bed</li>
+<li>genome_lengths.parquet</li>
+<li>gene_range_table.tsv</li>
+</ul>
+<p>Now you can profile your bam files:</p>
+<pre><code>zipstrain run profile --input-table &lt;path/to/bam/csv&gt; --stb-file &lt;path/to/stb/file&gt; --gene-range-table &lt;path/to/gene/range&gt; --bed-file &lt;path/to/bed/file&gt; --genome-length-file &lt;path/to/bed/file&gt; --run-dir &lt;path/to/save/generated/files&gt;
+
+</code></pre>
+<h4 id="nextflow-pipeline">Nextflow Pipeline</h4>
+<p>To profile multiple BAM files using Nextflow, you can create a Nextflow script as follows:</p>
+<pre><code>
+nextflow run zipstrain.nf --mode &quot;fast_profile&quot; --input_table &lt;path/to/bam/csv&gt;  --gene_file &lt;path/to/reference/fasta/genes&gt; --stb &lt;path/to/stb/file&gt;  --output_dir &lt;path/to/save/generated/files&gt; --reference_genome &lt;path/to/reference/fasta&gt; -c conf.config -profile &lt;your/system/specific/profile&gt; -resume
+
+</code></pre>
+<p><strong>Note</strong>  With the nextflow pipeline, you don't need the preparation step and those will be made along the way.</p>
+<p><strong>Note</strong> fast_profile mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:</p>
 <p><code>zipstrain utilities generate_stb --genomes-dir-file &lt;path/to/genomes_dir_file&gt;</code></p>
 <p>If you have trouble generating the STB file, you can simply make one using a custom script. The STB file is a tab-separated file with two columns: scaffold name and genome file name. </p>
-<h3 id="comparing-profiles">Comparing Profiles</h3>
-<p>In this step, you compare each profile at nucleotide level against another profile and aggregate the comparison results at genome level. There are two ways to perform comparisons using ZipStrain:</p>
-<ul>
-<li>
-<p>ZipStrain as a command-line tool</p>
-</li>
-<li>
-<p>ZipStrain Nextflow pipeline.</p>
-</li>
-</ul>
-<h4 id="using-zipstrain-as-a-command-line-tool_1">Using ZipStrain as a Command-Line Tool</h4>
-<p>UNDER CONSTRUCTION</p>
-<h4 id="using-the-nextflow-pipeline_1">Using the Nextflow Pipeline</h4>
-<p>You can also use the nextflow pipeline to perform comparisons. Here is an example command:</p>
-<pre><code>nextflow run zipstrain.nf --mode &quot;fast_compare&quot; --input_table all_profiles.csv  --null_model &lt;path/to/null_model.parquet&gt; --stb &lt;path/to/stbfile&gt;   --output_dir &lt;path/to/output/dir&gt;  --reference_genome &lt;path/to/your/reference_db.fasta&gt; -c conf.config -profile &lt;your_profile&gt; -resume
+<h3 id="compare-genomes-in-multiple-profiled-samples">Compare genomes in multiple profiled samples</h3>
+<p>You can compare multiple profiled samples using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods. The two approaches are slightly different in terms of input requirements. First let's see how this is done using the ZipStrain CLI.</p>
+<h4 id="zipstrain-cli_1">ZipStrain CLI</h4>
+<p>To compare multiple profiled samples using the ZipStrain CLI, first you need to build a profile database that contains all the profiled samples you want to compare. You can do this by running the following command:</p>
+<pre><code class="language-bash">zipstrain utilities build-profile-db --profile-db-csv &lt;path/to/profiles/csv&gt; --output-db &lt;path/to/save/profile/db&gt;
 </code></pre>
-<p>This step will generate comparison parquet files for a every batch of profile pairs as well as a merged comparison parquet file in the specified output directory. For more information about the Nextflow pipeline, please refer to the <a href="../NextflowPipeline/">Nextflow Pipeline Documentation</a>.</p>
+<p>The input CSV file should have the following columns:</p>
+<pre><code>- profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
+
+- profile_location: The location of the profile
+
+- scaffold_location: The location of the scaffold
+
+- reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
+
+- gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.
+</code></pre>
+<p>Running this command will perform the necessary checks and if successful, it will create a profile database in parquet format at the specified output location.</p>
+<p>Next, You use this profile database build a configuration json file that will be used to calculate the pairs that need to be compared. In this step you need to define the required parameters for comparison such as min_coverage, etc. You can make the configuration file by running the following command:</p>
+<pre><code class="language-bash">zipstrain utilities build-comparison-config \
+--profile-db &lt;path/to/profile/db&gt; \
+--gene-db-id &lt;gene_db_id_used_in_profile_db&gt; \
+--reference-db-id &lt;reference_db_id_used_in_profile_db&gt; \
+--scope &quot;all&quot; \
+--min-cov 5 \
+--min-gene-compare-len 200 \
+--null-model-p-value 0.05 \
+--stb-file-loc &lt;path/to/stb/file&gt; \
+--null-model-loc &lt;path/to/null/model/file&gt; \
+--current-comp-table &lt;path/to/current/comparison/table.parquet&gt; \
+--output-file &lt;path/to/save/comparison/config.json&gt;
+</code></pre>
+<p>Note that providing current-comp-table is optional. If provided, the comparison config will only include pairs that are not already compared in the current comparison table.</p>
+<p>Finally, you can run the comparison using the generated configuration file and the profile database:</p>
+<pre><code class="language-bash">zipstrain run compare_genomes \
+--genome-comparison-object &lt;path/to/comparison/config.json&gt; \
+--run-dir &lt;path/to/save/comparison/outputs&gt; \
+--max-concurrent-batches 1
+</code></pre>
+<h4 id="nextflow-workflow">Nextflow Workflow</h4>
+<p>There are two ways you can run the comparison workflow in ZipStrain Nextflow pipeline. </p>
+<p>1- I have a comparison config file already made using the ZipStrain CLI as explained above.</p>
+<p>In this case you obtain a table of remaining pairs to be compared from the comparison config file and run the comparison as follows:</p>
+<pre><code>zipstrain utilities to-complete-table --genome-comparison-object &lt;path/to/comparison/config.json&gt; --output-file &lt;path/to/output/remaining_pairs.csv&gt;
+</code></pre>
+<p>Then you can run the comparison using the following command:</p>
+<pre><code>nextflow run zipstrain.nf --mode fast_compare \
+ --input_table &lt;path/to/output/remaining_pairs.csv&gt; \
+ --input_type &quot;pair_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
+ --reference_genome &lt;path/to/reference/genome.fasta&gt; \  
+ --stb &lt;path/to/stb/file.stb&gt; -c conf.config \
+ --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
+ --compare_genome_scope &quot;all&quot; \
+ --compare_memory_mode &quot;heavy&quot; \
+ --parallel_mode &quot;batched&quot; \
+ --batch_size 2000 -profile &lt;profile_name&gt; \
+ --batch_compare_n_parallel 3 -qs 200 -resume
+</code></pre>
+<p>2- I don't have a comparison config file and I want to run the comparison directly from the profile lists.</p>
+<p>In this case, the nextflow pipeline will run all non-redundant pairwise comparisons between the provided profiles. Here is an example command:</p>
+<pre><code>nextflow run zipstrain.nf --mode fast_compare \
+ --input_table &lt;path/to/profiles/csv&gt; \
+ --input_type &quot;profile_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
+ --reference_genome &lt;path/to/reference/genome.fasta&gt; \
+ --stb &lt;path/to/stb/file.stb&gt; -c conf.config \
+ --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
+ --compare_genome_scope &quot;all&quot; \
+ --compare_memory_mode &quot;heavy&quot; \
+ --parallel_mode &quot;batched&quot; \
+ --batch_size 2000 -profile &lt;profile_name&gt; \
+ --batch_compare_n_parallel 3 -qs 200 -resume
+</code></pre>
+<p>For more information, refer to the <a href="../NextflowPipeline/">Nextflow Pipeline Documentation</a>.</p>
+<h4 id="output-files">Output files</h4>
+<p>Regardless of the execution workflow (ZipStrain CLI or Nextflow), comparing profiles yields a single table "merged_comparison.parquet" that contains the comparison results for all compared profile pairs. The table has the following columns:</p>
+<table>
+<thead>
+<tr>
+<th>genome</th>
+<th>total_positions</th>
+<th>share_allele_pos</th>
+<th>genome_pop_ani</th>
+<th>max_consecutive_length</th>
+<th>shared_genes_count</th>
+<th>identical_gene_count</th>
+<th>perc_id_genes</th>
+<th>sample_1</th>
+<th>sample_2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
 <h3 id="downstream-analyses">Downstream Analyses</h3>
 <p>In this step, you can use the perform statiscal analyses on the comparison results generated in the previous step and visualize them using ZipStrain's Python API. All of the functionalities in the visualization module are explained below:</p>
 <h4 id="strain-sharing-analysis">Strain Sharing Analysis</h4>
