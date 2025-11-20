@@ -347,6 +347,7 @@ process fromSRAtoProfile{
     path bed_file
     path gene_range_file
     path genome_length_file
+    path stb_file
     output:
     path "${sra_id}.parquet", emit: profiles
     path "${sra_id}.parquet.scaffolds", emit: covered_scaffolds
@@ -375,7 +376,7 @@ process fromSRAtoProfile{
                         --genome-length ${genome_length_file} \
                         --stb ${stb_file} \
                         --min-cov ${params.breadth_min_cov} \
-                        --output-file ${profile.baseName}_breadth.parquet
+                        --output-file ${sra_id}.parquet.breadth
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """
@@ -425,7 +426,7 @@ workflow
         }
         prepare_profile(reference_genome, gene_file, file(params.stb))
 
-        fromSRAtoProfile(sra_ids, reference_genome, index_files, prepare_profile.out.genome_bed, prepare_profile.out.out.gene_range_table)
+        fromSRAtoProfile(sra_ids, reference_genome, index_files, prepare_profile.out.genome_bed, prepare_profile.out.gene_range_table, prepare_profile.out.genome_lengths, file(params.stb))
     }
     if (params.mode =='fast_profile') {
         input_table = tableToDict(file(params.input_table))
