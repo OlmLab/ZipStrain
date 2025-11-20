@@ -1,4 +1,4 @@
-FROM continuumio/anaconda3
+FROM continuumio/miniconda3
 RUN conda config --add channels conda-forge
 RUN conda install -y parallel
 RUN conda install -y -c bioconda samtools

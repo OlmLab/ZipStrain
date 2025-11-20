@@ -14,6 +14,8 @@ params.batch_compare_n_parallel=4
 params.publish_mode="link"
 params.compare_genome_scope="all"
 params.input_type="profile_table"
+
+
 def tableToDict(file, delimiter = ',') {
     /*
     * This function reads a CSV file and converts it into a dictionary (map) where the keys are the headers
@@ -126,29 +128,30 @@ process map_reads{
 
 }
 
+process prepare_profile{
 
-
-
-process get_mpileup_genes {
-    /*
-    * This process generates mpileup files from BAM files.
-    * It takes in the BAM file and outputs the mpileup file.
-    */
     publishDir "${params.output_dir}", mode: 'link'
     input:
-    val sample_name
-    path bamfile
-    path gene_table
+    path reference_genome
+    path gene_fasta
+    path stb_file
     output:
-    path "${bamfile.baseName}.mpileup"
+    path "genomes_bed_file.bed", emit: genome_bed
+    path "gene_range_table.tsv", emit: gene_range_table
+    path "genome_lengths.parquet", emit: genome_lengths
     script:
-    """
-    samtools index "${bamfile}"
-    gene_profiler.sh ${gene_table} ${bamfile} ${bamfile.baseName}.mpileup ${task.cpus}
-    """
+"""
+zipstrain profile prepare_profiling \\
+        --reference-fasta ${reference_genome} \\
+        --gene-fasta ${gene_fasta} \\
+        --stb-file ${stb_file} \\
+        --output-dir . 
+"""
+
 }
 
-process get_mpileup_contigs {
+
+process profile_bam {
     /*
     * This process generates mpileup files from BAM files.
     * It takes in the BAM file and outputs the mpileup file.
@@ -157,73 +160,24 @@ process get_mpileup_contigs {
     input:
     val sample_name
     path bamfile
-    path scaffold_table
+    path bed_file
     path gene_range_table
     output:
-    path "${sample_name}.parquet", emit: mpileup_file
+    path "${sample_name}.parquet", emit: profile
     path "${sample_name}.parquet.scaffolds", emit: covered_scaffolds
     val sample_name, emit: sample_name
     script:
     """
-    samtools index ${bamfile}
-    fastprofiler.sh ${scaffold_table} ${bamfile} ${sample_name} ${gene_range_table} ${task.cpus}
-    samtools idxstats ${bamfile} | awk '\$3 > 0 {print \$1}' > ${sample_name}.parquet.scaffolds
+    zipstrain profile profile-single \\
+                        --bam-file ${bamfile} \\
+                        --bed-file ${bed_file} \\
+                        --gene-range-table ${gene_range_table} \\
+                        --num-workers ${task.cpus} \\
+                        --output-dir .
+    samtools idxstats ${bamfile} | awk '\$3 > 0 {print \$1}' >> ${sample_name}.parquet.scaffolds
     """
 }
 
-process prepare_gene_location_table {
-    /*
-    * This process prepares the gene location table from a FASTA file.
-    * It takes in the FASTA file and outputs the gene location table.
-    */
-    publishDir "${params.output_dir}", mode: 'link'
-    input:
-    path gene_file
-    path scaffold_table
-    output:
-    path "gene_location_table.parquet", emit: gene_location_table
-    script:
-    """
-    zipstrain gene_tools gene-loc-table --gene-file "${gene_file}" \
-                        --scaffold-list "${scaffold_table}" \
-                        --output-file gene_location_table.parquet
-    """
-}
-process get_all_gene_headers {
-    /*
-    * This process extracts all gene headers from contig tables.
-    * It takes in the contig tables and outputs the gene headers.
-    */
-    publishDir "${params.output_dir}", mode: 'link'
-    input:
-    path gene_file
-    output:
-    path "gene_headers.txt", emit: gene_headers
-    script:
-    """
-    grep '^>' ${gene_file} | sed 's/^>//' > gene_headers.txt
-    """
-}
-process prepare_gene_range_table {
-    /*
-    * This process prepares the gene range table from a FASTA file.
-    * It takes in the FASTA file and outputs the gene range table.
-    */
-    publishDir "${params.output_dir}", mode: 'link'
-    input:
-    path gene_headers
-    output:
-    path "gene_range_table.tsv", emit: gene_range_table
-    script:
-    """
-    awk -F ' # ' 'BEGIN {OFS="\t"; print "gene","scaffold","start","end"} {
-    gene = \$1
-    sub(/_[^_]+\$/, "", gene)  # remove last _... to get scaffold
-    scaffold = gene
-    print \$1, scaffold, \$2, \$3
-}' ${gene_headers} > gene_range_table.tsv
-    """
-}
 process compare_fast_profiles_single {
     /*
     * This process compares fast profiles.
@@ -255,25 +209,8 @@ process compare_fast_profiles_single {
                         -o ${pair_name}_comparison.parquet
 
     """
+}
 
-}
-process make_bed_file{
-    /*
-    * This process creates a BED file from a fasta database.
-    */
-    publishDir "${params.output_dir}", mode: 'link'
-    input:
-    path reference_genome
-    output:
-    path "${reference_genome.name}.bed", emit: bed_file
-    script:
-    """
-    zipstrain utilities make_bed \
-            --db-fasta-dir "${reference_genome}" \
-            --max-scaffold-length ${params.bed_max_scaffold_length} \
-            --output-file "${reference_genome.name}.bed"
-    """
-}
 process get_genome_breadth {
     /*
     * This process calculates the genome breadth.
@@ -350,7 +287,7 @@ process compare_fast_profiles_batched {
 
 }
 
-process merge_tables {
+process merge_comparison_tables {
     /*
     * This process merges multiple comparison result files into a single file.
     * It takes in multiple comparison result files and outputs a merged file.
@@ -409,9 +346,11 @@ process fromSRAtoProfile{
     path index_files
     path bed_file
     path gene_range_file
+    path genome_length_file
     output:
     path "${sra_id}.parquet", emit: profiles
     path "${sra_id}.parquet.scaffolds", emit: covered_scaffolds
+    path "${sra_id}.parquet.breadth", emit: breadth
     val sra_id, emit: sample_name
     script:
     """
@@ -425,9 +364,18 @@ process fromSRAtoProfile{
     else
     bowtie2 -x ${reference_genome} -U ${sra_id}/${sra_id}*.fastq.gz --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
     fi
-    samtools index ${sra_id}.bam
-    fastprofiler.sh  ${bed_file} ${sra_id}.bam ${sra_id} ${gene_range_file} ${task.cpus}
+    zipstrain profile profile-single \\
+                        --bam-file ${sra_id}.bam \\
+                        --bed-file ${bed_file} \\
+                        --gene-range-table ${gene_range_file} \\
+                        --num-workers ${task.cpus} \\
+                        --output-dir .
     samtools idxstats ${sra_id}.bam | awk '\$3 > 0 {print \$1}' > ${sra_id}.parquet.scaffolds
+    zipstrain utilities genome_breadth_matrix --profile ${sra_id}.parquet \
+                        --genome-length ${genome_length_file} \
+                        --stb ${stb_file} \
+                        --min-cov ${params.breadth_min_cov} \
+                        --output-file ${profile.baseName}_breadth.parquet
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """
@@ -475,11 +423,9 @@ workflow
             index_reference(reference_genome)
             index_files = index_reference.out.index_files
         }
-        get_all_gene_headers(gene_file)
-        prepare_gene_range_table(get_all_gene_headers.out.gene_headers)
-        make_bed_file(reference_genome)
+        prepare_profile(reference_genome, gene_file, file(params.stb))
 
-        fromSRAtoProfile(sra_ids, reference_genome, index_files, make_bed_file.out.bed_file, prepare_gene_range_table.out.gene_range_table)
+        fromSRAtoProfile(sra_ids, reference_genome, index_files, prepare_profile.out.genome_bed, prepare_profile.out.out.gene_range_table)
     }
     if (params.mode =='fast_profile') {
         input_table = tableToDict(file(params.input_table))
@@ -537,11 +483,9 @@ workflow fast_profile{
     gene_file
     reference_genome
     main:
-    get_all_gene_headers(gene_file)
-    prepare_gene_range_table(get_all_gene_headers.out.gene_headers)
-    make_bed_file(reference_genome)
-    get_mpileup_contigs(sample_names, bamfiles, make_bed_file.out.bed_file, prepare_gene_range_table.out.gene_range_table)
-    get_genome_breadth(get_mpileup_contigs.out.mpileup_file,
+    prepare_profile(reference_genome, gene_file, file(params.stb))
+    profile_bam(sample_names, bamfiles, prepare_profile.out.genome_bed, prepare_profile.out.gene_range_table)
+    get_genome_breadth(profile_bam.out.profile,
                        file(params.stb),
                        make_bed_file.out.bed_file)
     merge_breadth_tables(get_genome_breadth.out.genome_breadth.collect())

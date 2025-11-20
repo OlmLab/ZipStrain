@@ -3,7 +3,7 @@ zipstrain.utils
 ========================
 This module contains the command-line interface (CLI) implementation for the zipstrain application.
 """
-import rich_click as click
+import click as click
 import zipstrain.utils as ut
 import zipstrain.compare as cp
 import zipstrain.profile as pf
@@ -11,7 +11,6 @@ import zipstrain.task_manager as tm
 import zipstrain.database as db
 import polars as pl
 import pathlib
-
 
 @click.group()
 def cli():
@@ -410,12 +409,14 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
     
     comp.sink_parquet(output_file,engine=engine)
 
+
 @cli.group()
-def run():
-    """The commands in this group are related to running zipstrain workflows."""
+def profile():
+    """The commands in this group are related to profiling bam files."""
     pass
 
-@run.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
+
+@profile.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
 @click.option('--gene-fasta', '-g', required=True, help="Path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
@@ -439,6 +440,33 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
     bed_df = bed_df.lazy()
     genome_length = ut.extract_genome_length(stb, bed_df)
     genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
+
+
+@profile.command("profile-single")
+@click.option('--bed-file', '-b', required=True, help="Path to the BED file describing regions to be profiled.")
+@click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
+@click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
+@click.option('--num-workers', '-n', default=1, help="Number of workers to use for profiling.")
+@click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
+def profile_single(bed_file, bam_file, gene_range_table, num_workers, output_dir):
+    """
+    Profile a single BAM file using the provided BED file and gene range table.
+    
+    """
+    output_dir=pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pf.profile_bam(
+        bed_file=bed_file,
+        bam_file=bam_file,
+        gene_range_table=gene_range_table,
+        output_dir=output_dir,
+        num_workers=num_workers
+    )
+
+@cli.group()
+def run():
+    """The commands in this group are related to running zipstrain workflows."""
+    pass
 
 
 @run.command("profile")
@@ -572,6 +600,8 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
         tasks_per_batch=task_per_batch,
         poll_interval=poll_interval,
     )
+
+
 
 @run.command("build-comp-database")
 @click.option("--profile-db-dir", "-p", required=True, help="Directory containing profile either in parquet format.")
