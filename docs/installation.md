@@ -25,7 +25,7 @@ zipstrain test
 To install ZipStrain using Conda, run the following command in your conda environment with Python 3.12 or higher:
 
 ```
-conda install -c bioconda zipstrain
+conda install -c conda-forge -c bioconda -c defaults zipstrain
 ```
 This will install all the necessary dependencies along with ZipStrain **including samtools**.
 
