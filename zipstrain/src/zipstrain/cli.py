@@ -332,7 +332,8 @@ def compare():
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
 @click.option('--engine', '-e', default="streaming", type=click.Choice(['streaming', 'gpu',"auto"], case_sensitive=False), help="Engine to use for processing: 'streaming', 'gpu' or 'auto'.")
-def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaffolds_2, null_model, stb_file, min_cov, min_gene_compare_len, memory_mode, chrom_batch_size, output_file, genome, engine):
+@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaffolds_2, null_model, stb_file, min_cov, min_gene_compare_len, memory_mode, chrom_batch_size, output_file, genome, engine, ani_method):
     """
     Main function to compare two mpileup files and calculate genome and gene statistics.
     
@@ -396,7 +397,8 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
                      chrom_batch_size=chrom_batch_size, 
                      shared_scaffolds=shared_scaffolds, 
                      scaffold_scope=scaffold_scope, 
-                     engine=engine)
+                     engine=engine,
+                     ani_method=ani_method)
     comp=comp.join(
         stb.select("genome").unique(),
         left_on=pl.col("genome"),
@@ -409,6 +411,67 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
     
     comp.sink_parquet(output_file,engine=engine)
 
+@compare.command("single_compare_gene")
+@click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
+@click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
+@click.option('--null-model', '-n', required=True, help="Path to the null model Parquet file.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
+@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
+@click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
+@click.option('--engine', '-e', default="streaming", type=click.Choice(['streaming', 'gpu',"auto"], case_sensitive=False), help="Engine to use for processing: 'streaming', 'gpu' or 'auto'.")
+@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file, min_cov, min_gene_compare_len, output_file, engine, ani_method):
+    """
+    Compare two mpileup files and calculate gene-level comparison statistics.
+    
+    Args:
+    mpileup_contig_1 (str): Path to the first mpileup file.
+    mpileup_contig_2 (str): Path to the second mpileup file.
+    null_model (str): Path to the null model Parquet file.
+    stb_file (str): Path to the scaffold to genome mapping file.
+    min_cov (int): Minimum coverage to consider a position.
+    min_gene_compare_len (int): Minimum gene length to consider for comparison.
+    output_file (str): Path to save the parquet file.
+    engine (str): Engine to use for processing: 'streaming', 'gpu' or 'auto'.
+    ani_method (str): ANI calculation method to use.
+    """
+    with pl.StringCache():
+        mpile_contig_1 = pl.scan_parquet(mpileup_contig_1).with_columns(
+            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
+             pl.col("gene").cast(pl.Categorical).alias("gene"))
+        )
+        mpile_contig_2 = pl.scan_parquet(mpileup_contig_2).with_columns(
+            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
+             pl.col("gene").cast(pl.Categorical).alias("gene"))
+        )
+
+        stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
+            pl.col("column_1").alias("scaffold").cast(pl.Categorical),
+            pl.col("column_2").alias("genome").cast(pl.Categorical)
+        ).select(["scaffold", "genome"])
+
+    null_model = pl.scan_parquet(null_model)
+    mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
+    mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
+    
+    comp = cp.compare_genes(
+        mpile_contig_1=mpile_contig_1, 
+        mpile_contig_2=mpile_contig_2, 
+        null_model=null_model,
+        scaffold_to_genome=stb, 
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len, 
+        engine=engine,
+        ani_method=ani_method
+    )
+
+    comp = comp.with_columns(
+        pl.lit(mpile_contig_1_name).alias("sample_1"), 
+        pl.lit(mpile_contig_2_name).alias("sample_2")
+    ).fill_null(0)
+    
+    comp.sink_parquet(output_file, engine=engine)
 
 @cli.group()
 def profile():

@@ -418,7 +418,7 @@ workflow
         gene_file = file(params.gene_file)
         reference_genome = file(params.reference_genome)
         if (params.index_files) {
-            index_files = files(params.index_files)
+            index_files = file(params.index_files)
         }
         else {
             index_reference(reference_genome)
