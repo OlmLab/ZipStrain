@@ -189,7 +189,7 @@ async def profile_bam_in_chunks(
             chunk_id=chunk_id
         ))
     await asyncio.gather(*tasks) 
-    pfs=[output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet" for chunk_id in range(len(bed_chunk_files))]
+    pfs=[output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet" for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet").exists()]
     mpileup_df = pl.concat([pl.scan_parquet(pf) for pf in pfs])
     mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}.parquet", compression='zstd')
     os.system(f"rm -r {output_dir}/tmp")

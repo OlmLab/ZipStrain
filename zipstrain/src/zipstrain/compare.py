@@ -128,7 +128,7 @@ def add_contiguity_info(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
 
     mpile_contig= mpile_contig.sort(["scaffold", "pos"])
     mpile_contig = mpile_contig.with_columns([
-        (pl.col("scaffold").shift(1).fill_null(pl.col("scaffold").first()).alias("prev_scaffold")),
+        (pl.col("scaffold").shift(1).fill_null(pl.col("scaffold")).alias("prev_scaffold")),
     ])
     mpile_contig = mpile_contig.with_columns([
         (((pl.col("scaffold") != pl.col("prev_scaffold")) | (pl.col("surr") == 0))).cum_sum().alias("group_id")

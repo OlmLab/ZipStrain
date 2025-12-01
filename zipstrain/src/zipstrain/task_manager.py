@@ -1664,3 +1664,315 @@ def lazy_run_compares(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
+
+
+class FastGeneCompareTask(Task):
+    """A Task that performs a fast gene comparison using the compare single_compare_gene command.
+    
+    Args:
+        id (str): Unique identifier for the task.
+        inputs (dict[str, Input]): Dictionary of input parameters for the task.
+        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
+        engine (Engine): Container engine to wrap the command.
+    """
+    TEMPLATE_CMD="""
+    zipstrain compare single_compare_gene --mpileup-contig-1 <mpile_1_file> \
+    --mpileup-contig-2 <mpile_2_file> \
+    --null-model <null_model_file> \
+    --stb-file <stb_file> \
+    --min-cov <min_cov> \
+    --min-gene-compare-len <min-gene-compare-len> \
+    --output-file <output-file> \
+    --engine <engine> \
+    --ani-method <ani-method>
+    """
+
+class GeneCompareTaskGenerator(TaskGenerator):
+    """This TaskGenerator generates FastGeneCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genes functionality in
+    zipstrain.compare module.
+    
+    Args:
+        data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
+        yield_size (int): Number of tasks to yield at a time.
+        comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
+        polars_engine (str): Polars engine to use. Default is "streaming".
+        ani_method (str): ANI calculation method to use. Default is "popani".
+    """
+    def __init__(
+        self,
+        data: pl.LazyFrame,
+        yield_size: int,
+        container_engine: Engine,
+        comp_config: database.GenomeComparisonConfig,
+        polars_engine: str = "streaming",
+        ani_method: str = "popani",
+    ) -> None:
+        super().__init__(data, yield_size)
+        self.comp_config = comp_config
+        self.engine = container_engine
+        self.polars_engine = polars_engine
+        self.ani_method = ani_method
+        if type(self.data) is not pl.LazyFrame:
+            raise ValueError("data must be a polars LazyFrame.")
+        
+    def get_total_tasks(self) -> int:
+        """Returns total number of pairwise comparisons to be made."""
+        return self.data.select(size=pl.len()).collect(engine="streaming")["size"][0]
+
+    async def generate_tasks(self) -> list[Task]:
+        """Yields lists of FastGeneCompareTask objects based on the data in batches of yield_size. This method yields the control back to the event loop
+        while polars is collecting data to avoid blocking.
+        """
+        for offset in range(0, self._total_tasks, self.yield_size):
+            batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
+            tasks = []
+            for row in batch_df.iter_rows(named=True):
+                inputs = {
+                "mpile_1_file": FileInput(row["profile_location_1"]),
+                "mpile_2_file": FileInput(row["profile_location_2"]),
+                "null_model_file": FileInput(self.comp_config.null_model_loc),
+                "stb_file": FileInput(self.comp_config.stb_file_loc),
+                "min_cov": IntInput(self.comp_config.min_cov),
+                "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
+                "engine": StringInput(self.polars_engine),
+                "ani-method": StringInput(self.ani_method),
+                }
+                expected_outputs ={
+                "output-file":  FileOutput(row["sample_name_1"]+"_"+row["sample_name_2"]+"_gene_comparison.parquet" ),
+                }
+                task = FastGeneCompareTask(id=row["sample_name_1"]+"_"+row["sample_name_2"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
+                tasks.append(task)
+            yield tasks
+
+class GeneCompareRunner(Runner):
+    """
+    Creates and schedules batches of FastGeneCompareTask tasks using either local or Slurm batches.
+    
+    Args:
+        run_dir (str | pathlib.Path): Directory where the runner will operate.
+        task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
+        container_engine (Engine): An instance of Engine to wrap task commands.
+        max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
+        poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 1.0.
+        tasks_per_batch (int): Number of tasks to include in each batch. Default is 10.
+        batch_type (str): Type of batch to use ("local" or "slurm"). Default is "local".
+        slurm_config (SlurmConfig | None): Configuration for Slurm batches if batch_type
+            is "slurm". Default is None.    
+    """
+
+    def __init__(
+        self,
+        run_dir: str | pathlib.Path,
+        task_generator: TaskGenerator,
+        container_engine: Engine,
+        max_concurrent_batches: int = 1,
+        poll_interval: float = 1.0,
+        tasks_per_batch: int = 10,
+        batch_type: str = "local",
+        slurm_config: SlurmConfig | None = None,
+    ) -> None:
+        if batch_type == "slurm":
+            if slurm_config is None:
+                raise ValueError("Slurm config must be provided for slurm batch type.")
+            batch_factory = FastGeneCompareSlurmBatch
+            final_batch_factory = PrepareGeneCompareRunOutputsSlurmBatch
+        else:
+            batch_factory = FastGeneCompareLocalBatch
+            final_batch_factory = PrepareGeneCompareRunOutputsLocalBatch
+        super().__init__(
+            run_dir=run_dir,
+            task_generator=task_generator,
+            container_engine=container_engine,
+            batch_factory=batch_factory,
+            final_batch_factory=final_batch_factory,
+            max_concurrent_batches=max_concurrent_batches,
+            poll_interval=poll_interval,
+            tasks_per_batch=tasks_per_batch,
+            batch_type=batch_type,
+            slurm_config=slurm_config,
+        )
+
+    async def _batcher(self):
+        """
+        Defines the batcher coroutine that collects tasks from the tasks_queue, groups them into batches,
+        and puts the batches into the batches_queue. Each batch includes a CollectGeneComps task to merge the outputs of the tasks in the batch.
+        """
+        buffer: list[Task] = []
+        while True:
+            task = await self.tasks_queue.get()
+            if task is None:
+                if buffer:
+                    collect_task = CollectGeneComps(
+                        id="collect_gene_comps",
+                        inputs={},
+                        expected_outputs={"output-file": FileOutput(f"Merged_gene_batch_{self._batch_counter}.parquet")},
+                        engine=self.container_engine,
+                    )
+                    buffer.append(collect_task)
+                    batch = self.batch_factory(
+                        tasks=buffer,
+                        id=f"gene_batch_{self._batch_counter}",
+                        run_dir=self.run_dir,
+                        expected_outputs=[],
+                        slurm_config=self.slurm_config if self.batch_type == "slurm" else None,
+                    )
+                    await self.batches_queue.put(batch)
+                    self._batch_counter += 1
+                self._batcher_done = True
+                break
+
+            buffer.append(task)
+            if len(buffer) == self.tasks_per_batch:
+                collect_task = CollectGeneComps(
+                    id="collect_gene_comps",
+                    inputs={},
+                    expected_outputs={"output-file": FileOutput(f"Merged_gene_batch_{self._batch_counter}.parquet")},
+                    engine=self.container_engine,
+                )
+                buffer.append(collect_task)
+                batch = self.batch_factory(
+                    tasks=buffer,
+                    id=f"gene_batch_{self._batch_counter}",
+                    run_dir=self.run_dir,
+                    expected_outputs=[],
+                    slurm_config=self.slurm_config if self.batch_type == "slurm" else None,
+                )
+                await self.batches_queue.put(batch)
+                self._batch_counter += 1
+                buffer = []
+
+    def _create_final_batch(self) -> Batch:
+        """Creates the final batch that prepares the overall outputs after all gene comparison batches are done."""
+        final_task = PrepareGeneCompareRunOutputs(
+            id="prepare_gene_outputs",
+            inputs={"output-dir": StringInput("Outputs")},
+            expected_outputs={},
+            engine=self.container_engine,
+        )
+        expected_outputs = [BatchFileOutput("all_gene_comparisons.parquet")]
+        if self.batch_type == "slurm":
+            final_batch=self.final_batch_factory(
+                tasks=[final_task],
+                id="Outputs",
+                run_dir=self.run_dir,
+                expected_outputs=expected_outputs,
+                slurm_config=self.slurm_config,
+            )
+            final_batch._runner_obj = self
+            return final_batch
+        else:
+            final_batch = self.final_batch_factory(
+                tasks=[final_task],
+                id="Outputs",
+                run_dir=self.run_dir,
+                expected_outputs=expected_outputs,
+            )
+            final_batch._runner_obj = self
+            return final_batch
+
+class CollectGeneComps(Task):
+    """A Task that collects and merges gene comparison parquet files from multiple FastGeneCompareTask tasks into a single parquet file.
+    
+    Args:
+        id (str): Unique identifier for the task.
+        inputs (dict[str, Input]): Dictionary of input parameters for the task.
+        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
+        engine (Engine): Container engine to wrap the command."""
+    TEMPLATE_CMD="""
+    mkdir -p gene_comps
+    cp */*_gene_comparison.parquet gene_comps/
+    zipstrain utilities merge_parquet --input-dir gene_comps --output-file <output-file>
+    rm -rf gene_comps
+    """
+    
+    @property
+    def pre_run(self) -> str:
+        return f"echo {Status.RUNNING.value} > {self.task_dir.absolute()}/.status"
+
+class PrepareGeneCompareRunOutputs(Task):
+    """A Task that prepares the final output by merging all gene comparison parquet files after all gene comparisons are done."""
+    TEMPLATE_CMD="""
+    mkdir -p <output-dir>/gene_comps
+    find "$(pwd)" -type f -name "Merged_gene_batch_*.parquet" -print0 | xargs -0 -I {} ln -s {} <output-dir>/gene_comps/
+    zipstrain utilities merge_parquet --input-dir <output-dir>/gene_comps --output-file <output-dir>/all_gene_comparisons.parquet
+    rm -rf <output-dir>/gene_comps
+    """
+    
+    @property
+    def pre_run(self) -> str:
+        """Sets the task status to RUNNING and changes directory to the runner's run directory since this task may need to access multiple batch outputs."""
+        return f"echo {Status.RUNNING.value} > {self.task_dir.absolute()}/.status && cd {self._batch_obj._runner_obj.run_dir.absolute()}"
+
+class FastGeneCompareLocalBatch(LocalBatch):
+    """A LocalBatch that runs FastGeneCompareTask tasks locally."""
+    def cleanup(self) -> None:
+        tasks_to_remove = [task for task in self.tasks if isinstance(task, FastGeneCompareTask)]
+        for task in tasks_to_remove:
+            self.tasks.remove(task)
+            shutil.rmtree(task.task_dir)
+
+class FastGeneCompareSlurmBatch(SlurmBatch):
+    """A SlurmBatch that runs FastGeneCompareTask tasks on a Slurm cluster."""
+    def cleanup(self) -> None:
+        tasks_to_remove = [task for task in self.tasks if isinstance(task, FastGeneCompareTask)]
+        for task in tasks_to_remove:
+            self.tasks.remove(task)
+            shutil.rmtree(task.task_dir)
+
+class PrepareGeneCompareRunOutputsLocalBatch(LocalBatch):
+    pass
+
+class PrepareGeneCompareRunOutputsSlurmBatch(SlurmBatch):
+    pass
+
+def lazy_run_gene_compares(
+    run_dir: str | pathlib.Path,
+    container_engine: Engine,
+    comps_db: database.GenomeComparisonDatabase|None = None,
+    tasks_per_batch: int = 10,
+    max_concurrent_batches: int = 1,
+    poll_interval: float = 5.0,
+    execution_mode: str = "local",
+    slurm_config: SlurmConfig | None = None,
+    polars_engine: str = "streaming",
+    ani_method: str = "popani"
+) -> None:
+    """A helper function to quickly set up and run a GeneCompareRunner with given parameters.
+    
+    Args:
+        run_dir (str | pathlib.Path): Directory where the runner will operate.
+        container_engine (Engine): An instance of Engine to wrap task commands.
+        comps_db (GenomeComparisonDatabase | None): An instance of GenomeComparisonDatabase containing comparison data.
+        tasks_per_batch (int): Number of tasks to include in each batch. Default is 10.
+        max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
+        poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
+        execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
+        polars_engine (str): Polars engine to use. Default is "streaming".
+        ani_method (str): ANI calculation method to use. Default is "popani".
+    """
+    task_generator = GeneCompareTaskGenerator(
+        data=comps_db.to_complete_input_table(),
+        yield_size=tasks_per_batch,
+        container_engine=container_engine,
+        comp_config=comps_db.config,
+        polars_engine=polars_engine,
+        ani_method=ani_method,
+    )
+    if execution_mode=="local":
+        batch_type="local"
+    elif execution_mode=="slurm":
+        batch_type="slurm"
+    else:
+        raise ValueError(f"Unknown execution mode: {execution_mode}")
+    runner = GeneCompareRunner(
+        run_dir=pathlib.Path(run_dir),
+        task_generator=task_generator,
+        container_engine=container_engine,
+        max_concurrent_batches=max_concurrent_batches,
+        poll_interval=poll_interval,
+        tasks_per_batch=tasks_per_batch,
+        batch_type=batch_type,
+        slurm_config=slurm_config,
+    )
+    asyncio.run(runner.run())
+

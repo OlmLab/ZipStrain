@@ -694,7 +694,64 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
     obj.dump_obj(pathlib.Path(output_dir))
 
 
-        
+@run.command("compare_genes")
+@click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
+@click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
+@click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
+@click.option("--poll-interval", "-p", default=1, help="Polling interval in seconds to check the status of batches.")
+@click.option("--execution-mode", "-e", default="local", help="Execution mode: 'local' or 'slurm'.")
+@click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
+@click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
+@click.option("--polars-engine", "-a", default="streaming", type=click.Choice(['streaming', 'gpu', 'auto'], case_sensitive=False), help="Polars engine to use: 'streaming', 'gpu' or 'auto'.")
+@click.option("--ani-method", "-n", default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+def compare_genes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, polars_engine, ani_method):
+    """
+    Run gene comparisons in batches using the specified execution mode and container engine.
+
+    Args:
+    genome_comparison_object (str): Path to the genome comparison object in json format.
+    run_dir (str): Directory to save the run data.
+    max_concurrent_batches (int): Maximum number of concurrent batches to run.
+    poll_interval (int): Polling interval in seconds to check the status of batches.
+    execution_mode (str): Execution mode: 'local' or 'slurm'.
+    slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
+    container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
+    task_per_batch (int): Number of tasks to include in each batch.
+    polars_engine (str): Polars engine to use: 'streaming', 'gpu' or 'auto'.
+    ani_method (str): ANI calculation method to use.
+    """
+    genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
+    run_dir=pathlib.Path(run_dir)
+    slurm_conf=None
+    if execution_mode == "slurm":
+        if slurm_config is None:
+            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+    
+    if container_engine == "local":
+        container_engine_obj = tm.LocalEngine(address="")
+    elif container_engine == "docker":
+        container_engine_obj = tm.DockerEngine(address="parsaghadermazi/zipstrain:amd64")
+    elif container_engine == "apptainer":
+        container_engine_obj = tm.ApptainerEngine(address="docker://parsaghadermazi/zipstrain:amd64")
+    else:
+        raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
+    
+    tm.lazy_run_gene_compares(
+        comps_db=genome_comp_db,
+        container_engine=container_engine_obj,
+        run_dir=run_dir,
+        max_concurrent_batches=max_concurrent_batches,
+        polars_engine=polars_engine,
+        execution_mode=execution_mode,
+        slurm_config=slurm_conf,
+        tasks_per_batch=task_per_batch,
+        poll_interval=poll_interval,
+        ani_method=ani_method,
+    )
+
+# ...existing code...
         
 @cli.command("test")
 def test():
