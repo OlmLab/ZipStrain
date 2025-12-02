@@ -1703,7 +1703,7 @@ class GeneCompareTaskGenerator(TaskGenerator):
         data: pl.LazyFrame,
         yield_size: int,
         container_engine: Engine,
-        comp_config: database.GenomeComparisonConfig,
+        comp_config: database.GeneComparisonConfig,
         polars_engine: str = "streaming",
         ani_method: str = "popani",
     ) -> None:
@@ -1928,7 +1928,7 @@ class PrepareGeneCompareRunOutputsSlurmBatch(SlurmBatch):
 def lazy_run_gene_compares(
     run_dir: str | pathlib.Path,
     container_engine: Engine,
-    comps_db: database.GenomeComparisonDatabase|None = None,
+    comps_db: database.GeneComparisonDatabase | None = None,
     tasks_per_batch: int = 10,
     max_concurrent_batches: int = 1,
     poll_interval: float = 5.0,

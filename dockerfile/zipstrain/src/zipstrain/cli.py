@@ -332,7 +332,8 @@ def compare():
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
 @click.option('--engine', '-e', default="streaming", type=click.Choice(['streaming', 'gpu',"auto"], case_sensitive=False), help="Engine to use for processing: 'streaming', 'gpu' or 'auto'.")
-def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaffolds_2, null_model, stb_file, min_cov, min_gene_compare_len, memory_mode, chrom_batch_size, output_file, genome, engine):
+@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaffolds_2, null_model, stb_file, min_cov, min_gene_compare_len, memory_mode, chrom_batch_size, output_file, genome, engine, ani_method):
     """
     Main function to compare two mpileup files and calculate genome and gene statistics.
     
@@ -396,7 +397,8 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
                      chrom_batch_size=chrom_batch_size, 
                      shared_scaffolds=shared_scaffolds, 
                      scaffold_scope=scaffold_scope, 
-                     engine=engine)
+                     engine=engine,
+                     ani_method=ani_method)
     comp=comp.join(
         stb.select("genome").unique(),
         left_on=pl.col("genome"),
@@ -409,6 +411,67 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
     
     comp.sink_parquet(output_file,engine=engine)
 
+@compare.command("single_compare_gene")
+@click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
+@click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
+@click.option('--null-model', '-n', required=True, help="Path to the null model Parquet file.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
+@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
+@click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
+@click.option('--engine', '-e', default="streaming", type=click.Choice(['streaming', 'gpu',"auto"], case_sensitive=False), help="Engine to use for processing: 'streaming', 'gpu' or 'auto'.")
+@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file, min_cov, min_gene_compare_len, output_file, engine, ani_method):
+    """
+    Compare two mpileup files and calculate gene-level comparison statistics.
+    
+    Args:
+    mpileup_contig_1 (str): Path to the first mpileup file.
+    mpileup_contig_2 (str): Path to the second mpileup file.
+    null_model (str): Path to the null model Parquet file.
+    stb_file (str): Path to the scaffold to genome mapping file.
+    min_cov (int): Minimum coverage to consider a position.
+    min_gene_compare_len (int): Minimum gene length to consider for comparison.
+    output_file (str): Path to save the parquet file.
+    engine (str): Engine to use for processing: 'streaming', 'gpu' or 'auto'.
+    ani_method (str): ANI calculation method to use.
+    """
+    with pl.StringCache():
+        mpile_contig_1 = pl.scan_parquet(mpileup_contig_1).with_columns(
+            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
+             pl.col("gene").cast(pl.Categorical).alias("gene"))
+        )
+        mpile_contig_2 = pl.scan_parquet(mpileup_contig_2).with_columns(
+            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
+             pl.col("gene").cast(pl.Categorical).alias("gene"))
+        )
+
+        stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
+            pl.col("column_1").alias("scaffold").cast(pl.Categorical),
+            pl.col("column_2").alias("genome").cast(pl.Categorical)
+        ).select(["scaffold", "genome"])
+
+    null_model = pl.scan_parquet(null_model)
+    mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
+    mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
+    
+    comp = cp.compare_genes(
+        mpile_contig_1=mpile_contig_1, 
+        mpile_contig_2=mpile_contig_2, 
+        null_model=null_model,
+        scaffold_to_genome=stb, 
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len, 
+        engine=engine,
+        ani_method=ani_method
+    )
+
+    comp = comp.with_columns(
+        pl.lit(mpile_contig_1_name).alias("sample_1"), 
+        pl.lit(mpile_contig_2_name).alias("sample_2")
+    ).fill_null(0)
+    
+    comp.sink_parquet(output_file, engine=engine)
 
 @cli.group()
 def profile():
@@ -631,7 +694,64 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
     obj.dump_obj(pathlib.Path(output_dir))
 
 
-        
+@run.command("compare_genes")
+@click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
+@click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
+@click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
+@click.option("--poll-interval", "-p", default=1, help="Polling interval in seconds to check the status of batches.")
+@click.option("--execution-mode", "-e", default="local", help="Execution mode: 'local' or 'slurm'.")
+@click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
+@click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
+@click.option("--polars-engine", "-a", default="streaming", type=click.Choice(['streaming', 'gpu', 'auto'], case_sensitive=False), help="Polars engine to use: 'streaming', 'gpu' or 'auto'.")
+@click.option("--ani-method", "-n", default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+def compare_genes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, polars_engine, ani_method):
+    """
+    Run gene comparisons in batches using the specified execution mode and container engine.
+
+    Args:
+    genome_comparison_object (str): Path to the genome comparison object in json format.
+    run_dir (str): Directory to save the run data.
+    max_concurrent_batches (int): Maximum number of concurrent batches to run.
+    poll_interval (int): Polling interval in seconds to check the status of batches.
+    execution_mode (str): Execution mode: 'local' or 'slurm'.
+    slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
+    container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
+    task_per_batch (int): Number of tasks to include in each batch.
+    polars_engine (str): Polars engine to use: 'streaming', 'gpu' or 'auto'.
+    ani_method (str): ANI calculation method to use.
+    """
+    genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
+    run_dir=pathlib.Path(run_dir)
+    slurm_conf=None
+    if execution_mode == "slurm":
+        if slurm_config is None:
+            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+    
+    if container_engine == "local":
+        container_engine_obj = tm.LocalEngine(address="")
+    elif container_engine == "docker":
+        container_engine_obj = tm.DockerEngine(address="parsaghadermazi/zipstrain:amd64")
+    elif container_engine == "apptainer":
+        container_engine_obj = tm.ApptainerEngine(address="docker://parsaghadermazi/zipstrain:amd64")
+    else:
+        raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
+    
+    tm.lazy_run_gene_compares(
+        comps_db=genome_comp_db,
+        container_engine=container_engine_obj,
+        run_dir=run_dir,
+        max_concurrent_batches=max_concurrent_batches,
+        polars_engine=polars_engine,
+        execution_mode=execution_mode,
+        slurm_config=slurm_conf,
+        tasks_per_batch=task_per_batch,
+        poll_interval=poll_interval,
+        ani_method=ani_method,
+    )
+
+# ...existing code...
         
 @cli.command("test")
 def test():
