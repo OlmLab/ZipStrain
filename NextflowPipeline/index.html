@@ -327,9 +327,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#comparing-a-list-of-profile-pairs" class="md-nav__link">
+  <a href="#comparing-genomes-a-list-of-profile-pairs" class="md-nav__link">
     <span class="md-ellipsis">
-      Comparing a list of profile pairs
+      Comparing genomes a list of profile pairs
     </span>
   </a>
   
@@ -339,6 +339,24 @@
   <a href="#comparing-all-profiles-against-each-other" class="md-nav__link">
     <span class="md-ellipsis">
       Comparing all profiles against each other
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compare-genes-within-genomes-from-a-list-of-profile-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compare genes within genomes from a list of profile pairs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparing-all-genes-within-genomes-from-a-list-of-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing all genes within genomes from a list of profiles
     </span>
   </a>
   
@@ -483,9 +501,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#comparing-a-list-of-profile-pairs" class="md-nav__link">
+  <a href="#comparing-genomes-a-list-of-profile-pairs" class="md-nav__link">
     <span class="md-ellipsis">
-      Comparing a list of profile pairs
+      Comparing genomes a list of profile pairs
     </span>
   </a>
   
@@ -495,6 +513,24 @@
   <a href="#comparing-all-profiles-against-each-other" class="md-nav__link">
     <span class="md-ellipsis">
       Comparing all profiles against each other
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compare-genes-within-genomes-from-a-list-of-profile-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compare genes within genomes from a list of profile pairs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparing-all-genes-within-genomes-from-a-list-of-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparing all genes within genomes from a list of profiles
     </span>
   </a>
   
@@ -586,7 +622,7 @@ nextflow run instrain2.nf --mode &quot;from_sra_to_profile&quot; --input_table &
 <p>This command will download the SRA files, map the reads to the reference genome, and generate profiles in one step and then DELETEs all the intermediate files to save space.</p>
 <h2 id="comparing-profiles">Comparing Profiles</h2>
 <p>Once you have generated profiles, you have two options to compare them using the nextflow pipeline.</p>
-<h3 id="comparing-a-list-of-profile-pairs">Comparing a list of profile pairs</h3>
+<h3 id="comparing-genomes-a-list-of-profile-pairs">Comparing genomes a list of profile pairs</h3>
 <p>First, you have a CSV file that includes the pairs of profiles to compare. The table must have the following columns:</p>
 <ul>
 <li>
@@ -608,7 +644,7 @@ nextflow run instrain2.nf --mode &quot;from_sra_to_profile&quot; --input_table &
 <p>scaffold_location_2</p>
 </li>
 </ul>
-<pre><code>nextflow run zipstrain.nf --mode fast_compare \
+<pre><code>nextflow run zipstrain.nf --mode compare_genomes \
  --input_table &lt;path/to/output/remaining_pairs.csv&gt; \
  --input_type &quot;pair_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
  --reference_genome &lt;path/to/reference/genome.fasta&gt; \
@@ -629,7 +665,7 @@ nextflow run instrain2.nf --mode &quot;from_sra_to_profile&quot; --input_table &
 <p>Finally, you can also control the parallelization of the comparison step using the <code>--parallel_mode</code> option. There are two modes available: "single" and "batched". In batched mode, multiple number of pairs will be processed in a single task controlled by <code>--batch_size</code> parameter. "single" mode submits one comparison per task. When performin huge number of comparisons, batched mode is recommended to reduce the overhead of task submission as well as number of small output files generated.</p>
 <h3 id="comparing-all-profiles-against-each-other">Comparing all profiles against each other</h3>
 <p>In this case, you provide a CSV file that has all the profiles you want to compare and nextflow will do every possible non-redundant pairwise comparison.</p>
-<pre><code>nextflow run zipstrain.nf --mode fast_compare \
+<pre><code>nextflow run zipstrain.nf --mode compare_genomes \
  --input_table &lt;path/to/profiles/csv&gt; \
  --input_type &quot;profile_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
  --reference_genome &lt;path/to/reference/genome.fasta&gt; \
@@ -640,7 +676,36 @@ nextflow run instrain2.nf --mode &quot;from_sra_to_profile&quot; --input_table &
  --parallel_mode &quot;batched&quot; \
  --batch_size &lt;batch_size&gt; -profile &lt;profile_name&gt; \
  -resume
+</code></pre>
+<h3 id="compare-genes-within-genomes-from-a-list-of-profile-pairs">Compare genes within genomes from a list of profile pairs</h3>
+<p>This is similar to the first comparison option, but instead of comparing genomes, it compares genes within the genomes. The final table has a row for each gene comparison.</p>
+<pre><code>nextflow run zipstrain.nf --mode compare_genes \
+ --input_table &lt;path/to/output/remaining_pairs.csv&gt; \
+ --input_type &quot;pair_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
+ --reference_genome &lt;path/to/reference/genome.fasta&gt; \
+ --stb &lt;path/to/stb/file.stb&gt; -c conf.config,&lt;your_config_file&gt; \
+ --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
+ --scope &quot;all:all&quot; \
+ --compare_memory_mode &quot;heavy&quot; \
+ --parallel_mode &quot;batched&quot; \
+ --batch_size &lt;batch_size&gt; -profile &lt;profile_name&gt; \
+ -resume
 
+</code></pre>
+<p>Note that in this command, the <code>--scope</code> parameter is used to specify which genome-gene pairs to compare. The format is <code>&lt;genome_name&gt;:&lt;gene_name&gt;</code>. You can use "all" to compare all genomes or genes. For example, to compare all genes within a specific genome, you would use <code>&lt;specific_genome_name&gt;:all</code>. To compare a specific gene across all genomes, you would use <code>all:&lt;specific_gene_name&gt;</code>. </p>
+<h3 id="comparing-all-genes-within-genomes-from-a-list-of-profiles">Comparing all genes within genomes from a list of profiles</h3>
+<p>In this case, you provide a CSV file that has all the profiles you want to compare and nextflow will do every possible non-redundant pairwise gene comparison within the genomes.</p>
+<pre><code>nextflow run zipstrain.nf --mode compare_genes \
+ --input_table &lt;path/to/profiles/csv&gt; \
+ --input_type &quot;profile_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
+ --reference_genome &lt;path/to/reference/genome.fasta&gt; \
+ --stb &lt;path/to/stb/file.stb&gt; -c conf.config \
+ --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
+ --scope &quot;all:all&quot; \
+ --compare_memory_mode &quot;heavy&quot; \
+ --parallel_mode &quot;batched&quot; \
+ --batch_size &lt;batch_size&gt; -profile &lt;profile_name&gt; \
+ -resume
 </code></pre>
 
 
