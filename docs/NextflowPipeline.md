@@ -97,7 +97,7 @@ This command will download the SRA files, map the reads to the reference genome,
 
 Once you have generated profiles, you have two options to compare them using the nextflow pipeline.
 
-### Comparing a list of profile pairs
+### Comparing genomes a list of profile pairs
 
 First, you have a CSV file that includes the pairs of profiles to compare. The table must have the following columns:
 
@@ -115,7 +115,7 @@ First, you have a CSV file that includes the pairs of profiles to compare. The t
 
 
 ```
-nextflow run zipstrain.nf --mode fast_compare \
+nextflow run zipstrain.nf --mode compare_genomes \
  --input_table <path/to/output/remaining_pairs.csv> \
  --input_type "pair_table" --gene_file <path/to/gene/fasta/file> \
  --reference_genome <path/to/reference/genome.fasta> \
@@ -145,7 +145,7 @@ Finally, you can also control the parallelization of the comparison step using t
 In this case, you provide a CSV file that has all the profiles you want to compare and nextflow will do every possible non-redundant pairwise comparison.
 
 ```
-nextflow run zipstrain.nf --mode fast_compare \
+nextflow run zipstrain.nf --mode compare_genomes \
  --input_table <path/to/profiles/csv> \
  --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
  --reference_genome <path/to/reference/genome.fasta> \
@@ -156,5 +156,44 @@ nextflow run zipstrain.nf --mode fast_compare \
  --parallel_mode "batched" \
  --batch_size <batch_size> -profile <profile_name> \
  -resume
+```
+
+### Compare genes within genomes from a list of profile pairs
+
+This is similar to the first comparison option, but instead of comparing genomes, it compares genes within the genomes. The final table has a row for each gene comparison.
 
 ```
+nextflow run zipstrain.nf --mode compare_genes \
+ --input_table <path/to/output/remaining_pairs.csv> \
+ --input_type "pair_table" --gene_file <path/to/gene/fasta/file> \
+ --reference_genome <path/to/reference/genome.fasta> \
+ --stb <path/to/stb/file.stb> -c conf.config,<your_config_file> \
+ --output_dir "<path/to/output/directory>" \
+ --scope "all:all" \
+ --compare_memory_mode "heavy" \
+ --parallel_mode "batched" \
+ --batch_size <batch_size> -profile <profile_name> \
+ -resume
+
+```
+
+Note that in this command, the `--scope` parameter is used to specify which genome-gene pairs to compare. The format is `<genome_name>:<gene_name>`. You can use "all" to compare all genomes or genes. For example, to compare all genes within a specific genome, you would use `<specific_genome_name>:all`. To compare a specific gene across all genomes, you would use `all:<specific_gene_name>`. 
+
+### Comparing all genes within genomes from a list of profiles
+
+In this case, you provide a CSV file that has all the profiles you want to compare and nextflow will do every possible non-redundant pairwise gene comparison within the genomes.
+
+```
+nextflow run zipstrain.nf --mode compare_genes \
+ --input_table <path/to/profiles/csv> \
+ --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
+ --reference_genome <path/to/reference/genome.fasta> \
+ --stb <path/to/stb/file.stb> -c conf.config \
+ --output_dir "<path/to/output/directory>" \
+ --scope "all:all" \
+ --compare_memory_mode "heavy" \
+ --parallel_mode "batched" \
+ --batch_size <batch_size> -profile <profile_name> \
+ -resume
+```     
+

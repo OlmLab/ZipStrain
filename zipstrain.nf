@@ -428,7 +428,7 @@ workflow
 
         fromSRAtoProfile(sra_ids, reference_genome, index_files, prepare_profile.out.genome_bed, prepare_profile.out.gene_range_table, prepare_profile.out.genome_lengths, file(params.stb))
     }
-    if (params.mode =='fast_profile') {
+    if (params.mode =='profile') {
         input_table = tableToDict(file(params.input_table))
         bamfiles = Channel.fromPath(input_table['bamfile'].collect{t->file(t)})
         sample_names = Channel.fromList(input_table['sample_name'])
@@ -436,7 +436,43 @@ workflow
         reference_genome = file(params.reference_genome)
         fast_profile(bamfiles, sample_names, gene_file, reference_genome)
     }
-    else if (params.mode =='fast_compare') {
+    
+    else if (params.mode =="compare_genes")
+    {
+        input_table = tableToDict(file(params.input_table))
+        
+        if (params.input_type=="profile_table"){
+            mpileup_files_list = input_table['mpileup_files'].collect{t->file(t)}
+            sample_names_list = input_table['sample_names']
+            scaffolds_list = input_table['scaffolds'].collect{t->file(t)}
+            profiles=[mpileup_files_list,sample_names_list,scaffolds_list].transpose()
+            def profile_pairs = []
+            for (int i = 0; i < profiles.size(); i++) {
+                for (int j = i + 1; j < profiles.size(); j++) {
+                    profile_pairs << (profiles[i] + profiles[j])
+                    }
+            }
+            pair_channel=Channel.from(profile_pairs)
+        }
+        else if (params.input_type=="pair_table")
+        {
+            sample_1=input_table['sample_name_1']
+            sample_2=input_table['sample_name_2']
+            mpile_1=input_table["profile_location_1"].collect{t->file(t)}
+            mpile_2=input_table["profile_location_2"].collect{t->file(t)}
+            scaffold_1=input_table["scaffold_location_1"].collect{t->file(t)}
+            scaffold_2=input_table["scaffold_location_2"].collect{t->file(t)}
+            profile_pairs=([mpile_1]+[sample_1]+[scaffold_1]+[mpile_2]+[sample_2]+[scaffold_2]).transpose()
+            pair_channel=Channel.from(profile_pairs)
+
+        }
+        gene_file = file(params.gene_file)
+        stb = file(params.stb)
+        gene_compare(pair_channel, stb)
+    }
+    
+    
+    else if (params.mode =='compare_genomes') {
         input_table = tableToDict(file(params.input_table))
         
         if (params.input_type=="profile_table"){
@@ -465,7 +501,7 @@ workflow
 
         }
         stb = file(params.stb)
-        fast_compare(pair_channel, stb)
+        compare_genomes(pair_channel, stb)
 
 }}
 workflow profile_contigs
@@ -494,7 +530,7 @@ workflow fast_profile{
 }
 
 
-workflow fast_compare
+workflow compare_genomes
 {
     take:
     profile_pairs
@@ -537,3 +573,42 @@ workflow fast_compare
 }
 
 
+workflow compare_genes{
+    take:
+    profile_pairs
+    stb
+    main:
+
+    if (!params.null_model) {
+        build_null_model()
+        null_model = build_null_model.out.model
+    }
+    else {
+        null_model =file(params.null_model)
+    }
+    if (params.parallel_mode=="single") {
+
+    profile_pairs.multiMap{ v ->
+        mpile_1: v[0]
+        mpile_2: v[3]
+        scaffold_1: v[2]
+        scaffold_2: v[5]
+        pair_name: v[1]+"_" + v[4]
+    }.set{profile_pairs}
+    gene_compare_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
+    merge_tables(gene_compare_fast_profiles_single.out.comparison_results.collect() )
+    }
+    else if (params.parallel_mode=="batched") {
+    batch = profile_pairs.collate(params.batch_size)
+    batch.map{t->t.transpose()}.set{batch_t}
+    batch_t.multiMap{ v ->
+        unique_mpiles: (v[0]+v[3]).unique().sort()
+        unique_scaffolds: (v[2]+v[5]).unique().sort()
+        pairs: [v[0].collect{t->t.name}, v[3].collect{t->t.name}].transpose()
+    }.set{batch_pairs}
+
+    gene_compare_fast_profiles_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
+    merge_tables(gene_compare_fast_profiles_batched.out.comparison_results.collect() )
+    }
+
+}

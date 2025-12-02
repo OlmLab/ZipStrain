@@ -419,9 +419,10 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaff
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
+@click.option('--scope', '-g', default="all:all", help="If provided, do the comparison only for the specified genome-gene pair.")
 @click.option('--engine', '-e', default="streaming", type=click.Choice(['streaming', 'gpu',"auto"], case_sensitive=False), help="Engine to use for processing: 'streaming', 'gpu' or 'auto'.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file, min_cov, min_gene_compare_len, output_file, engine, ani_method):
+def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file, min_cov, min_gene_compare_len, output_file, scope, engine, ani_method):
     """
     Compare two mpileup files and calculate gene-level comparison statistics.
     
@@ -433,9 +434,11 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     output_file (str): Path to save the parquet file.
+    scope (str): If provided, do the comparison only for the specified genome-gene pair.
     engine (str): Engine to use for processing: 'streaming', 'gpu' or 'auto'.
     ani_method (str): ANI calculation method to use.
     """
+
     with pl.StringCache():
         mpile_contig_1 = pl.scan_parquet(mpileup_contig_1).with_columns(
             (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
@@ -450,6 +453,15 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file
             pl.col("column_1").alias("scaffold").cast(pl.Categorical),
             pl.col("column_2").alias("genome").cast(pl.Categorical)
         ).select(["scaffold", "genome"])
+    genome_scope, gene_scope = scope.split(":")
+
+    if genome_scope != "all":
+        mpile_contig_1 = mpile_contig_1.filter(pl.col("genome") == genome_scope)
+        mpile_contig_2 = mpile_contig_2.filter(pl.col("genome") == genome_scope)
+    
+    if gene_scope != "all":
+        mpile_contig_1 = mpile_contig_1.filter(pl.col("gene") == gene_scope)
+        mpile_contig_2 = mpile_contig_2.filter(pl.col("gene") == gene_scope)
 
     null_model = pl.scan_parquet(null_model)
     mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
