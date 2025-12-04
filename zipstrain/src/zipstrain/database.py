@@ -216,186 +216,8 @@ class ProfileDatabase:
         self.db.sink_csv(output_dir,engine="streaming")
         
 
-class GeneComparisonConfig(BaseModel):
-    """
-    Configuration for gene-level comparisons between profiles.
-    
-    Attributes:
-        scope (str): The scope of the comparison in format "GENOME:GENE" (e.g., "all:gene1" compares gene1 across all genomes, "genome1:gene1" compares gene1 only in genome1 across samples).
-        null_model_loc (str): Location of the null model parquet file.
-        stb_file_loc (str): Location of the scaffold-to-genome mapping file.
-        min_cov (int): Minimum coverage threshold for considering a position.
-        min_gene_compare_len (int): Minimum gene length required for comparison.
-    """
-    model_config = ConfigDict(extra="forbid")
-    scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
-    null_model_loc: str = Field(description="Location of the null model parquet file")
-    stb_file_loc: str = Field(description="Location of the scaffold-to-genome mapping file")
-    min_cov: int = Field(default=5, description="Minimum coverage threshold")
-    min_gene_compare_len: int = Field(default=100, description="Minimum gene length for comparison")
-    
-    @field_validator("scope")
-    @classmethod
-    def validate_scope(cls, v: str) -> str:
-        """Validate that scope follows GENOME:GENE format."""
-        if ":" not in v:
-            raise ValueError("Scope must be in format 'GENOME:GENE' (e.g., 'all:gene1' or 'genome1:gene1')")
-        parts = v.split(":")
-        if len(parts) != 2:
-            raise ValueError("Scope must have exactly one ':' separator")
-        genome_part, gene_part = parts
-        if not genome_part or not gene_part:
-            raise ValueError("Both genome and gene parts must be non-empty")
-        return v
-    
-    def get_genome_scope(self) -> str:
-        """Extract the genome part from the scope."""
-        return self.scope.split(":")[0]
-    
-    def get_gene_scope(self) -> str:
-        """Extract the gene part from the scope."""
-        return self.scope.split(":")[1]
 
-class GeneComparisonDatabase:
-    """
-    A database for managing gene-level comparisons between profiles.
-    
-    This class handles pairwise gene comparisons between profiles within specified genome and gene scopes.
-    It manages profile metadata, validates compatibility, and generates comparison tasks.
-    
-    Attributes:
-        profiles (dict[str, ProfileItem]): A dictionary mapping profile names to ProfileItem objects.
-        config (GeneComparisonConfig): Configuration for gene comparisons.
-        
-    """
-    
-    def __init__(self, config: GeneComparisonConfig) -> None:
-        """Initialize a GeneComparisonDatabase with the given configuration.
-        
-        Args:
-            config (GeneComparisonConfig): Configuration for gene comparisons.
-        """
-        self.profiles: dict[str, ProfileItem] = {}
-        self.config = config
-    
-    def add_profile(self, profile: ProfileItem) -> None:
-        """Add a profile to the database.
-        
-        Args:
-            profile (ProfileItem): Profile to add.
-            
-        Raises:
-            ValueError: If a profile with the same name already exists or if reference_db_id doesn't match existing profiles.
-        """
-        if profile.profile_name in self.profiles:
-            raise ValueError(f"Profile with name {profile.profile_name} already exists in the database.")
-        
-        # Check if this is the first profile or if reference_db_id matches
-        if self.profiles:
-            existing_ref_id = next(iter(self.profiles.values())).reference_db_id
-            if profile.reference_db_id != existing_ref_id:
-                raise ValueError(
-                    f"Reference database ID mismatch: {profile.reference_db_id} != {existing_ref_id}. "
-                    "All profiles in a GeneComparisonDatabase must use the same reference database."
-                )
-        
-        self.profiles[profile.profile_name] = profile
-    
-    def remove_profile(self, profile_name: str) -> None:
-        """Remove a profile from the database by name.
-        
-        Args:
-            profile_name (str): Name of the profile to remove.
-            
-        Raises:
-            KeyError: If profile_name doesn't exist in the database.
-        """
-        if profile_name not in self.profiles:
-            raise KeyError(f"Profile {profile_name} not found in database.")
-        del self.profiles[profile_name]
-    
-    def to_complete_input_table(self) -> pl.LazyFrame:
-        """Generate a LazyFrame containing all pairwise comparisons for the specified gene scope.
-        
-        Returns:
-            pl.LazyFrame: A LazyFrame with columns:
-                - sample_name_1: First sample name
-                - sample_name_2: Second sample name
-                - profile_location_1: Location of first profile
-                - profile_location_2: Location of second profile
-                - scaffold_location_1: Location of first scaffold file
-                - scaffold_location_2: Location of second scaffold file
-        """
-        if len(self.profiles) < 2:
-            raise ValueError("At least 2 profiles are required for comparisons.")
-        
-        profile_list = list(self.profiles.values())
-        comparisons = []
-        
-        # Generate all pairwise combinations
-        for i in range(len(profile_list)):
-            for j in range(i + 1, len(profile_list)):
-                profile_1 = profile_list[i]
-                profile_2 = profile_list[j]
-                
-                comparisons.append({
-                    "sample_name_1": profile_1.profile_name,
-                    "sample_name_2": profile_2.profile_name,
-                    "profile_location_1": profile_1.profile_location,
-                    "profile_location_2": profile_2.profile_location,
-                    "scaffold_location_1": profile_1.scaffold_location,
-                    "scaffold_location_2": profile_2.scaffold_location,
-                })
-        
-        return pl.LazyFrame(comparisons)
-    
-    def save_obj(self, path: pathlib.Path) -> None:
-        """Save the GeneComparisonDatabase to a JSON file.
-        
-        Args:
-            path (pathlib.Path): Path where the JSON file will be saved.
-        """
-        data = {
-            "config": self.config.model_dump(),
-            "profiles": {name: profile.model_dump() for name, profile in self.profiles.items()}
-        }
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    
-    @classmethod
-    def load_obj(cls, path: pathlib.Path) -> GeneComparisonDatabase:
-        """Load a GeneComparisonDatabase from a JSON file.
-        
-        Args:
-            path (pathlib.Path): Path to the JSON file.
-            
-        Returns:
-            GeneComparisonDatabase: The loaded database object.
-        """
-        with open(path, "r") as f:
-            data = json.load(f)
-        
-        config = GeneComparisonConfig(**data["config"])
-        db = cls(config=config)
-        
-        for profile_data in data["profiles"].values():
-            db.add_profile(ProfileItem(**profile_data))
-        
-        return db
-    
-    def __len__(self) -> int:
-        """Return the number of profiles in the database."""
-        return len(self.profiles)
-    
-    def __repr__(self) -> str:
-        """Return a string representation of the database."""
-        genome_scope = self.config.get_genome_scope()
-        gene_scope = self.config.get_gene_scope()
-        return (
-            f"GeneComparisonDatabase(n_profiles={len(self.profiles)}, "
-            f"genome_scope='{genome_scope}', gene_scope='{gene_scope}', "
-            f"reference_db='{next(iter(self.profiles.values())).reference_db_id if self.profiles else 'N/A'}')"
-        )
+
 
      
 class GenomeComparisonConfig(BaseModel):
@@ -485,6 +307,114 @@ class GenomeComparisonConfig(BaseModel):
         curr_config_dict=self.to_dict()
         curr_config_dict["scope"]=new_scope if new_scope=="all" else ",".join(sorted(new_scope))
         return GenomeComparisonConfig(**curr_config_dict)
+
+class GeneComparisonConfig(BaseModel):
+    """
+    Configuration for gene-level comparisons between profiles.
+    
+    Attributes:
+        scope (str): The scope of the comparison in format "GENOME:GENE" (e.g., "all:gene1" compares gene1 across all genomes, "genome1:gene1" compares gene1 only in genome1 across samples).
+        null_model_loc (str): Location of the null model parquet file.
+        stb_file_loc (str): Location of the scaffold-to-genome mapping file.
+        min_cov (int): Minimum coverage threshold for considering a position.
+        min_gene_compare_len (int): Minimum gene length required for comparison.
+    """
+    model_config = ConfigDict(extra="forbid")
+    scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
+    null_model_loc: str = Field(description="Location of the null model parquet file")
+    stb_file_loc: str = Field(description="Location of the scaffold-to-genome mapping file")
+    min_cov: int = Field(default=5, description="Minimum coverage threshold")
+    min_gene_compare_len: int = Field(default=100, description="Minimum gene length for comparison")
+    
+    @field_validator("scope")
+    @classmethod
+    def validate_scope(cls, v: str) -> str:
+        """Validate that scope follows GENOME:GENE format."""
+        if ":" not in v:
+            raise ValueError("Scope must be in format 'GENOME:GENE' (e.g., 'all:gene1' or 'genome1:gene1')")
+        parts = v.split(":")
+        if len(parts) != 2:
+            raise ValueError("Scope must have exactly one ':' separator")
+        genome_part, gene_part = parts
+        if not genome_part or not gene_part:
+            raise ValueError("Both genome and gene parts must be non-empty")
+        return v
+    
+    def is_compatible(self, other: GeneComparisonConfig) -> bool:
+        """
+        Check if this gene comparison configuration is compatible with another.
+        Two configurations are compatible if they have the same parameters, except for scope.
+        Scope can be different as long as they are not disjoint. Also, 'all' is compatible with any scope.
+        
+        Args:
+            other (GeneComparisonConfig): The other gene comparison configuration to check compatibility with.
+        """
+        if not self.is_compatible(other):
+            raise ValueError("The two comparison configurations are not compatible.")
+        attrs=self.__dict__
+        for key in attrs:
+            if key!="scope":
+                if attrs[key] != getattr(other, key):
+                    return False
+        self_genome_scope, self_gene_scope = self.scope.split(":")
+        other_genome_scope, other_gene_scope = other.scope.split(":")
+        if self_genome_scope == "all" or other_genome_scope == "all":
+            return True
+        return self_genome_scope == other_genome_scope and self_gene_scope == other_gene_scope
+
+    @classmethod
+    def from_json(cls,json_file_dir:str)->GeneComparisonConfig:
+        """Create a GeneComparisonConfig instance from a json file."""
+        with open(json_file_dir, 'r') as f:
+            config_dict = json.load(f)
+        return cls(**config_dict)
+    
+    def to_json(self,json_file_dir:str)->None:
+        """Writes the the current object to a json file"""
+        with open(json_file_dir,"w") as f:
+            json.dump(self.__dict__,f)
+    
+    def to_dict(self)->dict:
+        """Returns the dictionary representation of the current object"""
+        return copy.copy(self.__dict__)
+    
+    def get_maximal_scope_config(self, other: GeneComparisonConfig) -> GeneComparisonConfig:
+        """
+        Get a new GeneComparisonConfig object with the maximal scope that is compatible with the two configurations.
+        
+        Args:
+            other (GeneComparisonConfig): The other gene comparison configuration to get the maximal scope with.
+            
+        Returns:
+            GeneComparisonConfig: The new gene comparison configuration with the maximal scope.
+        """
+        if not self.is_compatible(other):
+            raise ValueError("The two comparison configurations are not compatible.")
+        
+        self_genome_scope, self_gene_scope = self.scope.split(":")
+        other_genome_scope, other_gene_scope = other.scope.split(":")
+        
+        if self_genome_scope == "all" and other_genome_scope == "all":
+            new_genome_scope = "all"
+        elif self_genome_scope == "all":
+            new_genome_scope = other_genome_scope
+        elif other_genome_scope == "all":
+            new_genome_scope = self_genome_scope
+        else:
+            new_genome_scope = self_genome_scope  # They must be equal if compatible
+        
+        if self_gene_scope == "all" and other_gene_scope == "all":
+            new_gene_scope = "all"
+        elif self_gene_scope == "all":
+            new_gene_scope = other_gene_scope
+        elif other_gene_scope == "all":
+            new_gene_scope = self_gene_scope
+        else:
+            new_gene_scope = self_gene_scope  # They must be equal if compatible
+        
+        curr_config_dict=self.to_dict()
+        curr_config_dict["scope"]=f"{new_genome_scope}:{new_gene_scope}"
+        return GeneComparisonConfig(**curr_config_dict)
 
 
 class GenomeComparisonDatabase:
@@ -712,3 +642,144 @@ class GenomeComparisonDatabase:
                )
 
 
+
+class GeneComparisonDatabase:
+    """
+    A database for managing gene-level comparisons between profiles.
+    
+    This class handles pairwise gene comparisons between profiles within specified genome and gene scopes.
+    It manages profile metadata, validates compatibility, and generates comparison tasks.
+    
+    Attributes:
+        profiles (dict[str, ProfileItem]): A dictionary mapping profile names to ProfileItem objects.
+        config (GeneComparisonConfig): Configuration for gene comparisons.
+        
+    """
+    
+    def __init__(self, config: GeneComparisonConfig) -> None:
+        """Initialize a GeneComparisonDatabase with the given configuration.
+        
+        Args:
+            config (GeneComparisonConfig): Configuration for gene comparisons.
+        """
+        self.profiles: dict[str, ProfileItem] = {}
+        self.config = config
+    
+    def add_profile(self, profile: ProfileItem) -> None:
+        """Add a profile to the database.
+        
+        Args:
+            profile (ProfileItem): Profile to add.
+            
+        Raises:
+            ValueError: If a profile with the same name already exists or if reference_db_id doesn't match existing profiles.
+        """
+        if profile.profile_name in self.profiles:
+            raise ValueError(f"Profile with name {profile.profile_name} already exists in the database.")
+        
+        # Check if this is the first profile or if reference_db_id matches
+        if self.profiles:
+            existing_ref_id = next(iter(self.profiles.values())).reference_db_id
+            if profile.reference_db_id != existing_ref_id:
+                raise ValueError(
+                    f"Reference database ID mismatch: {profile.reference_db_id} != {existing_ref_id}. "
+                    "All profiles in a GeneComparisonDatabase must use the same reference database."
+                )
+        
+        self.profiles[profile.profile_name] = profile
+    
+    def remove_profile(self, profile_name: str) -> None:
+        """Remove a profile from the database by name.
+        
+        Args:
+            profile_name (str): Name of the profile to remove.
+            
+        Raises:
+            KeyError: If profile_name doesn't exist in the database.
+        """
+        if profile_name not in self.profiles:
+            raise KeyError(f"Profile {profile_name} not found in database.")
+        del self.profiles[profile_name]
+    
+    def to_complete_input_table(self) -> pl.LazyFrame:
+        """Generate a LazyFrame containing all pairwise comparisons for the specified gene scope.
+        
+        Returns:
+            pl.LazyFrame: A LazyFrame with columns:
+                - sample_name_1: First sample name
+                - sample_name_2: Second sample name
+                - profile_location_1: Location of first profile
+                - profile_location_2: Location of second profile
+                - scaffold_location_1: Location of first scaffold file
+                - scaffold_location_2: Location of second scaffold file
+        """
+        if len(self.profiles) < 2:
+            raise ValueError("At least 2 profiles are required for comparisons.")
+        
+        profile_list = list(self.profiles.values())
+        comparisons = []
+        
+        # Generate all pairwise combinations
+        for i in range(len(profile_list)):
+            for j in range(i + 1, len(profile_list)):
+                profile_1 = profile_list[i]
+                profile_2 = profile_list[j]
+                
+                comparisons.append({
+                    "sample_name_1": profile_1.profile_name,
+                    "sample_name_2": profile_2.profile_name,
+                    "profile_location_1": profile_1.profile_location,
+                    "profile_location_2": profile_2.profile_location,
+                    "scaffold_location_1": profile_1.scaffold_location,
+                    "scaffold_location_2": profile_2.scaffold_location,
+                })
+        
+        return pl.LazyFrame(comparisons)
+    
+    def save_obj(self, path: pathlib.Path) -> None:
+        """Save the GeneComparisonDatabase to a JSON file.
+        
+        Args:
+            path (pathlib.Path): Path where the JSON file will be saved.
+        """
+        data = {
+            "config": self.config.model_dump(),
+            "profiles": {name: profile.model_dump() for name, profile in self.profiles.items()}
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    
+    @classmethod
+    def load_obj(cls, path: pathlib.Path) -> GeneComparisonDatabase:
+        """Load a GeneComparisonDatabase from a JSON file.
+        
+        Args:
+            path (pathlib.Path): Path to the JSON file.
+            
+        Returns:
+            GeneComparisonDatabase: The loaded database object.
+        """
+        with open(path, "r") as f:
+            data = json.load(f)
+        
+        config = GeneComparisonConfig(**data["config"])
+        db = cls(config=config)
+        
+        for profile_data in data["profiles"].values():
+            db.add_profile(ProfileItem(**profile_data))
+        
+        return db
+    
+    def __len__(self) -> int:
+        """Return the number of profiles in the database."""
+        return len(self.profiles)
+    
+    def __repr__(self) -> str:
+        """Return a string representation of the database."""
+        genome_scope = self.config.get_genome_scope()
+        gene_scope = self.config.get_gene_scope()
+        return (
+            f"GeneComparisonDatabase(n_profiles={len(self.profiles)}, "
+            f"genome_scope='{genome_scope}', gene_scope='{gene_scope}', "
+            f"reference_db='{next(iter(self.profiles.values())).reference_db_id if self.profiles else 'N/A'}')"
+        )

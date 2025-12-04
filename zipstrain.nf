@@ -178,7 +178,7 @@ process profile_bam {
     """
 }
 
-process compare_fast_profiles_single {
+process compare_genome_fast_profiles_single {
     /*
     * This process compares fast profiles.
     * It takes in the mpileup files and outputs the comparison results.
@@ -210,6 +210,40 @@ process compare_fast_profiles_single {
 
     """
 }
+process compare_gene_fast_profiles_single {
+    /*
+    * This process compares fast profiles.
+    * It takes in the mpileup files and outputs the comparison results.
+    */
+    input:
+    path mpileup_file1
+    path mpileup_file2
+    path scaffold_file1
+    path scaffold_file2
+    path null_model
+    path stb
+    val pair_name
+    output:
+    path "${pair_name}_comparison.parquet", emit: comparison_results
+    script:
+    """
+    zipstrain compare single_compare_gene  \
+                        --mpileup-contig-1 ${mpileup_file1} \
+                        --mpileup-contig-2 ${mpileup_file2} \
+                        --scaffolds-1 ${scaffold_file1} \
+                        --scaffolds-2 ${scaffold_file2} \
+                        --memory-mode ${params.compare_memory_mode} \
+                        --chrom-batch-size ${params.compare_chrom_batch_size} \
+                        -n ${null_model} \
+                        -s ${stb} \
+                        -c ${params.min_cov} \
+                        -l ${params.min_gene_compare_len} \
+                        --scope ${params.compare_gene_scope} \
+                        -o ${pair_name}_comparison.parquet
+
+    """
+}
+
 
 process get_genome_breadth {
     /*
@@ -235,7 +269,7 @@ process get_genome_breadth {
 }
 
 
-process compare_fast_profiles_batched {
+process compare_genome_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: 'link'
     afterScript """
     rm -rf comps pairs.txt
@@ -286,6 +320,56 @@ process compare_fast_profiles_batched {
 
 
 }
+
+process compare_gene_batched {
+    publishDir "${params.output_dir}/batch_comparisons", mode: 'link'
+    afterScript """
+    rm -rf comps pairs.txt
+    rm -f ${mpiles.collect{t->t.join(' ')}}
+    rm -f ${scaffolds.collect{t->t.join(' ')}}
+    rm -f ${null_model} ${stb}
+    """
+    input:
+    path mpiles
+    path scaffolds
+    val pairs
+    path null_model
+    path stb
+    output:
+    path "Batch_*_comparisons.parquet", emit: comparison_results
+    script:
+    pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
+    remove_mpiles = mpiles.join(' ')
+    remove_scaffolds = scaffolds.join(' ')
+    def add_gene_scope= (params.compare_gene_scope=="all") ? "" : "--scope ${params.compare_gene_scope}"
+    """
+    echo -e "${pairs_text}" > pairs.txt
+    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain compare single_compare_gene \
+                        --mpileup-contig-1 {1} \
+                        --mpileup-contig-2 {2} \
+                        --scaffolds-1 {1}.scaffolds \
+                        --scaffolds-2 {2}.scaffolds \
+                        --memory-mode ${params.compare_memory_mode} \
+                        --chrom-batch-size ${params.compare_chrom_batch_size} \
+                        -n ${null_model} \
+                        -s ${stb} \
+                        -c ${params.min_cov} \
+                        -l ${params.min_gene_compare_len} \
+                        ${add_gene_scope} \
+                        -o {1}_{2}_comparison.parquet'
+    mkdir comps
+    hash=\$(sha1sum pairs.txt | awk '{print \$1}')
+    mv *_comparison.parquet comps/
+    zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
+    rm -rf comps
+    rm -f pairs.txt
+    rm -f ${remove_mpiles}
+    rm -f ${remove_scaffolds}   
+
+    """ 
+}
+
+
 
 process merge_comparison_tables {
     /*
@@ -553,8 +637,8 @@ workflow compare_genomes
         scaffold_2: v[5]
         pair_name: v[1]+"_" + v[4]
     }.set{profile_pairs}
-    compare_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
-    merge_tables(compare_fast_profiles_single.out.comparison_results.collect() )
+    compare_genome_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
+    merge_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
@@ -565,8 +649,8 @@ workflow compare_genomes
         pairs: [v[0].collect{t->t.name}, v[3].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_fast_profiles_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
-    merge_tables(compare_fast_profiles_batched.out.comparison_results.collect() )
+    compare_genome_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
+    merge_tables(compare_genome_batched.out.comparison_results.collect() )
     }
 
 
@@ -595,8 +679,8 @@ workflow compare_genes{
         scaffold_2: v[5]
         pair_name: v[1]+"_" + v[4]
     }.set{profile_pairs}
-    gene_compare_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
-    merge_tables(gene_compare_fast_profiles_single.out.comparison_results.collect() )
+    compare_gene_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
+    merge_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
@@ -607,8 +691,8 @@ workflow compare_genes{
         pairs: [v[0].collect{t->t.name}, v[3].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    gene_compare_fast_profiles_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
-    merge_tables(gene_compare_fast_profiles_batched.out.comparison_results.collect() )
+    compare_gene_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
+    merge_tables(compare_gene_batched.out.comparison_results.collect() )
     }
 
 }

@@ -304,6 +304,21 @@ def simple_genome_compare_config(stb,null_model,tmp_path_factory):
         )
     
 
+@pytest.fixture(scope="module")
+def simple_gene_compare_config(stb,null_model,tmp_path_factory):
+    """Create a simple gene comparison config for testing"""
+    tmp_path=tmp_path_factory.mktemp("gene_compare")
+    stb_dir = tmp_path / "stb.tsv"
+    stb.sink_csv(stb_dir, separator="\t")
+    null_model_dir = tmp_path / "null_model.parquet"
+    null_model.sink_parquet(null_model_dir)
+    return database.GeneComparisonConfig(
+            scope="all:gene1",
+            min_cov=5,
+            min_gene_compare_len=100,
+            stb_file_loc=str(stb_dir),
+            null_model_loc=str(null_model_dir),
+        )
 def test_profile_create_new_empty_database():
     db = database.ProfileDatabase()
     assert db.db.collect().height == 0
@@ -833,6 +848,280 @@ def test_genome_comparison_database_to_complete_input_table(profile_1_2_3_databa
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_2")=="profile_1").height == 0
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_2")=="profile_2").height == 1
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_2")=="profile_3").height == 2
+
+def test_gene_compare_config_faulty()->None:
+    """tests the response of GeneComparisonConfig to wrong inputs"""
+    with pytest.raises(ValidationError, match="3 validation errors for GeneComparisonConfig"):
+        database.GeneComparisonConfig(
+            min_cov="5das", # This should be an int
+            scope="all:gene1",
+            min_gene_compare_len=100,
+        )
+    ### But passing string is okay if they can be turned to their numeric counterparts
+    database.GeneComparisonConfig(
+            min_cov="5", # This should be an int
+            scope="all:gene1",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    ### An extra attribute that is not expected
+    with pytest.raises(ValueError, match="1 validation error for GeneComparisonConfig"):
+        database.GeneComparisonConfig(
+            minimum_similarity="Wrongatte",
+            min_cov="5",
+            scope="all:gene1",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+
+    ### A missing attr that must be provided
+    with pytest.raises(ValueError, match="1 validation error for GeneComparisonConfig"):
+        database.GeneComparisonConfig(
+            min_cov="5",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    
+    ### Invalid scope format (missing colon)
+    with pytest.raises(ValueError, match="Scope must be in format 'GENOME:GENE'"):
+        database.GeneComparisonConfig(
+            min_cov=5,
+            scope="allgene1",  # Missing colon
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    
+    ### Invalid scope format (too many colons)
+    with pytest.raises(ValueError, match="Scope must have exactly one ':' separator"):
+        database.GeneComparisonConfig(
+            min_cov=5,
+            scope="all:gene1:extra",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    
+    ### Invalid scope format (empty parts)
+    with pytest.raises(ValueError, match="Both genome and gene parts must be non-empty"):
+        database.GeneComparisonConfig(
+            min_cov=5,
+            scope=":gene1",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+
+
+def test_gene_compare_config_io(tmp_path,simple_gene_compare_config):
+    """This test examines the input/output functionality of the GeneComparisonConfig class"""
+    # Test serialization
+    config_dict = simple_gene_compare_config.to_dict()
+    assert config_dict == {
+        "scope": "all:gene1",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": simple_gene_compare_config.stb_file_loc,
+        "null_model_loc": simple_gene_compare_config.null_model_loc,
+    }
+    # Test to_json (save)
+    json_path = tmp_path / "gene_config.json"
+    simple_gene_compare_config.to_json(json_path)
+    assert json_path.exists()
+    # Test from_json (load)
+    loaded_config = database.GeneComparisonConfig.from_json(json_path)
+    assert loaded_config == simple_gene_compare_config
+
+
+## The rest are AI generated tests and need to be checked and fixed before use
+
+# def test_gene_comparison_database_create_new_empty_database(profile_1_2_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+#     assert len(db.profiles) == 0
+#     assert db.config == simple_gene_compare_config
+
+
+
+# def test_gene_comparison_database_add_profiles(profile_1_2_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     # Add profiles from profile database
+#     for profile_item in profile_1_2_database.db.collect().iter_rows(named=True):
+#         profile = database.ProfileItem(**profile_item)
+#         db.add_profile(profile)
+    
+#     assert len(db.profiles) == 2
+#     assert "profile_1" in db.profiles
+#     assert "profile_2" in db.profiles
+
+# def test_gene_comparison_database_add_duplicate_profile(profile_1_2_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     profile_data = profile_1_2_database.db.collect().row(0, named=True)
+#     profile = database.ProfileItem(**profile_data)
+#     db.add_profile(profile)
+    
+#     # Try to add same profile again
+#     with pytest.raises(ValueError, match="Profile with name .* already exists"):
+#         db.add_profile(profile)
+
+# def test_gene_comparison_database_reference_db_mismatch(profile_1_2_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     # Add first profile
+#     profile_data_1 = profile_1_2_database.db.collect().row(0, named=True)
+#     profile_1 = database.ProfileItem(**profile_data_1)
+#     db.add_profile(profile_1)
+    
+#     # Try to add profile with different reference_db_id
+#     profile_data_2 = profile_1_2_database.db.collect().row(1, named=True)
+#     profile_data_2["reference_db_id"] = "different_ref"
+#     profile_2 = database.ProfileItem(**profile_data_2)
+    
+#     with pytest.raises(ValueError, match="Reference database ID mismatch"):
+#         db.add_profile(profile_2)
+
+# def test_gene_comparison_database_remove_profile(profile_1_2_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     # Add profiles
+#     for profile_name, profile_item in profile_1_2_database.db.collect().iter_rows(named=True):
+#         profile = database.ProfileItem(**profile_item)
+#         db.add_profile(profile)
+    
+#     assert len(db.profiles) == 2
+    
+#     # Remove a profile
+#     db.remove_profile("profile_1")
+#     assert len(db.profiles) == 1
+#     assert "profile_1" not in db.profiles
+#     assert "profile_2" in db.profiles
+    
+#     # Try to remove non-existent profile
+#     with pytest.raises(KeyError, match="Profile .* not found"):
+#         db.remove_profile("profile_nonexistent")
+
+# def test_gene_comparison_database_to_complete_input_table(profile_1_2_3_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     # Add profiles
+#     for profile_name, profile_item in profile_1_2_3_database.db.collect().iter_rows(named=True):
+#         profile = database.ProfileItem(**profile_item)
+#         db.add_profile(profile)
+    
+#     input_table = db.to_complete_input_table()
+#     assert input_table.collect().height == 3  # 3 pairwise combinations from 3 profiles
+#     assert set(input_table.collect_schema().keys()) == {
+#         "sample_name_1", "profile_location_1", "scaffold_location_1",
+#         "sample_name_2", "profile_location_2", "scaffold_location_2"
+#     }
+    
+#     # Check that all combinations are present
+#     collected = input_table.collect()
+#     pairs = set(zip(collected["sample_name_1"].to_list(), collected["sample_name_2"].to_list()))
+#     expected_pairs = {
+#         ("profile_1", "profile_2"),
+#         ("profile_1", "profile_3"),
+#         ("profile_2", "profile_3")
+#     }
+#     assert pairs == expected_pairs
+
+# def test_gene_comparison_database_to_complete_input_table_insufficient_profiles(simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     # Add only one profile
+#     profile = database.ProfileItem(
+#         profile_name="profile_1",
+#         profile_location="/path/to/profile1.parquet",
+#         scaffold_location="/path/to/scaffold1.txt",
+#         reference_db_id="ref_1",
+#         gene_db_id="gene_ref_1"
+#     )
+#     db.add_profile(profile)
+    
+#     with pytest.raises(ValueError, match="At least 2 profiles are required"):
+#         db.to_complete_input_table()
+
+# def test_gene_comparison_database_save_and_load(tmp_path,profile_1_2_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     # Add profiles
+#     for profile_name, profile_item in profile_1_2_database.db.collect().iter_rows(named=True):
+#         profile = database.ProfileItem(**profile_item)
+#         db.add_profile(profile)
+    
+#     # Save database
+#     save_path = tmp_path / "gene_comp_db.json"
+#     db.save_obj(save_path)
+#     assert save_path.exists()
+    
+#     # Load database
+#     loaded_db = database.GeneComparisonDatabase.load_obj(save_path)
+#     assert len(loaded_db.profiles) == len(db.profiles)
+#     assert loaded_db.config == db.config
+#     assert set(loaded_db.profiles.keys()) == set(db.profiles.keys())
+    
+#     # Verify profiles are identical
+#     for name in db.profiles:
+#         assert loaded_db.profiles[name] == db.profiles[name]
+
+# def test_gene_comparison_database_len_and_repr(profile_1_2_database,simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+    
+#     assert len(db) == 0
+    
+#     # Add profiles
+#     for profile_name, profile_item in profile_1_2_database.db.collect().iter_rows(named=True):
+#         profile = database.ProfileItem(**profile_item)
+#         db.add_profile(profile)
+    
+#     assert len(db) == 2
+    
+#     # Test repr
+#     repr_str = repr(db)
+#     assert "GeneComparisonDatabase" in repr_str
+#     assert "n_profiles=2" in repr_str
+#     assert "genome_scope='all'" in repr_str
+#     assert "gene_scope='gene1'" in repr_str
+#     assert "reference_db='ref_1'" in repr_str
+
+# def test_gene_comparison_database_empty_repr(simple_gene_compare_config):
+#     db = database.GeneComparisonDatabase(config=simple_gene_compare_config)
+#     repr_str = repr(db)
+#     assert "GeneComparisonDatabase" in repr_str
+#     assert "n_profiles=0" in repr_str
+#     assert "reference_db='N/A'" in repr_str
+
+# def test_gene_comparison_database_different_scopes(profile_1_2_database):
+#     # Test different scope formats
+#     scopes = [
+#         "all:gene1",
+#         "genome1:gene2",
+#         "genome1:all",
+#         "genome1,genome2:gene1"
+#     ]
+    
+#     for scope in scopes:
+#         config = database.GeneComparisonConfig(
+#             scope=scope,
+#             min_cov=5,
+#             min_gene_compare_len=100,
+#             stb_file_loc="Somefile",
+#             null_model_loc="Somefile"
+#         )
+#         db = database.GeneComparisonDatabase(config=config)
+        
+#         # Add profiles
+#         for profile_name, profile_item in profile_1_2_database.db.collect().iter_rows(named=True):
+#             profile = database.ProfileItem(**profile_item)
+#             db.add_profile(profile)
+        
+#         # Should be able to generate input table
+#         input_table = db.to_complete_input_table()
+#         assert input_table.collect().height == 1  # Only 1 comparison between 2 profiles
 
 
 
