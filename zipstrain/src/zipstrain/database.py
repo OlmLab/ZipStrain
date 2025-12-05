@@ -349,8 +349,6 @@ class GeneComparisonConfig(BaseModel):
         Args:
             other (GeneComparisonConfig): The other gene comparison configuration to check compatibility with.
         """
-        if not self.is_compatible(other):
-            raise ValueError("The two comparison configurations are not compatible.")
         attrs=self.__dict__
         for key in attrs:
             if key!="scope":
@@ -645,141 +643,229 @@ class GenomeComparisonDatabase:
 
 class GeneComparisonDatabase:
     """
-    A database for managing gene-level comparisons between profiles.
+    GeneComparisonDatabase object holds a reference to a gene comparison parquet file. The methods in this class serve to provide
+    functionality for working with the gene comparison data in an easy and efficient manner.
+    The comparison parquet file is the result of running gene-level comparisons, and optionally concatenating multiple compare parquet files from single comparisons.
+    This parquet file must contain the following columns:
     
-    This class handles pairwise gene comparisons between profiles within specified genome and gene scopes.
-    It manages profile metadata, validates compatibility, and generates comparison tasks.
+    - genome
+    - gene
+    - total_positions
+    - share_allele_pos
+    - ani
+    - sample_1
+    - sample_2
     
-    Attributes:
-        profiles (dict[str, ProfileItem]): A dictionary mapping profile names to ProfileItem objects.
-        config (GeneComparisonConfig): Configuration for gene comparisons.
-        
+    A GeneComparisonDatabase object needs a GeneComparisonConfig object to specify the parameters used for the comparison.
+    
+    Args:
+        profile_db (ProfileDatabase): The profile database used for the comparison.
+        config (GeneComparisonConfig): The gene comparison configuration used for the comparison.
+        comp_db_loc (str|None): The location of the comparison database parquet file. If
+            None, an empty comparison database is created.
     """
-    
-    def __init__(self, config: GeneComparisonConfig) -> None:
-        """Initialize a GeneComparisonDatabase with the given configuration.
-        
-        Args:
-            config (GeneComparisonConfig): Configuration for gene comparisons.
-        """
-        self.profiles: dict[str, ProfileItem] = {}
+    COLUMN_NAMES = [
+        "genome",
+        "gene",
+        "total_positions",
+        "share_allele_pos",
+        "ani",
+        "sample_1",
+        "sample_2"
+    ]
+
+    def __init__(self,
+                 profile_db: ProfileDatabase,
+                 config: GeneComparisonConfig,
+                 comp_db_loc: str|None = None,
+                 ):
+        self.profile_db = profile_db
         self.config = config
+        if comp_db_loc is not None:
+            self.comp_db_loc = pathlib.Path(comp_db_loc)
+            self._comp_db = pl.scan_parquet(self.comp_db_loc)
+        else:
+            self.comp_db_loc = None
+            self._comp_db = pl.LazyFrame({
+                "genome": [],
+                "gene": [],
+                "total_positions": [],
+                "share_allele_pos": [],
+                "ani": [],
+                "sample_1": [],
+                "sample_2": []
+            }, schema={
+                "genome": pl.Utf8,
+                "gene": pl.Utf8,
+                "total_positions": pl.Int64,
+                "share_allele_pos": pl.Int64,
+                "ani": pl.Float64,
+                "sample_1": pl.Utf8,
+                "sample_2": pl.Utf8
+            })
+            self.comp_db_loc = None
+
+    @property
+    def comp_db(self):
+        return self._comp_db
     
-    def add_profile(self, profile: ProfileItem) -> None:
-        """Add a profile to the database.
+    def _validate_db(self)->None:
+        """Validate the gene comparison database structure and content."""
+        self.profile_db._validate_db()
         
-        Args:
-            profile (ProfileItem): Profile to add.
-            
-        Raises:
-            ValueError: If a profile with the same name already exists or if reference_db_id doesn't match existing profiles.
+        if set(self._comp_db.collect_schema()) != set(self.COLUMN_NAMES):
+            raise ValueError(f"Your comparison database must provide these extra columns: {set(self.COLUMN_NAMES) - set(self._comp_db.collect_schema())}")
+        
+        # Check if all profile names exist in the profile database
+        profile_names_in_comp_db = set(self.get_all_profile_names())
+        profile_names_in_profile_db = set(self.profile_db.db.select("profile_name").collect(engine="streaming").to_series().to_list())
+        if not profile_names_in_comp_db.issubset(profile_names_in_profile_db):
+            raise ValueError(f"The following profile names are in the comparison database but not in the profile database: {profile_names_in_comp_db - profile_names_in_profile_db}")
+    
+    def get_all_profile_names(self) -> set[str]:
         """
-        if profile.profile_name in self.profiles:
-            raise ValueError(f"Profile with name {profile.profile_name} already exists in the database.")
-        
-        # Check if this is the first profile or if reference_db_id matches
-        if self.profiles:
-            existing_ref_id = next(iter(self.profiles.values())).reference_db_id
-            if profile.reference_db_id != existing_ref_id:
-                raise ValueError(
-                    f"Reference database ID mismatch: {profile.reference_db_id} != {existing_ref_id}. "
-                    "All profiles in a GeneComparisonDatabase must use the same reference database."
-                )
-        
-        self.profiles[profile.profile_name] = profile
-    
-    def remove_profile(self, profile_name: str) -> None:
-        """Remove a profile from the database by name.
-        
-        Args:
-            profile_name (str): Name of the profile to remove.
-            
-        Raises:
-            KeyError: If profile_name doesn't exist in the database.
-        """
-        if profile_name not in self.profiles:
-            raise KeyError(f"Profile {profile_name} not found in database.")
-        del self.profiles[profile_name]
-    
-    def to_complete_input_table(self) -> pl.LazyFrame:
-        """Generate a LazyFrame containing all pairwise comparisons for the specified gene scope.
+        Get all profile names that are in the comparison database.
         
         Returns:
-            pl.LazyFrame: A LazyFrame with columns:
-                - sample_name_1: First sample name
-                - sample_name_2: Second sample name
-                - profile_location_1: Location of first profile
-                - profile_location_2: Location of second profile
-                - scaffold_location_1: Location of first scaffold file
-                - scaffold_location_2: Location of second scaffold file
+            set[str]: Set of all profile names in the comparison database.
         """
-        if len(self.profiles) < 2:
-            raise ValueError("At least 2 profiles are required for comparisons.")
-        
-        profile_list = list(self.profiles.values())
-        comparisons = []
-        
-        # Generate all pairwise combinations
-        for i in range(len(profile_list)):
-            for j in range(i + 1, len(profile_list)):
-                profile_1 = profile_list[i]
-                profile_2 = profile_list[j]
-                
-                comparisons.append({
-                    "sample_name_1": profile_1.profile_name,
-                    "sample_name_2": profile_2.profile_name,
-                    "profile_location_1": profile_1.profile_location,
-                    "profile_location_2": profile_2.profile_location,
-                    "scaffold_location_1": profile_1.scaffold_location,
-                    "scaffold_location_2": profile_2.scaffold_location,
-                })
-        
-        return pl.LazyFrame(comparisons)
+        return set(self.comp_db.select(pl.col("sample_1")).collect(engine="streaming").to_series().to_list()).union(
+            set(self.comp_db.select(pl.col("sample_2")).collect(engine="streaming").to_series().to_list())
+        )
     
-    def save_obj(self, path: pathlib.Path) -> None:
-        """Save the GeneComparisonDatabase to a JSON file.
+    def get_remaining_pairs(self) -> pl.LazyFrame:
+        """
+        Get pairs of profiles that are in the profile database but not in the comparison database.
+        
+        Returns:
+            pl.LazyFrame: LazyFrame with columns profile_1 and profile_2 containing remaining pairs.
+        """
+        profiles = self.profile_db.db.select("profile_name")
+        pairs = profiles.join(profiles, how="cross").rename({"profile_name": "profile_1", "profile_name_right": "profile_2"}).filter(pl.col("profile_1") < pl.col("profile_2"))
+        samplepairs = self.comp_db.group_by("sample_1", "sample_2").agg().with_columns(
+            pl.min_horizontal(["sample_1", "sample_2"]).alias("profile_1"), 
+            pl.max_horizontal(["sample_1", "sample_2"]).alias("profile_2")
+        ).select(["profile_1", "profile_2"])
+
+        remaining_pairs = pairs.join(samplepairs, on=["profile_1", "profile_2"], how="anti").sort(["profile_1", "profile_2"])
+        return remaining_pairs
+
+    def is_complete(self) -> bool:
+        """
+        Check if the comparison database is complete, i.e., if all pairs of profiles in the profile database have been compared.
+        
+        Returns:
+            bool: True if all pairs have been compared, False otherwise.
+        """
+        return self.get_remaining_pairs().collect(engine="streaming").is_empty()
+
+    def add_comp_database(self, comp_database: GeneComparisonDatabase) -> None:
+        """Merge the provided gene comparison database into the current database.
         
         Args:
-            path (pathlib.Path): Path where the JSON file will be saved.
+            comp_database (GeneComparisonDatabase): The gene comparison database to merge.
+            
+        Raises:
+            ValueError: If the provided database is invalid or incompatible.
         """
-        data = {
-            "config": self.config.model_dump(),
-            "profiles": {name: profile.model_dump() for name, profile in self.profiles.items()}
+        try:
+            comp_database._validate_db()
+        except Exception as e:
+            raise ValueError(f"The comparison database provided is not valid: {e}")
+
+        if not self.config.is_compatible(comp_database.config):
+            raise ValueError("The comparison database provided is not compatible with the current comparison database.")
+        
+        self._comp_db = pl.concat([self._comp_db, comp_database.comp_db]).unique()
+        self.config = self.config.get_maximal_scope_config(comp_database.config)
+        
+    def save_new_compare_database(self, output_path: str) -> None:
+        """Save the database to a parquet file.
+        
+        Args:
+            output_path (str): The path to save the parquet file to.
+            
+        Raises:
+            ValueError: If the output path is the same as the current database location.
+        """
+        output_path = pathlib.Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # The new database must be written to a new location
+        if self.comp_db_loc is not None and str(self.comp_db_loc.absolute()) == str(output_path.absolute()):
+            raise ValueError("The output path must be different from the current database location.")
+
+        self.comp_db.sink_parquet(output_path)
+    
+    def update_compare_database(self) -> None:
+        """Overwrites the comparison database saved on the disk to the current comparison database object.
+        
+        Raises:
+            Exception: If comp_db_loc is not set or if update fails.
+        """
+        if self.comp_db_loc is None:
+            raise Exception("comp_db_loc attribute is not determined yet!")
+        try:
+            tmp_path = pathlib.Path(tempfile.mktemp(suffix=".parquet", prefix="tmp_gene_comp_db_", dir=str(self.comp_db_loc.parent)))
+            self.comp_db.sink_parquet(tmp_path)
+            os.replace(tmp_path, self.comp_db_loc)
+            self._comp_db = pl.scan_parquet(self.comp_db_loc)
+        except Exception as e:
+            raise Exception(f"Something went wrong when updating the comparison database: {e}")
+    
+    def dump_obj(self, output_path: str) -> None:
+        """Dump the current object to a json file.
+        
+        Args:
+            output_path (str): The path to save the json file to.
+        """
+        obj_dict = {
+            "profile_db_loc": str(self.profile_db.db_loc.absolute()) if self.profile_db.db_loc is not None else None,
+            "config": self.config.to_dict(),
+            "comp_db_loc": str(self.comp_db_loc.absolute()) if self.comp_db_loc is not None else None
         }
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+        with open(output_path, "w") as f:
+            json.dump(obj_dict, f, indent=4)
     
     @classmethod
-    def load_obj(cls, path: pathlib.Path) -> GeneComparisonDatabase:
-        """Load a GeneComparisonDatabase from a JSON file.
+    def load_obj(cls, json_path: str) -> GeneComparisonDatabase:
+        """Load a GeneComparisonDatabase object from a json file.
         
         Args:
-            path (pathlib.Path): Path to the JSON file.
+            json_path (str): The path to the json file.
             
         Returns:
-            GeneComparisonDatabase: The loaded database object.
+            GeneComparisonDatabase: The loaded GeneComparisonDatabase object.
         """
-        with open(path, "r") as f:
-            data = json.load(f)
+        with open(json_path, "r") as f:
+            obj_dict = json.load(f)
         
-        config = GeneComparisonConfig(**data["config"])
-        db = cls(config=config)
-        
-        for profile_data in data["profiles"].values():
-            db.add_profile(ProfileItem(**profile_data))
-        
-        return db
-    
-    def __len__(self) -> int:
-        """Return the number of profiles in the database."""
-        return len(self.profiles)
-    
-    def __repr__(self) -> str:
-        """Return a string representation of the database."""
-        genome_scope = self.config.get_genome_scope()
-        gene_scope = self.config.get_gene_scope()
-        return (
-            f"GeneComparisonDatabase(n_profiles={len(self.profiles)}, "
-            f"genome_scope='{genome_scope}', gene_scope='{gene_scope}', "
-            f"reference_db='{next(iter(self.profiles.values())).reference_db_id if self.profiles else 'N/A'}')"
+        return cls(
+            profile_db=ProfileDatabase(db_loc=obj_dict["profile_db_loc"]),
+            config=GeneComparisonConfig(**obj_dict["config"]),
+            comp_db_loc=obj_dict["comp_db_loc"]
         )
+    
+    def to_complete_input_table(self) -> pl.LazyFrame:
+        """This method gives a table of all pairwise comparisons that is needed to make the comparison database complete. 
+        The table contains the following columns:
+        
+        - sample_name_1
+        - sample_name_2
+        - profile_location_1
+        - scaffold_location_1
+        - profile_location_2
+        - scaffold_location_2
+        
+        Returns:
+            pl.LazyFrame: The table of all pairwise comparisons needed to complete the comparison database.
+        """
+        lf = self.get_remaining_pairs().rename({"profile_1": "sample_name_1", "profile_2": "sample_name_2"})
+        return (lf.join(self.profile_db.db.select(["profile_name", "profile_location", "scaffold_location"]), 
+                       left_on="sample_name_1", right_on="profile_name", how="left")
+                .rename({"profile_location": "profile_location_1", "scaffold_location": "scaffold_location_1"})
+                .join(self.profile_db.db.select(["profile_name", "profile_location", "scaffold_location"]), 
+                      left_on="sample_name_2", right_on="profile_name", how="left")
+                .rename({"profile_location": "profile_location_2", "scaffold_location": "scaffold_location_2"})
+               )
+

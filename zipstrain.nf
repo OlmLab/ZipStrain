@@ -608,7 +608,7 @@ workflow fast_profile{
     profile_bam(sample_names, bamfiles, prepare_profile.out.genome_bed, prepare_profile.out.gene_range_table)
     get_genome_breadth(profile_bam.out.profile,
                        file(params.stb),
-                       make_bed_file.out.bed_file)
+                       prepare_profile.out.genome_bed)
     merge_breadth_tables(get_genome_breadth.out.genome_breadth.collect())
 
 }
