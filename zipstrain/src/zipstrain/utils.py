@@ -15,7 +15,7 @@ from collections import defaultdict,Counter
 from functools import reduce
 from scipy.stats import poisson
 import subprocess
-
+import numpy as np
 def build_null_poisson(error_rate:float=0.001,
                        max_total_reads:int=10000,
                        p_threshold:float=0.05)->list[float]:
@@ -348,3 +348,86 @@ def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
         chunk = lf.slice(start, end - start)
         chunks.append(chunk)
     return chunks
+
+
+def estimate_genome_presence(
+    profile:pl.LazyFrame,
+    genome_length: pl.LazyFrame,
+    stb: pl.LazyFrame,
+    ber:float=0.5,
+    min_cov_constant_poisson: int = 0.5,
+    gini_threshold: float = 0.3,
+    genome_chunk_size: int = 5000
+)->pl.LazyFrame:
+    """
+    This function estimates the presence of genomes in a sample based on coverage information.
+    as long as the coverage is above a certain threshold. BER is used to decide the threshold.
+    However, if the coverage is below the threshold, the Gini coefficient of coverage distribution is used
+    to make the decision. The genome is broken into chunks to calculate the Gini coefficient.
+    
+    Args:
+        profile (pl.LazyFrame): The profile LazyFrame containing coverage information.
+        genome_length (pl.LazyFrame): The genome length LazyFrame.
+        stb (pl.LazyFrame): The scaffold-to-bin mapping LazyFrame.
+        ber (float): Breadth-Expected breadth Ratio (BER) threshold.
+        min_cov_constant_poisson (int): Minimum coverage threshold based on constant Poisson model.
+        gini_threshold (float): Gini coefficient threshold for coverage distribution.
+        genome_chunk_size (int): Chunk size for breaking the genome into smaller segments for Gini calculation.
+    """
+    profile=profile.with_columns(
+        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage")
+    ).select(
+        pl.col("chrom").alias("scaffold"),
+        pl.col("pos"),
+        pl.col("coverage")
+    )
+    ### creating genome chunk blocks
+    profile=profile.with_columns(
+        (pl.col("pos")//genome_chunk_size).cast(pl.Int32).alias("genome_chunk")
+    )
+    ### adding the genome information
+    profile=profile.join(
+        stb,
+        on="scaffold",
+        how="left"
+    )
+    ### joining the genome length information
+    profile=profile.join(
+        genome_length,
+        on="genome",
+        how="left"
+    )
+    gini_lf=profile.group_by(
+        "genome",
+        "genome_chunk",
+    ).agg(
+        chunk_coverage=pl.sum("coverage"),  
+        total_expected_chunks=(pl.first("genome_length")/genome_chunk_size).ceil().cast(pl.Int32),
+        recovered_chunks=pl.count()
+    ).with_columns(
+        pl.col("chunk_coverage").sort().over("genome").alias("sorted_chunk_coverage")
+    ).with_columns(
+        pl.int_ranges(start=pl.col("total_expected_chunks")-pl.col("recovered_chunks"), end=pl.col("total_expected_chunks")).over("genome").alias("corrected_ranges")
+    ).with_columns(
+        (pl.col("corrected_ranges")*pl.col("sorted_chunk_coverage")).alias("num1"))
+    gini_lf=gini_lf.group_by("genome").agg(
+        total_expected_chunks=pl.first("total_expected_chunks"),
+        gini_numerator=pl.sum("num1"),
+        gini_denominator=(pl.col("chunk_coverage").sum())).with_columns(
+           (2*pl.col("gini_numerator")/pl.col("gini_denominator")-(pl.col("total_expected_chunks")+1))/pl.col("total_expected_chunks").alias("gini_coefficient")
+        ).select(
+            pl.col("genome"),
+            pl.col("gini_coefficient")
+        )
+    
+    profile=profile.group_by("genome").agg(
+        breadth=pl.count()/pl.first("genome_length"),
+        coverage=pl.sum("coverage")/pl.first("genome_length")
+    )
+    profile=profile.join(
+        gini_lf,
+        on="genome",
+        how="left"
+    )
+    return profile
+        
