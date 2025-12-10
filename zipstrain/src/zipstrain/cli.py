@@ -12,6 +12,7 @@ import zipstrain.database as db
 import polars as pl
 import pathlib
 
+
 @click.group()
 def cli():
     """ZipStrain CLI"""
@@ -210,7 +211,7 @@ def build_profile_db(profile_db_csv, output_file):
     profile_db.save_as_new_database(pathlib.Path(output_file))
 
 
-@utilities.command("build-comparison-config")
+@utilities.command("build-genome-comparison-config")
 @click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
 @click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
 @click.option('--reference-db-id', '-r', required=True, help="Reference fasta ID.")
@@ -221,8 +222,8 @@ def build_profile_db(profile_db_csv, output_file):
 @click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model-loc', '-m', required=True, help="Path to the null model Parquet file.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")    
-def build_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
+@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
+def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
     """
     Build a comparison configuration JSON file from the given parameters.
 
@@ -249,8 +250,55 @@ def build_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, 
         stb_file_loc=stb_file_loc,
         null_model_loc=null_model_loc,
     )
+    profile_db=db.ProfileDatabase(profile_db)
     comp_obj=db.GenomeComparisonDatabase(
         profile_db=profile_db,
+        config=conf_obj,
+        comp_db_loc=current_comp_table
+    )
+    comp_obj.dump_obj(pathlib.Path(output_file))
+
+
+@utilities.command("build-gene-comparison-config")
+@click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
+@click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
+@click.option('--reference-genome-id', '-r', required=True, help="Reference fasta ID.")
+@click.option('--scope', '-s', default="all:all", help="Genome scope for comparison.")
+@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
+@click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--null-model-loc', '-m', required=True, help="Path to the null model Parquet file.")
+@click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
+def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, null_model_loc, current_comp_table, output_file):
+    """
+    Build a gene comparison configuration JSON file from the given parameters.
+
+    Args:
+    profile_db (str): Path to the profile database Parquet file.
+    gene_db_id (str): Gene database ID.
+    reference_genome_id (str): Reference genome ID.
+    scope (str): Genome scope for comparison.
+    min_cov (int): Minimum coverage to consider a position.
+    min_gene_compare_len (int): Minimum gene length to consider for comparison.
+    stb_file_loc (str): Path to the scaffold-to-genome mapping file.
+    null_model_loc (str): Path to the null model Parquet file.
+    current_comp_table (str): Path to the current comparison table in Parquet format.
+    output_file (str): Path to save the output configuration JSON file.
+    """
+    conf_obj=db.GeneComparisonConfig(
+        gene_db_id=gene_db_id,
+        reference_genome_id=reference_genome_id,
+        scope=scope,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        stb_file_loc=stb_file_loc,
+        null_model_loc=null_model_loc,
+    )
+    profile_db_obj=db.ProfileDatabase(profile_db)
+    
+    comp_obj=db.GeneComparisonDatabase(
+        profile_db=profile_db_obj,
         config=conf_obj,
         comp_db_loc=current_comp_table
     )
@@ -272,6 +320,41 @@ def to_complete_table(genome_comparison_object, output_file):
     completed_pairs=genome_comp_db.to_complete_input_table()
     completed_pairs.sink_csv(pathlib.Path(output_file), compression='zstd', engine="streaming")
 
+@utilities.command("presence-profile")
+@click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--bed-file', '-b', required=True, help="Path to the BED file.")
+@click.option('--min-cov', '-c', default=0.1, help="Minimum genome-wide coverage to use homogeneous Poisson point process.")
+@click.option('--ber', '-e', default=0.5, help="Minimum breadth to expected breadth ratio to consider a genome as present.")
+@click.option('--cv-threshold', '-v', default=1.0, help="Maximum coefficient of variation to consider genome as present when coverage is smaller than min-cov.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
+def presence_profile(profile_file, stb_file, bed_file, min_cov, ber, cv_threshold, output_file):
+    """
+    Generate a presence profile from the given files.
+
+    Args:
+    profile_file (str): Path to the profile Parquet file.
+    stb_file (str): Path to the scaffold-to-genome mapping file.
+    bed_file (str): Path to the BED file.
+    """
+    profile=pl.scan_parquet(profile_file)
+    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("genome")
+    ).select(["scaffold", "genome"])
+    bed = pl.scan_csv(bed_file, separator="\t", has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("start"),
+        pl.col("column_3").alias("end")
+    ).select(["scaffold", "start", "end"])
+    ut.estimate_genome_presence(
+        profile=profile,
+        stb=stb,
+        bed=bed,
+        cv_threshold=cv_threshold,
+        ber=ber,
+        min_cov_constant_poisson=min_cov
+    ).sink_parquet(output_file, compression='zstd',engine="streaming")
 
 @cli.group()
 def gene_tools():
@@ -707,7 +790,7 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
 
 
 @run.command("compare_genes")
-@click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
+@click.option("--gene-comparison-object", "-g", required=True, help="Path to the gene comparison object in json format.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
 @click.option("--poll-interval", "-p", default=1, help="Polling interval in seconds to check the status of batches.")
@@ -717,7 +800,7 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
 @click.option("--polars-engine", "-a", default="streaming", type=click.Choice(['streaming', 'gpu', 'auto'], case_sensitive=False), help="Polars engine to use: 'streaming', 'gpu' or 'auto'.")
 @click.option("--ani-method", "-n", default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-def compare_genes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, polars_engine, ani_method):
+def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, polars_engine, ani_method):
     """
     Run gene comparisons in batches using the specified execution mode and container engine.
 
@@ -733,7 +816,7 @@ def compare_genes(genome_comparison_object, run_dir, max_concurrent_batches, pol
     polars_engine (str): Polars engine to use: 'streaming', 'gpu' or 'auto'.
     ani_method (str): ANI calculation method to use.
     """
-    genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
+    genome_comp_db=db.GeneComparisonDatabase.load_obj(pathlib.Path(gene_comparison_object))
     run_dir=pathlib.Path(run_dir)
     slurm_conf=None
     if execution_mode == "slurm":
@@ -762,8 +845,6 @@ def compare_genes(genome_comparison_object, run_dir, max_concurrent_batches, pol
         poll_interval=poll_interval,
         ani_method=ani_method,
     )
-
-# ...existing code...
         
 @cli.command("test")
 def test():

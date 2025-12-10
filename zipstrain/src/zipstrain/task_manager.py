@@ -1809,12 +1809,20 @@ class GeneCompareRunner(Runner):
                         engine=self.container_engine,
                     )
                     buffer.append(collect_task)
-                    batch = self.batch_factory(
+                    if self.batch_type == "slurm":
+                        batch = self.batch_factory(
+                            tasks=buffer,
+                            id=f"gene_batch_{self._batch_counter}",
+                            run_dir=self.run_dir,
+                            expected_outputs=[],
+                            slurm_config=self.slurm_config,
+                        )
+                    else:
+                        batch = self.batch_factory(
                         tasks=buffer,
                         id=f"gene_batch_{self._batch_counter}",
                         run_dir=self.run_dir,
                         expected_outputs=[],
-                        slurm_config=self.slurm_config if self.batch_type == "slurm" else None,
                     )
                     await self.batches_queue.put(batch)
                     self._batch_counter += 1
@@ -1830,12 +1838,21 @@ class GeneCompareRunner(Runner):
                     engine=self.container_engine,
                 )
                 buffer.append(collect_task)
-                batch = self.batch_factory(
+                if self.batch_type == "slurm":
+                    batch = self.batch_factory(
+                        tasks=buffer,
+                        id=f"gene_batch_{self._batch_counter}",
+                        run_dir=self.run_dir,
+                        expected_outputs=[],
+                        slurm_config=self.slurm_config,
+                    )
+                else:
+                    
+                    batch = self.batch_factory(
                     tasks=buffer,
                     id=f"gene_batch_{self._batch_counter}",
                     run_dir=self.run_dir,
                     expected_outputs=[],
-                    slurm_config=self.slurm_config if self.batch_type == "slurm" else None,
                 )
                 await self.batches_queue.put(batch)
                 self._batch_counter += 1
