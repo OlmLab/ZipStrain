@@ -371,23 +371,34 @@ def estimate_genome_presence(
         ber (float): Breadth over expected breadth ratio threshold for genome presence.
         cv_threshold (float): Coefficient of variation threshold for genome presence.
         min_cov_constant_poisson (int): Minimum coverage threshold to use BER for presence estimation.
+        
+    Returns:
+        pl.LazyFrame: A LazyFrame containing genome presence information.
     """
+    profile=profile.with_columns(
+        (pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")).alias("coverage")
+        )
     starts_df=bed.select(
-        pl.col("scaffold").alias("chrom"),
-        pl.col("start").alias("pos"),
-        pl.lit("NA").alias("gene"),
-        pl.lit(0).alias("A"),
-        pl.lit(0).alias("T"),
-        pl.lit(0).alias("C"),
-        pl.lit(0).alias("G"),)
+        pl.col("scaffold").cast(profile.collect_schema()["chrom"]).alias("chrom"),
+        pl.col("start").cast(profile.collect_schema()["pos"]).alias("pos"),
+        pl.lit("NA").cast(profile.collect_schema()["gene"]).alias("gene"),
+        pl.lit(0).cast(profile.collect_schema()["A"]).alias("A"),
+        pl.lit(0).cast(profile.collect_schema()["T"]).alias("T"),
+        pl.lit(0).cast(profile.collect_schema()["C"]).alias("C"),
+        pl.lit(0).cast(profile.collect_schema()["G"]).alias("G"),
+        pl.lit(0).cast(profile.collect_schema()["coverage"]).alias("coverage")
+        )
     ends_df=bed.select(
-        pl.col("scaffold").alias("chrom"),
-        (pl.col("end")-1).alias("pos"),
-        pl.lit("NA").alias("gene"),
-        pl.lit(0).alias("A"),
-        pl.lit(0).alias("T"),
-        pl.lit(0).alias("C"),
-        pl.lit(0).alias("G"),)
+        pl.col("scaffold").cast(profile.collect_schema()["chrom"]).alias("chrom"),
+        (pl.col("end")-1).cast(profile.collect_schema()["pos"]).alias("pos"),
+        pl.lit("NA").cast(profile.collect_schema()["gene"]).alias("gene"),
+        pl.lit(0).cast(profile.collect_schema()["A"]).alias("A"),
+        pl.lit(0).cast(profile.collect_schema()["T"]).alias("T"),
+        pl.lit(0).cast(profile.collect_schema()["C"]).alias("C"),
+        pl.lit(0).cast(profile.collect_schema()["G"]).alias("G"),
+        pl.lit(0).cast(profile.collect_schema()["coverage"]).alias("coverage")
+        )
+
     profile=pl.concat([profile,starts_df,ends_df]).unique(subset=["chrom","pos"],keep="first").sort(["chrom","pos"])
     genome_lengths=bed.join(
         stb,
@@ -409,15 +420,15 @@ def estimate_genome_presence(
         right_on="scaffold",
         how="left"
     ).group_by("genome").agg(
-        cv=pl.col("gap_size").std()/pl.col("gap_size").mean(),
-        total_coverage=pl.sum("A")+pl.sum("T")+pl.sum("C")+pl.sum("G"),
-        total_positions=pl.len(),
-        ).join(
+        cv=pl.col("gap_size").filter(pl.col("gap_size") > 1).std()/pl.col("gap_size").filter(pl.col("gap_size") > 1).mean(),
+        total_coverage=pl.col("coverage").sum(),
+        covered_positions=(pl.col("coverage")>0).sum()
+    ).join(
         genome_lengths,
         on="genome",
-        how="left"  
-        ).with_columns(
-        (pl.col("total_positions")/pl.col("genome_length")).alias("breadth"),
+        how="left"
+    ).with_columns(
+        (pl.col("covered_positions")/pl.col("genome_length")).alias("breadth"),
         (pl.col("total_coverage")/pl.col("genome_length")).alias("coverage"),
     ).select(
         pl.col("genome"),
@@ -432,7 +443,7 @@ def estimate_genome_presence(
         ).then(
             pl.col("ber") >= ber
         ).otherwise(
-            pl.col("cv") <= cv_threshold
+            (pl.col("cv") <= cv_threshold)  & (~pl.col("ber").is_nan())
         ).alias("is_present")
     )
 
