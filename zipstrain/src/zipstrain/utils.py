@@ -420,7 +420,7 @@ def estimate_genome_presence(
         right_on="scaffold",
         how="left"
     ).group_by("genome").agg(
-        cv=pl.col("gap_size").std()/pl.col("gap_size").mean(),
+        cv=pl.col("gap_size").filter(pl.col("gap_size") > 1).std()/pl.col("gap_size").filter(pl.col("gap_size") > 1).mean(),
         total_coverage=pl.col("coverage").sum(),
         covered_positions=(pl.col("coverage")>0).sum()
     ).join(

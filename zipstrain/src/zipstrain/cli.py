@@ -211,7 +211,7 @@ def build_profile_db(profile_db_csv, output_file):
     profile_db.save_as_new_database(pathlib.Path(output_file))
 
 
-@utilities.command("build-comparison-config")
+@utilities.command("build-genome-comparison-config")
 @click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
 @click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
 @click.option('--reference-db-id', '-r', required=True, help="Reference fasta ID.")
@@ -222,8 +222,8 @@ def build_profile_db(profile_db_csv, output_file):
 @click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model-loc', '-m', required=True, help="Path to the null model Parquet file.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")    
-def build_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
+@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
+def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
     """
     Build a comparison configuration JSON file from the given parameters.
 
@@ -258,6 +258,53 @@ def build_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, 
     comp_obj.dump_obj(pathlib.Path(output_file))
 
 
+@utilities.command("build-gene-comparison-config")
+@click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
+@click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
+@click.option('--reference-db-id', '-r', required=True, help="Reference fasta ID.")
+@click.option('--scope', '-s', default="all", help="Genome scope for comparison.")
+@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
+@click.option('--null-model-p-value', '-n', default=0.05, help="P-value threshold for the null model to detect sequencing error.")
+@click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--null-model-loc', '-m', required=True, help="Path to the null model Parquet file.")
+@click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
+def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
+    """
+    Build a gene comparison configuration JSON file from the given parameters.
+
+    Args:
+    profile_db (str): Path to the profile database Parquet file.
+    gene_db_id (str): Gene database ID.
+    reference_genome_id (str): Reference genome ID.
+    scope (str): Genome scope for comparison.
+    min_cov (int): Minimum coverage to consider a position.
+    min_gene_compare_len (int): Minimum gene length to consider for comparison.
+    null_model_p_value (float): P-value threshold for the null model to detect sequencing error.
+    stb_file_loc (str): Path to the scaffold-to-genome mapping file.
+    null_model_loc (str): Path to the null model Parquet file.
+    current_comp_table (str): Path to the current comparison table in Parquet format.
+    output_file (str): Path to save the output configuration JSON file.
+    """
+    conf_obj=db.GeneComparisonConfig(
+        gene_db_id=gene_db_id,
+        reference_id=reference_genome_id,
+        scope=scope,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        null_model_p_value=null_model_p_value,
+        stb_file_loc=stb_file_loc,
+        null_model_loc=null_model_loc,
+    )
+    comp_obj=db.GeneComparisonDatabase(
+        profile_db=profile_db,
+        config=conf_obj,
+        comp_db_loc=current_comp_table
+    )
+    comp_obj.dump_obj(pathlib.Path(output_file))
+
+
 @utilities.command("to-complete-table")
 @click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
 @click.option("--output-file", "-o", required=True, help="Path to save the completed pairs csv file.")
@@ -277,8 +324,11 @@ def to_complete_table(genome_comparison_object, output_file):
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file.")
+@click.option('--min-cov', '-c', default=0.1, help="Minimum genome-wide coverage to use homogeneous Poisson point process.")
+@click.option('--ber', '-e', default=0.5, help="Minimum breadth to expected breadth ratio to consider a genome as present.")
+@click.option('--cv-threshold', '-v', default=1.0, help="Maximum coefficient of variation to consider genome as present when coverage is smaller than min-cov.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def presence_profile(profile_file, stb_file, bed_file, output_file):
+def presence_profile(profile_file, stb_file, bed_file, min_cov, ber, cv_threshold, output_file):
     """
     Generate a presence profile from the given files.
 
@@ -300,7 +350,10 @@ def presence_profile(profile_file, stb_file, bed_file, output_file):
     ut.estimate_genome_presence(
         profile=profile,
         stb=stb,
-        bed=bed
+        bed=bed,
+        cv_threshold=cv_threshold,
+        ber=ber,
+        min_cov_constant_poisson=min_cov
     ).sink_parquet(output_file, compression='zstd',engine="streaming")
 
 @cli.group()
