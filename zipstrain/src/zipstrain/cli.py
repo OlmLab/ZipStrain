@@ -12,6 +12,7 @@ import zipstrain.database as db
 import polars as pl
 import pathlib
 
+
 @click.group()
 def cli():
     """ZipStrain CLI"""
@@ -272,6 +273,35 @@ def to_complete_table(genome_comparison_object, output_file):
     completed_pairs=genome_comp_db.to_complete_input_table()
     completed_pairs.sink_csv(pathlib.Path(output_file), compression='zstd', engine="streaming")
 
+@utilities.command("presence-profile")
+@click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--bed-file', '-b', required=True, help="Path to the BED file.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
+def presence_profile(profile_file, stb_file, bed_file, output_file):
+    """
+    Generate a presence profile from the given files.
+
+    Args:
+    profile_file (str): Path to the profile Parquet file.
+    stb_file (str): Path to the scaffold-to-genome mapping file.
+    bed_file (str): Path to the BED file.
+    """
+    profile=pl.scan_parquet(profile_file)
+    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("genome")
+    ).select(["scaffold", "genome"])
+    bed = pl.scan_csv(bed_file, separator="\t", has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("start"),
+        pl.col("column_3").alias("end")
+    ).select(["scaffold", "start", "end"])
+    ut.estimate_genome_presence(
+        profile=profile,
+        stb=stb,
+        bed=bed
+    ).sink_parquet(output_file, compression='zstd',engine="streaming")
 
 @cli.group()
 def gene_tools():
