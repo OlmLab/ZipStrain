@@ -13,6 +13,7 @@ params.compare_chrom_batch_size=10000
 params.batch_compare_n_parallel=4
 params.publish_mode="link"
 params.compare_genome_scope="all"
+params.compare_gene_scope="all:all"
 params.input_type="profile_table"
 
 
@@ -347,15 +348,10 @@ process compare_gene_batched {
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain compare single_compare_gene \
                         --mpileup-contig-1 {1} \
                         --mpileup-contig-2 {2} \
-                        --scaffolds-1 {1}.scaffolds \
-                        --scaffolds-2 {2}.scaffolds \
-                        --memory-mode ${params.compare_memory_mode} \
-                        --chrom-batch-size ${params.compare_chrom_batch_size} \
                         -n ${null_model} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
-                        ${add_gene_scope} \
                         -o {1}_{2}_comparison.parquet'
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
@@ -550,9 +546,8 @@ workflow
             pair_channel=Channel.from(profile_pairs)
 
         }
-        gene_file = file(params.gene_file)
         stb = file(params.stb)
-        gene_compare(pair_channel, stb)
+        compare_genes(pair_channel, stb)
     }
     
     
@@ -638,7 +633,7 @@ workflow compare_genomes
         pair_name: v[1]+"_" + v[4]
     }.set{profile_pairs}
     compare_genome_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
-    merge_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
+    merge_comparison_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
@@ -650,7 +645,7 @@ workflow compare_genomes
     }.set{batch_pairs}
 
     compare_genome_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
-    merge_tables(compare_genome_batched.out.comparison_results.collect() )
+    merge_comparison_tables(compare_genome_batched.out.comparison_results.collect() )
     }
 
 
