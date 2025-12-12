@@ -147,6 +147,16 @@ async def _profile_chunk_task(
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+    cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
+    proc = await asyncio.create_subprocess_shell(
+                " ".join(cmd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=output_dir
+            )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
 
 async def profile_bam_in_chunks(
     bed_file:str,
@@ -189,9 +199,18 @@ async def profile_bam_in_chunks(
             chunk_id=chunk_id
         ))
     await asyncio.gather(*tasks) 
-    pfs=[output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet" for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet").exists()]
-    mpileup_df = pl.concat([pl.scan_parquet(pf) for pf in pfs])
-    mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}.parquet", compression='zstd')
+    pfs=[(output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet", output_dir/"tmp"/f"{bam_file.stem}_read_locs_{chunk_id}.parquet" ) for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet").exists()]
+    
+    mpile_container=[]
+    for pf, read_loc_pf in pfs:
+        mpile_df=pl.scan_parquet(pf)
+        read_locs_df=pl.scan_parquet(read_loc_pf).group_by(["chrom","pos"]).agg(pl.len().alias("num_reads"))
+        mpile_df=mpile_df.join(read_locs_df,on=["chrom","pos"],how="left").with_columns(
+            pl.col("num_reads").fill_null(0).alias("num_reads")
+        )
+        mpile_container.append(mpile_df)
+    mpileup_df = pl.concat(mpile_container)
+    mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}.parquet", compression='zstd', engine='streaming')
     os.system(f"rm -r {output_dir}/tmp")
 
 def profile_bam(

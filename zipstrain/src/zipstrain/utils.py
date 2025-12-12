@@ -140,7 +140,7 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
 
         if writer is None:
             # Open writer for the first time
-            writer = pq.ParquetWriter(output_file, schema, compression='snappy')
+            writer = pq.ParquetWriter(output_file, schema, compression='zstd')
         writer.write_table(pa.Table.from_batches([batch]))
 
         # Clear buffers
@@ -179,6 +179,51 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
 
     if writer:
         writer.close()
+
+def process_read_location(output_file:str, batch_size:int=10000)->None:
+    """
+    This function takes the output of samtools view -F 132 and processes it to extract read locations in a parquet file.
+    """
+    schema = pa.schema([
+        ('chrom', pa.string()),
+        ('pos', pa.int16()),
+    ])
+    writer = None
+    chroms = []
+    positions = []
+    def flush_batch():
+        nonlocal writer
+        if not chroms:
+            return
+        batch = pa.RecordBatch.from_arrays([
+            pa.array(chroms, type=pa.string()),
+            pa.array(positions, type=pa.int32()),
+        ], schema=schema)
+
+        if writer is None:
+            # Open writer for the first time
+            writer = pq.ParquetWriter(output_file, schema, compression='zstd')
+        writer.write_table(pa.Table.from_batches([batch]))
+
+        # Clear buffers
+        chroms.clear()
+        positions.clear()
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        fields = line.strip().split('\t')
+        if len(fields) < 4:
+            continue
+        chrom, pos = fields[2], fields[3]
+        chroms.append(chrom)
+        positions.append(int(pos))
+        if len(chroms) >= batch_size:
+            flush_batch()
+    # Flush remaining data
+    flush_batch()
+    if writer:
+        writer.close()
+
 
 def extract_genome_length(stb: pl.LazyFrame, bed_table: pl.LazyFrame) -> pl.LazyFrame:
     """
@@ -420,7 +465,7 @@ def estimate_genome_presence(
         right_on="scaffold",
         how="left"
     ).group_by("genome").agg(
-        cv=pl.col("gap_size").filter(pl.col("gap_size") > 1).std()/pl.col("gap_size").filter(pl.col("gap_size") > 1).mean(),
+        cv=pl.col("gap_size").std()/pl.col("gap_size").mean(),
         total_coverage=pl.col("coverage").sum(),
         covered_positions=(pl.col("coverage")>0).sum()
     ).join(
@@ -443,9 +488,10 @@ def estimate_genome_presence(
         ).then(
             pl.col("ber") >= ber
         ).otherwise(
-            (pl.col("cv") <= cv_threshold)  & (~pl.col("ber").is_nan())
+            (pl.col("cv") <= cv_threshold)  & (~pl.col("ber").is_nan()) & (pl.col("ber") >= ber)
         ).alias("is_present")
     )
 
     return profile
         
+

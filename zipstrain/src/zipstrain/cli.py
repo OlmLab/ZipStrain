@@ -356,6 +356,17 @@ def presence_profile(profile_file, stb_file, bed_file, min_cov, ber, cv_threshol
         min_cov_constant_poisson=min_cov
     ).sink_parquet(output_file, compression='zstd',engine="streaming")
 
+@utilities.command("process-read-locs")
+@click.option("--output-file", "-o", required=True, help="Path to save the processed read locations Parquet file.")
+def process_read_locs(output_file):
+    """
+    Process read locations and save them to a Parquet file.
+
+    Args:
+    output_file (str): Path to save the output Parquet file.
+    """
+    ut.process_read_location(output_file=pathlib.Path(output_file))
+
 @cli.group()
 def gene_tools():
     """Holds anything related to gene analysis."""
