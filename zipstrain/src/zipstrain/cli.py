@@ -324,37 +324,49 @@ def to_complete_table(genome_comparison_object, output_file):
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file.")
-@click.option('--min-cov', '-c', default=0.1, help="Minimum genome-wide coverage to use homogeneous Poisson point process.")
-@click.option('--ber', '-e', default=0.5, help="Minimum breadth to expected breadth ratio to consider a genome as present.")
-@click.option('--cv-threshold', '-v', default=1.0, help="Maximum coefficient of variation to consider genome as present when coverage is smaller than min-cov.")
+@click.option('--read-loc-file', '-r', required=True, help="Path to the read location table.")
+@click.option('--min-cov-fug', '-c', default=0.1, help="Minimum coverage to use fug.")
+@click.option('--fug-threshold', '-f', default=2, help="FUG threshold.")
+@click.option('--ber', '-e', default=0.5, help="Minimum ratio of breadth over expected breadth to consider presence.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def presence_profile(profile_file, stb_file, bed_file, min_cov, ber, cv_threshold, output_file):
+def presence_profile(profile_file, stb_file, bed_file, read_loc_file, min_cov_fug, fug_threshold, ber, output_file):
     """
-    Generate a presence profile from the given files.
+    Generate a presence profile for genomes based on the given profile and read location data.
 
     Args:
     profile_file (str): Path to the profile Parquet file.
     stb_file (str): Path to the scaffold-to-genome mapping file.
     bed_file (str): Path to the BED file.
+    read_loc_file (str): Path to the read location table.
+    min_cov_fug (float): Minimum coverage to use fug.
+    fug_threshold (float): FUG threshold.
+    ber (float): Minimum ratio of breadth over expected breadth to consider presence.
+    output_file (str): Path to save the output Parquet file.
     """
-    profile=pl.scan_parquet(profile_file)
+    profile = pl.scan_parquet(profile_file)
     stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
         pl.col("column_1").alias("scaffold"),
         pl.col("column_2").alias("genome")
     ).select(["scaffold", "genome"])
     bed = pl.scan_csv(bed_file, separator="\t", has_header=False).with_columns(
         pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("start"),
-        pl.col("column_3").alias("end")
+        pl.col("column_2").cast(pl.Int64).alias("start"),
+        pl.col("column_3").cast(pl.Int64).alias("end")
     ).select(["scaffold", "start", "end"])
-    ut.estimate_genome_presence(
+    read_loc_table = pl.scan_parquet(read_loc_file).rename({
+        "chrom":"scaffold",
+        "pos":"loc"
+    })
+    presence_df = ut.get_genome_stats(
         profile=profile,
         stb=stb,
         bed=bed,
-        cv_threshold=cv_threshold,
-        ber=ber,
-        min_cov_constant_poisson=min_cov
-    ).sink_parquet(output_file, compression='zstd',engine="streaming")
+        read_loc_table=read_loc_table,
+        min_cov_use_fug=min_cov_fug,
+        fug=fug_threshold,
+        ber=ber
+    )
+    presence_df.sink_parquet(output_file, compression='zstd')
 
 @utilities.command("process-read-locs")
 @click.option("--output-file", "-o", required=True, help="Path to save the processed read locations Parquet file.")
@@ -614,22 +626,34 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
 @profile.command("profile-single")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file describing regions to be profiled.")
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
 @click.option('--num-workers', '-n', default=1, help="Number of workers to use for profiling.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(bed_file, bam_file, gene_range_table, num_workers, output_dir):
+@click.option('--ber', '-r', default=0.5, help="Minimum ratio of breadth over expected breadth to consider presence.")
+@click.option('--fug', '-f', default=2.0, help="fraction of expected gaps (FUG) threshold.")
+@click.option('--min-cov-use-fug', '-m', default=0.1, help="Minimum coverage to use FUG.")
+def profile_single(bed_file, bam_file, stb_file, gene_range_table, num_workers, output_dir, ber, fug, min_cov_use_fug):
     """
     Profile a single BAM file using the provided BED file and gene range table.
     
     """
     output_dir=pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    stb= pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("genome")
+    )
     pf.profile_bam(
         bed_file=bed_file,
         bam_file=bam_file,
         gene_range_table=gene_range_table,
+        stb=stb,
         output_dir=output_dir,
-        num_workers=num_workers
+        num_workers=num_workers,
+        ber=ber,
+        fug=fug,
+        min_cov_use_fug=min_cov_use_fug
     )
 
 @cli.group()

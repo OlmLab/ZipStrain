@@ -186,7 +186,7 @@ def process_read_location(output_file:str, batch_size:int=10000)->None:
     """
     schema = pa.schema([
         ('chrom', pa.string()),
-        ('pos', pa.int16()),
+        ('pos', pa.int32()),
     ])
     writer = None
     chroms = []
@@ -395,103 +395,106 @@ def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
     return chunks
 
 
-def estimate_genome_presence(
-    profile:pl.LazyFrame,
-    bed: pl.LazyFrame,
+def get_genome_gaps(
+    read_loc_table: pl.LazyFrame,
     stb: pl.LazyFrame,
-    ber:float=0.5,
-    cv_threshold:float=2.5,
-    min_cov_constant_poisson: int = 0.5,
-)->pl.LazyFrame:
-    """
-    This function estimates the presence of genomes in a sample based on coverage information.
-    as long as the coverage is above a certain threshold. BER is used to decide the threshold.
-    However, if the coverage is below the threshold, the coefficient of variation (CV) is used instead as
-    a more reliable metric for low-coverage scenarios.
-    
-    Args:
-        profile (pl.LazyFrame): The profile LazyFrame containing coverage information.
-        bed (pl.LazyFrame): The BED table containing genomic regions.
-        stb (pl.LazyFrame): The scaffold-to-bin mapping LazyFrame.
-        ber (float): Breadth over expected breadth ratio threshold for genome presence.
-        cv_threshold (float): Coefficient of variation threshold for genome presence.
-        min_cov_constant_poisson (int): Minimum coverage threshold to use BER for presence estimation.
-        
-    Returns:
-        pl.LazyFrame: A LazyFrame containing genome presence information.
-    """
-    profile=profile.with_columns(
-        (pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")).alias("coverage")
-        )
-    starts_df=bed.select(
-        pl.col("scaffold").cast(profile.collect_schema()["chrom"]).alias("chrom"),
-        pl.col("start").cast(profile.collect_schema()["pos"]).alias("pos"),
-        pl.lit("NA").cast(profile.collect_schema()["gene"]).alias("gene"),
-        pl.lit(0).cast(profile.collect_schema()["A"]).alias("A"),
-        pl.lit(0).cast(profile.collect_schema()["T"]).alias("T"),
-        pl.lit(0).cast(profile.collect_schema()["C"]).alias("C"),
-        pl.lit(0).cast(profile.collect_schema()["G"]).alias("G"),
-        pl.lit(0).cast(profile.collect_schema()["coverage"]).alias("coverage")
-        )
-    ends_df=bed.select(
-        pl.col("scaffold").cast(profile.collect_schema()["chrom"]).alias("chrom"),
-        (pl.col("end")-1).cast(profile.collect_schema()["pos"]).alias("pos"),
-        pl.lit("NA").cast(profile.collect_schema()["gene"]).alias("gene"),
-        pl.lit(0).cast(profile.collect_schema()["A"]).alias("A"),
-        pl.lit(0).cast(profile.collect_schema()["T"]).alias("T"),
-        pl.lit(0).cast(profile.collect_schema()["C"]).alias("C"),
-        pl.lit(0).cast(profile.collect_schema()["G"]).alias("G"),
-        pl.lit(0).cast(profile.collect_schema()["coverage"]).alias("coverage")
-        )
-
-    profile=pl.concat([profile,starts_df,ends_df]).unique(subset=["chrom","pos"],keep="first").sort(["chrom","pos"])
-    genome_lengths=bed.join(
+    genome_length: pl.LazyFrame,
+                    )-> pl.LazyFrame:
+    read_loc_table=read_loc_table.sort(["scaffold",'loc'])
+    read_loc_table=read_loc_table.with_columns(
+        (pl.col("loc") - pl.col("loc").shift(1).over("scaffold")).alias("gap_length")
+    ).join(
         stb,
         on="scaffold",
         how="left"
-    ).group_by("genome").agg(
-        genome_length=(pl.col("end") - pl.col("start")).sum()
-    ).select(
-        pl.col("genome"),
-        pl.col("genome_length")
     )
-    profile=profile.with_columns(
-        pl.col("pos").shift(1).fill_null(0).over("chrom").alias("prev_pos"),
+    delta=read_loc_table.group_by("genome").agg(
+        rn=pl.len()).join(
+        genome_length,
+        on="genome",
+        how="left"
     ).with_columns(
-        (pl.col("pos") - pl.col("prev_pos")).clip(lower_bound=1).alias("gap_size")
-    ).join(
+        delta=(pl.col("genome_length")/pl.col("rn")).round().alias("delta")).select(
+        pl.col("genome"),
+        pl.col("delta"),
+        pl.col("rn")
+        )
+    read_loc_table=read_loc_table.join(
+        delta,
+        on="genome",
+        how="left"
+    )
+    read_loc_table=read_loc_table.filter(
+        pl.col("gap_length") > pl.col("delta")
+    ).group_by(["genome","gap_length"]).agg(
+        pd=(pl.len()/(pl.col("rn").first()-1)),
+        delta=pl.col("delta").first()
+    ).with_columns(
+        pd= pl.col("pd") * (pl.col("gap_length")-pl.col("delta"))
+    ).group_by("genome").agg(
+        fug=(pl.col("delta").first()-pl.col("pd").sum())/pl.col("delta").first()
+    )
+    return read_loc_table.select(
+        pl.col("genome"),
+        pl.col("fug")
+    )
+
+def get_genome_stats(
+    profile:pl.LazyFrame,
+    bed: pl.LazyFrame,
+    stb: pl.LazyFrame,
+    read_loc_table: pl.LazyFrame,
+    ber:float=0.5,
+    fug:float=2,
+    min_cov_use_fug:int=0.1
+)->pl.LazyFrame:
+
+    genome_lengths=extract_genome_length(stb, bed)
+    genome_gap_stats= get_genome_gaps(read_loc_table, stb, genome_lengths)
+    profile=profile.join(
         stb,
         left_on="chrom",
         right_on="scaffold",
         how="left"
-    ).group_by("genome").agg(
-        cv=pl.col("gap_size").std()/pl.col("gap_size").mean(),
-        total_coverage=pl.col("coverage").sum(),
-        covered_positions=(pl.col("coverage")>0).sum()
+    ).select(
+        pl.col("chrom"),
+        pl.col("genome"),
+        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage")
+    )
+    profile=profile.group_by("genome").agg(
+        total_covered_sites=pl.len(),
+        coverage=pl.col("coverage").sum()
     ).join(
         genome_lengths,
         on="genome",
         how="left"
+    ).join(
+        genome_gap_stats,
+        on="genome",
+        how="left"
     ).with_columns(
-        (pl.col("covered_positions")/pl.col("genome_length")).alias("breadth"),
-        (pl.col("total_coverage")/pl.col("genome_length")).alias("coverage"),
-    ).select(
-        pl.col("genome"),
-        pl.col("cv"),
-        pl.col("breadth"),
-        pl.col("coverage"),
+        coverage=(pl.col("coverage")/pl.col("genome_length")),
+        breadth=(pl.col("total_covered_sites")/pl.col("genome_length")),
     ).with_columns(
-        (pl.col("breadth")/(1-(-0.883*pl.col("coverage")).exp())).alias("ber"),
+        ber=pl.col("breadth")/(1-(-0.883*pl.col("coverage")).exp()),
+        fug=pl.col("fug")
     ).with_columns(
-        pl.when(
-            pl.col("coverage") >= min_cov_constant_poisson
-        ).then(
-            pl.col("ber") >= ber
+    
+    pl.when(pl.col("coverage") > min_cov_use_fug)
+    .then(
+        pl.col("ber") > ber
         ).otherwise(
-            (pl.col("cv") <= cv_threshold)  & (~pl.col("ber").is_nan()) & (pl.col("ber") >= ber)
-        ).alias("is_present")
+            (pl.col("fug")/0.632 < fug) &
+            (pl.col("ber") > ber)
+        ).fill_null(False).alias("is_present"))
+
+    return profile.select(
+        pl.col("genome"),
+        pl.col("coverage"),
+        pl.col("breadth"),
+        pl.col("ber"),
+        pl.col("fug"),
+        pl.col("is_present")
     )
 
-    return profile
-        
 
