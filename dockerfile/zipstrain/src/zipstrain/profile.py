@@ -147,13 +147,27 @@ async def _profile_chunk_task(
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+    cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
+    proc = await asyncio.create_subprocess_shell(
+                " ".join(cmd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=output_dir
+            )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
 
 async def profile_bam_in_chunks(
     bed_file:str,
     bam_file:str,
     gene_range_table:str,
+    stb:pl.LazyFrame,
     output_dir:str,
-    num_workers:int=4
+    num_workers:int=4,
+    ber:float=0.5,
+    fug:float=2.0,
+    min_cov_use_fug:int=0.1
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -189,17 +203,46 @@ async def profile_bam_in_chunks(
             chunk_id=chunk_id
         ))
     await asyncio.gather(*tasks) 
-    pfs=[output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet" for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet").exists()]
-    mpileup_df = pl.concat([pl.scan_parquet(pf) for pf in pfs])
-    mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}.parquet", compression='zstd')
+    pfs=[(output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet", output_dir/"tmp"/f"{bam_file.stem}_read_locs_{chunk_id}.parquet" ) for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet").exists()]
+
+    mpile_container: list[pl.LazyFrame] = []
+    read_loc_pfs: list[pl.LazyFrame] = []
+    for pf, read_loc_pf in pfs:
+        mpile_container.append(pl.scan_parquet(pf).lazy())
+        read_loc_pfs.append(pl.scan_parquet(read_loc_pf).lazy())
+
+    mpileup_df = pl.concat(mpile_container)
+    mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
+    read_loc_df = pl.concat(read_loc_pfs).rename(
+        {
+            "chrom":"scaffold",
+            "pos":"loc",
+        }
+    )
+
+    utils.get_genome_stats(
+        profile=mpileup_df,
+        read_loc_table=read_loc_df,
+        stb=stb,
+        bed=bed_lf.rename({"column_1":"scaffold","column_2":"start","column_3":"end"}),
+        ber=ber,
+        fug=fug,
+        min_cov_use_fug=min_cov_use_fug,
+    ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
+    
+    
     os.system(f"rm -r {output_dir}/tmp")
 
 def profile_bam(
     bed_file:str,
     bam_file:str,
     gene_range_table:str,
+    stb:pl.LazyFrame,
     output_dir:str,
-    num_workers:int=4
+    num_workers:int=4,
+    ber:float=0.5,
+    fug:float=2.0,
+    min_cov_use_fug:int=0.1
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -208,6 +251,7 @@ def profile_bam(
     bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
     bam_file (pathlib.Path): Path to the BAM file.
     gene_range_table (pathlib.Path): Path to the gene range table.
+    stb (pl.LazyFrame): Scaffold-to-bin mapping table.
     output_dir (pathlib.Path): Directory to save output files.
     num_workers (int): Number of concurrent workers to use.
     """
@@ -215,7 +259,11 @@ def profile_bam(
         bed_file=bed_file,
         bam_file=bam_file,
         gene_range_table=gene_range_table,
+        stb=stb,
         output_dir=output_dir,
-        num_workers=num_workers
+        num_workers=num_workers,
+        ber=ber,
+        fug=fug,
+        min_cov_use_fug=min_cov_use_fug
     ))
 

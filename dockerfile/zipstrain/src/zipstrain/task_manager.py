@@ -275,7 +275,6 @@ class IntOutput(Output):
             raise ValueError(f"Output value for task {self.task.id} is not an integer.")
         else:
             return False
-        return False
 
 
 class Engine(ABC):
@@ -526,8 +525,8 @@ class ProfileTaskGenerator(TaskGenerator):
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+".parquet" ),
-                "breadth":  FileOutput(row["sample_name"]+"_breadth.parquet" ),
                 "scaffold": FileOutput(row["sample_name"]+".parquet.scaffolds" ),
+                "genome-stats": FileOutput(row["sample_name"]+"_genome_stats.parquet" ),
                 }
                 task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
                 tasks.append(task)
@@ -1470,15 +1469,11 @@ class ProfileBamTask(Task):
     zipstrain profile profile-single --bam-file input.bam \
     --bed-file bed_file.bed \
     --gene-range-table gene-range-table.bed \
+    --stb-file <stb-file> \
     --num-workers <num-workers> \
     --output-dir .
     mv input.bam.parquet <sample-name>.parquet
     samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
-    zipstrain utilities genome_breadth_matrix --profile <sample-name>.parquet \
-        --genome-length <genome-length-file> \
-        --stb <stb-file> \
-        --min-cov <breadth-min-cov> \
-        --output-file <sample-name>_breadth.parquet
     """
     
 class FastCompareTask(Task):
@@ -1703,7 +1698,7 @@ class GeneCompareTaskGenerator(TaskGenerator):
         data: pl.LazyFrame,
         yield_size: int,
         container_engine: Engine,
-        comp_config: database.GenomeComparisonConfig,
+        comp_config: database.GeneComparisonConfig,
         polars_engine: str = "streaming",
         ani_method: str = "popani",
     ) -> None:
@@ -1809,12 +1804,20 @@ class GeneCompareRunner(Runner):
                         engine=self.container_engine,
                     )
                     buffer.append(collect_task)
-                    batch = self.batch_factory(
+                    if self.batch_type == "slurm":
+                        batch = self.batch_factory(
+                            tasks=buffer,
+                            id=f"gene_batch_{self._batch_counter}",
+                            run_dir=self.run_dir,
+                            expected_outputs=[],
+                            slurm_config=self.slurm_config,
+                        )
+                    else:
+                        batch = self.batch_factory(
                         tasks=buffer,
                         id=f"gene_batch_{self._batch_counter}",
                         run_dir=self.run_dir,
                         expected_outputs=[],
-                        slurm_config=self.slurm_config if self.batch_type == "slurm" else None,
                     )
                     await self.batches_queue.put(batch)
                     self._batch_counter += 1
@@ -1830,12 +1833,21 @@ class GeneCompareRunner(Runner):
                     engine=self.container_engine,
                 )
                 buffer.append(collect_task)
-                batch = self.batch_factory(
+                if self.batch_type == "slurm":
+                    batch = self.batch_factory(
+                        tasks=buffer,
+                        id=f"gene_batch_{self._batch_counter}",
+                        run_dir=self.run_dir,
+                        expected_outputs=[],
+                        slurm_config=self.slurm_config,
+                    )
+                else:
+                    
+                    batch = self.batch_factory(
                     tasks=buffer,
                     id=f"gene_batch_{self._batch_counter}",
                     run_dir=self.run_dir,
                     expected_outputs=[],
-                    slurm_config=self.slurm_config if self.batch_type == "slurm" else None,
                 )
                 await self.batches_queue.put(batch)
                 self._batch_counter += 1
@@ -1928,7 +1940,7 @@ class PrepareGeneCompareRunOutputsSlurmBatch(SlurmBatch):
 def lazy_run_gene_compares(
     run_dir: str | pathlib.Path,
     container_engine: Engine,
-    comps_db: database.GenomeComparisonDatabase|None = None,
+    comps_db: database.GeneComparisonDatabase | None = None,
     tasks_per_batch: int = 10,
     max_concurrent_batches: int = 1,
     poll_interval: float = 5.0,

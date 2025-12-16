@@ -162,9 +162,11 @@ process profile_bam {
     val sample_name
     path bamfile
     path bed_file
+    path stb_file
     path gene_range_table
     output:
-    path "${sample_name}.parquet", emit: profile
+    path "${bam_file.stem}_profile.parquet", emit: profile
+    path "${bam_file.stem}_genome_stats.parquet", emit: genome_stats
     path "${sample_name}.parquet.scaffolds", emit: covered_scaffolds
     val sample_name, emit: sample_name
     script:
@@ -173,6 +175,7 @@ process profile_bam {
                         --bam-file ${bamfile} \\
                         --bed-file ${bed_file} \\
                         --gene-range-table ${gene_range_table} \\
+                        --stb-file ${stb_file} \\
                         --num-workers ${task.cpus} \\
                         --output-dir .
     samtools idxstats ${bamfile} | awk '\$3 > 0 {print \$1}' >> ${sample_name}.parquet.scaffolds
@@ -429,9 +432,9 @@ process fromSRAtoProfile{
     path genome_length_file
     path stb_file
     output:
-    path "${sra_id}.parquet", emit: profiles
+    path "${sra_id}_profile.parquet", emit: profiles
     path "${sra_id}.parquet.scaffolds", emit: covered_scaffolds
-    path "${sra_id}.parquet.breadth", emit: breadth
+    path "${sra_id}_genome_stats.parquet", emit: genome_stats
     val sra_id, emit: sample_name
     script:
     """
@@ -449,14 +452,10 @@ process fromSRAtoProfile{
                         --bam-file ${sra_id}.bam \\
                         --bed-file ${bed_file} \\
                         --gene-range-table ${gene_range_file} \\
+                        --stb-file ${stb_file} \\
                         --num-workers ${task.cpus} \\
                         --output-dir .
     samtools idxstats ${sra_id}.bam | awk '\$3 > 0 {print \$1}' > ${sra_id}.parquet.scaffolds
-    zipstrain utilities genome_breadth_matrix --profile ${sra_id}.parquet \
-                        --genome-length ${genome_length_file} \
-                        --stb ${stb_file} \
-                        --min-cov ${params.breadth_min_cov} \
-                        --output-file ${sra_id}.parquet.breadth
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """

@@ -304,6 +304,21 @@ def simple_genome_compare_config(stb,null_model,tmp_path_factory):
         )
     
 
+@pytest.fixture(scope="module")
+def simple_gene_compare_config(stb,null_model,tmp_path_factory):
+    """Create a simple gene comparison config for testing"""
+    tmp_path=tmp_path_factory.mktemp("gene_compare")
+    stb_dir = tmp_path / "stb.tsv"
+    stb.sink_csv(stb_dir, separator="\t")
+    null_model_dir = tmp_path / "null_model.parquet"
+    null_model.sink_parquet(null_model_dir)
+    return database.GeneComparisonConfig(
+            scope="all:gene1",
+            min_cov=5,
+            min_gene_compare_len=100,
+            stb_file_loc=str(stb_dir),
+            null_model_loc=str(null_model_dir),
+        )
 def test_profile_create_new_empty_database():
     db = database.ProfileDatabase()
     assert db.db.collect().height == 0
@@ -834,5 +849,560 @@ def test_genome_comparison_database_to_complete_input_table(profile_1_2_3_databa
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_2")=="profile_2").height == 1
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_2")=="profile_3").height == 2
 
+def test_gene_compare_config_faulty()->None:
+    """tests the response of GeneComparisonConfig to wrong inputs"""
+    with pytest.raises(ValidationError, match="3 validation errors for GeneComparisonConfig"):
+        database.GeneComparisonConfig(
+            min_cov="5das", # This should be an int
+            scope="all:gene1",
+            min_gene_compare_len=100,
+        )
+    ### But passing string is okay if they can be turned to their numeric counterparts
+    database.GeneComparisonConfig(
+            min_cov="5", # This should be an int
+            scope="all:gene1",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    ### An extra attribute that is not expected
+    with pytest.raises(ValueError, match="1 validation error for GeneComparisonConfig"):
+        database.GeneComparisonConfig(
+            minimum_similarity="Wrongatte",
+            min_cov="5",
+            scope="all:gene1",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
 
+    ### A missing attr that must be provided
+    with pytest.raises(ValueError, match="1 validation error for GeneComparisonConfig"):
+        database.GeneComparisonConfig(
+            min_cov="5",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    
+    ### Invalid scope format (missing colon)
+    with pytest.raises(ValueError, match="Scope must be in format 'GENOME:GENE'"):
+        database.GeneComparisonConfig(
+            min_cov=5,
+            scope="allgene1",  # Missing colon
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    
+    ### Invalid scope format (too many colons)
+    with pytest.raises(ValueError, match="Scope must have exactly one ':' separator"):
+        database.GeneComparisonConfig(
+            min_cov=5,
+            scope="all:gene1:extra",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+    
+    ### Invalid scope format (empty parts)
+    with pytest.raises(ValueError, match="Both genome and gene parts must be non-empty"):
+        database.GeneComparisonConfig(
+            min_cov=5,
+            scope=":gene1",
+            min_gene_compare_len=100,
+            stb_file_loc="Somefile",
+            null_model_loc="Somefile"
+        )
+
+
+def test_gene_compare_config_io(tmp_path,simple_gene_compare_config):
+    """This test examines the input/output functionality of the GeneComparisonConfig class"""
+    # Test serialization
+    config_dict = simple_gene_compare_config.to_dict()
+    assert config_dict == {
+        "scope": "all:gene1",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": simple_gene_compare_config.stb_file_loc,
+        "null_model_loc": simple_gene_compare_config.null_model_loc,
+    }
+    # Test to_json (save)
+    json_path = tmp_path / "gene_config.json"
+    simple_gene_compare_config.to_json(json_path)
+    assert json_path.exists()
+    # Test from_json (load)
+    loaded_config = database.GeneComparisonConfig.from_json(json_path)
+    assert loaded_config == simple_gene_compare_config
+
+
+def test_gene_comparison_database_create_new_empty_database(profile_1_2_database,simple_gene_compare_config):
+    """Test creating an empty gene comparison database"""
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config
+    )
+    assert len(db.comp_db.collect()) == 0
+    assert db.config == simple_gene_compare_config
+    assert db.comp_db_loc is None
+
+def test_gene_comparison_database_create_with_existing_comp_db(profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test creating a gene comparison database with existing comparison data"""
+    # Create a simple gene comparison parquet file
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    assert db.comp_db_loc == comp_db_path
+    assert db.comp_db.collect().height == 1
+
+def test_gene_comparison_database_validate_db(profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test validation of gene comparison database structure"""
+    # Create invalid comparison data (missing columns)
+    invalid_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100]
+    })
+    invalid_path = tmp_path / "invalid_gene_comp.parquet"
+    invalid_data.write_parquet(invalid_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(invalid_path)
+    )
+    
+    with pytest.raises(ValueError, match="Your comparison database must provide these extra columns"):
+        db._validate_db()
+
+def test_gene_comparison_database_validate_profile_names(profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test validation that all profile names in comp_db exist in profile_db"""
+    # Create comparison data with non-existent profile name
+    invalid_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["nonexistent_profile"]
+    })
+    invalid_path = tmp_path / "invalid_gene_comp.parquet"
+    invalid_data.write_parquet(invalid_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(invalid_path)
+    )
+    
+    with pytest.raises(ValueError, match="The following profile names are in the comparison database but not in the profile database"):
+        db._validate_db()
+
+def test_gene_comparison_database_get_all_profile_names(profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test getting all profile names from gene comparison database"""
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1", "genome1"],
+        "gene": ["gene1", "gene2"],
+        "total_positions": [100, 150],
+        "share_allele_pos": [95, 140],
+        "ani": [95.0, 93.3],
+        "sample_1": ["profile_1", "profile_1"],
+        "sample_2": ["profile_2", "profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    profile_names = db.get_all_profile_names()
+    assert profile_names == {"profile_1", "profile_2"}
+
+def test_gene_comparison_database_get_remaining_pairs(profile_1_2_3_database,simple_gene_compare_config,tmp_path):
+    """Test getting remaining pairs that haven't been compared"""
+    # Create comparison data for only profile_1 vs profile_2
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_3_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    remaining = db.get_remaining_pairs().collect()
+    assert remaining.height == 2  
+    pairs = set(zip(remaining["profile_1"].to_list(), remaining["profile_2"].to_list()))
+    assert pairs == {("profile_1", "profile_3"), ("profile_2", "profile_3")}
+
+def test_gene_comparison_database_is_complete(profile_1_2_3_database,profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test checking if all pairs have been compared"""
+    # Create complete comparison data
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    assert db.is_complete()
+    
+    profile_1_2_3_database_dir = tmp_path / "profile_1_2_3.parquet"
+    profile_1_2_3_database.save_as_new_database(profile_1_2_3_database_dir)
+    
+    db_incomplete = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    assert not db_incomplete.is_complete() 
+
+def test_gene_comparison_database_add_comp_database(profile_1_2_3_database,simple_gene_compare_config,tmp_path):
+    """Test merging two gene comparison databases"""
+    profile_1_2_3_database_dir = tmp_path / "profile_1_2_3.parquet"
+    profile_1_2_3_database.save_as_new_database(profile_1_2_3_database_dir)
+    
+    # Create first comparison database
+    gene_comp_data_1 = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path_1 = tmp_path / "gene_comp_1.parquet"
+    gene_comp_data_1.write_parquet(comp_db_path_1)
+    
+    # Create second comparison database
+    gene_comp_data_2 = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [120],
+        "share_allele_pos": [110],
+        "ani": [91.7],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_3"]
+    })
+    comp_db_path_2 = tmp_path / "gene_comp_2.parquet"
+    gene_comp_data_2.write_parquet(comp_db_path_2)
+    
+    db_1 = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path_1)
+    )
+    
+    db_2 = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path_2)
+    )
+    
+    db_1.add_comp_database(db_2)
+    assert db_1.comp_db.collect().height == 2
+
+def test_gene_comparison_database_add_incompatible_comp_database(profile_1_2_database,tmp_path,simple_gene_compare_config):
+    """Test that adding an incompatible gene comparison database raises an error"""
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db_1 = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+
+    incompatible_config = database.GeneComparisonConfig(
+        scope="all:gene1",
+        min_cov=10,  
+        min_gene_compare_len=100,
+        stb_file_loc=simple_gene_compare_config.stb_file_loc,
+        null_model_loc=simple_gene_compare_config.null_model_loc
+    )
+    
+    db_2 = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=incompatible_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    with pytest.raises(ValueError, match="The comparison database provided is not compatible"):
+        db_1.add_comp_database(db_2)
+
+def test_gene_comparison_database_save_new_compare_database(profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test saving gene comparison database to a new location"""
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    new_path = tmp_path / "gene_comp_new.parquet"
+    db.save_new_compare_database(str(new_path))
+    
+    assert new_path.exists()
+    loaded_data = pl.read_parquet(new_path)
+    assert loaded_data.height == 1
+
+def test_gene_comparison_database_save_to_same_location_raises_error(profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test that saving to the same location raises an error"""
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    with pytest.raises(ValueError, match="The output path must be different from the current database location"):
+        db.save_new_compare_database(str(comp_db_path))
+
+def test_gene_comparison_database_update_compare_database(profile_1_2_3_database,simple_gene_compare_config,tmp_path):
+    """Test updating the gene comparison database in place"""
+    profile_1_2_3_database_dir = tmp_path / "profile_1_2_3.parquet"
+    profile_1_2_3_database.save_as_new_database(profile_1_2_3_database_dir)
+    
+    # Create initial comparison database
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    # Add more data
+    gene_comp_data_2 = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [120],
+        "share_allele_pos": [110],
+        "ani": [91.7],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_3"]
+    })
+    comp_db_path_2 = tmp_path / "gene_comp_2.parquet"
+    gene_comp_data_2.write_parquet(comp_db_path_2)
+    
+    db_2 = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path_2)
+    )
+    
+    db.add_comp_database(db_2)
+    db.update_compare_database()
+    
+    # Reload and verify
+    updated_data = pl.read_parquet(comp_db_path)
+    assert updated_data.height == 2
+
+def test_gene_comparison_database_update_without_comp_db_loc_raises_error(profile_1_2_database,simple_gene_compare_config):
+    """Test that updating without a comp_db_loc raises an error"""
+    db = database.GeneComparisonDatabase(
+        profile_db=profile_1_2_database,
+        config=simple_gene_compare_config
+    )
+    
+    with pytest.raises(Exception, match="comp_db_loc attribute is not determined yet"):
+        db.update_compare_database()
+
+def test_gene_comparison_database_dump_and_load_obj(profile_1_2_database,simple_gene_compare_config,tmp_path):
+    """Test dumping and loading a gene comparison database object"""
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    profile_db_path = tmp_path / "profile_db.parquet"
+    profile_1_2_database.save_as_new_database(str(profile_db_path))
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=str(profile_db_path)),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    json_path = tmp_path / "gene_comp_db.json"
+    db.dump_obj(str(json_path))
+    
+    assert json_path.exists()
+    
+    loaded_db = database.GeneComparisonDatabase.load_obj(str(json_path))
+    assert loaded_db.config == db.config
+    assert loaded_db.comp_db.collect().height == db.comp_db.collect().height
+
+def test_gene_comparison_database_to_complete_input_table(profile_1_2_3_database,simple_gene_compare_config,tmp_path):
+    """Test generating complete input table for remaining gene comparisons"""
+    profile_1_2_3_database_dir = tmp_path / "profile_1_2_3.parquet"
+    profile_1_2_3_database.save_as_new_database(profile_1_2_3_database_dir)
+    
+    # Create partial comparison database
+    gene_comp_data = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_path = tmp_path / "gene_comp.parquet"
+    gene_comp_data.write_parquet(comp_db_path)
+    
+    db = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_path)
+    )
+    
+    input_table = db.to_complete_input_table().collect()
+    
+    assert input_table.height == 2  # Two remaining pairs
+    assert set(input_table.columns) == {
+        "sample_name_1", "sample_name_2",
+        "profile_location_1", "profile_location_2",
+        "scaffold_location_1", "scaffold_location_2"
+    }
+    
+    pairs = set(zip(input_table["sample_name_1"].to_list(), input_table["sample_name_2"].to_list()))
+    assert pairs == {("profile_1", "profile_3"), ("profile_2", "profile_3")}
+
+def test_gene_comparison_database_load_and_dump(profile_1_2_3_database,tmp_path,simple_gene_compare_config):
+    """Test complete workflow of loading and dumping gene comparison database"""
+    profile_1_2_3_database_dir = tmp_path / "profile_1_2_3.parquet"
+    profile_1_2_3_database.save_as_new_database(profile_1_2_3_database_dir)
+    
+    # Create two separate comparison databases
+    gene_comp_data_1 = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [100],
+        "share_allele_pos": [95],
+        "ani": [95.0],
+        "sample_1": ["profile_1"],
+        "sample_2": ["profile_2"]
+    })
+    comp_db_1_path = tmp_path / "gene_comp_1_2.parquet"
+    gene_comp_data_1.write_parquet(comp_db_1_path)
+    
+    gene_comp_data_2 = pl.DataFrame({
+        "genome": ["genome1"],
+        "gene": ["gene1"],
+        "total_positions": [120],
+        "share_allele_pos": [110],
+        "ani": [91.7],
+        "sample_1": ["profile_3"],
+        "sample_2": ["profile_1"]
+    })
+    comp_db_3_1_path = tmp_path / "gene_comp_31_32.parquet"
+    gene_comp_data_2.write_parquet(comp_db_3_1_path)
+    
+    db_12 = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_1_path)
+    )
+    
+    db_3_12 = database.GeneComparisonDatabase(
+        profile_db=database.ProfileDatabase(db_loc=profile_1_2_3_database_dir),
+        config=simple_gene_compare_config,
+        comp_db_loc=str(comp_db_3_1_path)
+    )
+    
+    db_12.add_comp_database(db_3_12)
+    db_12.update_compare_database()
+    
+    assert db_12.comp_db.collect().height == 2
 

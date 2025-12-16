@@ -3,7 +3,6 @@ zipstrain.utils
 ========================
 This module provides utility functions for profiling and compare operations.
 """
-import click
 import pathlib
 import polars as pl
 import sys
@@ -15,6 +14,7 @@ from collections import defaultdict,Counter
 from functools import reduce
 from scipy.stats import poisson
 import subprocess
+import pdb
 
 def build_null_poisson(error_rate:float=0.001,
                        max_total_reads:int=10000,
@@ -140,7 +140,7 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
 
         if writer is None:
             # Open writer for the first time
-            writer = pq.ParquetWriter(output_file, schema, compression='snappy')
+            writer = pq.ParquetWriter(output_file, schema, compression='zstd')
         writer.write_table(pa.Table.from_batches([batch]))
 
         # Clear buffers
@@ -179,6 +179,51 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
 
     if writer:
         writer.close()
+
+def process_read_location(output_file:str, batch_size:int=10000)->None:
+    """
+    This function takes the output of samtools view -F 132 and processes it to extract read locations in a parquet file.
+    """
+    schema = pa.schema([
+        ('chrom', pa.string()),
+        ('pos', pa.int32()),
+    ])
+    writer = None
+    chroms = []
+    positions = []
+    def flush_batch():
+        nonlocal writer
+        if not chroms:
+            return
+        batch = pa.RecordBatch.from_arrays([
+            pa.array(chroms, type=pa.string()),
+            pa.array(positions, type=pa.int32()),
+        ], schema=schema)
+
+        if writer is None:
+            # Open writer for the first time
+            writer = pq.ParquetWriter(output_file, schema, compression='zstd')
+        writer.write_table(pa.Table.from_batches([batch]))
+
+        # Clear buffers
+        chroms.clear()
+        positions.clear()
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        fields = line.strip().split('\t')
+        if len(fields) < 4:
+            continue
+        chrom, pos = fields[2], fields[3]
+        chroms.append(chrom)
+        positions.append(int(pos))
+        if len(chroms) >= batch_size:
+            flush_batch()
+    # Flush remaining data
+    flush_batch()
+    if writer:
+        writer.close()
+
 
 def extract_genome_length(stb: pl.LazyFrame, bed_table: pl.LazyFrame) -> pl.LazyFrame:
     """
@@ -348,3 +393,108 @@ def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
         chunk = lf.slice(start, end - start)
         chunks.append(chunk)
     return chunks
+
+
+def get_genome_gaps(
+    read_loc_table: pl.LazyFrame,
+    stb: pl.LazyFrame,
+    genome_length: pl.LazyFrame,
+                    )-> pl.LazyFrame:
+    read_loc_table=read_loc_table.sort(["scaffold",'loc'])
+    read_loc_table=read_loc_table.with_columns(
+        (pl.col("loc") - pl.col("loc").shift(1).over("scaffold")).alias("gap_length")
+    ).join(
+        stb,
+        on="scaffold",
+        how="left"
+    )
+    delta=read_loc_table.group_by("genome").agg(
+        rn=pl.len()).join(
+        genome_length,
+        on="genome",
+        how="left"
+    ).with_columns(
+        delta=(pl.col("genome_length")/pl.col("rn")).round().alias("delta")).select(
+        pl.col("genome"),
+        pl.col("delta"),
+        pl.col("rn")
+        )
+    read_loc_table=read_loc_table.join(
+        delta,
+        on="genome",
+        how="left"
+    )
+    read_loc_table=read_loc_table.filter(
+        pl.col("gap_length") > pl.col("delta")
+    ).group_by(["genome","gap_length"]).agg(
+        pd=(pl.len()/(pl.col("rn").first()-1)),
+        delta=pl.col("delta").first()
+    ).with_columns(
+        pd= pl.col("pd") * (pl.col("gap_length")-pl.col("delta"))
+    ).group_by("genome").agg(
+        fug=(pl.col("delta").first()-pl.col("pd").sum())/pl.col("delta").first()
+    )
+    return read_loc_table.select(
+        pl.col("genome"),
+        pl.col("fug")
+    )
+
+def get_genome_stats(
+    profile:pl.LazyFrame,
+    bed: pl.LazyFrame,
+    stb: pl.LazyFrame,
+    read_loc_table: pl.LazyFrame,
+    ber:float=0.5,
+    fug:float=2,
+    min_cov_use_fug:int=0.1
+)->pl.LazyFrame:
+
+    genome_lengths=extract_genome_length(stb, bed)
+    genome_gap_stats= get_genome_gaps(read_loc_table, stb, genome_lengths)
+    profile=profile.join(
+        stb,
+        left_on="chrom",
+        right_on="scaffold",
+        how="left"
+    ).select(
+        pl.col("chrom"),
+        pl.col("genome"),
+        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage")
+    )
+    profile=profile.group_by("genome").agg(
+        total_covered_sites=pl.len(),
+        coverage=pl.col("coverage").sum()
+    ).join(
+        genome_lengths,
+        on="genome",
+        how="left"
+    ).join(
+        genome_gap_stats,
+        on="genome",
+        how="left"
+    ).with_columns(
+        coverage=(pl.col("coverage")/pl.col("genome_length")),
+        breadth=(pl.col("total_covered_sites")/pl.col("genome_length")),
+    ).with_columns(
+        ber=pl.col("breadth")/(1-(-0.883*pl.col("coverage")).exp()),
+        fug=pl.col("fug")
+    ).with_columns(
+    
+    pl.when(pl.col("coverage") > min_cov_use_fug)
+    .then(
+        pl.col("ber") > ber
+        ).otherwise(
+            (pl.col("fug")/0.632 < fug) &
+            (pl.col("ber") > ber)
+        ).fill_null(False).alias("is_present"))
+
+    return profile.select(
+        pl.col("genome"),
+        pl.col("coverage"),
+        pl.col("breadth"),
+        pl.col("ber"),
+        pl.col("fug"),
+        pl.col("is_present")
+    )
+
+

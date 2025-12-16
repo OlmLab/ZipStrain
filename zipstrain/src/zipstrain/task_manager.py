@@ -275,7 +275,6 @@ class IntOutput(Output):
             raise ValueError(f"Output value for task {self.task.id} is not an integer.")
         else:
             return False
-        return False
 
 
 class Engine(ABC):
@@ -526,8 +525,8 @@ class ProfileTaskGenerator(TaskGenerator):
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+".parquet" ),
-                "breadth":  FileOutput(row["sample_name"]+"_breadth.parquet" ),
                 "scaffold": FileOutput(row["sample_name"]+".parquet.scaffolds" ),
+                "genome-stats": FileOutput(row["sample_name"]+"_genome_stats.parquet" ),
                 }
                 task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
                 tasks.append(task)
@@ -1470,15 +1469,11 @@ class ProfileBamTask(Task):
     zipstrain profile profile-single --bam-file input.bam \
     --bed-file bed_file.bed \
     --gene-range-table gene-range-table.bed \
+    --stb-file <stb-file> \
     --num-workers <num-workers> \
     --output-dir .
     mv input.bam.parquet <sample-name>.parquet
     samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
-    zipstrain utilities genome_breadth_matrix --profile <sample-name>.parquet \
-        --genome-length <genome-length-file> \
-        --stb <stb-file> \
-        --min-cov <breadth-min-cov> \
-        --output-file <sample-name>_breadth.parquet
     """
     
 class FastCompareTask(Task):
