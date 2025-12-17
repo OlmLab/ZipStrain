@@ -76,7 +76,7 @@ def genome_length_lf()->pl.LazyFrame:
     }).lazy()
 
     
-def test_extract_genome_length(stb,bed_table):
+def test_get_genome_stats(stb,bed_table):
     result = utils.extract_genome_length(stb, bed_table).collect().rows_by_key("genome",unique=True,named=True)
     assert result["genome1"]["genome_length"] == 30
     assert result["genome2"]["genome_length"] == 30
@@ -84,10 +84,21 @@ def test_extract_genome_length(stb,bed_table):
 def test_estimate_genome_presence_interface(profile_1,
                                   bed_table,
                                   stb,):
-    result = utils.estimate_genome_presence(profile_1,
-                                           bed_table,
-                                           stb,
+    
+    
+    read_loc_table = pl.LazyFrame(
+        {
+            "scaffold": ["chr1"]*7 + ["chr2"]*14,
+            "loc": [0,1,2,3,6,7,9] + [0,2,3,6,7,11,12,13,14,15,16,17,18,19],
+        }
+    )
+    
+    result = utils.get_genome_stats(profile=profile_1,
+                                    bed=bed_table,
+                                    stb=stb,
+                                    read_loc_table=read_loc_table
                                           ).collect()
+    
     result_dict = result.rows_by_key("genome", unique=True, named=True)
     assert result_dict["genome1"]["is_present"] 
     assert result_dict["genome2"]["is_present"] 
@@ -95,5 +106,5 @@ def test_estimate_genome_presence_interface(profile_1,
     assert result_dict["genome2"]["coverage"] > 0
     assert result_dict["genome1"]["breadth"] ==1
     assert result_dict["genome2"]["breadth"] ==1
-    assert result_dict["genome1"]["cv"] == 0
-    assert result_dict["genome2"]["cv"] == 0
+    assert result_dict["genome1"]["fug"]>0
+    assert result_dict["genome2"]["fug"]is None
