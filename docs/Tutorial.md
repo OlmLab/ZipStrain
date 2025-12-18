@@ -242,3 +242,98 @@ Database module in ZipStrain provides functionalities to create and manage a cen
 - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to. Could be used for filtering profiles based on reference database later on.
     
 - gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier of your choice for the database that the reads are mapped to. Could be used for filtering profiles based on gene database later on.
+
+
+
+## An Example Workflow
+
+This example guides you through a complete workflow of using ZipStrain from building a genome database all the way to perform pairwise genome and gene comparisons and between multiple samples. Here we use MGnify Genomes mouse gut catalogue v1.0 as our reference genome database and use some example reads provided below to demonstrate the workflow. For each step, you can download the necessary input files from the provided links and follow the instructions to produce the outputs or if you want to skip a step, you can directly download the output files from the provided links.
+
+### Step 1- Prepare Reference Database
+
+|Inputs|Link|
+|------|-----|
+| MGnify Genomes mouse gut catalogue v1.0 metadata | [Link](https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/genomes-all_metadata.tsv) |
+
+|Outputs|Link|
+|-------|-----|
+| Concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+| STB file | [Link](TOBEIMPLEMENTED) |
+
+We first need to extract the accessions of the species representatives genomes from the metadata file provided above. You can use any tool of your choice to extract the accessions. Here is an example command using polars library (installed when you install ZipStrain) in python:
+
+```python
+import polars as pl
+metadata_df = pl.read_csv("genomes-all_metadata.tsv", sep="\t")
+accessions = metadata_df["accession"].unique()
+accessions.with_columns(
+
+).write_csv("genome_accessions.txt", sep="\n", header=False)
+```
+
+This will a text file containing the link to download each genome. Using the tool of your choice, download all the genomes. Here is an example command using `wget`:
+
+```bash
+mkdir genomes
+for link in $(cat genome_accessions.txt); do
+    wget $link -P genomes/
+done
+```
+
+Now you can use ZipStrain to build the STB file:
+
+```bash
+zipstrain utilities generate_stb -g genomes/ -o  mgnify_mouse_gut_genomes.stb --extension ".fna"
+```
+
+Finally, concatenate all the genomes into a single fasta file:
+
+```bash
+cat genomes/*.fna > mgnify_mouse_gut_genomes.fa 
+```
+
+This will be your reference genome database for profiling.
+
+### Step 2- Find genes in the reference genomes by running Prodigal
+
+|Inputs|Link|
+|------|-----|
+| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+
+|Outputs|Link|
+|-------|-----|
+| Prodigal gene fasta file | [Link](TOBEIMPLEMENTED) |  
+
+For this example, we can directly use the concatenated genome fasta file from Step 1. You can run Prodigal to find genes in the reference genomes using the following command:
+
+```bash
+prodigal -i mgnify_mouse_gut_genomes.fa -d mgnify_mouse_gut_genes.fasta  -p meta
+```
+
+### Step 3- Map example reads to the reference database
+
+|Inputs|Link|
+|------|-----|
+| Example metagenomics reads | [Link](TOBEIMPLEMENTED) |
+| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+
+|Outputs|Link|
+|-------|-----|
+| Mapped BAM files | [Link](TOBEIMPLEMENTED) |
+
+You can use any read mapper of your choice to map the reads to the reference database. Here we use the bowtie2 option provided in the ZipStrain Nextflow pipeline to perform the mapping. First, prepare an input CSV file containing the sample names and paths to the FASTQ files:
+
+```csv
+sample_name,reads1,reads2
+sample1,/path/to/sample1_R1.fastq,/path/to/sample1_R2.fastq
+sample2,/path/to/sample2_R1.fastq,/path/to/sample2_R2.fastq
+```
+
+Then run the following Nextflow command to perform the mapping:
+
+```bash
+nextflow run zipstrain.nf --mode 'map_reads' --input_type 'local' --input_table 'path/to/your/input_table.csv' --reference_genome mgnify_mouse_gut_genomes.fa --output_dir mapping_output/ -c conf.config -profile <your_profile> -resume
+```
+
+This will generate BAM files for each sample in the `mapping_output/` directory.
+
