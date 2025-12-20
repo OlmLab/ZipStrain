@@ -182,7 +182,7 @@ nextflow run zipstrain.nf --mode fast_compare \
 
 In this case, the nextflow pipeline will run all non-redundant pairwise comparisons between the provided profiles. Here is an example command:
 
-```
+```bash
 nextflow run zipstrain.nf --mode fast_compare \
  --input_table <path/to/profiles/csv> \
  --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
@@ -337,3 +337,70 @@ nextflow run zipstrain.nf --mode 'map_reads' --input_type 'local' --input_table 
 
 This will generate BAM files for each sample in the `mapping_output/` directory.
 
+### Step 4- Prepare necessary files for profiling
+
+|Inputs|Link|
+|------|-----|
+| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+| Prodigal gene fasta file | [Link](TOBEIMPLEMENTED) |
+| STB file | [Link](TOBEIMPLEMENTED)|
+
+|Outputs|Link|
+|-------|-----|
+| Bed file | [Link](TOBEIMPLEMENTED) |
+| Genome lengths parquet file | [Link](TOBEIMPLEMENTED) |
+| Gene range table TSV file | [Link](TOBEIMPLEMENTED) |
+
+You can use ZipStrain to prepare the necessary files for profiling using the following command:
+
+```bash
+zipstrain profile prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
+``` 
+
+This will generate the following files in the `preprofiles/` directory:
+
+- genomes_bed_file.bed
+- genome_lengths.parquet
+- gene_range_table.tsv
+
+### Step 5- Profile the mapped BAM files
+
+|Inputs                       |Link                                 |
+|-----------------------------|-------------------------------------|
+| Mapped BAM files            | [mapped_bam](TOBEIMPLEMENTED)       |
+| Bed file                    | [bed_file](TOBEIMPLEMENTED)         |
+| Genome lengths parquet file | [genome_lengths](TOBEIMPLEMENTED)   |
+| Gene range table TSV file   | [gene_range_table](TOBEIMPLEMENTED) |
+| STB file                    | [stb_file](TOBEIMPLEMENTED)         |
+
+|Outputs                          |Link                                 |
+|---------------------------------|-------------------------------------|
+| Profile parquet files           |[profile_link](TOBEIMPLEMENTED)      |
+| Scaffold TSV files              |[scaffold_link](TOBEIMPLEMENTED)     |
+| Genome Statistics parquet files |[genome_stats_link](TOBEIMPLEMENTED) |
+
+Now we have to make a CSV file containing the sample names and paths to the BAM files:
+
+```csv
+sample_name,bamfile
+sample1,/path/to/mapping_output/sample1.bam
+sample2,/path/to/mapping_output/sample2.bam
+```
+
+You can profile the mapped BAM files using ZipStrain with the following command:
+
+```bash
+zipstrain run profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+```
+
+This will generate profile parquet files, scaffold TSV files, and genome statistics parquet files for each sample in the `profiling_output/` directory.
+
+As an alternative, you can use the Nextflow pipeline to perform the profiling:
+
+```bash
+nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv>  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile <your/system/specific/profile> -resume
+```
+
+### Step 6- Compare the profiled samples at the genome level
+
+### Step 7- Compare the profiled samples at the gene level

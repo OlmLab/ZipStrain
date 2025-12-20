@@ -720,7 +720,7 @@ class LocalBatch(Batch):
 
     def __init__(self, tasks, id, run_dir, expected_outputs) -> None:
         super().__init__(tasks, id, run_dir, expected_outputs)
-        self._script = self.TEMPLATE_CMD + "\nset -o pipefail\n"
+        self._script = self.TEMPLATE_CMD + "\nset -euo pipefail\n"
         self._proc: asyncio.subprocess.Process | None = None 
 
 
@@ -759,9 +759,9 @@ class LocalBatch(Batch):
             except asyncio.CancelledError:
                 if self._proc and self._proc.returncode is None:
                     self._proc.terminate()
-                    await write_file(self.batch_dir / f"{self.id}.err", Messages.CANCELLED_BY_USER, self.file_semaphore)
+                    await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
 
-                raise
+                raise Exception
             
 
             await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
@@ -814,7 +814,7 @@ class SlurmBatch(Batch):
         super().__init__(tasks, id, run_dir, expected_outputs)
         self._check_slurm_works()
         self.slurm_config = slurm_config
-        self._script = self.TEMPLATE_CMD + self.slurm_config.to_slurm_args() + "\nset -o pipefail\n"
+        self._script = self.TEMPLATE_CMD + self.slurm_config.to_slurm_args() + "\nset -euo pipefail\n"
         self._job_id = None
 
     def _check_slurm_works(self) -> None:
