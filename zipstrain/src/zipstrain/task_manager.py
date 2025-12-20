@@ -523,7 +523,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 "bed-file": FileInput(self.profile_bed_file),
                 "gene-range-table": FileInput(self.gene_range_file),
                 "genome-length-file": FileInput(self.genome_length_file),
-                "num-threads": IntInput(self.num_procs),
+                "num-workers": IntInput(self.num_procs),
                 "breadth-min-cov": IntInput(self.breadth_min_cov),
                 }
                 expected_outputs ={
@@ -767,6 +767,10 @@ class LocalBatch(Batch):
             await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
             await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
 
+            if self._proc.returncode != 0:
+                error=err_bytes.decode()
+                raise RuntimeError(f"Batch script failed with error:\n{error}")
+            
             if self._proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
@@ -1454,7 +1458,7 @@ class ProfileBamTask(Task):
 
         - gene-range-table: A BED file specifying the gene ranges for the sample.
 
-        - num-threads: The number of threads to use for processing.
+        - num-workers: The number of concurrent workers to use for processing.
 
         - genome-length-file: A file containing the lengths of the genomes in the reference fasta.
 
@@ -1477,7 +1481,8 @@ class ProfileBamTask(Task):
     --stb-file <stb-file> \
     --num-workers <num-workers> \
     --output-dir .
-    mv input.bam.parquet <sample-name>.parquet
+    mv input_profile.parquet <sample-name>.parquet
+    mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
     samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
     """
     
