@@ -1169,7 +1169,7 @@ class Runner(ABC):
         console.clear()
         total_batches = self._batch_counter + (1 if self._final_batch_created and self.final_batch_factory is not None else 0)
         summary = Panel(
-            f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{total_batches} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
+            f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{self.task_generator.get_total_tasks()/self.tasks_per_batch} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
             expand=True,
             title="Summary",
             border_style="green",
