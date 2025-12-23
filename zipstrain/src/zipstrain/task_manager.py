@@ -121,10 +121,10 @@ class Status(StrEnum):
     BATCH_NOT_ASSIGNED = "batch_not_assigned"
     NOT_STARTED = "not_started"
     RUNNING = "running"
-    DONE = "done"
+    DONE = "done"      # Means a unit is finished running but the outputs are not validated
     FAILED = "failed"
     SUBMITTED = "submitted"
-    SUCCESS = "success"
+    SUCCESS = "success" # Means a unit is done and the outputs exist
     PENDING = "pending"
 
 class Messages(StrEnum):
@@ -727,6 +727,7 @@ class LocalBatch(Batch):
     async def run(self) -> None:
         """This method runs all tasks in the batch locally by creating a shell script and executing it."""
         if self.status != Status.SUCCESS:
+            
             self.batch_dir.mkdir(parents=True, exist_ok=True)
             
             self._status = Status.RUNNING.value
@@ -737,7 +738,9 @@ class LocalBatch(Batch):
             
             for task in self.tasks:
                 if task.status != Status.SUCCESS.value:
-                    task.task_dir.mkdir(parents=True, exist_ok=True)  # Create task directory
+                    if task.task_dir.exists():
+                        shutil.rmtree(task.task_dir) # Because it must have failed and we don't want those remnants
+                    task.task_dir.mkdir(parents=True)  # Create task directory
                     await write_file(task.task_dir / ".status", Status.NOT_STARTED.value, self.file_semaphore)
                     script += f"\n{task.pre_run}\n{task.command}\n{task.post_run}\n"
             
@@ -760,8 +763,9 @@ class LocalBatch(Batch):
                 if self._proc and self._proc.returncode is None:
                     self._proc.terminate()
                     await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
+                    await write_file(self.batch_dir / ".status", Status.FAILED.value, self.file_semaphore)
 
-                raise Exception
+                raise RuntimeError("Batch script execution was cancelled.")
             
 
             await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
@@ -769,26 +773,24 @@ class LocalBatch(Batch):
 
             if self._proc.returncode != 0:
                 error=err_bytes.decode()
-                raise RuntimeError(f"Batch script failed with error:\n{error}")
+                raise RuntimeError(f"Batch {self.id} hit the following error at runtime:\n{error}")
             
             if self._proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
-                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                await write_file(self.batch_dir / ".status", Status.DONE.value, self.file_semaphore)
             
             else:
                 self._status = Status.FAILED.value
                 await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                raise FileNotFoundError(f"Batch {self.id} is done but at least one expected output is missing.")
 
-        else:
-            self._status = Status.SUCCESS.value
+
 
     
     def _parse_job_id(self, sbatch_output):
         return super()._parse_job_id(sbatch_output)
 
-    def cleanup(self) -> None:
-        super().cleanup()
 
     async def cancel(self) -> None:
         """Cancels the local batch by terminating the subprocess if it's running."""
@@ -826,7 +828,7 @@ class SlurmBatch(Batch):
         try:
             subprocess.run(["sbatch", "--version"], capture_output=True, text=True, check=True)
             subprocess.run(["sacct", "--version"], capture_output=True, text=True, check=True)
-        except:
+        except Exception:
             raise EnvironmentError("Slurm does not seem to be available or configured properly on this system.")
 
     async def cancel(self) -> None:
@@ -847,22 +849,25 @@ class SlurmBatch(Batch):
         This method is unavoidably different from LocalBatch.run() because of the nature of Slurm job submission.
         """
         
-        if self.status != Status.SUCCESS and self.status != Status.FAILED.value:
+        if self.status != Status.SUCCESS:
             self.batch_dir.mkdir(parents=True, exist_ok=True)
             self._status = Status.RUNNING.value
             await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
             # create task directories and initialize .status if needed
             
             for task in self.tasks:
-                if task.status == Status.NOT_STARTED.value:
-                    task.task_dir.mkdir(parents=True, exist_ok=True)
+                if task.status != Status.SUCCESS.value:
+                    if task.task_dir.exists():
+                        shutil.rmtree(task.task_dir) # Because it must have failed and we don't want those remnants
+                    task.task_dir.mkdir(parents=True)
                     await write_file(task.task_dir / ".status", Status.NOT_STARTED.value, self.file_semaphore)
+            
             # write the batch script (all tasks included)
             
             batch_path = self.batch_dir / f"{self.id}.batch"
             script=self._script
             for task in self.tasks:
-                if task.status == Status.NOT_STARTED.value:
+                if task.status != Status.SUCCESS.value:
                     script += f"\n{task.pre_run}\n{task.command}\n{task.post_run}\n"
             
             await write_file(batch_path, script, self.file_semaphore)
@@ -905,7 +910,7 @@ class SlurmBatch(Batch):
         else:
             raise ValueError("Could not parse job ID from sbatch output.")
 
-    async def _wait_to_finish(self,sleep_duration:float=1.0):
+    async def _wait_to_finish(self,sleep_duration:float=5.0):
         while self.status not in (Status.SUCCESS.value, Status.FAILED.value):
             await self.update_status()
             await asyncio.sleep(sleep_duration)
@@ -925,13 +930,25 @@ class SlurmBatch(Batch):
                 state = out_bytes.decode().strip()
                 if state in ["FAILED", "CANCELLED", "TIMEOUT"]:
                     self._status = Status.FAILED.value
-                elif state=="RUNNING":
+                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    raise Exception(f"Job {self._job_id} failed with state: {state}")
+
+                elif state in ["RUNNING", "COMPLETING"]:
                     self._status = Status.RUNNING.value
-                elif state in ["COMPLETED", "COMPLETING"]:
-                    self._status = Status.SUCCESS.value
+                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    
+                elif state in ["COMPLETED"]:
+                    if self.outputs_ready():
+                        self._status = Status.SUCCESS.value
+                        await write_file(self.batch_dir / ".status", Status.DONE.value, self.file_semaphore)
+                    else:
+                        self._status = Status.FAILED.value
+                        await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                        raise Exception(f"Job {self._job_id} finished but at least one output is missing.")
+                        
                 else:
                     self._status = Status.PENDING.value
-                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
 console = Console()
 

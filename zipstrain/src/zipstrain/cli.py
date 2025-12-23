@@ -214,7 +214,7 @@ def build_profile_db(profile_db_csv, output_file):
 @utilities.command("build-genome-comparison-config")
 @click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
 @click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
-@click.option('--reference-db-id', '-r', required=True, help="Reference fasta ID.")
+@click.option('--reference-genome-id', '-r', required=True, help="Reference fasta ID.")
 @click.option('--scope', '-s', default="all", help="Genome scope for comparison.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
@@ -318,7 +318,7 @@ def to_complete_table(genome_comparison_object, output_file):
     """
     genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
     completed_pairs=genome_comp_db.to_complete_input_table()
-    completed_pairs.sink_csv(pathlib.Path(output_file), compression='zstd', engine="streaming")
+    completed_pairs.sink_csv(pathlib.Path(output_file), engine="streaming")
 
 @utilities.command("presence-profile")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")

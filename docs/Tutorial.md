@@ -264,10 +264,10 @@ We first need to extract the accessions of the species representatives genomes f
 
 ```python
 import polars as pl
-metadata_df = pl.read_csv("genomes-all_metadata.tsv", separator="\t")
+metadata_df = pl.read_csv("genomes-all_metadata.tsv", separator="\t") #Load metadata table downloaded from the provided link
 metadata_df.join(pl.read_csv("genomes-all_metadata.tsv",separator="\t").select('Species_rep',"FTP_download").unique("Species_rep"),left_on="Genome",right_on="Species_rep",how="inner").select("Genome").with_columns("https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/species_catalogue/"+
 pl.col("Genome").str.slice(0,11)+"/"+pl.col("Genome")+"/genome/"+pl.col("Genome")+".fna").select("literal"
-).write_csv("sp_rep_genomes.csv",include_header=False)
+).write_csv("sp_rep_genomes.csv",include_header=False) # A one(ish) liner that generates the link of each species representative genome
 ```
 
 This will a text file containing the link to download each genome. Using the tool of your choice, download all the genomes. Here is an example command using `wget`:
