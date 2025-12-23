@@ -647,18 +647,13 @@ class Batch(ABC):
             return Status.NOT_STARTED.value
         with open(self.batch_dir / ".status", mode="r") as f:
             status_as_written = f.read().strip()
-        if status_as_written in (Status.DONE.value, Status.SUCCESS.value):
-            all_ready = True
-            try:
-                for output in self.expected_outputs:
-                    if not output.ready():
-                        all_ready = False
-                        break
-            except Exception:
-                all_ready = False
 
-            if all_ready:
+        if status_as_written== Status.DONE.value:
+            outputs_ready = self.outputs_ready()
+
+            if outputs_ready:
                 return Status.SUCCESS.value
+            
             else:
                 return Status.FAILED.value
 
@@ -674,13 +669,8 @@ class Batch(ABC):
         
     def outputs_ready(self) -> bool:
         """Check if all BATCH-LEVEL expected outputs are ready."""
-        try:
-            for output in self.expected_outputs:
-                if not output.ready():
-                    return False
-            return True
-        except Exception:
-            return False
+
+        return all([output.ready() for output in self.expected_outputs])
         
     async def _collect_task_status(self) -> list[str]:
         """Collects the status of all tasks asynchronously."""
@@ -709,6 +699,7 @@ class Batch(ABC):
     async def update_status(self) -> str:
         """Updates the status of the batch by collecting the status of all tasks."""
         await self._collect_task_status()
+    
     def _set_file_semaphore(self, file_semaphore: asyncio.Semaphore) -> None:
         self.file_semaphore = file_semaphore
         for task in self.tasks:
