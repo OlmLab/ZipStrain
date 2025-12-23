@@ -641,7 +641,7 @@ class GenomeComparisonDatabase:
                 .rename({"profile_location":"profile_location_1","scaffold_location":"scaffold_location_1"})
                 .join(self.profile_db.db.select(["profile_name","profile_location","scaffold_location"]),left_on="sample_name_2",right_on="profile_name",how="left")
                 .rename({"profile_location":"profile_location_2","scaffold_location":"scaffold_location_2"})
-               )
+               ).sort(["sample_name_1","sample_name_2"])
 
 
 
@@ -871,5 +871,5 @@ class GeneComparisonDatabase:
                 .join(self.profile_db.db.select(["profile_name", "profile_location", "scaffold_location"]), 
                       left_on="sample_name_2", right_on="profile_name", how="left")
                 .rename({"profile_location": "profile_location_2", "scaffold_location": "scaffold_location_2"})
-               )
+               ).sort(["sample_name_1", "sample_name_2"])
 

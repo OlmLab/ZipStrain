@@ -140,3 +140,27 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     lf2 = pl.read_parquet(tmp_path/"output.parquet")
     assert result.exit_code == 0
     assert lf2.shape[0] == 2
+    
+
+
+def test_generate_stb(tmp_path):
+    # Create multiple fasta files in a temporary directory
+    fasta1 = tmp_path / "genome1.fasta"
+    fasta1.write_text(">chr1_1\nACGTACGTAC\n>chr2_1\nACGTACGTACGTACGTACGT\n")
+    fasta2 = tmp_path / "genome2.fasta"
+    fasta2.write_text(">chr1_2\nACGTACGTACGTACGTACGTACGTACGT\n")
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["utilities","generate_stb", "-g",  str(tmp_path) , "-o", str(tmp_path / "stb_output.tsv"), "--extension", ".fasta"])
+    assert result.exit_code == 0
+    stb_path = tmp_path / "stb_output.tsv"
+    assert stb_path.exists()
+    stb=pl.read_csv(stb_path,separator="\t",has_header=False).rename(
+        {
+            "column_1":"scaffold",
+            "column_2":"genome"
+        }
+    )
+    result_dict = stb.rows_by_key("scaffold", unique=True, named=True)
+    assert result_dict["chr1_1"]["genome"] == "genome1"
+    assert result_dict["chr2_1"]["genome"] == "genome1"
+    assert result_dict["chr1_2"]["genome"] == "genome2"

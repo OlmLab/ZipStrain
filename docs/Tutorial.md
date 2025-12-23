@@ -182,7 +182,7 @@ nextflow run zipstrain.nf --mode fast_compare \
 
 In this case, the nextflow pipeline will run all non-redundant pairwise comparisons between the provided profiles. Here is an example command:
 
-```
+```bash
 nextflow run zipstrain.nf --mode fast_compare \
  --input_table <path/to/profiles/csv> \
  --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
@@ -242,3 +242,164 @@ Database module in ZipStrain provides functionalities to create and manage a cen
 - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to. Could be used for filtering profiles based on reference database later on.
     
 - gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier of your choice for the database that the reads are mapped to. Could be used for filtering profiles based on gene database later on.
+
+
+
+## An Example Workflow
+
+This example guides you through a complete workflow of using ZipStrain from building a genome database all the way to perform pairwise genome and gene comparisons and between multiple samples. Here we use MGnify Genomes mouse gut catalogue v1.0 as our reference genome database and use some example reads provided below to demonstrate the workflow. For each step, you can download the necessary input files from the provided links and follow the instructions to produce the outputs or if you want to skip a step, you can directly download the output files from the provided links.
+
+### Step 1- Prepare Reference Database
+
+|Inputs|Link|
+|------|-----|
+| MGnify Genomes mouse gut catalogue v1.0 metadata | [Link](https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/genomes-all_metadata.tsv) |
+
+|Outputs|Link|
+|-------|-----|
+| Concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+| STB file | [Link](TOBEIMPLEMENTED) |
+
+We first need to extract the accessions of the species representatives genomes from the metadata file provided above. You can use any tool of your choice to extract the accessions. Here is an example command using polars library (installed when you install ZipStrain) in python:
+
+```python
+import polars as pl
+metadata_df = pl.read_csv("genomes-all_metadata.tsv", separator="\t") #Load metadata table downloaded from the provided link
+metadata_df.join(pl.read_csv("genomes-all_metadata.tsv",separator="\t").select('Species_rep',"FTP_download").unique("Species_rep"),left_on="Genome",right_on="Species_rep",how="inner").select("Genome").with_columns("https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/species_catalogue/"+
+pl.col("Genome").str.slice(0,11)+"/"+pl.col("Genome")+"/genome/"+pl.col("Genome")+".fna").select("literal"
+).write_csv("sp_rep_genomes.csv",include_header=False) # A one(ish) liner that generates the link of each species representative genome
+```
+
+This will a text file containing the link to download each genome. Using the tool of your choice, download all the genomes. Here is an example command using `wget`:
+
+```bash
+mkdir genomes
+for link in $(cat genome_accessions.txt); do
+    wget $link -P genomes/
+done
+```
+
+Now you can use ZipStrain to build the STB file:
+
+```bash
+zipstrain utilities generate_stb -g genomes/ -o  mgnify_mouse_gut_genomes.stb --extension ".fna"
+```
+
+Finally, concatenate all the genomes into a single fasta file:
+
+```bash
+cat genomes/*.fna > mgnify_mouse_gut_genomes.fa 
+```
+
+This will be your reference genome database for profiling.
+
+### Step 2- Find genes in the reference genomes by running Prodigal
+
+|Inputs|Link|
+|------|-----|
+| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+
+|Outputs|Link|
+|-------|-----|
+| Prodigal gene fasta file | [Link](TOBEIMPLEMENTED) |  
+
+For this example, we can directly use the concatenated genome fasta file from Step 1. You can run Prodigal to find genes in the reference genomes using the following command:
+
+```bash
+prodigal -i mgnify_mouse_gut_genomes.fa -d mgnify_mouse_gut_genes.fasta  -p meta
+```
+
+### Step 3- Map example reads to the reference database
+
+|Inputs|Link|
+|------|-----|
+| Example metagenomics reads | [Link](TOBEIMPLEMENTED) |
+| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+
+|Outputs|Link|
+|-------|-----|
+| Mapped BAM files | [Link](TOBEIMPLEMENTED) |
+
+You can use any read mapper of your choice to map the reads to the reference database. Here we use the bowtie2 option provided in the ZipStrain Nextflow pipeline to perform the mapping. First, prepare an input CSV file containing the sample names and paths to the FASTQ files:
+
+```csv
+sample_name,reads1,reads2
+sample1,/path/to/sample1_R1.fastq,/path/to/sample1_R2.fastq
+sample2,/path/to/sample2_R1.fastq,/path/to/sample2_R2.fastq
+```
+
+Then run the following Nextflow command to perform the mapping:
+
+```bash
+nextflow run zipstrain.nf --mode 'map_reads' --input_type 'local' --input_table 'path/to/your/input_table.csv' --reference_genome mgnify_mouse_gut_genomes.fa --output_dir mapping_output/ -c conf.config -profile <your_profile> -resume
+```
+
+This will generate BAM files for each sample in the `mapping_output/` directory.
+
+### Step 4- Prepare necessary files for profiling
+
+|Inputs|Link|
+|------|-----|
+| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+| Prodigal gene fasta file | [Link](TOBEIMPLEMENTED) |
+| STB file | [Link](TOBEIMPLEMENTED)|
+
+|Outputs|Link|
+|-------|-----|
+| Bed file | [Link](TOBEIMPLEMENTED) |
+| Genome lengths parquet file | [Link](TOBEIMPLEMENTED) |
+| Gene range table TSV file | [Link](TOBEIMPLEMENTED) |
+
+You can use ZipStrain to prepare the necessary files for profiling using the following command:
+
+```bash
+zipstrain profile prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
+``` 
+
+This will generate the following files in the `preprofiles/` directory:
+
+- genomes_bed_file.bed
+- genome_lengths.parquet
+- gene_range_table.tsv
+
+### Step 5- Profile the mapped BAM files
+
+|Inputs                       |Link                                 |
+|-----------------------------|-------------------------------------|
+| Mapped BAM files            | [mapped_bam](TOBEIMPLEMENTED)       |
+| Bed file                    | [bed_file](TOBEIMPLEMENTED)         |
+| Genome lengths parquet file | [genome_lengths](TOBEIMPLEMENTED)   |
+| Gene range table TSV file   | [gene_range_table](TOBEIMPLEMENTED) |
+| STB file                    | [stb_file](TOBEIMPLEMENTED)         |
+
+|Outputs                          |Link                                 |
+|---------------------------------|-------------------------------------|
+| Profile parquet files           |[profile_link](TOBEIMPLEMENTED)      |
+| Scaffold TSV files              |[scaffold_link](TOBEIMPLEMENTED)     |
+| Genome Statistics parquet files |[genome_stats_link](TOBEIMPLEMENTED) |
+
+Now we have to make a CSV file containing the sample names and paths to the BAM files:
+
+```csv
+sample_name,bamfile
+sample1,/path/to/mapping_output/sample1.bam
+sample2,/path/to/mapping_output/sample2.bam
+```
+
+You can profile the mapped BAM files using ZipStrain with the following command:
+
+```bash
+zipstrain run profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+```
+
+This will generate profile parquet files, scaffold TSV files, and genome statistics parquet files for each sample in the `profiling_output/` directory.
+
+As an alternative, you can use the Nextflow pipeline to perform the profiling:
+
+```bash
+nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv>  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile <your/system/specific/profile> -resume
+```
+
+### Step 6- Compare the profiled samples at the genome level
+
+### Step 7- Compare the profiled samples at the gene level

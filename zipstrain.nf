@@ -165,8 +165,8 @@ process profile_bam {
     path stb_file
     path gene_range_table
     output:
-    path "${bam_file.stem}_profile.parquet", emit: profile
-    path "${bam_file.stem}_genome_stats.parquet", emit: genome_stats
+    path "${bamfile.baseName}_profile.parquet", emit: profile
+    path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
     path "${sample_name}.parquet.scaffolds", emit: covered_scaffolds
     val sample_name, emit: sample_name
     script:
@@ -599,12 +599,7 @@ workflow fast_profile{
     reference_genome
     main:
     prepare_profile(reference_genome, gene_file, file(params.stb))
-    profile_bam(sample_names, bamfiles, prepare_profile.out.genome_bed, prepare_profile.out.gene_range_table)
-    get_genome_breadth(profile_bam.out.profile,
-                       file(params.stb),
-                       prepare_profile.out.genome_bed)
-    merge_breadth_tables(get_genome_breadth.out.genome_breadth.collect())
-
+    profile_bam(sample_names, bamfiles, prepare_profile.out.genome_bed,file(params.stb), prepare_profile.out.gene_range_table)
 }
 
 

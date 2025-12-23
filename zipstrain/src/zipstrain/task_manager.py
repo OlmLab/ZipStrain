@@ -121,12 +121,15 @@ class Status(StrEnum):
     BATCH_NOT_ASSIGNED = "batch_not_assigned"
     NOT_STARTED = "not_started"
     RUNNING = "running"
-    DONE = "done"
+    DONE = "done"      # Means a unit is finished running but the outputs are not validated
     FAILED = "failed"
     SUBMITTED = "submitted"
-    SUCCESS = "success"
+    SUCCESS = "success" # Means a unit is done and the outputs exist
     PENDING = "pending"
 
+class Messages(StrEnum):
+    """Enumeration of common messages used in task and batch management."""
+    CANCELLED_BY_USER = "Task was cancelled by a signal from the user."
 
 class Input(ABC):
     """Abstract base class for task inputs. DO NOT INSTANTIATE DIRECTLY.
@@ -390,6 +393,7 @@ class Task(ABC):
         """Asynchronously reads the task status from the .status file in the task directory."""
         status_path = self.task_dir / ".status"
         # read the status file if it exists
+        
         if status_path.exists():
             raw = await read_file(status_path, self.file_semaphore)
             self._status = raw.strip()
@@ -405,12 +409,11 @@ class Task(ABC):
                 except Exception:
                     all_ready = False
 
-                if all_ready:
+                if all_ready or self._batch_obj._cleaned_up:
                     self._status = Status.SUCCESS.value
-                    await write_file(status_path, Status.SUCCESS.value, self.file_semaphore)
+                    
                 else:
                     self._status = Status.FAILED.value
-                    await write_file(status_path, Status.FAILED.value, self.file_semaphore)
                     raise ValueError(f"Task {self.id} reported done but outputs are not ready or invalid. {self.expected_outputs['output-file'].expected_file.absolute()}")
 
         return self._status
@@ -520,7 +523,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 "bed-file": FileInput(self.profile_bed_file),
                 "gene-range-table": FileInput(self.gene_range_file),
                 "genome-length-file": FileInput(self.genome_length_file),
-                "num-threads": IntInput(self.num_procs),
+                "num-workers": IntInput(self.num_procs),
                 "breadth-min-cov": IntInput(self.breadth_min_cov),
                 }
                 expected_outputs ={
@@ -636,32 +639,27 @@ class Batch(ABC):
             task.map_io()
         
         self._runner_obj:Runner = None
-            
+        self._cleaned_up = False
 
-    
     def _get_initial_status(self) -> str:
         """Returns the initial status of the batch based on the presence of the batch directory."""
         if not self.batch_dir.exists():
             return Status.NOT_STARTED.value
         with open(self.batch_dir / ".status", mode="r") as f:
             status_as_written = f.read().strip()
-        if status_as_written in (Status.DONE.value, Status.SUCCESS.value):
-            all_ready = True
-            try:
-                for output in self.expected_outputs:
-                    if not output.ready():
-                        all_ready = False
-                        break
-            except Exception:
-                all_ready = False
 
-            if all_ready:
+        if status_as_written== Status.DONE.value:
+            outputs_ready = self.outputs_ready()
+
+            if outputs_ready:
                 return Status.SUCCESS.value
+            
             else:
                 return Status.FAILED.value
 
     def cleanup(self) -> None:
         """The base class defines if any cleanup is needed after batch success. By default, it does nothing."""
+        self._cleaned_up = True
         return None
 
     @abstractmethod
@@ -671,13 +669,8 @@ class Batch(ABC):
         
     def outputs_ready(self) -> bool:
         """Check if all BATCH-LEVEL expected outputs are ready."""
-        try:
-            for output in self.expected_outputs:
-                if not output.ready():
-                    return False
-            return True
-        except Exception:
-            return False
+
+        return all([output.ready() for output in self.expected_outputs])
         
     async def _collect_task_status(self) -> list[str]:
         """Collects the status of all tasks asynchronously."""
@@ -706,6 +699,7 @@ class Batch(ABC):
     async def update_status(self) -> str:
         """Updates the status of the batch by collecting the status of all tasks."""
         await self._collect_task_status()
+    
     def _set_file_semaphore(self, file_semaphore: asyncio.Semaphore) -> None:
         self.file_semaphore = file_semaphore
         for task in self.tasks:
@@ -717,33 +711,33 @@ class LocalBatch(Batch):
 
     def __init__(self, tasks, id, run_dir, expected_outputs) -> None:
         super().__init__(tasks, id, run_dir, expected_outputs)
-        self._script = self.TEMPLATE_CMD + "\nset -o pipefail\n"
+        self._script = self.TEMPLATE_CMD + "\nset -euo pipefail\n"
         self._proc: asyncio.subprocess.Process | None = None 
 
 
     async def run(self) -> None:
         """This method runs all tasks in the batch locally by creating a shell script and executing it."""
-        if self.status != Status.SUCCESS and self.status != Status.FAILED.value:
+        if self.status != Status.SUCCESS:
+            
             self.batch_dir.mkdir(parents=True, exist_ok=True)
+            
             self._status = Status.RUNNING.value
-
-
             await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
-
-            for task in self.tasks:
-                if task.status == Status.NOT_STARTED.value:
-                    task.task_dir.mkdir(parents=True, exist_ok=True)  # Create task directory
-                    await write_file(task.task_dir / ".status", Status.NOT_STARTED.value, self.file_semaphore)
-
+            
             script_path = self.batch_dir / f"{self.id}.sh" # Path to the shell script for the batch
-
-            script = self._script
+            script = self._script # Initialize the script content
+            
             for task in self.tasks:
-                if task.status == Status.NOT_STARTED.value or task.status == Status.FAILED.value:
+                if task.status != Status.SUCCESS.value:
+                    if task.task_dir.exists():
+                        shutil.rmtree(task.task_dir) # Because it must have failed and we don't want those remnants
+                    task.task_dir.mkdir(parents=True)  # Create task directory
+                    await write_file(task.task_dir / ".status", Status.NOT_STARTED.value, self.file_semaphore)
                     script += f"\n{task.pre_run}\n{task.command}\n{task.post_run}\n"
             
+            
+            
             await write_file(script_path, script, self.file_semaphore)
-
             await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
             self._proc = await asyncio.create_subprocess_exec(
@@ -752,34 +746,42 @@ class LocalBatch(Batch):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.batch_dir,
             )
+
             try:
                 out_bytes, err_bytes = await self._proc.communicate()
+            
             except asyncio.CancelledError:
                 if self._proc and self._proc.returncode is None:
                     self._proc.terminate()
-                raise
+                    await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
+                    await write_file(self.batch_dir / ".status", Status.FAILED.value, self.file_semaphore)
+
+                raise RuntimeError("Batch script execution was cancelled.")
+            
 
             await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
             await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
 
+            if self._proc.returncode != 0:
+                error=err_bytes.decode()
+                raise RuntimeError(f"Batch {self.id} hit the following error at runtime:\n{error}")
+            
             if self._proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
                 self._status = Status.SUCCESS.value
-                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                await write_file(self.batch_dir / ".status", Status.DONE.value, self.file_semaphore)
+            
             else:
                 self._status = Status.FAILED.value
                 await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
-        
-        elif self.status == Status.SUCCESS.value and self.outputs_ready():
-            self._status = Status.SUCCESS.value
-        else:
-            self._status = Status.FAILED.value
+                raise FileNotFoundError(f"Batch {self.id} is done but at least one expected output is missing.")
+
+
+
     
     def _parse_job_id(self, sbatch_output):
         return super()._parse_job_id(sbatch_output)
 
-    def cleanup(self) -> None:
-        super().cleanup()
 
     async def cancel(self) -> None:
         """Cancels the local batch by terminating the subprocess if it's running."""
@@ -809,7 +811,7 @@ class SlurmBatch(Batch):
         super().__init__(tasks, id, run_dir, expected_outputs)
         self._check_slurm_works()
         self.slurm_config = slurm_config
-        self._script = self.TEMPLATE_CMD + self.slurm_config.to_slurm_args() + "\nset -o pipefail\n"
+        self._script = self.TEMPLATE_CMD + self.slurm_config.to_slurm_args() + "\nset -euo pipefail\n"
         self._job_id = None
 
     def _check_slurm_works(self) -> None:
@@ -817,7 +819,7 @@ class SlurmBatch(Batch):
         try:
             subprocess.run(["sbatch", "--version"], capture_output=True, text=True, check=True)
             subprocess.run(["sacct", "--version"], capture_output=True, text=True, check=True)
-        except:
+        except Exception:
             raise EnvironmentError("Slurm does not seem to be available or configured properly on this system.")
 
     async def cancel(self) -> None:
@@ -838,22 +840,25 @@ class SlurmBatch(Batch):
         This method is unavoidably different from LocalBatch.run() because of the nature of Slurm job submission.
         """
         
-        if self.status != Status.SUCCESS and self.status != Status.FAILED.value:
+        if self.status != Status.SUCCESS:
             self.batch_dir.mkdir(parents=True, exist_ok=True)
             self._status = Status.RUNNING.value
             await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
             # create task directories and initialize .status if needed
             
             for task in self.tasks:
-                if task.status == Status.NOT_STARTED.value:
-                    task.task_dir.mkdir(parents=True, exist_ok=True)
+                if task.status != Status.SUCCESS.value:
+                    if task.task_dir.exists():
+                        shutil.rmtree(task.task_dir) # Because it must have failed and we don't want those remnants
+                    task.task_dir.mkdir(parents=True)
                     await write_file(task.task_dir / ".status", Status.NOT_STARTED.value, self.file_semaphore)
+            
             # write the batch script (all tasks included)
             
             batch_path = self.batch_dir / f"{self.id}.batch"
             script=self._script
             for task in self.tasks:
-                if task.status == Status.NOT_STARTED.value:
+                if task.status != Status.SUCCESS.value:
                     script += f"\n{task.pre_run}\n{task.command}\n{task.post_run}\n"
             
             await write_file(batch_path, script, self.file_semaphore)
@@ -896,7 +901,7 @@ class SlurmBatch(Batch):
         else:
             raise ValueError("Could not parse job ID from sbatch output.")
 
-    async def _wait_to_finish(self,sleep_duration:float=1.0):
+    async def _wait_to_finish(self,sleep_duration:float=5.0):
         while self.status not in (Status.SUCCESS.value, Status.FAILED.value):
             await self.update_status()
             await asyncio.sleep(sleep_duration)
@@ -916,13 +921,25 @@ class SlurmBatch(Batch):
                 state = out_bytes.decode().strip()
                 if state in ["FAILED", "CANCELLED", "TIMEOUT"]:
                     self._status = Status.FAILED.value
-                elif state=="RUNNING":
+                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    raise Exception(f"Job {self._job_id} failed with state: {state}")
+
+                elif state in ["RUNNING", "COMPLETING"]:
                     self._status = Status.RUNNING.value
-                elif state in ["COMPLETED", "COMPLETING"]:
-                    self._status = Status.SUCCESS.value
+                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    
+                elif state in ["COMPLETED"]:
+                    if self.outputs_ready():
+                        self._status = Status.SUCCESS.value
+                        await write_file(self.batch_dir / ".status", Status.DONE.value, self.file_semaphore)
+                    else:
+                        self._status = Status.FAILED.value
+                        await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                        raise Exception(f"Job {self._job_id} finished but at least one output is missing.")
+                        
                 else:
                     self._status = Status.PENDING.value
-                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
 console = Console()
 
@@ -1152,7 +1169,7 @@ class Runner(ABC):
         console.clear()
         total_batches = self._batch_counter + (1 if self._final_batch_created and self.final_batch_factory is not None else 0)
         summary = Panel(
-            f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{total_batches} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
+            f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{self.task_generator.get_total_tasks()/self.tasks_per_batch} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
             expand=True,
             title="Summary",
             border_style="green",
@@ -1449,7 +1466,7 @@ class ProfileBamTask(Task):
 
         - gene-range-table: A BED file specifying the gene ranges for the sample.
 
-        - num-threads: The number of threads to use for processing.
+        - num-workers: The number of concurrent workers to use for processing.
 
         - genome-length-file: A file containing the lengths of the genomes in the reference fasta.
 
@@ -1472,7 +1489,8 @@ class ProfileBamTask(Task):
     --stb-file <stb-file> \
     --num-workers <num-workers> \
     --output-dir .
-    mv input.bam.parquet <sample-name>.parquet
+    mv input_profile.parquet <sample-name>.parquet
+    mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
     samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
     """
     
@@ -1547,6 +1565,7 @@ class FastCompareLocalBatch(LocalBatch):
         for task in tasks_to_remove:
             self.tasks.remove(task)
             shutil.rmtree(task.task_dir)
+        self._cleaned_up = True
 
 class FastCompareSlurmBatch(SlurmBatch):
     """A SlurmBatch that runs FastCompareTask tasks on a Slurm cluster. Maybe removed in future"""
@@ -1555,6 +1574,8 @@ class FastCompareSlurmBatch(SlurmBatch):
         for task in tasks_to_remove:
             self.tasks.remove(task)
             shutil.rmtree(task.task_dir)
+        
+        self._cleaned_up = True
 
 class PrepareCompareGenomeRunOutputsLocalBatch(LocalBatch):
     pass
@@ -1920,8 +1941,11 @@ class FastGeneCompareLocalBatch(LocalBatch):
     def cleanup(self) -> None:
         tasks_to_remove = [task for task in self.tasks if isinstance(task, FastGeneCompareTask)]
         for task in tasks_to_remove:
+            task._status=Status.SUCCESS
             self.tasks.remove(task)
             shutil.rmtree(task.task_dir)
+        self._cleaned_up = True
+        
 
 class FastGeneCompareSlurmBatch(SlurmBatch):
     """A SlurmBatch that runs FastGeneCompareTask tasks on a Slurm cluster."""
@@ -1930,6 +1954,7 @@ class FastGeneCompareSlurmBatch(SlurmBatch):
         for task in tasks_to_remove:
             self.tasks.remove(task)
             shutil.rmtree(task.task_dir)
+        self._cleaned_up = True
 
 class PrepareGeneCompareRunOutputsLocalBatch(LocalBatch):
     pass

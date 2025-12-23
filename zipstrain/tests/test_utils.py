@@ -1,5 +1,6 @@
-from zipstrain import database,compare,utils
+from zipstrain import database,compare,utils,cli
 import polars as pl
+from click.testing import CliRunner
 import pytest
 import pdb
 
