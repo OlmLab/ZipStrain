@@ -207,28 +207,35 @@ async def profile_bam_in_chunks(
 
     mpile_container: list[pl.LazyFrame] = []
     read_loc_pfs: list[pl.LazyFrame] = []
+    
     for pf, read_loc_pf in pfs:
-        mpile_container.append(pl.scan_parquet(pf).lazy())
-        read_loc_pfs.append(pl.scan_parquet(read_loc_pf).lazy())
-
-    mpileup_df = pl.concat(mpile_container)
-    mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
-    read_loc_df = pl.concat(read_loc_pfs).rename(
-        {
-            "chrom":"scaffold",
+        
+        if pf.exists():
+            mpile_container.append(pl.scan_parquet(pf).lazy())
+        
+        if read_loc_pf.exists():
+            read_loc_pfs.append(pl.scan_parquet(read_loc_pf).lazy())
+    if mpile_container:
+        mpileup_df = pl.concat(mpile_container)
+        mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
+    if read_loc_pfs:
+        read_loc_df = pl.concat(read_loc_pfs).rename(
+            {
+                "chrom":"scaffold",
             "pos":"loc",
         }
     )
 
-    utils.get_genome_stats(
-        profile=mpileup_df,
-        read_loc_table=read_loc_df,
-        stb=stb,
-        bed=bed_lf.rename({"column_1":"scaffold","column_2":"start","column_3":"end"}),
-        ber=ber,
+    if mpile_container and read_loc_pfs:
+        utils.get_genome_stats(
+            profile=mpileup_df,
+            read_loc_table=read_loc_df,
+            stb=stb,
+            bed=bed_lf.rename({"column_1":"scaffold","column_2":"start","column_3":"end"}),
+            ber=ber,
         fug=fug,
         min_cov_use_fug=min_cov_use_fug,
-    ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
+        ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
     
     
     os.system(f"rm -r {output_dir}/tmp")
