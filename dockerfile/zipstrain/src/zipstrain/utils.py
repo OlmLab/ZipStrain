@@ -16,6 +16,156 @@ from scipy.stats import poisson
 import subprocess
 import pdb
 
+
+class CallPresence:
+    """This class provides methods to use the information """
+    def validate_input(self,lf:pl.LazyFrame)->pl.LazyFrame:
+        required_columns = {"genome", "coverage", "breadth", "ber", "fug"}
+        missing_columns = required_columns - set(lf.collect_schema().names)
+        if missing_columns:
+            raise ValueError(f"Input LazyFrame is missing required columns: {missing_columns}")
+        return lf
+    
+    def metapresence(self,
+                       lf:pl.LazyFrame,
+                       ber:float=0.5,
+                       fug:float=2,
+                       min_cov_use_fug:int=0.1
+                       )->pl.LazyFrame:
+        """
+        Call presence/absence of genomes based on breadth, coverage, ber, and fug.
+        Parameters:
+        lf (pl.LazyFrame): Input LazyFrame with genome statistics.
+        ber (float): Breadth error rate threshold.
+        fug (float): Fragmented unassembled genome threshold.
+        min_cov_use_fug (int): Minimum coverage to use fug for presence call.
+        Returns:
+        pl.LazyFrame: LazyFrame with presence/absence calls.
+        """
+        lf=lf.with_columns(
+            pl.when(pl.col("coverage") > min_cov_use_fug)
+            .then(
+                pl.col("ber") > ber
+                ).otherwise(
+                    (pl.col("fug")/0.632 < fug) &
+                    (pl.col("ber") > ber)
+                ).fill_null(False).alias("is_present"))
+        return lf.select(
+            pl.col("genome"),
+            pl.col("coverage"),
+            pl.col("breadth"),
+            pl.col("ber"),
+            pl.col("fug"),
+            pl.col("is_present")
+        )
+        
+    def breadth_only(
+        self,
+        lf:pl.LazyFrame,
+        breadth:float=0.5
+        )->pl.LazyFrame:
+        """
+        Call presence/absence of genomes based on breadth only.
+        Parameters:
+        lf (pl.LazyFrame): Input LazyFrame with genome statistics.
+        breadth (float): Breadth threshold.
+        Returns:
+        pl.LazyFrame: LazyFrame with presence/absence calls.
+        """
+
+        lf=lf.with_columns(
+            (pl.col("breadth") > breadth).fill_null(False).alias("is_present"))
+        return lf.select(
+            pl.col("genome"),
+            pl.col("coverage"),
+            pl.col("breadth"),
+            pl.col("ber"),
+            pl.col("fug"),
+            pl.col("is_present")
+        )
+    
+    def coverage_only(
+        self,
+        lf:pl.LazyFrame,
+        coverage:float=0.1
+        )->pl.LazyFrame:
+        """
+        Call presence/absence of genomes based on coverage only.
+        Parameters:
+        lf (pl.LazyFrame): Input LazyFrame with genome statistics.
+        coverage (float): Coverage threshold.
+        Returns:
+        pl.LazyFrame: LazyFrame
+        """
+        lf=lf.with_columns(
+            (pl.col("coverage") > coverage).fill_null(False).alias("is_present"))
+        return lf.select(
+            pl.col("genome"),
+            pl.col("coverage"),
+            pl.col("breadth"),
+            pl.col("ber"),
+            pl.col("fug"),
+            pl.col("is_present")
+        )           
+    
+    def __call__(self, method: str, lf:pl.LazyFrame, **kwargs) -> pl.LazyFrame:
+        self.validate_input(lf)
+        return self.__getattribute__(method)(lf, **kwargs)
+
+
+
+
+class EstimateAbundance:
+    """This class provides methods to estimate abundance of genomes based on coverage."""
+    def validate_input(self,lf:pl.LazyFrame)->pl.LazyFrame:
+        required_columns = {"genome", "coverage","is_present","Rn"}
+        missing_columns = required_columns - set(lf.collect_schema().names)
+        if missing_columns:
+            raise ValueError(f"Input LazyFrame is missing required columns: {missing_columns}")
+        return lf
+
+    def coverage_ratio(
+        self,
+        lf:pl.LazyFrame
+        )->pl.LazyFrame:
+        """
+        Estimate abundance based on coverage ratio.
+        Parameters:
+        lf (pl.LazyFrame): Input LazyFrame with genome statistics.
+        Returns:
+        pl.LazyFrame: LazyFrame with estimated abundance.
+        """
+        lf=lf.with_columns(
+            abundance=pl.when(pl.col("is_present"))
+            .then(
+                pl.col("coverage") /pl.col("coverage").sum()
+            ).otherwise(pl.lit(0.0))
+        )
+        return lf
+    
+    def reads_ratio(
+        self,
+        lf:pl.LazyFrame
+        )->pl.LazyFrame:
+        """
+        Estimate abundance based on reads ratio.
+        Parameters:
+        lf (pl.LazyFrame): Input LazyFrame with genome statistics.
+        Returns:
+        pl.LazyFrame: LazyFrame with estimated abundance.
+        """
+        lf=lf.with_columns(
+            abundance=pl.when(pl.col("is_present"))
+            .then(
+                pl.col("Rn") /pl.col("total_reads").sum()
+            ).otherwise(pl.lit(0.0))
+        )
+        return lf
+    
+    
+
+
+
 def build_null_poisson(error_rate:float=0.001,
                        max_total_reads:int=10000,
                        p_threshold:float=0.05)->list[float]:
@@ -428,15 +578,18 @@ def get_genome_gaps(
         pl.col("gap_length") > pl.col("delta")
     ).group_by(["genome","gap_length"]).agg(
         pd=(pl.len()/(pl.col("rn").first()-1)),
-        delta=pl.col("delta").first()
+        delta=pl.col("delta").first(),
+        rn=pl.col("rn").first()
     ).with_columns(
         pd= pl.col("pd") * (pl.col("gap_length")-pl.col("delta"))
     ).group_by("genome").agg(
-        fug=(pl.col("delta").first()-pl.col("pd").sum())/pl.col("delta").first()
+        fug=(pl.col("delta").first()-pl.col("pd").sum())/pl.col("delta").first(),
+        rn=pl.col("rn").first()
     )
     return read_loc_table.select(
         pl.col("genome"),
-        pl.col("fug")
+        pl.col("fug"),
+        pl.col("rn")
     )
 
 def get_genome_stats(
@@ -444,9 +597,6 @@ def get_genome_stats(
     bed: pl.LazyFrame,
     stb: pl.LazyFrame,
     read_loc_table: pl.LazyFrame,
-    ber:float=0.5,
-    fug:float=2,
-    min_cov_use_fug:int=0.1
 )->pl.LazyFrame:
 
     genome_lengths=extract_genome_length(stb, bed)
@@ -477,16 +627,9 @@ def get_genome_stats(
         breadth=(pl.col("total_covered_sites")/pl.col("genome_length")),
     ).with_columns(
         ber=pl.col("breadth")/(1-(-0.883*pl.col("coverage")).exp()),
-        fug=pl.col("fug")
-    ).with_columns(
-    
-    pl.when(pl.col("coverage") > min_cov_use_fug)
-    .then(
-        pl.col("ber") > ber
-        ).otherwise(
-            (pl.col("fug")/0.632 < fug) &
-            (pl.col("ber") > ber)
-        ).fill_null(False).alias("is_present"))
+        fug=pl.col("fug"),
+        rn=pl.col("rn").fill_null(0)
+    )
 
     return profile.select(
         pl.col("genome"),
@@ -494,7 +637,7 @@ def get_genome_stats(
         pl.col("breadth"),
         pl.col("ber"),
         pl.col("fug"),
-        pl.col("is_present")
+        pl.col("rn").alias("reads_mapped")
     )
 
 

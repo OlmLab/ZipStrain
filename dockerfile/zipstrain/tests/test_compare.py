@@ -1,8 +1,7 @@
 import pytest
 import polars as pl
 from zipstrain import compare
-from click.testing import CliRunner
-import json
+
 
 a_chr1=[ 1, 0, 1, 0, 0, 0, 4, 4, 2, 1]
 t_chr1=[ 0, 2, 3, 1, 0, 0, 1, 0, 0, 1]

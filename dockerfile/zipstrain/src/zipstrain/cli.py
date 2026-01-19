@@ -214,7 +214,7 @@ def build_profile_db(profile_db_csv, output_file):
 @utilities.command("build-genome-comparison-config")
 @click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
 @click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
-@click.option('--reference-db-id', '-r', required=True, help="Reference fasta ID.")
+@click.option('--reference-genome-id', '-r', required=True, help="Reference fasta ID.")
 @click.option('--scope', '-s', default="all", help="Genome scope for comparison.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
@@ -318,7 +318,7 @@ def to_complete_table(genome_comparison_object, output_file):
     """
     genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
     completed_pairs=genome_comp_db.to_complete_input_table()
-    completed_pairs.sink_csv(pathlib.Path(output_file), compression='zstd', engine="streaming")
+    completed_pairs.sink_csv(pathlib.Path(output_file), engine="streaming")
 
 @utilities.command("presence-profile")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
@@ -383,6 +383,31 @@ def process_read_locs(output_file):
 def gene_tools():
     """Holds anything related to gene analysis."""
     pass
+
+@utilities.command("generate_stb")
+@click.option('--genomes-dir-file', '-g', required=True, help="Path to the genomes directory file. A text file with each line containing a genome fasta file path.")
+@click.option('--output-file', '-o', required=True, help="Path to save the output scaffold-to-genome mapping file.")
+@click.option('--extension', '-e', default=".fasta", help="File extension of the genome fasta files.")
+def generate_stb(genomes_dir_file, output_file, extension):
+    """
+    Generate a scaffold-to-genome mapping file from the given genomes directory file.
+
+    Args:
+    genomes_dir_file (str): Path to the genomes directory file.
+    output_file (str): Path to save the output scaffold-to-genome mapping file.
+    extension (str): File extension of the genome fasta files.
+    """
+    with open(output_file, 'w') as out_f:
+        for genome in pathlib.Path(genomes_dir_file).glob(f"*{extension}"):
+            genome_name = genome.stem
+            with open(genome, 'r') as gf:
+                for line in gf:
+                    if line.startswith('>'):
+                        scaffold_name = line[1:].strip().split()[0]
+                        out_f.write(f"{scaffold_name}\t{genome_name}\n")
+    
+        
+    
 
 
 @gene_tools.command("gene-range-table")

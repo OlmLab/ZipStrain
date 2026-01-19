@@ -313,6 +313,8 @@ def simple_gene_compare_config(stb,null_model,tmp_path_factory):
     null_model_dir = tmp_path / "null_model.parquet"
     null_model.sink_parquet(null_model_dir)
     return database.GeneComparisonConfig(
+            gene_db_id="gene_ref_1",
+            reference_genome_id="ref_1",
             scope="all:gene1",
             min_cov=5,
             min_gene_compare_len=100,
@@ -853,12 +855,16 @@ def test_gene_compare_config_faulty()->None:
     """tests the response of GeneComparisonConfig to wrong inputs"""
     with pytest.raises(ValidationError, match="3 validation errors for GeneComparisonConfig"):
         database.GeneComparisonConfig(
+            gene_db_id="gene_ref_1",
+            reference_genome_id="ref_1",
             min_cov="5das", # This should be an int
             scope="all:gene1",
             min_gene_compare_len=100,
         )
     ### But passing string is okay if they can be turned to their numeric counterparts
     database.GeneComparisonConfig(
+            gene_db_id="gene_ref_1",
+            reference_genome_id="ref_1",
             min_cov="5", # This should be an int
             scope="all:gene1",
             min_gene_compare_len=100,
@@ -868,6 +874,8 @@ def test_gene_compare_config_faulty()->None:
     ### An extra attribute that is not expected
     with pytest.raises(ValueError, match="1 validation error for GeneComparisonConfig"):
         database.GeneComparisonConfig(
+            gene_db_id="gene_ref_1",
+            reference_genome_id="ref_1",
             minimum_similarity="Wrongatte",
             min_cov="5",
             scope="all:gene1",
@@ -879,6 +887,8 @@ def test_gene_compare_config_faulty()->None:
     ### A missing attr that must be provided
     with pytest.raises(ValueError, match="1 validation error for GeneComparisonConfig"):
         database.GeneComparisonConfig(
+            gene_db_id="gene_ref_1",
+            reference_genome_id="ref_1",
             min_cov="5",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
@@ -888,6 +898,8 @@ def test_gene_compare_config_faulty()->None:
     ### Invalid scope format (missing colon)
     with pytest.raises(ValueError, match="Scope must be in format 'GENOME:GENE'"):
         database.GeneComparisonConfig(
+            gene_db_id="gene_ref_1",
+            reference_genome_id="ref_1",
             min_cov=5,
             scope="allgene1",  # Missing colon
             min_gene_compare_len=100,
@@ -921,6 +933,8 @@ def test_gene_compare_config_io(tmp_path,simple_gene_compare_config):
     # Test serialization
     config_dict = simple_gene_compare_config.to_dict()
     assert config_dict == {
+        "gene_db_id": "gene_ref_1",
+        "reference_genome_id": "ref_1",
         "scope": "all:gene1",
         "min_cov": 5,
         "min_gene_compare_len": 100,
@@ -1165,6 +1179,8 @@ def test_gene_comparison_database_add_incompatible_comp_database(profile_1_2_dat
     
 
     incompatible_config = database.GeneComparisonConfig(
+        gene_db_id="gene_ref_2",
+        reference_genome_id="ref_2",
         scope="all:gene1",
         min_cov=10,  
         min_gene_compare_len=100,
