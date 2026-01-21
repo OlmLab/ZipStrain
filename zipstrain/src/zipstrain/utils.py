@@ -550,6 +550,7 @@ def get_genome_gaps(
     stb: pl.LazyFrame,
     genome_length: pl.LazyFrame,
                     )-> pl.LazyFrame:
+    ## adding mincovbreadth
     read_loc_table=read_loc_table.sort(["scaffold",'loc'])
     read_loc_table=read_loc_table.with_columns(
         (pl.col("loc") - pl.col("loc").shift(1).over("scaffold")).alias("gap_length")
@@ -559,7 +560,10 @@ def get_genome_gaps(
         how="left"
     )
     delta=read_loc_table.group_by("genome").agg(
-        rn=pl.len()).join(
+        rn=pl.len(),
+        gap_mean=pl.col("gap_length").mean(),
+        gap_std=pl.col("gap_length").std()
+        ).join(
         genome_length,
         on="genome",
         how="left"
@@ -567,7 +571,9 @@ def get_genome_gaps(
         delta=(pl.col("genome_length")/pl.col("rn")).round().alias("delta")).select(
         pl.col("genome"),
         pl.col("delta"),
-        pl.col("rn")
+        pl.col("rn"),
+        pl.col("gap_mean"),
+        pl.col("gap_std")
         )
     read_loc_table=read_loc_table.join(
         delta,
@@ -579,17 +585,23 @@ def get_genome_gaps(
     ).group_by(["genome","gap_length"]).agg(
         pd=(pl.len()/(pl.col("rn").first()-1)),
         delta=pl.col("delta").first(),
-        rn=pl.col("rn").first()
+        rn=pl.col("rn").first(),
+        gap_mean=pl.col("gap_mean").first(),
+        gap_std=pl.col("gap_std").first()
     ).with_columns(
         pd= pl.col("pd") * (pl.col("gap_length")-pl.col("delta"))
     ).group_by("genome").agg(
         fug=(pl.col("delta").first()-pl.col("pd").sum())/pl.col("delta").first(),
-        rn=pl.col("rn").first()
+        rn=pl.col("rn").first(),
+        gap_mean=pl.col("gap_mean").first(),
+        gap_std=pl.col("gap_std").first()
     )
     return read_loc_table.select(
         pl.col("genome"),
         pl.col("fug"),
-        pl.col("rn")
+        pl.col("rn"),
+        pl.col("gap_mean"),
+        pl.col("gap_std")
     )
 
 def get_genome_stats(
@@ -597,6 +609,10 @@ def get_genome_stats(
     bed: pl.LazyFrame,
     stb: pl.LazyFrame,
     read_loc_table: pl.LazyFrame,
+    comp_min_cov_breadth: int = 5,
+    hetro_min_freq: float = 0.8,
+    hetro_min_cov: int = 5
+    
 )->pl.LazyFrame:
 
     genome_lengths=extract_genome_length(stb, bed)
@@ -609,12 +625,15 @@ def get_genome_stats(
     ).select(
         pl.col("chrom"),
         pl.col("genome"),
-        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage")
+        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage"),
+        pl.max_horizontal(["A","C","G","T"]).alias("max_base_count")
     )
     profile=profile.group_by("genome").agg(
-        total_covered_sites=pl.len(),
-        coverage=pl.col("coverage").sum()
-    ).join(
+        pl.len().alias("total_covered_sites"),
+        pl.col("coverage").sum().alias("coverage"),
+        pl.col("coverage").filter(pl.col("coverage") >= comp_min_cov_breadth).count().alias(f"{comp_min_cov_breadth}x_cov_sites"),
+        ((((pl.col("max_base_count")/pl.col("coverage"))<=hetro_min_freq) & (pl.col("coverage") > hetro_min_cov)).sum()/ ((pl.col("coverage") > hetro_min_cov).sum())).alias("heterogeneity")
+        ).join(
         genome_lengths,
         on="genome",
         how="left"
@@ -635,6 +654,11 @@ def get_genome_stats(
         pl.col("genome"),
         pl.col("coverage"),
         pl.col("breadth"),
+        pl.col("genome_length"),
+        pl.col("gap_mean"),
+        pl.col("gap_std"),
+        pl.col(f"{comp_min_cov_breadth}x_cov_sites"),
+        pl.col("heterogeneity"),
         pl.col("ber"),
         pl.col("fug"),
         pl.col("rn").alias("reads_mapped")
