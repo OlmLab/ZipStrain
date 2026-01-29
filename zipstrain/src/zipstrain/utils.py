@@ -29,7 +29,7 @@ class CallPresence:
     def metapresence(self,
                        lf:pl.LazyFrame,
                        ber:float=0.5,
-                       fug:float=2,
+                       fug:float=0.5,
                        min_cov_use_fug:int=0.1
                        )->pl.LazyFrame:
         """

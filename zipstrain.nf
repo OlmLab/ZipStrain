@@ -67,7 +67,7 @@ process get_sequences_from_sra {
     
     script:
     """
-    prefetch ${sra_ids}
+    prefetch --max-size 200g ${sra_ids} 
     fasterq-dump --split-files --outdir ${sra_ids} ${sra_ids}
     gzip ${sra_ids}/${sra_ids}*.fastq
     rm -rf ${sra_ids}/${sra_ids}.sra
@@ -438,7 +438,7 @@ process fromSRAtoProfile{
     val sra_id, emit: sample_name
     script:
     """
-    prefetch ${sra_id}
+    prefetch --max-size 200g ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
     gzip ${sra_id}/${sra_id}*.fastq
     rm -rf ${sra_id}/${sra_id}.sra

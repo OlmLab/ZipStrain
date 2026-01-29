@@ -165,9 +165,6 @@ async def profile_bam_in_chunks(
     stb:pl.LazyFrame,
     output_dir:str,
     num_workers:int=4,
-    ber:float=0.5,
-    fug:float=2.0,
-    min_cov_use_fug:int=0.1
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -232,9 +229,6 @@ async def profile_bam_in_chunks(
             read_loc_table=read_loc_df,
             stb=stb,
             bed=bed_lf.rename({"column_1":"scaffold","column_2":"start","column_3":"end"}),
-            ber=ber,
-        fug=fug,
-        min_cov_use_fug=min_cov_use_fug,
         ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
     
     
@@ -247,9 +241,6 @@ def profile_bam(
     stb:pl.LazyFrame,
     output_dir:str,
     num_workers:int=4,
-    ber:float=0.5,
-    fug:float=2.0,
-    min_cov_use_fug:int=0.1
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -269,8 +260,5 @@ def profile_bam(
         stb=stb,
         output_dir=output_dir,
         num_workers=num_workers,
-        ber=ber,
-        fug=fug,
-        min_cov_use_fug=min_cov_use_fug
     ))
 

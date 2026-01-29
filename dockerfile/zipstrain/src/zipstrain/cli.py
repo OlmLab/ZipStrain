@@ -655,10 +655,7 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
 @click.option('--num-workers', '-n', default=1, help="Number of workers to use for profiling.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-@click.option('--ber', '-r', default=0.5, help="Minimum ratio of breadth over expected breadth to consider presence.")
-@click.option('--fug', '-f', default=2.0, help="fraction of expected gaps (FUG) threshold.")
-@click.option('--min-cov-use-fug', '-m', default=0.1, help="Minimum coverage to use FUG.")
-def profile_single(bed_file, bam_file, stb_file, gene_range_table, num_workers, output_dir, ber, fug, min_cov_use_fug):
+def profile_single(bed_file, bam_file, stb_file, gene_range_table, num_workers, output_dir):
     """
     Profile a single BAM file using the provided BED file and gene range table.
     
@@ -676,9 +673,6 @@ def profile_single(bed_file, bam_file, stb_file, gene_range_table, num_workers, 
         stb=stb,
         output_dir=output_dir,
         num_workers=num_workers,
-        ber=ber,
-        fug=fug,
-        min_cov_use_fug=min_cov_use_fug
     )
 
 @cli.group()
