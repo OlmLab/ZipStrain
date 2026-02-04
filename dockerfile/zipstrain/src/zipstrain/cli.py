@@ -66,11 +66,9 @@ def merge_parquet(input_dir, output_file):
 
 
 @utilities.command("process_mpileup")
-@click.option('--gene-range-table-loc', '-g', required=True, help="Location of the gene range table in TSV format.")
-@click.option('--batch-bed', '-b', required=True, help="Location of the batch BED file.")
 @click.option('--batch-size', '-s', default=10000, help="Buffer size for processing stdin from samtools.")
 @click.option('--output-file', '-o', required=True, help="Location to save the output Parquet file.")
-def process_mpileup(gene_range_table_loc, batch_bed, batch_size, output_file):
+def process_mpileup(batch_size, output_file):
     """
     Process mpileup files and save the results in a Parquet file.
 
@@ -79,7 +77,7 @@ def process_mpileup(gene_range_table_loc, batch_bed, batch_size, output_file):
     batch_bed (str): Path to the batch BED file.
     output_file (str): Path to save the output Parquet file.
     """
-    ut.process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output_file)
+    ut.process_mpileup_function(batch_size, output_file)
     
 @utilities.command("make_bed")
 @click.option('--db-fasta-dir', '-d', required=True, help="Path to the database in fasta format.")

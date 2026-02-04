@@ -76,16 +76,22 @@ def build_gene_range_table(fasta_file:pathlib.Path)->pl.DataFrame:
 
 
 
-def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.DataFrame)->pl.DataFrame:
-    mpileup_df=mpileup_df.with_columns(pl.col("gene").fill_null("NA"))
-    for gene, scaffold, start, end in gene_range.iter_rows():
-        mpileup_df=mpileup_df.with_columns(
-            pl.when((pl.col("chrom") == scaffold) & (pl.col("pos") >= start) & (pl.col("pos") <= end))
-            .then(gene)
-            .otherwise(pl.col("gene"))
+def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->pl.LazyFrame:
+    mpileup_df=mpileup_df.sort(["chrom", "pos"])
+    gene_range=gene_range.sort(["scaffold", "start"])
+    annotated_mpileup=mpileup_df.join_asof(
+        gene_range,
+        left_on="pos",
+        right_on="start",
+        by_left="chrom",
+        by_right="scaffold",
+        strategy="backward").with_columns(
+            pl.when(pl.col("pos") <= pl.col("end"))
+            .then(pl.col("gene"))
+            .otherwise(pl.lit("NA"))
             .alias("gene")
         )
-    return mpileup_df
+    return annotated_mpileup
 
 
 def get_strain_hetrogeneity(profile:pl.LazyFrame,
@@ -137,7 +143,7 @@ async def _profile_chunk_task(
     chunk_id:int
 )->None:
     cmd=["samtools", "mpileup", "-A", "-l", str(bed_file.absolute()), str(bam_file.absolute())]
-    cmd += ["|", "zipstrain", "utilities", "process_mpileup", "--gene-range-table-loc", str(gene_range_table.absolute()), "--batch-bed", str(bed_file.absolute()), "--output-file", f"{bam_file.stem}_{chunk_id}.parquet"]
+    cmd += ["|", "zipstrain", "utilities", "process_mpileup", "--output-file", f"{bam_file.stem}_{chunk_id}_pre.parquet"]
     proc = await asyncio.create_subprocess_shell(
                 " ".join(cmd),
                 stdout=asyncio.subprocess.PIPE,
@@ -147,6 +153,36 @@ async def _profile_chunk_task(
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+    else:
+        mpileup=pl.scan_parquet(output_dir/f"{bam_file.stem}_{chunk_id}_pre.parquet")
+        scaffolds=pl.scan_csv(bed_file,has_header=False,separator="\t").select("column_1").unique().collect().to_series().to_list()
+        if pathlib.Path(output_dir/f"{bam_file.stem}_{chunk_id}_pre.parquet").exists():
+            mpileup_with_gene=add_gene_info_to_mpileup(
+                mpileup_df=mpileup,
+                gene_range=pl.scan_csv(
+                    gene_range_table,
+                    has_header=False,
+                    separator="\t",
+                ).rename({
+                    "column_1":"gene",
+                    "column_2":"scaffold",
+                    "column_3":"start",
+                    "column_4":"end",
+                }).filter(pl.col("scaffold").is_in(scaffolds))
+            ).drop(["start","end"]).select([
+                "chrom",
+                "pos",
+                "gene",
+                "A",
+                "C",
+                "G",
+                "T",
+            ])
+            mpileup_with_gene.sink_parquet(
+                output_dir/f"{bam_file.stem}_{chunk_id}.parquet",
+                compression='zstd',
+                engine='streaming'
+            )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(
                 " ".join(cmd),

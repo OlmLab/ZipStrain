@@ -77,7 +77,7 @@ def genome_length_lf()->pl.LazyFrame:
         "genome_length":[30,30]
     }).lazy()
 
-    
+
 def test_get_genome_stats(stb,bed_table):
     result = utils.extract_genome_length(stb, bed_table).collect().rows_by_key("genome",unique=True,named=True)
     assert result["genome1"]["genome_length"] == 30
@@ -229,4 +229,3 @@ def test_estimate_genome_presence_makes_sense():
     assert result_dict["genome1"]["coverage"] == (num_reads_genome1 * read_length) / genome_lengths["genome1"]
     assert result_dict["genome2"]["coverage"] == (num_reads_genome2 * read_length) / genome_lengths["genome2"]
     assert result_dict["genome1"]["ber"] > result_dict["genome2"]["ber"] 
-    

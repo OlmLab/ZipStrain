@@ -88,7 +88,7 @@ def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->
         strategy="backward").with_columns(
             pl.when(pl.col("pos") <= pl.col("end"))
             .then(pl.col("gene"))
-            .otherwise("NA")
+            .otherwise(pl.lit("NA"))
             .alias("gene")
         )
     return annotated_mpileup
@@ -169,7 +169,15 @@ async def _profile_chunk_task(
                     "column_3":"start",
                     "column_4":"end",
                 }).filter(pl.col("scaffold").is_in(scaffolds))
-            )
+            ).drop(["start","end"]).select([
+                "chrom",
+                "pos",
+                "gene",
+                "A",
+                "C",
+                "G",
+                "T",
+            ])
             mpileup_with_gene.sink_parquet(
                 output_dir/f"{bam_file.stem}_{chunk_id}.parquet",
                 compression='zstd',
