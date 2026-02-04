@@ -529,7 +529,7 @@ def plot_clustermap(
     )
     
     # Combine the self similarity with the filtered data
-    comps_lf_filtered = pl.concat([self_similarity, comps_lf_filtered]).collect()
+    comps_lf_filtered = pl.concat([self_similarity, comps_lf_filtered]).collect(engine="streaming")
     # Pivot the data for the clustermap
     clustermap_data = comps_lf_filtered.pivot(
         index="sample_1",
@@ -547,7 +547,7 @@ def plot_clustermap(
     elif isinstance(impute_method, (int, float)):
         clustermap_data = clustermap_data.fill_null(impute_method)
     sample_to_population = clustermap_data.select(pl.col("sample_1")).join(
-        sample_to_population.collect(),
+        sample_to_population.collect(engine="streaming"),
         left_on="sample_1",
         right_on="sample",
         how="left")

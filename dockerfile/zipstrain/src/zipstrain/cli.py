@@ -587,8 +587,9 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file
     genome_scope, gene_scope = scope.split(":")
 
     if genome_scope != "all":
-        mpile_contig_1 = mpile_contig_1.filter(pl.col("genome") == genome_scope)
-        mpile_contig_2 = mpile_contig_2.filter(pl.col("genome") == genome_scope)
+        scaffolds=stb.filter(pl.col("genome") == genome_scope).collect(engine="streaming")["scaffold"].to_list()
+        mpile_contig_1 = mpile_contig_1.filter(pl.col("chrom").is_in(scaffolds))
+        mpile_contig_2 = mpile_contig_2.filter(pl.col("chrom").is_in(scaffolds))
     
     if gene_scope != "all":
         mpile_contig_1 = mpile_contig_1.filter(pl.col("gene") == gene_scope)

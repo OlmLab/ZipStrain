@@ -355,7 +355,7 @@ process compare_gene_batched {
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
-                        -o {1}_{2}_comparison.parquet'
+                        -o {1}_{2}_comparison.parquet' ${add_gene_scope}
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
     mv *_comparison.parquet comps/

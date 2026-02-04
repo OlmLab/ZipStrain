@@ -232,7 +232,7 @@ def count_bases(bases: str):
         'T': counts.get('T', 0),
     }
 
-def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output_file):
+def process_mpileup_function(batch_size, output_file):
     """
     Process mpileup files and save the results in a Parquet file.
 
@@ -243,22 +243,11 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
     output_file (str): Path to save the output Parquet file.
     """
     indel_re = re.compile(r'\^.|[\$]|[+-](\d+)')
-    gene_ranges_pl = pl.scan_csv(gene_range_table_loc,separator='\t', has_header=False).rename({
-        "column_1": "scaffold",
-        "column_2": "start",
-        "column_3": "end",
-        "column_4": "gene"
-    })
-    scaffolds = pl.read_csv(batch_bed, separator='\t', has_header=False)["column_1"].unique().to_list()
-    gene_ranges_pl = gene_ranges_pl.filter(pl.col("scaffold").is_in(scaffolds)).collect()
-    gene_ranges = defaultdict(IntervalTree)
-    for row in gene_ranges_pl.iter_rows(named=True):
-        gene_ranges[row["scaffold"]].addi(row["start"], row["end"] + 1, row["gene"])
+
 
     schema = pa.schema([
         ('chrom', pa.string()),
         ('pos', pa.int32()),
-        ('gene', pa.string()),
         ('A', pa.uint16()),
         ('C', pa.uint16()),
         ('G', pa.uint16()),
@@ -267,7 +256,6 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
 
     chroms = []
     positions = []
-    genes = []
     As = []
     Cs = []
     Gs = []
@@ -281,7 +269,6 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
         batch = pa.RecordBatch.from_arrays([
             pa.array(chroms, type=pa.string()),
             pa.array(positions, type=pa.int32()),
-            pa.array(genes, type=pa.string()),
             pa.array(As, type=pa.uint16()),
             pa.array(Cs, type=pa.uint16()),
             pa.array(Gs, type=pa.uint16()),
@@ -296,7 +283,6 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
         # Clear buffers
         chroms.clear()
         positions.clear()
-        genes.clear()
         As.clear()
         Cs.clear()
         Gs.clear()
@@ -314,8 +300,6 @@ def process_mpileup_function(gene_range_table_loc, batch_bed, batch_size, output
 
         chroms.append(chrom)
         positions.append(int(pos))
-        matches = gene_ranges[chrom][int(pos)]
-        genes.append(next(iter(matches)).data if matches else "NA")
         As.append(counts['A'])
         Cs.append(counts['C'])
         Gs.append(counts['G'])
