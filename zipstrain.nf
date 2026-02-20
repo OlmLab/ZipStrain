@@ -15,7 +15,7 @@ params.publish_mode="link"
 params.compare_genome_scope="all"
 params.compare_gene_scope="all:all"
 params.input_type="profile_table"
-
+params.bowtie2_non_competitive_mapping=false
 
 def tableToDict(file, delimiter = ',') {
     /*
@@ -106,12 +106,14 @@ process map_reads{
     output:
     path "${sample_name}.bam", emit: bamfile
     script:
+    def competitiveness= (params.bowtie2_non_competitive_mapping) ? "-a" : ""
     if (reads.size() == 2) {
     """
     bowtie2 \\
             -x ${reference_genome} \\
             -1 ${reads[0]} \\
             -2 ${reads[1]} \\
+            ${competitiveness} \\
             --threads ${task.cpus} \\
             | samtools view -bS -F 4 - \\
             | samtools sort -@ ${task.cpus} -o ${sample_name}.bam -
@@ -121,6 +123,7 @@ process map_reads{
         bowtie2 \\
                 -x ${reference_genome} \\
                 -U ${reads[0]} \\
+                ${competitiveness} \\
                 --threads ${task.cpus} \\
                 | samtools view -bS -F 4 - \\
                 | samtools sort -@ ${task.cpus} -o ${sample_name}.bam -

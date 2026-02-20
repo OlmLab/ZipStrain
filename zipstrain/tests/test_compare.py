@@ -1,3 +1,7 @@
+import pdb
+import random
+from memory_profiler import memory_usage
+
 import pytest
 import polars as pl
 from zipstrain import compare
@@ -69,6 +73,69 @@ def null_model()->pl.LazyFrame:
         "max_error_count":[int(i*0.1) for i in range(100)],
     }).lazy()
 
+@pytest.fixture
+def large_profile_1()->pl.LazyFrame:
+
+    chr1=pl.DataFrame({
+        "chrom": ["chr1"]*1000000,
+        "pos":list(range(1000000)),
+        "gene": ["NA"]*1000000,
+        "A": [random.randint(0,10) for _ in range(1000000)],
+        "T": [random.randint(0,10) for _ in range(1000000)],
+        "C": [random.randint(0,10) for _ in range(1000000)],
+        "G": [random.randint(0,10) for _ in range(1000000)],
+    }).lazy()
+    chr2=pl.DataFrame({
+        "chrom": ["chr2"]*1000000,
+        "pos":list(range(1000000)),
+        "gene": ["NA"]*1000000,
+        "A": [random.randint(0,10) for _ in range(1000000)],
+        "T": [random.randint(0,10) for _ in range(1000000)],
+        "C": [random.randint(0,10) for _ in range(1000000)],
+        "G": [random.randint(0,10) for _ in range(1000000)],
+    }).lazy()
+    chr3=pl.DataFrame({
+        "chrom": ["chr3"]*1000000,
+        "pos":list(range(1000000)),
+        "gene": ["NA"]*1000000,
+        "A": [random.randint(0,10) for _ in range(1000000)],
+        "T": [random.randint(0,10) for _ in range(1000000)],
+        "C": [random.randint(0,10) for _ in range(1000000)],
+        "G": [random.randint(0,10) for _ in range(1000000)],
+    }).lazy()
+    return pl.concat([chr1,chr2,chr3])
+@pytest.fixture
+def large_profile_2()->pl.LazyFrame:
+    """A slightly different version of large_profile_1"""
+    chr1=pl.DataFrame({
+        "chrom": ["chr1"]*1000000,
+        "pos":list(range(1000000)),
+        "gene": ["NA"]*1000000,
+        "A": [random.randint(0,10) for _ in range(1000000)],
+        "T": [random.randint(0,10) for _ in range(1000000)],
+        "C": [random.randint(0,10) for _ in range(1000000)],
+        "G": [random.randint(0,10) for _ in range(1000000)],
+    }).lazy()
+    chr2=pl.DataFrame({
+        "chrom": ["chr2"]*1000000,
+        "pos":list(range(1000000)),
+        "gene": ["NA"]*1000000,
+        "A": [random.randint(0,10) for _ in range(1000000)],
+        "T": [random.randint(0,10) for _ in range(1000000)],
+        "C": [random.randint(0,10) for _ in range(1000000)],
+        "G": [random.randint(0,10) for _ in range(1000000)],
+    }).lazy()
+    chr3=pl.DataFrame({
+        "chrom": ["chr3"]*1000000,
+        "pos":list(range(1000000)),
+        "gene": ["NA"]*1000000,
+        "A": [random.randint(0,10) for _ in range(1000000)],
+        "T": [random.randint(0,10) for _ in range(1000000)],
+        "C": [random.randint(0,10) for _ in range(1000000)],
+        "G": [random.randint(0,10) for _ in range(1000000)],
+    }).lazy()
+    return pl.concat([chr1,chr2,chr3])
+    
 @pytest.mark.parametrize("min_cov,min_gene_compare_len", [(1, 1), (5, 1), (1, 3), (5, 3),(5,5)])
 def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,stb,null_model,min_cov,min_gene_compare_len):
     res_dict=compare.compare_genomes(
@@ -191,3 +258,5 @@ def test_cos_ani_expression(threshold1,threshold2):
     }).lazy()
 
     assert compare.get_shared_locs(profile_1, profile_2, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare.get_shared_locs(profile_3, profile_2, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
+
+

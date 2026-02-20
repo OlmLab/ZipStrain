@@ -222,7 +222,6 @@ def test_estimate_genome_presence_makes_sense():
         "genome1": sum(genome1_scaffold_lengths),
         "genome2": sum(genome2_scaffold_lengths)
     }
-    pdb.set_trace()
     result_dict = result.rows_by_key("genome", unique=True, named=True)
     assert result_dict["genome1"]["reads_mapped"]==num_reads_genome1   
     assert result_dict["genome2"]["reads_mapped"]==num_reads_genome2
