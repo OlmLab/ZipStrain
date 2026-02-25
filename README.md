@@ -32,6 +32,24 @@ zipstrain test
 
 ----------
 
+### Build genome DB from Sylph abundances
+
+If you already have Sylph abundance outputs and want to build/download the matching reference genomes into a local database:
+
+```bash
+zipstrain utilities build-genome-db \
+  --tool sylph \
+  --abundance-table <path/to/sylph_abundance.csv> \
+  --db-file <path/to/.genome_db.parquet> \
+  --genomes-dir <path/to/genomes> \
+  --download \
+  --report-file <path/to/genome_download_report.csv>
+```
+
+Full walkthrough: [Build a Genome Database from Sylph Abundances](docs/GenomeDBFromSylph.md).
+
+----------
+
 ### Profile multiple bam files
 
 You can profile multiple BAM files using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods.

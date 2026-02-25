@@ -697,10 +697,11 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file describing regions to be profiled.")
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--null-model', '-m', required=True, help="Path to the null model file. If not provided, the null model will be generated from the data.") 
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
 @click.option('--num-workers', '-n', default=1, help="Number of workers to use for profiling.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(bed_file, bam_file, stb_file, gene_range_table, num_workers, output_dir):
+def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, num_workers, output_dir):
     """
     Profile a single BAM file using the provided BED file and gene range table.
     
@@ -711,11 +712,13 @@ def profile_single(bed_file, bam_file, stb_file, gene_range_table, num_workers, 
         pl.col("column_1").alias("scaffold"),
         pl.col("column_2").alias("genome")
     )
+    null_model=pl.scan_parquet(null_model)
     pf.profile_bam(
         bed_file=bed_file,
         bam_file=bam_file,
         gene_range_table=gene_range_table,
         stb=stb,
+        null_model=null_model,
         output_dir=output_dir,
         num_workers=num_workers,
     )
