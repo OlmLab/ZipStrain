@@ -143,3 +143,40 @@ def test_generate_stb(tmp_path):
     assert result_dict["chr1_1"]["genome"] == "genome1"
     assert result_dict["chr2_1"]["genome"] == "genome1"
     assert result_dict["chr1_2"]["genome"] == "genome2"
+
+
+def test_cli_build_genome_db_no_download(tmp_path):
+    abundance = tmp_path / "sylph.csv"
+    abundance.write_text(
+        "Genome_file,abundance\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,0.6\n"
+        "/ref/GCA_123456.1_genomic.fna.gz,0.4\n"
+    )
+    db_path = tmp_path / ".genome_db.parquet"
+    genomes_dir = tmp_path / "genomes"
+    report_file = tmp_path / "report.csv"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-genome-db",
+            "--tool",
+            "sylph",
+            "--abundance-table",
+            str(abundance),
+            "--db-file",
+            str(db_path),
+            "--genomes-dir",
+            str(genomes_dir),
+            "--no-download",
+            "--report-file",
+            str(report_file),
+        ],
+    )
+    assert result.exit_code == 0
+    assert db_path.exists()
+    db_df = pl.read_parquet(db_path)
+    assert set(db_df["accession"].to_list()) == {"GCF_000001405.40", "GCA_123456.1"}
+    assert report_file.exists()

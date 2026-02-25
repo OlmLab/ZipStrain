@@ -9,6 +9,7 @@ import zipstrain.compare as cp
 import zipstrain.profile as pf
 import zipstrain.task_manager as tm
 import zipstrain.database as db
+import zipstrain.build_db as bdb
 import polars as pl
 import pathlib
 
@@ -207,6 +208,38 @@ def build_profile_db(profile_db_csv, output_file):
     """
     profile_db = db.ProfileDatabase.from_csv(pathlib.Path(profile_db_csv))
     profile_db.save_as_new_database(pathlib.Path(output_file))
+
+
+@utilities.command("build-genome-db")
+@click.option('--tool', '-t', required=True, type=click.Choice(sorted(bdb.ADAPTERS.keys())), help="Abundance tool format to parse (for example, sylph).")
+@click.option('--abundance-table', '-a', required=True, help="Path to abundance table (csv/tsv/parquet).")
+@click.option('--db-file', '-d', required=True, help="Path to local genome DB parquet file.")
+@click.option('--genomes-dir', '-g', required=True, help="Directory to store downloaded genomes.")
+@click.option('--download/--no-download', default=True, help="Whether to download missing genomes.")
+@click.option('--overwrite', is_flag=True, default=False, help="Redownload genomes even if existing files are found.")
+@click.option('--report-file', '-r', default=None, help="Optional path to save a download report csv.")
+def build_genome_db(tool, abundance_table, db_file, genomes_dir, download, overwrite, report_file):
+    """
+    Build or update a local genome database from an abundance table.
+
+    The parser is selected by `--tool` and currently supports Sylph.
+    """
+    local_db, extracted, report = bdb.build_local_genome_db(
+        tool_name=tool,
+        abundance_table=pathlib.Path(abundance_table),
+        db_path=pathlib.Path(db_file),
+        genomes_dir=pathlib.Path(genomes_dir),
+        download=download,
+        overwrite=overwrite,
+    )
+    _ = local_db
+    if report_file is not None:
+        bdb.write_report_csv(report, pathlib.Path(report_file))
+    click.echo(f"Extracted {extracted.height} genome accessions.")
+    if download:
+        downloaded = report.filter(pl.col("status") == "downloaded").height if report.height else 0
+        failed = report.filter(pl.col("status") == "failed").height if report.height else 0
+        click.echo(f"Downloaded: {downloaded}; Failed: {failed}.")
 
 
 @utilities.command("build-genome-comparison-config")
