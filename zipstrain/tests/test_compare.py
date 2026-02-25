@@ -1,6 +1,4 @@
-import pdb
 import random
-from memory_profiler import memory_usage
 
 import pytest
 import polars as pl
@@ -30,6 +28,7 @@ gene_locs = (["NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA","NA"])+ \
 def profile_1()->pl.LazyFrame:
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20+["chr3"]*30,
+        "genome": ["genome1"]*30 + ["genome2"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2)))+list(range(0,len(a_chr3))),
         "gene": gene_locs,
         "A": a_chr1 + a_chr2 + a_chr3,
@@ -47,6 +46,7 @@ def profile_2()->pl.LazyFrame:
     """Exactly the same as profile_1"""
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20+["chr3"]*30,
+        "genome": ["genome1"]*30 + ["genome2"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2)))+list(range(0,len(a_chr3))),
         "gene": gene_locs,
         "A": a_chr1 + a_chr2 + a_chr3,
@@ -64,13 +64,6 @@ def stb()->pl.LazyFrame:
     return pl.DataFrame({
         "scaffold":["chr1","chr2","chr3"],
         "genome":["genome1","genome1","genome2"],
-    }).lazy()
-
-@pytest.fixture
-def null_model()->pl.LazyFrame:
-    return pl.DataFrame({
-        "cov":list(range(100)),
-        "max_error_count":[int(i*0.1) for i in range(100)],
     }).lazy()
 
 @pytest.fixture
@@ -137,14 +130,12 @@ def large_profile_2()->pl.LazyFrame:
     return pl.concat([chr1,chr2,chr3])
     
 @pytest.mark.parametrize("min_cov,min_gene_compare_len", [(1, 1), (5, 1), (1, 3), (5, 3),(5,5)])
-def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,stb,null_model,min_cov,min_gene_compare_len):
+def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_gene_compare_len):
     res_dict=compare.compare_genomes(
         mpile_contig_1=profile_1,
         mpile_contig_2=profile_2,
-        null_model=null_model,
-        scaffold_to_genome=stb,
         min_cov=min_cov ,
-        min_gene_compare_len=min_gene_compare_len
+        min_gene_compare_len=min_gene_compare_len,
     ).collect().fill_null(-1).rows_by_key(key="genome",unique=True,named=True)
 
     a_genome_1=a_chr1 + a_chr2 
@@ -174,7 +165,7 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,stb,null_model
     assert res_dict["genome2"]["max_consecutive_length"]==max([len([i for i in zip(a_chr3,t_chr3,c_chr3,g_chr3) if sum(i)>=min_cov])])
 
 
-    covered_gene_counts=profile_1.filter((pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")>=min_cov) & (pl.col("gene")!="NA")).join(stb,left_on="chrom",right_on="scaffold").group_by(["gene","genome"]).agg(pl.len()).filter(pl.col("len")>=min_gene_compare_len).group_by("genome").agg(pl.len()).collect().rows_by_key(key="genome",unique=True,named=True)
+    covered_gene_counts=profile_1.filter((pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")>=min_cov) & (pl.col("gene")!="NA")).group_by(["gene","genome"]).agg(pl.len()).filter(pl.col("len")>=min_gene_compare_len).group_by("genome").agg(pl.len()).collect().rows_by_key(key="genome",unique=True,named=True)
     
     
     if "genome1" in covered_gene_counts and "genome1" in res_dict:
@@ -260,3 +251,102 @@ def test_cos_ani_expression(threshold1,threshold2):
     assert compare.get_shared_locs(profile_1, profile_2, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare.get_shared_locs(profile_3, profile_2, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
 
 
+def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
+    p1 = tmp_path / "p1.parquet"
+    p2 = tmp_path / "p2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    out_path = tmp_path / "genome_comp.parquet"
+    profile_1.sink_parquet(p1)
+    profile_2.sink_parquet(p2)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    compare.duckdb_compare_genomes_to_parquet(
+        mpile1=p1,
+        mpile2=p2,
+        output_file=out_path,
+        stb_file=stb_path,
+        sample_1_name="s1",
+        sample_2_name="s2",
+        min_cov=5,
+        min_gene_compare_len=3,
+        genome_scope="all",
+        ani_method="popani",
+        memory_limit="512MB",
+        temp_directory=tmp_path,
+    )
+
+    out = pl.read_parquet(out_path)
+    assert out.shape[0] == 2
+    assert set(out.columns) == {
+        "genome",
+        "total_positions",
+        "share_allele_pos",
+        "genome_pop_ani",
+        "max_consecutive_length",
+        "shared_genes_count",
+        "identical_gene_count",
+        "perc_id_genes",
+        "sample_1",
+        "sample_2",
+    }
+    assert set(out["sample_1"].to_list()) == {"s1"}
+    assert set(out["sample_2"].to_list()) == {"s2"}
+
+
+def test_compare_genomes_polars_with_categorical_keys(tmp_path):
+    p1 = (
+        pl.DataFrame(
+            {
+                "chrom": ["chr1", "chr1", "chr2", "chr2"],
+                "genome": ["genome1", "genome1", "genome2", "genome2"],
+                "pos": [0, 1, 0, 1],
+                "gene": ["geneA", "geneA", "geneB", "geneB"],
+                "A": [10, 5, 8, 8],
+                "T": [0, 0, 0, 0],
+                "C": [0, 0, 0, 0],
+                "G": [0, 0, 0, 0],
+            }
+        )
+        .with_columns(
+            pl.col("chrom").cast(pl.Categorical),
+            pl.col("genome").cast(pl.Categorical),
+            pl.col("gene").cast(pl.Categorical),
+        )
+        .lazy()
+    )
+    p2 = (
+        pl.DataFrame(
+            {
+                "chrom": ["chr1", "chr1", "chr2", "chr2"],
+                "genome": ["genome1", "genome1", "genome2", "genome2"],
+                "pos": [0, 1, 0, 1],
+                "gene": ["geneA", "geneA", "geneB", "geneB"],
+                "A": [9, 4, 7, 7],
+                "T": [0, 0, 0, 0],
+                "C": [0, 0, 0, 0],
+                "G": [0, 0, 0, 0],
+            }
+        )
+        .with_columns(
+            pl.col("chrom").cast(pl.Categorical),
+            pl.col("genome").cast(pl.Categorical),
+            pl.col("gene").cast(pl.Categorical),
+        )
+        .lazy()
+    )
+    stb_path = tmp_path / "stb.tsv"
+    pl.DataFrame({"scaffold": ["chr1", "chr2"], "genome": ["genome1", "genome2"]}).write_csv(
+        stb_path, separator="\t", include_header=False
+    )
+
+    out = compare.compare_genomes(
+        mpile_contig_1=p1,
+        mpile_contig_2=p2,
+        min_cov=1,
+        min_gene_compare_len=1,
+        engine="polars",
+        stb_file=stb_path,
+    ).collect()
+
+    assert out.shape[0] == 2
+    assert set(out["genome"].to_list()) == {"genome1", "genome2"}

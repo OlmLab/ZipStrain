@@ -9,12 +9,10 @@ import sys
 import re
 import pyarrow as pa
 import pyarrow.parquet as pq
-from intervaltree import IntervalTree
-from collections import defaultdict,Counter
+from collections import Counter
 from functools import reduce
 from scipy.stats import poisson
 import subprocess
-import pdb
 
 
 class CallPresence:
@@ -601,12 +599,7 @@ def get_genome_stats(
 
     genome_lengths=extract_genome_length(stb, bed)
     genome_gap_stats= get_genome_gaps(read_loc_table, stb, genome_lengths)
-    profile=profile.join(
-        stb,
-        left_on="chrom",
-        right_on="scaffold",
-        how="left"
-    ).select(
+    profile=profile.select(
         pl.col("chrom"),
         pl.col("genome"),
         (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage"),
@@ -617,7 +610,9 @@ def get_genome_stats(
         pl.col("coverage").sum().alias("coverage"),
         pl.col("coverage").filter(pl.col("coverage") >= comp_min_cov_breadth).count().alias(f"{comp_min_cov_breadth}x_cov_sites"),
         ((((pl.col("max_base_count")/pl.col("coverage"))<=hetro_min_freq) & (pl.col("coverage") > hetro_min_cov)).sum()/ ((pl.col("coverage") > hetro_min_cov).sum())).alias("heterogeneity")
-        ).join(
+        ).with_columns(
+            pl.col("genome").cast(pl.String)
+            ).join(
         genome_lengths,
         on="genome",
         how="left"
@@ -646,6 +641,47 @@ def get_genome_stats(
         pl.col("ber"),
         pl.col("fug"),
         pl.col("rn").alias("reads_mapped")
+    ).with_columns(
+        pl.col("genome").cast(pl.Categorical)
     )
 
 
+def get_gene_stats(
+    profile:pl.LazyFrame,
+    gene_bed: pl.LazyFrame,
+    stb: pl.LazyFrame,
+)->pl.LazyFrame:
+    gene_length=gene_bed.with_columns(
+        gene_length=pl.col("end")-pl.col("start")
+    ).select(
+        pl.col("scaffold").alias("chrom"),
+        pl.col("gene"),
+        pl.col("gene_length")
+    )
+    profile=profile.join(
+        stb,
+        left_on="chrom",
+        right_on="scaffold",
+        how="left"
+    ).select(
+        pl.col("chrom"),
+        pl.col("gene"),
+        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage")
+    ).group_by("gene").agg(
+        pl.len().alias("total_covered_sites"),
+        pl.col("coverage").sum().alias("coverage")
+    ).join(
+        gene_length,
+        on="gene",
+        how="left"
+    ).with_columns(
+        coverage=(pl.col("coverage")/pl.col("gene_length")),
+        breadth=(pl.col("total_covered_sites")/pl.col("gene_length"))
+    )
+    return profile.select(
+        pl.col("gene"),
+        pl.col("genome"),
+        pl.col("coverage"),
+        pl.col("breadth"),
+        pl.col("gene_length")
+    )

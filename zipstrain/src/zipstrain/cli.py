@@ -218,7 +218,7 @@ def build_profile_db(profile_db_csv, output_file):
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
 @click.option('--null-model-p-value', '-n', default=0.05, help="P-value threshold for the null model to detect sequencing error.")
 @click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model-loc', '-m', required=True, help="Path to the null model Parquet file.")
+@click.option('--null-model-loc', '-m', default="", help="Deprecated: ignored in compare; kept for backward compatibility.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
 def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
@@ -232,9 +232,9 @@ def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, 
     scope (str): Genome scope for comparison.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    null_model_p_value (float): P-value threshold for the null model to detect sequencing error.
+    null_model_p_value (float): Deprecated compatibility field.
     stb_file_loc (str): Path to the scaffold-to-genome mapping file.
-    null_model_loc (str): Path to the null model Parquet file.
+    null_model_loc (str): Deprecated compatibility field (ignored by compare).
     current_comp_table (str): Path to the current comparison table in Parquet format.
     output_file (str): Path to save the output configuration JSON file.
     """
@@ -265,7 +265,7 @@ def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, 
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
 @click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model-loc', '-m', required=True, help="Path to the null model Parquet file.")
+@click.option('--null-model-loc', '-m', default="", help="Deprecated: ignored in compare; kept for backward compatibility.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
 def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, null_model_loc, current_comp_table, output_file):
@@ -280,7 +280,7 @@ def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, sc
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     stb_file_loc (str): Path to the scaffold-to-genome mapping file.
-    null_model_loc (str): Path to the null model Parquet file.
+    null_model_loc (str): Deprecated compatibility field (ignored by compare).
     current_comp_table (str): Path to the current comparison table in Parquet format.
     output_file (str): Path to save the output configuration JSON file.
     """
@@ -450,170 +450,183 @@ def compare():
 @compare.command("single_compare_genome")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
 @click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
-@click.option('--scaffolds-1', '-s1', required=True, help="Path to the list of scaffolds for the first mpileup file.")
-@click.option('--scaffolds-2', '-s2', required=True, help="Path to the list of scaffolds for the second mpileup file.")
-@click.option('--null-model', '-n', required=True, help="Path to the null model Parquet file.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
-@click.option('--memory-mode', '-m', default="heavy", type=click.Choice(['heavy', 'light'], case_sensitive=False), help="Memory mode for processing: 'heavy' or 'light'.")
-@click.option('--chrom-batch-size', '-b', default=10000, help="Batch size for processing chromosomes. Only used in light memory mode.")
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
-@click.option('--engine', '-e', default="streaming", type=click.Choice(['streaming', 'gpu',"auto"], case_sensitive=False), help="Engine to use for processing: 'streaming', 'gpu' or 'auto'.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-def single_compare_genome(mpileup_contig_1, mpileup_contig_2, scaffolds_1, scaffolds_2, null_model, stb_file, min_cov, min_gene_compare_len, memory_mode, chrom_batch_size, output_file, genome, engine, ani_method):
+@click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
+@click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
+@click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
+@click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
+def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """
     Main function to compare two mpileup files and calculate genome and gene statistics.
     
     Args:
     mpileup_contig_1 (str): Path to the first mpileup file.
     mpileup_contig_2 (str): Path to the second mpileup file.
-    scaffolds_1 (str): Path to the list of scaffolds for the first mpileup file.
-    scaffolds_2 (str): Path to the list of scaffolds for the second mpileup file.
-    null_model (str): Path to the null model Parquet file.
-    gene_locs (str): Path to the gene locations Parquet file.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    memory_mode (str): Memory mode for processing: 'heavy' or 'light'.
-    chrom_batch_size (int): Batch size for processing chromosomes. Only used in light memory mode.
     output_file (str): Path to save the parquet file.
     genome (str): If provided, do the comparison only for the specified genome.
     stb_file (str): Path to the scaffold to genome mapping file.
     """
-    with pl.StringCache():
-        mpile_contig_1 = pl.scan_parquet(mpileup_contig_1).with_columns(
-            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
-             pl.col("gene").cast(pl.Categorical).alias("gene"))
-        )
-        mpile_contig_2 = pl.scan_parquet(mpileup_contig_2).with_columns(
-            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
-             pl.col("gene").cast(pl.Categorical).alias("gene"))
-        )
-
-        stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-            pl.col("column_1").alias("scaffold").cast(pl.Categorical),
-            pl.col("column_2").alias("genome").cast(pl.Categorical)
-        ).select(["scaffold", "genome"])
-        if genome != "all":
-            stb = stb.filter(pl.col("genome") == genome)
-
-    null_model = pl.scan_parquet(null_model)
     mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
     mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
+
+    mpile_1_for_compare = mpileup_contig_1
+    mpile_2_for_compare = mpileup_contig_2
     if genome != "all":
-        scaffold_scope = stb.filter(pl.col("genome") == genome).collect()["scaffold"].to_list()
-    else:
-        scaffold_scope = None
+        mpile_1_for_compare, mpile_2_for_compare = cp.duckdb_prefilter_by_scope(
+            mpile1=mpileup_contig_1,
+            mpile2=mpileup_contig_2,
+            genome_scope=genome,
+            memory_limit=duckdb_memory_limit,
+            temp_directory=duckdb_temp_directory,
+            threads=duckdb_threads,
+        )
 
-    if memory_mode == "light":
-        scaffolds_1 = pl.scan_csv(scaffolds_1, separator="\t", has_header=False).select(pl.col("column_1").alias("scaffold"))
-        scaffolds_2 = pl.scan_csv(scaffolds_2, separator="\t", has_header=False).select(pl.col("column_1").alias("scaffold"))
-        shared_scaffolds = list(set(scaffolds_1["scaffold"].to_list()).intersection(set(scaffolds_2["scaffold"].to_list())))
-        mpile_contig_1 = mpile_contig_1.filter(pl.col("chrom").is_in(shared_scaffolds))
-        mpile_contig_2 = mpile_contig_2.filter(pl.col("chrom").is_in(shared_scaffolds))
-    else:
-        shared_scaffolds=None
-        
-    
-    comp = cp.compare_genomes(mpile_contig_1=mpile_contig_1, 
-                     mpile_contig_2=mpile_contig_2, 
-                     null_model=null_model,
-                     scaffold_to_genome=stb, 
-                     min_cov=min_cov,
-                     min_gene_compare_len=min_gene_compare_len, 
-                     memory_mode=memory_mode, 
-                     chrom_batch_size=chrom_batch_size, 
-                     shared_scaffolds=shared_scaffolds, 
-                     scaffold_scope=scaffold_scope, 
-                     engine=engine,
-                     ani_method=ani_method)
-    comp=comp.join(
-        stb.select("genome").unique(),
-        left_on=pl.col("genome"),
-        right_on=pl.col("genome"),
-        how="full",
-        coalesce=True
-    ).fill_null(0)
+    if engine == "duckdb":
+        cp.duckdb_compare_genomes_to_parquet(
+            mpile1=mpile_1_for_compare,
+            mpile2=mpile_2_for_compare,
+            output_file=output_file,
+            stb_file=stb_file,
+            sample_1_name=mpile_contig_1_name,
+            sample_2_name=mpile_contig_2_name,
+            min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
+            genome_scope=genome,
+            ani_method=ani_method,
+            memory_limit=duckdb_memory_limit,
+            temp_directory=duckdb_temp_directory,
+            threads=duckdb_threads,
+        )
+        return
 
-    comp=comp.with_columns(pl.lit(mpile_contig_1_name).alias("sample_1"), pl.lit(mpile_contig_2_name).alias("sample_2")).fill_null(0)
-    
-    comp.sink_parquet(output_file,engine=engine)
+    comp = cp.compare_genomes(
+        mpile_contig_1=mpile_1_for_compare,
+        mpile_contig_2=mpile_2_for_compare,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        genome_scope=genome,
+        ani_method=ani_method,
+        duckdb_memory_limit=duckdb_memory_limit,
+        duckdb_temp_directory=duckdb_temp_directory,
+        duckdb_threads=duckdb_threads,
+        engine="polars",
+        stb_file=stb_file,
+    ).with_columns(
+        sample_1=pl.lit(mpile_contig_1_name),
+        sample_2=pl.lit(mpile_contig_2_name),
+    ).select(
+        "genome",
+        "total_positions",
+        "share_allele_pos",
+        "genome_pop_ani",
+        "max_consecutive_length",
+        "shared_genes_count",
+        "identical_gene_count",
+        "perc_id_genes",
+        "sample_1",
+        "sample_2",
+    )
+    comp.sink_parquet(output_file, compression='zstd')
 
 @compare.command("single_compare_gene")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
 @click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
-@click.option('--null-model', '-n', required=True, help="Path to the null model Parquet file.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--scope', '-g', default="all:all", help="If provided, do the comparison only for the specified genome-gene pair.")
-@click.option('--engine', '-e', default="streaming", type=click.Choice(['streaming', 'gpu',"auto"], case_sensitive=False), help="Engine to use for processing: 'streaming', 'gpu' or 'auto'.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-def single_compare_gene(mpileup_contig_1, mpileup_contig_2, null_model, stb_file, min_cov, min_gene_compare_len, output_file, scope, engine, ani_method):
+@click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
+@click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
+@click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
+@click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
+def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """
     Compare two mpileup files and calculate gene-level comparison statistics.
     
     Args:
     mpileup_contig_1 (str): Path to the first mpileup file.
     mpileup_contig_2 (str): Path to the second mpileup file.
-    null_model (str): Path to the null model Parquet file.
     stb_file (str): Path to the scaffold to genome mapping file.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     output_file (str): Path to save the parquet file.
     scope (str): If provided, do the comparison only for the specified genome-gene pair.
-    engine (str): Engine to use for processing: 'streaming', 'gpu' or 'auto'.
     ani_method (str): ANI calculation method to use.
     """
 
-    with pl.StringCache():
-        mpile_contig_1 = pl.scan_parquet(mpileup_contig_1).with_columns(
-            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
-             pl.col("gene").cast(pl.Categorical).alias("gene"))
-        )
-        mpile_contig_2 = pl.scan_parquet(mpileup_contig_2).with_columns(
-            (pl.col("chrom").cast(pl.Categorical).alias("chrom"),
-             pl.col("gene").cast(pl.Categorical).alias("gene"))
-        )
-
-        stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-            pl.col("column_1").alias("scaffold").cast(pl.Categorical),
-            pl.col("column_2").alias("genome").cast(pl.Categorical)
-        ).select(["scaffold", "genome"])
-    genome_scope, gene_scope = scope.split(":")
-
-    if genome_scope != "all":
-        scaffolds=stb.filter(pl.col("genome") == genome_scope).collect(engine="streaming")["scaffold"].to_list()
-        mpile_contig_1 = mpile_contig_1.filter(pl.col("chrom").is_in(scaffolds))
-        mpile_contig_2 = mpile_contig_2.filter(pl.col("chrom").is_in(scaffolds))
-    
-    if gene_scope != "all":
-        mpile_contig_1 = mpile_contig_1.filter(pl.col("gene") == gene_scope)
-        mpile_contig_2 = mpile_contig_2.filter(pl.col("gene") == gene_scope)
-
-    null_model = pl.scan_parquet(null_model)
     mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
     mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
-    
-    comp = cp.compare_genes(
-        mpile_contig_1=mpile_contig_1, 
-        mpile_contig_2=mpile_contig_2, 
-        null_model=null_model,
-        scaffold_to_genome=stb, 
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len, 
-        engine=engine,
-        ani_method=ani_method
-    )
 
-    comp = comp.with_columns(
-        pl.lit(mpile_contig_1_name).alias("sample_1"), 
-        pl.lit(mpile_contig_2_name).alias("sample_2")
-    ).fill_null(0)
-    
-    comp.sink_parquet(output_file, engine=engine)
+    _ = stb_file
+    if ":" not in scope:
+        raise ValueError("scope must be in 'GENOME:GENE' format (e.g., all:all).")
+    genome_scope, gene_scope = scope.split(":", 1)
+
+    mpile_1_for_compare = mpileup_contig_1
+    mpile_2_for_compare = mpileup_contig_2
+    if genome_scope != "all" or gene_scope != "all":
+        mpile_1_for_compare, mpile_2_for_compare = cp.duckdb_prefilter_by_scope(
+            mpile1=mpileup_contig_1,
+            mpile2=mpileup_contig_2,
+            genome_scope=genome_scope,
+            gene_scope=gene_scope,
+            memory_limit=duckdb_memory_limit,
+            temp_directory=duckdb_temp_directory,
+            threads=duckdb_threads,
+        )
+
+    if engine == "duckdb":
+        cp.duckdb_compare_genes_to_parquet(
+            mpile1=mpile_1_for_compare,
+            mpile2=mpile_2_for_compare,
+            output_file=output_file,
+            sample_1_name=mpile_contig_1_name,
+            sample_2_name=mpile_contig_2_name,
+            min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
+            genome_scope=genome_scope,
+            gene_scope=gene_scope,
+            ani_method=ani_method,
+            memory_limit=duckdb_memory_limit,
+            temp_directory=duckdb_temp_directory,
+            threads=duckdb_threads,
+        )
+        return
+
+    gene_comp = cp.compare_genes(
+        mpile_contig_1=mpile_1_for_compare,
+        mpile_contig_2=mpile_2_for_compare,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        genome_scope=genome_scope,
+        gene_scope=gene_scope,
+        ani_method=ani_method,
+        duckdb_memory_limit=duckdb_memory_limit,
+        duckdb_temp_directory=duckdb_temp_directory,
+        duckdb_threads=duckdb_threads,
+        engine="polars",
+    ).with_columns(
+        sample_1=pl.lit(mpile_contig_1_name),
+        sample_2=pl.lit(mpile_contig_2_name),
+    ).select(
+        "genome",
+        "gene",
+        "total_positions",
+        "share_allele_pos",
+        "ani",
+        "sample_1",
+        "sample_2",
+    )
+    gene_comp.sink_parquet(output_file, compression='zstd')
 
 @cli.group()
 def profile():
@@ -765,10 +778,8 @@ def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_fil
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
-@click.option("--polars-engine", "-a", default="streaming", type=click.Choice(['streaming', 'gpu', 'auto'], case_sensitive=False), help="Polars engine to use: 'streaming', 'gpu' or 'auto'.")  
-@click.option("--chrom-batch-size", "-b", default=10000, help="Batch size for processing chromosomes. Only used in light memory mode.")
-@click.option("--memory-mode", "-h", default="heavy", type=click.Choice(['heavy', 'light'], case_sensitive=False), help="Memory mode for processing: 'heavy' or 'light'.")
-def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, polars_engine, chrom_batch_size, memory_mode):
+@click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
+def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, duckdb_memory_limit):
     """
     Run genome comparisons in batches using the specified execution mode and container engine.
 
@@ -803,11 +814,9 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
         container_engine=container_engine_obj,
         run_dir=run_dir,
         max_concurrent_batches=max_concurrent_batches,
-        polars_engine=polars_engine,
         execution_mode=execution_mode,
         slurm_config=slurm_conf,
-        memory_mode=memory_mode,
-        chrom_batch_size=chrom_batch_size,
+        duckdb_memory_limit=duckdb_memory_limit,
         tasks_per_batch=task_per_batch,
         poll_interval=poll_interval,
     )
@@ -851,9 +860,9 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
-@click.option("--polars-engine", "-a", default="streaming", type=click.Choice(['streaming', 'gpu', 'auto'], case_sensitive=False), help="Polars engine to use: 'streaming', 'gpu' or 'auto'.")
 @click.option("--ani-method", "-n", default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, polars_engine, ani_method):
+@click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
+def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, duckdb_memory_limit):
     """
     Run gene comparisons in batches using the specified execution mode and container engine.
 
@@ -866,7 +875,6 @@ def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_
     slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
     container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
     task_per_batch (int): Number of tasks to include in each batch.
-    polars_engine (str): Polars engine to use: 'streaming', 'gpu' or 'auto'.
     ani_method (str): ANI calculation method to use.
     """
     genome_comp_db=db.GeneComparisonDatabase.load_obj(pathlib.Path(gene_comparison_object))
@@ -891,12 +899,12 @@ def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_
         container_engine=container_engine_obj,
         run_dir=run_dir,
         max_concurrent_batches=max_concurrent_batches,
-        polars_engine=polars_engine,
         execution_mode=execution_mode,
         slurm_config=slurm_conf,
         tasks_per_batch=task_per_batch,
         poll_interval=poll_interval,
         ani_method=ani_method,
+        duckdb_memory_limit=duckdb_memory_limit,
     )
         
 @cli.command("test")

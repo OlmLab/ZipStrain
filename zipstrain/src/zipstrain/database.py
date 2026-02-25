@@ -243,7 +243,7 @@ class GenomeComparisonConfig(BaseModel):
     min_gene_compare_len: int=Field(description="Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
     null_model_p_value:float=Field(default=0.05,description="P_value above which a base call is counted as sequencing error")
     stb_file_loc:str=Field(description="The location of the scaffold to bin file.")
-    null_model_loc:str=Field(description="The location of the null model file.")
+    null_model_loc:str=Field(default="", description="Deprecated: null model path is no longer used in compare.")
 
     def is_compatible(self, other: GenomeComparisonConfig) -> bool:
         """
@@ -325,7 +325,7 @@ class GeneComparisonConfig(BaseModel):
     gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
     reference_genome_id:str= Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
     scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
-    null_model_loc: str = Field(description="Location of the null model parquet file")
+    null_model_loc: str = Field(default="", description="Deprecated: null model path is no longer used in compare.")
     stb_file_loc: str = Field(description="Location of the scaffold-to-genome mapping file")
     min_cov: int = Field(default=5, description="Minimum coverage threshold")
     min_gene_compare_len: int = Field(default=100, description="Minimum gene length for comparison")
@@ -872,4 +872,3 @@ class GeneComparisonDatabase:
                       left_on="sample_name_2", right_on="profile_name", how="left")
                 .rename({"profile_location": "profile_location_2", "scaffold_location": "scaffold_location_2"})
                ).sort(["sample_name_1", "sample_name_2"])
-

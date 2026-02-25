@@ -543,9 +543,7 @@ class CompareTaskGenerator(TaskGenerator):
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
-        memory_mode (str): Memory mode for the comparison task. Default is "heavy".
-        polars_engine (str): Polars engine to use. Default is "streaming".
-        chrom_batch_size (int): Chromosome batch size for the comparison task in light memory mode. Default is 10000.
+        duckdb_memory_limit (str | None): Optional DuckDB memory limit (for example "2GB").
     """
     def __init__(
         self,
@@ -553,16 +551,12 @@ class CompareTaskGenerator(TaskGenerator):
         yield_size: int,
         container_engine: Engine,
         comp_config: database.GenomeComparisonConfig,
-        memory_mode: str = "heavy",
-        polars_engine: str = "streaming",
-        chrom_batch_size: int = 10000,
+        duckdb_memory_limit: str | None = None,
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
         self.engine = container_engine
-        self.memory_mode = memory_mode
-        self.polars_engine = polars_engine
-        self.chrom_batch_size = chrom_batch_size
+        self.duckdb_memory_limit = duckdb_memory_limit
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         
@@ -578,19 +572,19 @@ class CompareTaskGenerator(TaskGenerator):
             batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
             tasks = []
             for row in batch_df.iter_rows(named=True):
+                duckdb_memory_limit_arg = (
+                    f"--duckdb-memory-limit {self.duckdb_memory_limit}"
+                    if self.duckdb_memory_limit
+                    else ""
+                )
                 inputs = {
                 "mpile_1_file": FileInput(row["profile_location_1"]),
                 "mpile_2_file": FileInput(row["profile_location_2"]),
-                "scaffold_1_file": FileInput(row["scaffold_location_1"]),
-                "scaffold_2_file": FileInput(row["scaffold_location_2"]),
-                "null_model_file": FileInput(self.comp_config.null_model_loc),
                 "stb_file": FileInput(self.comp_config.stb_file_loc),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
-                "memory-mode": StringInput(self.memory_mode),
-                "chrom-batch-size": IntInput(self.chrom_batch_size),
+                "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
                 "genome-name": StringInput(self.comp_config.scope),
-                "engine": StringInput(self.polars_engine),
                 }
                 expected_outputs ={
                 "output-file":  FileOutput(row["sample_name_1"]+"_"+row["sample_name_2"]+"_comparison.parquet" ),
@@ -1506,17 +1500,12 @@ class FastCompareTask(Task):
     TEMPLATE_CMD="""
     zipstrain compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
-    --scaffolds-1 <scaffold_1_file> \
-    --scaffolds-2 <scaffold_2_file> \
-    --null-model <null_model_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
-    --memory-mode <memory-mode> \
-    --chrom-batch-size <chrom-batch-size> \
+    <duckdb-memory-limit-arg> \
     --output-file <output-file> \
-    --genome <genome-name> \
-    --engine <engine> 
+    --genome <genome-name>
     """
 
 
@@ -1639,9 +1628,7 @@ def lazy_run_compares(
     poll_interval: float = 5.0,
     execution_mode: str = "local",
     slurm_config: SlurmConfig | None = None,
-    memory_mode: str = "heavy",
-    chrom_batch_size: int = 10000,
-    polars_engine: str = "streaming"
+    duckdb_memory_limit: str | None = None,
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -1659,9 +1646,7 @@ def lazy_run_compares(
         yield_size=tasks_per_batch,
         container_engine=container_engine,
         comp_config=comps_db.config,
-        memory_mode=memory_mode,
-        polars_engine=polars_engine,
-        chrom_batch_size=chrom_batch_size,
+        duckdb_memory_limit=duckdb_memory_limit,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -1694,12 +1679,11 @@ class FastGeneCompareTask(Task):
     TEMPLATE_CMD="""
     zipstrain compare single_compare_gene --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
-    --null-model <null_model_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
+    <duckdb-memory-limit-arg> \
     --output-file <output-file> \
-    --engine <engine> \
     --ani-method <ani-method>
     """
 
@@ -1711,7 +1695,6 @@ class GeneCompareTaskGenerator(TaskGenerator):
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
-        polars_engine (str): Polars engine to use. Default is "streaming".
         ani_method (str): ANI calculation method to use. Default is "popani".
     """
     def __init__(
@@ -1720,14 +1703,14 @@ class GeneCompareTaskGenerator(TaskGenerator):
         yield_size: int,
         container_engine: Engine,
         comp_config: database.GeneComparisonConfig,
-        polars_engine: str = "streaming",
         ani_method: str = "popani",
+        duckdb_memory_limit: str | None = None,
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
         self.engine = container_engine
-        self.polars_engine = polars_engine
         self.ani_method = ani_method
+        self.duckdb_memory_limit = duckdb_memory_limit
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         
@@ -1743,14 +1726,18 @@ class GeneCompareTaskGenerator(TaskGenerator):
             batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
             tasks = []
             for row in batch_df.iter_rows(named=True):
+                duckdb_memory_limit_arg = (
+                    f"--duckdb-memory-limit {self.duckdb_memory_limit}"
+                    if self.duckdb_memory_limit
+                    else ""
+                )
                 inputs = {
                 "mpile_1_file": FileInput(row["profile_location_1"]),
                 "mpile_2_file": FileInput(row["profile_location_2"]),
-                "null_model_file": FileInput(self.comp_config.null_model_loc),
                 "stb_file": FileInput(self.comp_config.stb_file_loc),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
-                "engine": StringInput(self.polars_engine),
+                "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
                 "ani-method": StringInput(self.ani_method),
                 }
                 expected_outputs ={
@@ -1971,8 +1958,8 @@ def lazy_run_gene_compares(
     poll_interval: float = 5.0,
     execution_mode: str = "local",
     slurm_config: SlurmConfig | None = None,
-    polars_engine: str = "streaming",
-    ani_method: str = "popani"
+    ani_method: str = "popani",
+    duckdb_memory_limit: str | None = None,
 ) -> None:
     """A helper function to quickly set up and run a GeneCompareRunner with given parameters.
     
@@ -1984,7 +1971,6 @@ def lazy_run_gene_compares(
         max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
         poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
         execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
-        polars_engine (str): Polars engine to use. Default is "streaming".
         ani_method (str): ANI calculation method to use. Default is "popani".
     """
     task_generator = GeneCompareTaskGenerator(
@@ -1992,8 +1978,8 @@ def lazy_run_gene_compares(
         yield_size=tasks_per_batch,
         container_engine=container_engine,
         comp_config=comps_db.config,
-        polars_engine=polars_engine,
         ani_method=ani_method,
+        duckdb_memory_limit=duckdb_memory_limit,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -2012,4 +1998,3 @@ def lazy_run_gene_compares(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
-

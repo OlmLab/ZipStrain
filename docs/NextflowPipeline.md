@@ -107,11 +107,7 @@ First, you have a CSV file that includes the pairs of profiles to compare. The t
 
 - profile_location_1
 
-- scaffold_location_1
-
 - profile_location_2
-
-- scaffold_location_2
 
 
 ```
@@ -196,4 +192,3 @@ nextflow run zipstrain.nf --mode compare_genes \
  --batch_size <batch_size> -profile <profile_name> \
  -resume
 ```     
-

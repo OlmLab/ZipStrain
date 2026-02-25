@@ -36,6 +36,7 @@ gene_locs = (["NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA","NA"])+ \
 def profile_1()->pl.LazyFrame:
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20+["chr3"]*30,
+        "genome": ["genome1"]*30 + ["genome2"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2)))+list(range(0,len(a_chr3))),
         "gene": gene_locs,
         "A": a_chr1 + a_chr2 + a_chr3,
@@ -53,6 +54,7 @@ def profile_2()->pl.LazyFrame:
     """Exactly the same as profile_1"""
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20+["chr3"]*30,
+        "genome": ["genome1"]*30 + ["genome2"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2)))+list(range(0,len(a_chr3))),
         "gene": gene_locs,
         "A": a_chr1 + a_chr2 + a_chr3,
@@ -70,6 +72,7 @@ def profile_3()->pl.LazyFrame:
     """A profile with a single mutation in chr2 compared to profile_1"""
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20+["chr3"]*30,
+        "genome": ["genome1"]*30 + ["genome2"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2)))+list(range(0,len(a_chr3))),
         "gene": gene_locs,
         "A": a_chr1 + a_chr2_1mut + a_chr3,
@@ -88,6 +91,7 @@ def profile_4_random()->pl.LazyFrame:
     """A profile with a single mutation in chr2 compared to profile_1"""
     return pl.DataFrame({
         "chrom": ["Scaffold_1"]*100+["Scaffold_2"]*200+["Scaffold_3"]*300,
+        "genome": ["genome1"]*300 + ["genome2"]*300,
         "pos":list(range(0,100))+list(range(0,200))+list(range(0,300)),
         "gene": ["NA"]*600,
         "A": random.choices(range(0,20),k=600),
@@ -105,6 +109,7 @@ def profile_5_random()->pl.LazyFrame:
     """A profile with a single mutation in chr2 compared to profile_1"""
     return pl.DataFrame({
         "chrom": ["Scaffold_1"]*90+["Scaffold_2"]*220+["Scaffold_3"]*400+["Scaffold_4"]*150,
+        "genome": ["genome1"]*310 + ["genome2"]*550,
         "pos":list(range(0,90))+list(range(0,220))+list(range(0,400))+list(range(0,150)),
         "gene": ["NA"]*860,
         "A": random.choices(range(0,20),k=860),
@@ -139,12 +144,10 @@ def null_model()->pl.LazyFrame:
     }).lazy()
 
 @pytest.fixture(scope="module")
-def comps_lf_1_2(profile_1,profile_2,stb,null_model)->pl.LazyFrame:
+def comps_lf_1_2(profile_1,profile_2)->pl.LazyFrame:
     comp_1_2=compare.compare_genomes(
         mpile_contig_1=profile_1,
         mpile_contig_2=profile_2,
-        scaffold_to_genome=stb,
-        null_model=null_model,
         min_cov=2 ,
         min_gene_compare_len=10
     )
@@ -152,12 +155,10 @@ def comps_lf_1_2(profile_1,profile_2,stb,null_model)->pl.LazyFrame:
     return comp_1_2
 
 @pytest.fixture(scope="module")
-def comps_lf_31_32(profile_1,profile_2,profile_3,stb,null_model)->pl.LazyFrame:
+def comps_lf_31_32(profile_1,profile_2,profile_3)->pl.LazyFrame:
     comp_1_3=compare.compare_genomes(
         mpile_contig_1=profile_1,
         mpile_contig_2=profile_3,
-        scaffold_to_genome=stb,
-        null_model=null_model,
         min_cov=2 ,
         min_gene_compare_len=10
     )
@@ -166,8 +167,6 @@ def comps_lf_31_32(profile_1,profile_2,profile_3,stb,null_model)->pl.LazyFrame:
     comp_2_3=compare.compare_genomes(
         mpile_contig_1=profile_2,
         mpile_contig_2=profile_3,
-        scaffold_to_genome=stb,
-        null_model=null_model,
         min_cov=2 ,
         min_gene_compare_len=10
     )
@@ -176,12 +175,10 @@ def comps_lf_31_32(profile_1,profile_2,profile_3,stb,null_model)->pl.LazyFrame:
     return pl.concat([comp_1_3,comp_2_3])
 
 @pytest.fixture(scope="module")
-def comps_lf_4_5(profile_4_random,profile_5_random,stb_4_5,null_model)->pl.LazyFrame:
+def comps_lf_4_5(profile_4_random,profile_5_random)->pl.LazyFrame:
     comp_4_5=compare.compare_genomes(
         mpile_contig_1=profile_4_random,
         mpile_contig_2=profile_5_random,
-        scaffold_to_genome=stb_4_5,
-        null_model=null_model,
         min_cov=5 ,
         min_gene_compare_len=50
     )
@@ -468,7 +465,7 @@ def test_profile_add_profile_1_2_to_empty_database(profile_1_2_database):
 
 def test_genome_compare_config_faulty()->None:
     """tests the response of GenomeComparisonConfig to wrong inputs"""
-    with pytest.raises(ValidationError, match="3 validation errors for GenomeComparisonConfig"):
+    with pytest.raises(ValidationError, match="2 validation errors for GenomeComparisonConfig"):
         database.GenomeComparisonConfig(
             reference_id="blah",
             min_cov="5das", # This should be an int
@@ -853,7 +850,7 @@ def test_genome_comparison_database_to_complete_input_table(profile_1_2_3_databa
 
 def test_gene_compare_config_faulty()->None:
     """tests the response of GeneComparisonConfig to wrong inputs"""
-    with pytest.raises(ValidationError, match="3 validation errors for GeneComparisonConfig"):
+    with pytest.raises(ValidationError, match="2 validation errors for GeneComparisonConfig"):
         database.GeneComparisonConfig(
             gene_db_id="gene_ref_1",
             reference_genome_id="ref_1",
@@ -1421,4 +1418,3 @@ def test_gene_comparison_database_load_and_dump(profile_1_2_3_database,tmp_path,
     db_12.update_compare_database()
     
     assert db_12.comp_db.collect().height == 2
-

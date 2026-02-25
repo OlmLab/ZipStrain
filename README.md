@@ -137,13 +137,13 @@ zipstrain utilities build-comparison-config \
 --scope "all" \
 --min-cov 5 \
 --min-gene-compare-len 200 \
---null-model-p-value 0.05 \
 --stb-file-loc <path/to/stb/file> \
---null-model-loc <path/to/null/model/file> \
 --current-comp-table <path/to/current/comparison/table.parquet> \
 --output-file <path/to/save/comparison/config.json>
 ```
 Note that providing current-comp-table is optional. If provided, the comparison config will only include pairs that are not already compared in the current comparison table.
+
+For direct CLI pairwise comparison, `--null-model` is no longer used in `zipstrain compare single_compare_genome` and `zipstrain compare single_compare_gene`.
 
 Finally, you can run the comparison using the generated configuration file and the profile database:
 
@@ -152,6 +152,19 @@ zipstrain run compare_genomes \
 --genome-comparison-object <path/to/comparison/config.json> \
 --run-dir <path/to/save/comparison/outputs> \
 --max-concurrent-batches 1
+```
+
+`single_compare_genome` supports `--engine polars|duckdb` (default: `polars`). You can optionally cap DuckDB memory:
+
+```bash
+zipstrain compare single_compare_genome \
+--mpileup-contig-1 <profile_1.parquet> \
+--mpileup-contig-2 <profile_2.parquet> \
+--stb-file <path/to/stb.tsv> \
+--engine duckdb \
+--output-file <out.parquet> \
+--duckdb-memory-limit 2GB \
+--duckdb-temp-directory /tmp
 ```
 
 This command take some more arguments and for more information about them please refer to the [Tutorial](docs/Tutorial.md).
