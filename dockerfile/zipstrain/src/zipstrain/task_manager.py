@@ -58,6 +58,7 @@ import polars as pl
 import psutil
 import shutil
 import signal 
+from datetime import datetime, timezone
 
 
 class SlurmConfig(BaseModel):
@@ -106,11 +107,29 @@ class SlurmConfig(BaseModel):
         return cls.model_validate_json(path.read_text())
 
 async def write_file(path: pathlib.Path, text: str, file_semaphore: asyncio.Semaphore) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if file_semaphore is None:
+        with open(path, "w") as f:
+            f.write(text)
+        return
     async with file_semaphore:
         async with aiofiles.open(path, "w") as f:
             await f.write(text)
 
+async def append_file(path: pathlib.Path, text: str, file_semaphore: asyncio.Semaphore) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if file_semaphore is None:
+        with open(path, "a") as f:
+            f.write(text)
+        return
+    async with file_semaphore:
+        async with aiofiles.open(path, "a") as f:
+            await f.write(text)
+
 async def read_file(path: pathlib.Path, file_semaphore: asyncio.Semaphore) -> str:
+    if file_semaphore is None:
+        with open(path, "r") as f:
+            return f.read()
     async with file_semaphore:
         async with aiofiles.open(path, "r") as f:
             content = await f.read()
@@ -528,7 +547,6 @@ class ProfileTaskGenerator(TaskGenerator):
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+".parquet" ),
-                "scaffold": FileOutput(row["sample_name"]+".parquet.scaffolds" ),
                 "genome-stats": FileOutput(row["sample_name"]+"_genome_stats.parquet" ),
                 }
                 task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
@@ -543,9 +561,9 @@ class CompareTaskGenerator(TaskGenerator):
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
-        memory_mode (str): Memory mode for the comparison task. Default is "heavy".
-        polars_engine (str): Polars engine to use. Default is "streaming".
-        chrom_batch_size (int): Chromosome batch size for the comparison task in light memory mode. Default is 10000.
+        duckdb_memory_limit (str | None): Optional DuckDB memory limit (for example "2GB").
+        duckdb_threads (int | None): Optional DuckDB thread cap (for example 8).
+        compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
     """
     def __init__(
         self,
@@ -553,18 +571,20 @@ class CompareTaskGenerator(TaskGenerator):
         yield_size: int,
         container_engine: Engine,
         comp_config: database.GenomeComparisonConfig,
-        memory_mode: str = "heavy",
-        polars_engine: str = "streaming",
-        chrom_batch_size: int = 10000,
+        duckdb_memory_limit: str | None = None,
+        duckdb_threads: int | None = None,
+        compare_engine: str = "polars",
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
         self.engine = container_engine
-        self.memory_mode = memory_mode
-        self.polars_engine = polars_engine
-        self.chrom_batch_size = chrom_batch_size
+        self.duckdb_memory_limit = duckdb_memory_limit
+        self.duckdb_threads = duckdb_threads
+        self.compare_engine = compare_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
+        if self.compare_engine not in {"polars", "duckdb"}:
+            raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
         
     def get_total_tasks(self) -> int:
         """Returns total number of pairwise comparisons to be made."""
@@ -578,19 +598,27 @@ class CompareTaskGenerator(TaskGenerator):
             batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
             tasks = []
             for row in batch_df.iter_rows(named=True):
+                duckdb_memory_limit_arg = (
+                    f"--duckdb-memory-limit {self.duckdb_memory_limit}"
+                    if self.duckdb_memory_limit
+                    else ""
+                )
+                duckdb_threads_arg = (
+                    f"--duckdb-threads {self.duckdb_threads}"
+                    if self.duckdb_threads is not None
+                    else ""
+                )
+                compare_engine_arg = f"--engine {self.compare_engine}"
                 inputs = {
                 "mpile_1_file": FileInput(row["profile_location_1"]),
                 "mpile_2_file": FileInput(row["profile_location_2"]),
-                "scaffold_1_file": FileInput(row["scaffold_location_1"]),
-                "scaffold_2_file": FileInput(row["scaffold_location_2"]),
-                "null_model_file": FileInput(self.comp_config.null_model_loc),
                 "stb_file": FileInput(self.comp_config.stb_file_loc),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
-                "memory-mode": StringInput(self.memory_mode),
-                "chrom-batch-size": IntInput(self.chrom_batch_size),
+                "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
+                "duckdb-threads-arg": StringInput(duckdb_threads_arg),
+                "compare-engine-arg": StringInput(compare_engine_arg),
                 "genome-name": StringInput(self.comp_config.scope),
-                "engine": StringInput(self.polars_engine),
                 }
                 expected_outputs ={
                 "output-file":  FileOutput(row["sample_name_1"]+"_"+row["sample_name_2"]+"_comparison.parquet" ),
@@ -612,6 +640,8 @@ class Batch(ABC):
         expected_outputs (list[Output]): List of expected outputs for the batch.
     """
     TEMPLATE_CMD = ""
+    RUN_LOG_FILE = "batch_events.log"
+    BATCH_LOG_FILE = "batch.log"
 
     def __init__(self, tasks: list[Task],
                  id: str,
@@ -640,15 +670,19 @@ class Batch(ABC):
         
         self._runner_obj:Runner = None
         self._cleaned_up = False
+        self._last_progress_snapshot: tuple[str, int, int, int, int, int] | None = None
 
     def _get_initial_status(self) -> str:
         """Returns the initial status of the batch based on the presence of the batch directory."""
         if not self.batch_dir.exists():
             return Status.NOT_STARTED.value
-        with open(self.batch_dir / ".status", mode="r") as f:
+        status_file = self.batch_dir / ".status"
+        if not status_file.exists():
+            return Status.NOT_STARTED.value
+        with open(status_file, mode="r") as f:
             status_as_written = f.read().strip()
 
-        if status_as_written== Status.DONE.value:
+        if status_as_written in (Status.DONE.value, Status.SUCCESS.value):
             outputs_ready = self.outputs_ready()
 
             if outputs_ready:
@@ -656,6 +690,72 @@ class Batch(ABC):
             
             else:
                 return Status.FAILED.value
+        if status_as_written in (
+            Status.NOT_STARTED.value,
+            Status.RUNNING.value,
+            Status.SUBMITTED.value,
+            Status.PENDING.value,
+            Status.FAILED.value,
+        ):
+            return status_as_written
+        return Status.NOT_STARTED.value
+
+    def _progress_counts(self) -> tuple[int, int, int, int]:
+        """Return (done, total, success, failed) counts for batch tasks."""
+        total = len(self.tasks)
+        success = sum(1 for task in self.tasks if task.status == Status.SUCCESS.value)
+        failed = sum(1 for task in self.tasks if task.status == Status.FAILED.value)
+        done = success + failed
+        return done, total, success, failed
+
+    async def _append_batch_log(self, event: str, message: str = "") -> None:
+        """Append a human-readable lifecycle/progress line to logs."""
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        clean_message = message.replace("\n", "\\n").strip()
+        done, total, success, failed = self._progress_counts()
+        line = (
+            f"{timestamp} BATCH {self.id} {event} "
+            f"state={self._status} progress={done}/{total} success={success} failed={failed} "
+            f"attempt={self.retry_count + 1}"
+        )
+        if clean_message:
+            line += f" message={clean_message}"
+        line += "\n"
+        await append_file(self.run_dir / self.RUN_LOG_FILE, line, self.file_semaphore)
+        if self.batch_dir.exists():
+            await append_file(self.batch_dir / self.BATCH_LOG_FILE, line, self.file_semaphore)
+
+    async def log_progress(self, message: str = "", force: bool = False) -> None:
+        """Log progress if the batch snapshot changed, unless forced."""
+        done, total, success, failed = self._progress_counts()
+        snapshot = (self._status, done, total, success, failed, self.retry_count)
+        if not force and snapshot == self._last_progress_snapshot:
+            return
+        self._last_progress_snapshot = snapshot
+        await self._append_batch_log("PROGRESS", message)
+
+    async def _set_status(self, status: str, message: str = "", persist_status: str | None = None) -> None:
+        """Set batch status, persist it, and write a log entry."""
+        previous = self._status
+        self._status = status
+        persisted = persist_status if persist_status is not None else status
+        if self.batch_dir.exists():
+            await write_file(self.batch_dir / ".status", persisted, self.file_semaphore)
+        if previous != status:
+            transition = f"{previous}->{status}"
+            if message:
+                transition = f"{transition}; {message}"
+            if status == Status.SUCCESS.value:
+                event = "DONE"
+            elif status == Status.FAILED.value:
+                event = "FAILED"
+            elif previous == Status.NOT_STARTED.value:
+                event = "START"
+            else:
+                event = "STATE"
+            await self._append_batch_log(event, transition)
+        elif message:
+            await self._append_batch_log("NOTE", message)
 
     def cleanup(self) -> None:
         """The base class defines if any cleanup is needed after batch success. By default, it does nothing."""
@@ -699,6 +799,7 @@ class Batch(ABC):
     async def update_status(self) -> str:
         """Updates the status of the batch by collecting the status of all tasks."""
         await self._collect_task_status()
+        return self._status
     
     def _set_file_semaphore(self, file_semaphore: asyncio.Semaphore) -> None:
         self.file_semaphore = file_semaphore
@@ -721,8 +822,7 @@ class LocalBatch(Batch):
             
             self.batch_dir.mkdir(parents=True, exist_ok=True)
             
-            self._status = Status.RUNNING.value
-            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+            await self._set_status(Status.RUNNING.value, "batch execution started")
             
             script_path = self.batch_dir / f"{self.id}.sh" # Path to the shell script for the batch
             script = self._script # Initialize the script content
@@ -738,7 +838,6 @@ class LocalBatch(Batch):
             
             
             await write_file(script_path, script, self.file_semaphore)
-            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
 
             self._proc = await asyncio.create_subprocess_exec(
                 "bash", f"{self.id}.sh",
@@ -746,6 +845,7 @@ class LocalBatch(Batch):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.batch_dir,
             )
+            out_bytes, err_bytes = b"", b""
 
             try:
                 out_bytes, err_bytes = await self._proc.communicate()
@@ -754,27 +854,29 @@ class LocalBatch(Batch):
                 if self._proc and self._proc.returncode is None:
                     self._proc.terminate()
                     await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
-                    await write_file(self.batch_dir / ".status", Status.FAILED.value, self.file_semaphore)
+                    await self._set_status(Status.FAILED.value, "batch execution cancelled")
 
                 raise RuntimeError("Batch script execution was cancelled.")
             
 
             await write_file(self.batch_dir / f"{self.id}.out", out_bytes.decode(), self.file_semaphore)
             await write_file(self.batch_dir / f"{self.id}.err", err_bytes.decode(), self.file_semaphore)
+            await self._collect_task_status()
 
             if self._proc.returncode != 0:
                 error=err_bytes.decode()
+                await self._set_status(Status.FAILED.value, f"runtime error: {error.strip()}")
                 raise RuntimeError(f"Batch {self.id} hit the following error at runtime:\n{error}")
             
             if self._proc.returncode == 0 and self.outputs_ready():
                 self.cleanup()
-                self._status = Status.SUCCESS.value
-                await write_file(self.batch_dir / ".status", Status.DONE.value, self.file_semaphore)
+                await self._set_status(Status.SUCCESS.value, "batch outputs validated", persist_status=Status.DONE.value)
             
             else:
-                self._status = Status.FAILED.value
-                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                await self._set_status(Status.FAILED.value, "missing expected outputs")
                 raise FileNotFoundError(f"Batch {self.id} is done but at least one expected output is missing.")
+        else:
+            await self._append_batch_log("status_note", "batch already marked success; skipping run")
 
 
 
@@ -792,8 +894,7 @@ class LocalBatch(Batch):
             except asyncio.TimeoutError:
                 self._proc.kill()
                 await self._proc.wait()
-            self._status = Status.FAILED.value
-            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+            await self._set_status(Status.FAILED.value, Messages.CANCELLED_BY_USER.value)
 
 
 class SlurmBatch(Batch):
@@ -832,8 +933,7 @@ class SlurmBatch(Batch):
             )
             await proc.wait()
 
-        self._status = Status.FAILED.value
-        await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+        await self._set_status(Status.FAILED.value, Messages.CANCELLED_BY_USER.value)
         
     async def run(self) -> None:
         """This method submits the batch to Slurm by creating a batch script and using sbatch command. It also monitors the job status until completion.
@@ -842,8 +942,7 @@ class SlurmBatch(Batch):
         
         if self.status != Status.SUCCESS:
             self.batch_dir.mkdir(parents=True, exist_ok=True)
-            self._status = Status.RUNNING.value
-            await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+            await self._set_status(Status.RUNNING.value, "batch submission started")
             # create task directories and initialize .status if needed
             
             for task in self.tasks:
@@ -874,26 +973,24 @@ class SlurmBatch(Batch):
             if proc.returncode == 0:
                 try:
                     self._job_id = self._parse_job_id(out)
-                    self._status = Status.SUBMITTED.value
+                    await self._set_status(Status.SUBMITTED.value, f"job_id={self._job_id}")
                     await self._wait_to_finish()
-                except Exception:
-                    self._status = Status.FAILED.value
+                except Exception as e:
+                    await self._set_status(Status.FAILED.value, f"slurm submission/monitoring error: {e}")
             else:
-                self._status = Status.FAILED.value
+                await self._set_status(Status.FAILED.value, "failed to submit slurm job")
             
             if self._status == Status.SUCCESS.value and self.outputs_ready():
                 self.cleanup()
-                self._status = Status.SUCCESS.value
-                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                await self._set_status(Status.SUCCESS.value, "batch outputs validated")
             else:
-                self._status = Status.FAILED.value
-                await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                await self._set_status(Status.FAILED.value, "missing expected outputs")
             
         else:
             if self.status == Status.SUCCESS.value and self.outputs_ready():
-                self._status = Status.SUCCESS.value
+                await self._set_status(Status.SUCCESS.value, "batch already successful")
             else:
-                self._status = Status.FAILED.value
+                await self._set_status(Status.FAILED.value, "batch marked success but outputs missing")
             
     def _parse_job_id(self, sbatch_output: str) -> str:
         if match := re.search(r"(\d+)", sbatch_output):
@@ -920,26 +1017,21 @@ class SlurmBatch(Batch):
             if out_bytes:
                 state = out_bytes.decode().strip()
                 if state in ["FAILED", "CANCELLED", "TIMEOUT"]:
-                    self._status = Status.FAILED.value
-                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    await self._set_status(Status.FAILED.value, f"slurm_state={state}")
                     raise Exception(f"Job {self._job_id} failed with state: {state}")
 
                 elif state in ["RUNNING", "COMPLETING"]:
-                    self._status = Status.RUNNING.value
-                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    await self._set_status(Status.RUNNING.value, f"slurm_state={state}")
                     
                 elif state in ["COMPLETED"]:
                     if self.outputs_ready():
-                        self._status = Status.SUCCESS.value
-                        await write_file(self.batch_dir / ".status", Status.DONE.value, self.file_semaphore)
+                        await self._set_status(Status.SUCCESS.value, f"slurm_state={state}", persist_status=Status.DONE.value)
                     else:
-                        self._status = Status.FAILED.value
-                        await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                        await self._set_status(Status.FAILED.value, "slurm completed but outputs missing")
                         raise Exception(f"Job {self._job_id} finished but at least one output is missing.")
                         
                 else:
-                    self._status = Status.PENDING.value
-                    await write_file(self.batch_dir / ".status", self._status, self.file_semaphore)
+                    await self._set_status(Status.PENDING.value, f"slurm_state={state}")
 
 console = Console()
 
@@ -1059,7 +1151,19 @@ class Runner(ABC):
         async def run_batch(batch: Batch):
             async with semaphore:
                 while batch.status != Status.SUCCESS.value and batch.retry_count < self.max_retries:
-                    await batch.run()
+                    current_attempt = batch.retry_count + 1
+                    if current_attempt > 1:
+                        await batch._append_batch_log("RETRY", f"starting attempt {current_attempt}")
+                    try:
+                        await batch.run()
+                    except Exception as e:
+                        await batch._append_batch_log(
+                            "ERROR",
+                            f"attempt {current_attempt} raised: {e}",
+                        )
+                        if batch.status != Status.FAILED.value:
+                            await batch._set_status(Status.FAILED.value, f"unhandled exception: {e}")
+                    await batch.log_progress()
                     if batch.status == Status.SUCCESS.value:
                         break
                     else:
@@ -1069,9 +1173,22 @@ class Runner(ABC):
                 
                 if batch.status == Status.SUCCESS.value:
                     self._success_batches_count += 1
+                    await batch._append_batch_log(
+                        "SUMMARY",
+                        f"terminal=success retries_used={batch.retry_count}",
+                    )
                 
                 elif batch.status == Status.FAILED.value:
                     self._failed_batches_count += 1
+                    await batch._append_batch_log(
+                        "SUMMARY",
+                        f"terminal=failed retries_used={batch.retry_count}",
+                    )
+                else:
+                    await batch._append_batch_log(
+                        "SUMMARY",
+                        f"terminal={batch.status} retries_used={batch.retry_count}",
+                    )
 
                 if batch in self._active_batches:
                     self._active_batches.remove(batch)
@@ -1123,6 +1240,8 @@ class Runner(ABC):
                         else:
                             self._final_batch_created = True
                             break
+                    else:
+                        break
                 while len(self._active_batches) < self.max_concurrent_batches and not self.batches_queue.empty(): 
                     batch = await self.batches_queue.get()
                     if batch is not None:
@@ -1177,7 +1296,9 @@ class Runner(ABC):
         console.print(summary)
     
     async def _update_statuses(self):
-        await asyncio.gather(*[batch.update_status() for batch in self._active_batches if batch.status not in self.TERMINAL_BATCH_STATES])
+        active = [batch for batch in self._active_batches if batch.status not in self.TERMINAL_BATCH_STATES]
+        await asyncio.gather(*[batch.update_status() for batch in active])
+        await asyncio.gather(*[batch.log_progress() for batch in active])
     
     def _make_system_stats_panel(self):
         """helpers to create a system stats panel for the live UI."""
@@ -1491,7 +1612,6 @@ class ProfileBamTask(Task):
     --output-dir .
     mv input_profile.parquet <sample-name>.parquet
     mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
-    samtools idxstats <bam-file> |  awk '$3 > 0 {print $1}' > <sample-name>.parquet.scaffolds
     """
     
 class FastCompareTask(Task):
@@ -1506,17 +1626,14 @@ class FastCompareTask(Task):
     TEMPLATE_CMD="""
     zipstrain compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
-    --scaffolds-1 <scaffold_1_file> \
-    --scaffolds-2 <scaffold_2_file> \
-    --null-model <null_model_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
-    --memory-mode <memory-mode> \
-    --chrom-batch-size <chrom-batch-size> \
+    <duckdb-memory-limit-arg> \
+    <duckdb-threads-arg> \
+    <compare-engine-arg> \
     --output-file <output-file> \
-    --genome <genome-name> \
-    --engine <engine> 
+    --genome <genome-name>
     """
 
 
@@ -1529,8 +1646,9 @@ class CollectComps(Task):
         expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
         engine (Engine): Container engine to wrap the command."""
     TEMPLATE_CMD="""
+    rm -rf comps
     mkdir -p comps
-    cp */*_comparison.parquet comps/
+    find . -maxdepth 2 -type f -name "*_comparison.parquet" ! -path "./comps/*" -exec cp {} comps/ \\;
     zipstrain utilities merge_parquet --input-dir comps --output-file <output-file>
     rm -rf comps
     """
@@ -1639,9 +1757,9 @@ def lazy_run_compares(
     poll_interval: float = 5.0,
     execution_mode: str = "local",
     slurm_config: SlurmConfig | None = None,
-    memory_mode: str = "heavy",
-    chrom_batch_size: int = 10000,
-    polars_engine: str = "streaming"
+    duckdb_memory_limit: str | None = None,
+    duckdb_threads: int | None = None,
+    compare_engine: str = "polars",
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -1653,15 +1771,17 @@ def lazy_run_compares(
         max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
         poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
         execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
+        duckdb_threads (int | None): Optional DuckDB thread cap passed to compare tasks.
+        compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
     """
     task_generator = CompareTaskGenerator(
         data=comps_db.to_complete_input_table(),
         yield_size=tasks_per_batch,
         container_engine=container_engine,
         comp_config=comps_db.config,
-        memory_mode=memory_mode,
-        polars_engine=polars_engine,
-        chrom_batch_size=chrom_batch_size,
+        duckdb_memory_limit=duckdb_memory_limit,
+        duckdb_threads=duckdb_threads,
+        compare_engine=compare_engine,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -1694,12 +1814,13 @@ class FastGeneCompareTask(Task):
     TEMPLATE_CMD="""
     zipstrain compare single_compare_gene --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
-    --null-model <null_model_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
+    <duckdb-memory-limit-arg> \
+    <duckdb-threads-arg> \
+    <compare-engine-arg> \
     --output-file <output-file> \
-    --engine <engine> \
     --ani-method <ani-method>
     """
 
@@ -1711,8 +1832,9 @@ class GeneCompareTaskGenerator(TaskGenerator):
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
-        polars_engine (str): Polars engine to use. Default is "streaming".
         ani_method (str): ANI calculation method to use. Default is "popani".
+        duckdb_threads (int | None): Optional DuckDB thread cap (for example 8).
+        compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
     """
     def __init__(
         self,
@@ -1720,16 +1842,22 @@ class GeneCompareTaskGenerator(TaskGenerator):
         yield_size: int,
         container_engine: Engine,
         comp_config: database.GeneComparisonConfig,
-        polars_engine: str = "streaming",
         ani_method: str = "popani",
+        duckdb_memory_limit: str | None = None,
+        duckdb_threads: int | None = None,
+        compare_engine: str = "polars",
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
         self.engine = container_engine
-        self.polars_engine = polars_engine
         self.ani_method = ani_method
+        self.duckdb_memory_limit = duckdb_memory_limit
+        self.duckdb_threads = duckdb_threads
+        self.compare_engine = compare_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
+        if self.compare_engine not in {"polars", "duckdb"}:
+            raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
         
     def get_total_tasks(self) -> int:
         """Returns total number of pairwise comparisons to be made."""
@@ -1743,14 +1871,26 @@ class GeneCompareTaskGenerator(TaskGenerator):
             batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
             tasks = []
             for row in batch_df.iter_rows(named=True):
+                duckdb_memory_limit_arg = (
+                    f"--duckdb-memory-limit {self.duckdb_memory_limit}"
+                    if self.duckdb_memory_limit
+                    else ""
+                )
+                duckdb_threads_arg = (
+                    f"--duckdb-threads {self.duckdb_threads}"
+                    if self.duckdb_threads is not None
+                    else ""
+                )
+                compare_engine_arg = f"--engine {self.compare_engine}"
                 inputs = {
                 "mpile_1_file": FileInput(row["profile_location_1"]),
                 "mpile_2_file": FileInput(row["profile_location_2"]),
-                "null_model_file": FileInput(self.comp_config.null_model_loc),
                 "stb_file": FileInput(self.comp_config.stb_file_loc),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
-                "engine": StringInput(self.polars_engine),
+                "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
+                "duckdb-threads-arg": StringInput(duckdb_threads_arg),
+                "compare-engine-arg": StringInput(compare_engine_arg),
                 "ani-method": StringInput(self.ani_method),
                 }
                 expected_outputs ={
@@ -1912,8 +2052,9 @@ class CollectGeneComps(Task):
         expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
         engine (Engine): Container engine to wrap the command."""
     TEMPLATE_CMD="""
+    rm -rf gene_comps
     mkdir -p gene_comps
-    cp */*_gene_comparison.parquet gene_comps/
+    find . -maxdepth 2 -type f -name "*_gene_comparison.parquet" ! -path "./gene_comps/*" -exec cp {} gene_comps/ \\;
     zipstrain utilities merge_parquet --input-dir gene_comps --output-file <output-file>
     rm -rf gene_comps
     """
@@ -1971,8 +2112,10 @@ def lazy_run_gene_compares(
     poll_interval: float = 5.0,
     execution_mode: str = "local",
     slurm_config: SlurmConfig | None = None,
-    polars_engine: str = "streaming",
-    ani_method: str = "popani"
+    ani_method: str = "popani",
+    duckdb_memory_limit: str | None = None,
+    duckdb_threads: int | None = None,
+    compare_engine: str = "polars",
 ) -> None:
     """A helper function to quickly set up and run a GeneCompareRunner with given parameters.
     
@@ -1984,16 +2127,19 @@ def lazy_run_gene_compares(
         max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
         poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
         execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
-        polars_engine (str): Polars engine to use. Default is "streaming".
         ani_method (str): ANI calculation method to use. Default is "popani".
+        duckdb_threads (int | None): Optional DuckDB thread cap passed to compare tasks.
+        compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
     """
     task_generator = GeneCompareTaskGenerator(
         data=comps_db.to_complete_input_table(),
         yield_size=tasks_per_batch,
         container_engine=container_engine,
         comp_config=comps_db.config,
-        polars_engine=polars_engine,
         ani_method=ani_method,
+        duckdb_memory_limit=duckdb_memory_limit,
+        duckdb_threads=duckdb_threads,
+        compare_engine=compare_engine,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -2012,4 +2158,3 @@ def lazy_run_gene_compares(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
-

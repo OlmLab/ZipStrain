@@ -35,6 +35,7 @@ gene_locs = (["NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA","NA"])+ \
 def profile_1()->pl.LazyFrame:
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20+["chr3"]*30,
+        "genome": ["genome1"]*10+["genome1"]*20+["genome2"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2)))+list(range(0,len(a_chr3))),
         "gene": gene_locs,
         "A": a_chr1 + a_chr2 + a_chr3,
@@ -44,6 +45,7 @@ def profile_1()->pl.LazyFrame:
     },schema={
         "chrom": pl.String,
         "pos": pl.Int64,
+        "genome": pl.String,
         "gene": pl.String,
         "A": pl.Int32,
         "T": pl.Int32,
@@ -149,6 +151,7 @@ def test_estimate_genome_presence_makes_sense():
     profile_1=pl.concat([
         pl.DataFrame({
             "chrom": [f"genome1_scaf{i+1}"]*genome1_scaffold_lengths[i],
+            "genome": ["genome1"]*genome1_scaffold_lengths[i],
             "pos": list(range(genome1_scaffold_lengths[i])),
             "gene": ["NA"]*genome1_scaffold_lengths[i],
             "A": cov[i].tolist(),
@@ -196,6 +199,7 @@ def test_estimate_genome_presence_makes_sense():
     profile_2=pl.concat([
         pl.DataFrame({
             "chrom": [f"genome2_scaf{i+1}"]*genome2_scaffold_lengths[i],
+            "genome": ["genome2"]*genome2_scaffold_lengths[i],
             "pos": list(range(genome2_scaffold_lengths[i])),
             "gene": ["NA"]*genome2_scaffold_lengths[i],
             "A": cov2[i].tolist(),

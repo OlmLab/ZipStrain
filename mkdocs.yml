@@ -10,6 +10,7 @@ nav:
   - index.md
   - installation.md
   - Tutorial.md
+  - GenomeDBFromSylph.md
   - NextflowPipeline.md
   - cli.md
   - api.md

@@ -8,8 +8,7 @@ params.min_gene_compare_len=200
 params.batch_size=10
 params.breadth_min_cov=1
 params.bed_max_scaffold_length=500000
-params.compare_memory_mode="light"
-params.compare_chrom_batch_size=10000
+params.compare_duckdb_memory_limit=""
 params.batch_compare_n_parallel=4
 params.publish_mode="link"
 params.compare_genome_scope="all"
@@ -170,7 +169,6 @@ process profile_bam {
     output:
     path "${bamfile.baseName}_profile.parquet", emit: profile
     path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
-    path "${sample_name}.parquet.scaffolds", emit: covered_scaffolds
     val sample_name, emit: sample_name
     script:
     """
@@ -181,7 +179,6 @@ process profile_bam {
                         --stb-file ${stb_file} \\
                         --num-workers ${task.cpus} \\
                         --output-dir .
-    samtools idxstats ${bamfile} | awk '\$3 > 0 {print \$1}' >> ${sample_name}.parquet.scaffolds
     """
 }
 
@@ -193,26 +190,22 @@ process compare_genome_fast_profiles_single {
     input:
     path mpileup_file1
     path mpileup_file2
-    path scaffold_file1
-    path scaffold_file2
-    path null_model
     path stb
     val pair_name
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
+    def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
+    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     zipstrain compare single_compare_genome  \
                         --mpileup-contig-1 ${mpileup_file1} \
                         --mpileup-contig-2 ${mpileup_file2} \
-                        --scaffolds-1 ${scaffold_file1} \
-                        --scaffolds-2 ${scaffold_file2} \
-                        --memory-mode ${params.compare_memory_mode} \
-                        --chrom-batch-size ${params.compare_chrom_batch_size} \
-                        -n ${null_model} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_duckdb_memory_limit} \
+                        ${add_genome_scope} \
                         -o ${pair_name}_comparison.parquet
 
     """
@@ -225,26 +218,20 @@ process compare_gene_fast_profiles_single {
     input:
     path mpileup_file1
     path mpileup_file2
-    path scaffold_file1
-    path scaffold_file2
-    path null_model
     path stb
     val pair_name
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
+    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     zipstrain compare single_compare_gene  \
                         --mpileup-contig-1 ${mpileup_file1} \
                         --mpileup-contig-2 ${mpileup_file2} \
-                        --scaffolds-1 ${scaffold_file1} \
-                        --scaffolds-2 ${scaffold_file2} \
-                        --memory-mode ${params.compare_memory_mode} \
-                        --chrom-batch-size ${params.compare_chrom_batch_size} \
-                        -n ${null_model} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_duckdb_memory_limit} \
                         --scope ${params.compare_gene_scope} \
                         -o ${pair_name}_comparison.parquet
 
@@ -281,14 +268,11 @@ process compare_genome_batched {
     afterScript """
     rm -rf comps pairs.txt
     rm -f ${mpiles.collect{t->t.join(' ')}}
-    rm -f ${scaffolds.collect{t->t.join(' ')}}
-    rm -f ${null_model} ${stb}
+    rm -f ${stb}
     """
     input:
     path mpiles
-    path scaffolds
     val pairs
-    path null_model
     path stb
 
 
@@ -298,21 +282,17 @@ process compare_genome_batched {
     script:
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
     remove_mpiles = mpiles.join(' ')
-    remove_scaffolds = scaffolds.join(' ')
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
+    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     echo -e "${pairs_text}" > pairs.txt
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain compare single_compare_genome \
                         --mpileup-contig-1 {1} \
                         --mpileup-contig-2 {2} \
-                        --scaffolds-1 {1}.scaffolds \
-                        --scaffolds-2 {2}.scaffolds \
-                        --memory-mode ${params.compare_memory_mode} \
-                        --chrom-batch-size ${params.compare_chrom_batch_size} \
-                        -n ${null_model} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_genome_scope}
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
@@ -321,7 +301,6 @@ process compare_genome_batched {
     rm -rf comps
     rm -f pairs.txt
     rm -f ${remove_mpiles}
-    rm -f ${remove_scaffolds}
 
     """
 
@@ -333,31 +312,28 @@ process compare_gene_batched {
     afterScript """
     rm -rf comps pairs.txt
     rm -f ${mpiles.collect{t->t.join(' ')}}
-    rm -f ${scaffolds.collect{t->t.join(' ')}}
-    rm -f ${null_model} ${stb}
+    rm -f ${stb}
     """
     input:
     path mpiles
-    path scaffolds
     val pairs
-    path null_model
     path stb
     output:
     path "Batch_*_comparisons.parquet", emit: comparison_results
     script:
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
     remove_mpiles = mpiles.join(' ')
-    remove_scaffolds = scaffolds.join(' ')
     def add_gene_scope= (params.compare_gene_scope=="all") ? "" : "--scope ${params.compare_gene_scope}"
+    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     echo -e "${pairs_text}" > pairs.txt
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain compare single_compare_gene \
                         --mpileup-contig-1 {1} \
                         --mpileup-contig-2 {2} \
-                        -n ${null_model} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_gene_scope}
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
@@ -366,7 +342,6 @@ process compare_gene_batched {
     rm -rf comps
     rm -f pairs.txt
     rm -f ${remove_mpiles}
-    rm -f ${remove_scaffolds}   
 
     """ 
 }
@@ -436,7 +411,6 @@ process fromSRAtoProfile{
     path stb_file
     output:
     path "${sra_id}_profile.parquet", emit: profiles
-    path "${sra_id}.parquet.scaffolds", emit: covered_scaffolds
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
     val sra_id, emit: sample_name
     script:
@@ -458,7 +432,6 @@ process fromSRAtoProfile{
                         --stb-file ${stb_file} \\
                         --num-workers ${task.cpus} \\
                         --output-dir .
-    samtools idxstats ${sra_id}.bam | awk '\$3 > 0 {print \$1}' > ${sra_id}.parquet.scaffolds
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """
@@ -526,8 +499,7 @@ workflow
         if (params.input_type=="profile_table"){
             mpileup_files_list = input_table['mpileup_files'].collect{t->file(t)}
             sample_names_list = input_table['sample_names']
-            scaffolds_list = input_table['scaffolds'].collect{t->file(t)}
-            profiles=[mpileup_files_list,sample_names_list,scaffolds_list].transpose()
+            profiles=[mpileup_files_list,sample_names_list].transpose()
             def profile_pairs = []
             for (int i = 0; i < profiles.size(); i++) {
                 for (int j = i + 1; j < profiles.size(); j++) {
@@ -542,9 +514,7 @@ workflow
             sample_2=input_table['sample_name_2']
             mpile_1=input_table["profile_location_1"].collect{t->file(t)}
             mpile_2=input_table["profile_location_2"].collect{t->file(t)}
-            scaffold_1=input_table["scaffold_location_1"].collect{t->file(t)}
-            scaffold_2=input_table["scaffold_location_2"].collect{t->file(t)}
-            profile_pairs=([mpile_1]+[sample_1]+[scaffold_1]+[mpile_2]+[sample_2]+[scaffold_2]).transpose()
+            profile_pairs=([mpile_1]+[sample_1]+[mpile_2]+[sample_2]).transpose()
             pair_channel=Channel.from(profile_pairs)
 
         }
@@ -559,8 +529,7 @@ workflow
         if (params.input_type=="profile_table"){
             mpileup_files_list = input_table['mpileup_files'].collect{t->file(t)}
             sample_names_list = input_table['sample_names']
-            scaffolds_list = input_table['scaffolds'].collect{t->file(t)}
-            profiles=[mpileup_files_list,sample_names_list,scaffolds_list].transpose()
+            profiles=[mpileup_files_list,sample_names_list].transpose()
             def profile_pairs = []
             for (int i = 0; i < profiles.size(); i++) {
                 for (int j = i + 1; j < profiles.size(); j++) {
@@ -575,9 +544,7 @@ workflow
             sample_2=input_table['sample_name_2']
             mpile_1=input_table["profile_location_1"].collect{t->file(t)}
             mpile_2=input_table["profile_location_2"].collect{t->file(t)}
-            scaffold_1=input_table["scaffold_location_1"].collect{t->file(t)}
-            scaffold_2=input_table["scaffold_location_2"].collect{t->file(t)}
-            profile_pairs=([mpile_1]+[sample_1]+[scaffold_1]+[mpile_2]+[sample_2]+[scaffold_2]).transpose()
+            profile_pairs=([mpile_1]+[sample_1]+[mpile_2]+[sample_2]).transpose()
             pair_channel=Channel.from(profile_pairs)
 
         }
@@ -612,36 +579,25 @@ workflow compare_genomes
     profile_pairs
     stb
     main:
-
-    if (!params.null_model) {
-        build_null_model()
-        null_model = build_null_model.out.model
-    }
-    else {
-        null_model =file(params.null_model)
-    }
     if (params.parallel_mode=="single") {
 
     profile_pairs.multiMap{ v ->
         mpile_1: v[0]
-        mpile_2: v[3]
-        scaffold_1: v[2]
-        scaffold_2: v[5]
-        pair_name: v[1]+"_" + v[4]
+        mpile_2: v[2]
+        pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_genome_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
+    compare_genome_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, stb, profile_pairs.pair_name)
     merge_comparison_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
     batch.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
-        unique_mpiles: (v[0]+v[3]).unique().sort()
-        unique_scaffolds: (v[2]+v[5]).unique().sort()
-        pairs: [v[0].collect{t->t.name}, v[3].collect{t->t.name}].transpose()
+        unique_mpiles: (v[0]+v[2]).unique().sort()
+        pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_genome_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
+    compare_genome_batched(batch_pairs.unique_mpiles, batch_pairs.pairs, stb)
     merge_comparison_tables(compare_genome_batched.out.comparison_results.collect() )
     }
 
@@ -654,37 +610,26 @@ workflow compare_genes{
     profile_pairs
     stb
     main:
-
-    if (!params.null_model) {
-        build_null_model()
-        null_model = build_null_model.out.model
-    }
-    else {
-        null_model =file(params.null_model)
-    }
     if (params.parallel_mode=="single") {
 
     profile_pairs.multiMap{ v ->
         mpile_1: v[0]
-        mpile_2: v[3]
-        scaffold_1: v[2]
-        scaffold_2: v[5]
-        pair_name: v[1]+"_" + v[4]
+        mpile_2: v[2]
+        pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_gene_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, profile_pairs.scaffold_1, profile_pairs.scaffold_2, null_model, stb, profile_pairs.pair_name)
-    merge_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
+    compare_gene_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, stb, profile_pairs.pair_name)
+    merge_comparison_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
     batch.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
-        unique_mpiles: (v[0]+v[3]).unique().sort()
-        unique_scaffolds: (v[2]+v[5]).unique().sort()
-        pairs: [v[0].collect{t->t.name}, v[3].collect{t->t.name}].transpose()
+        unique_mpiles: (v[0]+v[2]).unique().sort()
+        pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_gene_batched(batch_pairs.unique_mpiles, batch_pairs.unique_scaffolds, batch_pairs.pairs, null_model, stb)
-    merge_tables(compare_gene_batched.out.comparison_results.collect() )
+    compare_gene_batched(batch_pairs.unique_mpiles, batch_pairs.pairs, stb)
+    merge_comparison_tables(compare_gene_batched.out.comparison_results.collect() )
     }
 
 }

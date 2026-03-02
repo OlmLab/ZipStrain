@@ -26,6 +26,7 @@ gene_locs = (["NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA","NA"])+ \
 def profile_1()->pl.LazyFrame:
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20,
+        "genome": ["genome1"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2))),
         "gene": gene_locs[:30],
         "A": a_chr1 + a_chr2 ,
@@ -35,14 +36,11 @@ def profile_1()->pl.LazyFrame:
     }).lazy()
 
 @pytest.fixture
-def scaffold_1()->str:
-    return "chr1\nchr2"
-
-@pytest.fixture
 def profile_2()->pl.LazyFrame:
     """Exactly the same as profile_1"""
     return pl.DataFrame({
         "chrom": ["chr1"]*10+["chr2"]*20+["chr3"]*30,
+        "genome": ["genome1"]*30 + ["genome2"]*30,
         "pos":list(range(0,len(a_chr1)))+list(range(0,len(a_chr2)))+list(range(0,len(a_chr3))),
         "gene": gene_locs,
         "A": a_chr1 + a_chr2 + a_chr3,
@@ -56,6 +54,7 @@ def profile_3()->pl.LazyFrame:
     """Exactly the same as profile_1"""
     return pl.DataFrame({
         "chrom": ["chr3"]*30,
+        "genome": ["genome2"]*30,
         "pos":list(range(0,len(a_chr3))),
         "gene": gene_locs[30:],
         "A": a_chr3,
@@ -64,83 +63,207 @@ def profile_3()->pl.LazyFrame:
         "G": g_chr3,
     }).lazy()
 @pytest.fixture
-def scaffold_2():
-    return "chr1\nchr2\nchr3"
-
-@pytest.fixture
-def scaffold_3():
-    return "chr3"
-
-@pytest.fixture
 def stb()->pl.LazyFrame:
     return pl.DataFrame({
         "scaffold":["chr1","chr2","chr3"],
         "genome":["genome1","genome1","genome2"],
     }).lazy()
 
-@pytest.fixture
-def null_model()->pl.LazyFrame:
-    return pl.DataFrame({
-        "cov":list(range(100)),
-        "max_error_count":[int(i*0.1) for i in range(100)],
-    }).lazy()
-    
-
 def test_cli_profile_compare(profile_1:pl.LazyFrame,
                              profile_2:pl.LazyFrame,
                              profile_3:pl.LazyFrame,
-                             scaffold_1:str,
-                             scaffold_2:str,
-                             scaffold_3:str,
                              stb:pl.LazyFrame,
-                             null_model:pl.LazyFrame,
                              tmp_path):
     profile_1_dir=tmp_path/"profile_1.parquet"
     profile_2_dir=tmp_path/"profile_2.parquet"
     profile_3_dir=tmp_path/"profile_3.parquet"
-    scaffold_1_path=tmp_path/"scaffold_1.txt"
-    scaffold_2_path=tmp_path/"scaffold_2.txt"
-    scaffold_3_path=tmp_path/"scaffold_3.txt"
     stb_path=tmp_path/"stb.parquet"
-    null_model_path=tmp_path/"null_model.parquet"
     profile_1.sink_parquet(profile_1_dir)
     profile_2.sink_parquet(profile_2_dir)
     profile_3.sink_parquet(profile_3_dir)
-    scaffold_1_path.write_text(scaffold_1)
-    scaffold_2_path.write_text(scaffold_2)
-    scaffold_3_path.write_text(scaffold_3)
     stb.sink_csv(stb_path,separator="\t",include_header=False)
-    null_model.sink_parquet(null_model_path)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "compare",
         "single_compare_genome", 
         "--mpileup-contig-1", str(profile_1_dir),
         "--mpileup-contig-2", str(profile_2_dir),
-        "--scaffolds-1", str(scaffold_1_path),
-        "--scaffolds-2", str(scaffold_2_path),
         "--stb-file", str(stb_path),
-        "--null-model", str(null_model_path),
         "--output-file", str(tmp_path/"output.parquet"),
+        "--duckdb-memory-limit", "512MB",
+        "--duckdb-temp-directory", str(tmp_path),
     ])
     lf1 = pl.read_parquet(tmp_path/"output.parquet")
     assert result.exit_code == 0 
     assert lf1.shape[0] == 2
     result = runner.invoke(cli.cli, [
         "compare",
+        "single_compare_genome",
+        "--mpileup-contig-1", str(profile_1_dir),
+        "--mpileup-contig-2", str(profile_2_dir),
+        "--stb-file", str(stb_path),
+        "--engine", "duckdb",
+        "--output-file", str(tmp_path/"output_duckdb.parquet"),
+    ])
+    lf1_duckdb = pl.read_parquet(tmp_path/"output_duckdb.parquet")
+    assert result.exit_code == 0
+    assert lf1.sort("genome").equals(lf1_duckdb.sort("genome"))
+    result = runner.invoke(cli.cli, [
+        "compare",
         "single_compare_genome", 
         "--mpileup-contig-1", str(profile_1_dir),
         "--mpileup-contig-2", str(profile_3_dir),
-        "--scaffolds-1", str(scaffold_1_path),
-        "--scaffolds-2", str(scaffold_3_path),
         "--stb-file", str(stb_path),
-        "--null-model", str(null_model_path),
         "--output-file", str(tmp_path/"output.parquet"),
     ])
     lf2 = pl.read_parquet(tmp_path/"output.parquet")
     assert result.exit_code == 0
     assert lf2.shape[0] == 2
     
+
+
+def test_single_compare_genome_duckdb_scope_skips_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    def _should_not_prefilter(*args, **kwargs):
+        raise AssertionError("duckdb_prefilter_by_scope should not be called for --engine duckdb")
+
+    monkeypatch.setattr(cli.cp, "duckdb_prefilter_by_scope", _should_not_prefilter)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "compare",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            "duckdb",
+            "--genome",
+            "genome1",
+            "--output-file",
+            str(tmp_path / "scoped_duckdb.parquet"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert (tmp_path / "scoped_duckdb.parquet").exists()
+
+
+def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    def _should_not_prefilter(*args, **kwargs):
+        raise AssertionError("duckdb_prefilter_by_scope should not be called for --engine duckdb")
+
+    monkeypatch.setattr(cli.cp, "duckdb_prefilter_by_scope", _should_not_prefilter)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "compare",
+            "single_compare_gene",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            "duckdb",
+            "--scope",
+            "genome1:gene1",
+            "--output-file",
+            str(tmp_path / "scoped_gene_duckdb.parquet"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert (tmp_path / "scoped_gene_duckdb.parquet").exists()
+
+
+def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
+    comp_obj = tmp_path / "genome_comp.json"
+    comp_obj.write_text("{}")
+    captured = {}
+
+    monkeypatch.setattr(
+        cli.db.GenomeComparisonDatabase,
+        "load_obj",
+        classmethod(lambda cls, path: object()),
+    )
+
+    def _fake_lazy_run_compares(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", _fake_lazy_run_compares)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "run",
+            "compare_genomes",
+            "--genome-comparison-object",
+            str(comp_obj),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--engine",
+            "duckdb",
+            "--duckdb-threads",
+            "7",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["duckdb_threads"] == 7
+    assert captured["compare_engine"] == "duckdb"
+
+
+def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
+    comp_obj = tmp_path / "gene_comp.json"
+    comp_obj.write_text("{}")
+    captured = {}
+
+    monkeypatch.setattr(
+        cli.db.GeneComparisonDatabase,
+        "load_obj",
+        classmethod(lambda cls, path: object()),
+    )
+
+    def _fake_lazy_run_gene_compares(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", _fake_lazy_run_gene_compares)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "run",
+            "compare_genes",
+            "--gene-comparison-object",
+            str(comp_obj),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--engine",
+            "duckdb",
+            "--duckdb-threads",
+            "9",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["duckdb_threads"] == 9
+    assert captured["compare_engine"] == "duckdb"
 
 
 def test_generate_stb(tmp_path):
@@ -164,3 +287,81 @@ def test_generate_stb(tmp_path):
     assert result_dict["chr1_1"]["genome"] == "genome1"
     assert result_dict["chr2_1"]["genome"] == "genome1"
     assert result_dict["chr1_2"]["genome"] == "genome2"
+
+
+def test_cli_build_genome_db_no_download(tmp_path):
+    abundance = tmp_path / "sylph.csv"
+    abundance.write_text(
+        "Genome_file,abundance\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,0.6\n"
+        "/ref/GCA_123456.1_genomic.fna.gz,0.4\n"
+    )
+    db_path = tmp_path / ".genome_db.parquet"
+    genomes_dir = tmp_path / "genomes"
+    report_file = tmp_path / "report.csv"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-genome-db",
+            "--tool",
+            "sylph",
+            "--abundance-table",
+            str(abundance),
+            "--db-file",
+            str(db_path),
+            "--genomes-dir",
+            str(genomes_dir),
+            "--no-download",
+            "--report-file",
+            str(report_file),
+        ],
+    )
+    assert result.exit_code == 0
+    assert db_path.exists()
+    db_df = pl.read_parquet(db_path)
+    assert set(db_df["accession"].to_list()) == {"GCF_000001405.40", "GCA_123456.1"}
+    assert report_file.exists()
+
+
+def test_cli_build_profile_db_minimal_columns(tmp_path):
+    profile_path = tmp_path / "sample_profile.parquet"
+    pl.DataFrame({
+        "chrom": ["chr2", "chr1", "chr1"],
+        "genome": ["genome1", "genome1", "genome1"],
+        "pos": [0, 1, 2],
+        "gene": ["NA", "NA", "NA"],
+        "A": [1, 0, 0],
+        "T": [0, 1, 0],
+        "C": [0, 0, 1],
+        "G": [0, 0, 0],
+    }).write_parquet(profile_path)
+
+    input_csv = tmp_path / "profiles.csv"
+    pl.DataFrame({
+        "profile_name": ["sample_1"],
+        "profile_location": [str(profile_path)],
+        "reference_db_id": ["ref_1"],
+        "gene_db_id": ["gene_ref_1"],
+    }).write_csv(input_csv)
+
+    output_db = tmp_path / "profiles.parquet"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-profile-db",
+            "-p",
+            str(input_csv),
+            "-o",
+            str(output_db),
+        ],
+    )
+    assert result.exit_code == 0
+    assert output_db.exists()
+
+    built_db = pl.read_parquet(output_db)
+    assert set(built_db.columns) == {"profile_name", "profile_location", "reference_db_id", "gene_db_id"}
