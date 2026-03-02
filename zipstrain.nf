@@ -169,7 +169,6 @@ process profile_bam {
     output:
     path "${bamfile.baseName}_profile.parquet", emit: profile
     path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
-    path "${sample_name}.parquet.scaffolds", emit: covered_scaffolds
     val sample_name, emit: sample_name
     script:
     """
@@ -180,7 +179,6 @@ process profile_bam {
                         --stb-file ${stb_file} \\
                         --num-workers ${task.cpus} \\
                         --output-dir .
-    samtools idxstats ${bamfile} | awk '\$3 > 0 {print \$1}' >> ${sample_name}.parquet.scaffolds
     """
 }
 
@@ -413,7 +411,6 @@ process fromSRAtoProfile{
     path stb_file
     output:
     path "${sra_id}_profile.parquet", emit: profiles
-    path "${sra_id}.parquet.scaffolds", emit: covered_scaffolds
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
     val sra_id, emit: sample_name
     script:
@@ -435,7 +432,6 @@ process fromSRAtoProfile{
                         --stb-file ${stb_file} \\
                         --num-workers ${task.cpus} \\
                         --output-dir .
-    samtools idxstats ${sra_id}.bam | awk '\$3 > 0 {print \$1}' > ${sra_id}.parquet.scaffolds
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """

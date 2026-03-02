@@ -249,12 +249,10 @@ def build_genome_db(tool, abundance_table, db_file, genomes_dir, download, overw
 @click.option('--scope', '-s', default="all", help="Genome scope for comparison.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
-@click.option('--null-model-p-value', '-n', default=0.05, help="P-value threshold for the null model to detect sequencing error.")
 @click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model-loc', '-m', default="", help="Deprecated: ignored in compare; kept for backward compatibility.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
-def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, null_model_p_value, stb_file_loc, null_model_loc, current_comp_table, output_file):
+def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, current_comp_table, output_file):
     """
     Build a comparison configuration JSON file from the given parameters.
 
@@ -265,9 +263,7 @@ def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, 
     scope (str): Genome scope for comparison.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    null_model_p_value (float): Deprecated compatibility field.
     stb_file_loc (str): Path to the scaffold-to-genome mapping file.
-    null_model_loc (str): Deprecated compatibility field (ignored by compare).
     current_comp_table (str): Path to the current comparison table in Parquet format.
     output_file (str): Path to save the output configuration JSON file.
     """
@@ -277,9 +273,7 @@ def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, 
         scope=scope,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
-        null_model_p_value=null_model_p_value,
         stb_file_loc=stb_file_loc,
-        null_model_loc=null_model_loc,
     )
     profile_db=db.ProfileDatabase(profile_db)
     comp_obj=db.GenomeComparisonDatabase(
@@ -298,10 +292,9 @@ def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, 
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
 @click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model-loc', '-m', default="", help="Deprecated: ignored in compare; kept for backward compatibility.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
-def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, null_model_loc, current_comp_table, output_file):
+def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, current_comp_table, output_file):
     """
     Build a gene comparison configuration JSON file from the given parameters.
 
@@ -313,7 +306,6 @@ def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, sc
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     stb_file_loc (str): Path to the scaffold-to-genome mapping file.
-    null_model_loc (str): Deprecated compatibility field (ignored by compare).
     current_comp_table (str): Path to the current comparison table in Parquet format.
     output_file (str): Path to save the output configuration JSON file.
     """
@@ -324,7 +316,6 @@ def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, sc
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         stb_file_loc=stb_file_loc,
-        null_model_loc=null_model_loc,
     )
     profile_db_obj=db.ProfileDatabase(profile_db)
     
@@ -508,10 +499,12 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
     """
     mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
     mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
+    if duckdb_threads is not None and duckdb_threads < 1:
+        raise ValueError("--duckdb-threads must be >= 1")
 
     mpile_1_for_compare = mpileup_contig_1
     mpile_2_for_compare = mpileup_contig_2
-    if genome != "all":
+    if engine == "polars" and genome != "all":
         mpile_1_for_compare, mpile_2_for_compare = cp.duckdb_prefilter_by_scope(
             mpile1=mpileup_contig_1,
             mpile2=mpileup_contig_2,
@@ -523,8 +516,8 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
 
     if engine == "duckdb":
         cp.duckdb_compare_genomes_to_parquet(
-            mpile1=mpile_1_for_compare,
-            mpile2=mpile_2_for_compare,
+            mpile1=mpileup_contig_1,
+            mpile2=mpileup_contig_2,
             output_file=output_file,
             stb_file=stb_file,
             sample_1_name=mpile_contig_1_name,
@@ -598,6 +591,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
 
     mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
     mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
+    if duckdb_threads is not None and duckdb_threads < 1:
+        raise ValueError("--duckdb-threads must be >= 1")
 
     _ = stb_file
     if ":" not in scope:
@@ -606,7 +601,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
 
     mpile_1_for_compare = mpileup_contig_1
     mpile_2_for_compare = mpileup_contig_2
-    if genome_scope != "all" or gene_scope != "all":
+    if engine == "polars" and (genome_scope != "all" or gene_scope != "all"):
         mpile_1_for_compare, mpile_2_for_compare = cp.duckdb_prefilter_by_scope(
             mpile1=mpileup_contig_1,
             mpile2=mpileup_contig_2,
@@ -619,8 +614,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
 
     if engine == "duckdb":
         cp.duckdb_compare_genes_to_parquet(
-            mpile1=mpile_1_for_compare,
-            mpile2=mpile_2_for_compare,
+            mpile1=mpileup_contig_1,
+            mpile2=mpileup_contig_2,
             output_file=output_file,
             sample_1_name=mpile_contig_1_name,
             sample_2_name=mpile_contig_2_name,
@@ -814,8 +809,10 @@ def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_fil
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
+@click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
-def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, duckdb_memory_limit):
+@click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
+def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, engine, duckdb_memory_limit, duckdb_threads):
     """
     Run genome comparisons in batches using the specified execution mode and container engine.
 
@@ -831,6 +828,8 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
     """
     genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
     run_dir=pathlib.Path(run_dir)
+    if duckdb_threads is not None and duckdb_threads < 1:
+        raise ValueError("--duckdb-threads must be >= 1")
     slurm_conf=None
     if execution_mode == "slurm":
         if slurm_config is None:
@@ -852,7 +851,9 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
         max_concurrent_batches=max_concurrent_batches,
         execution_mode=execution_mode,
         slurm_config=slurm_conf,
+        compare_engine=engine,
         duckdb_memory_limit=duckdb_memory_limit,
+        duckdb_threads=duckdb_threads,
         tasks_per_batch=task_per_batch,
         poll_interval=poll_interval,
     )
@@ -897,8 +898,10 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
 @click.option("--ani-method", "-n", default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
-def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, duckdb_memory_limit):
+@click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
+def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, engine, duckdb_memory_limit, duckdb_threads):
     """
     Run gene comparisons in batches using the specified execution mode and container engine.
 
@@ -915,6 +918,8 @@ def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_
     """
     genome_comp_db=db.GeneComparisonDatabase.load_obj(pathlib.Path(gene_comparison_object))
     run_dir=pathlib.Path(run_dir)
+    if duckdb_threads is not None and duckdb_threads < 1:
+        raise ValueError("--duckdb-threads must be >= 1")
     slurm_conf=None
     if execution_mode == "slurm":
         if slurm_config is None:
@@ -937,10 +942,12 @@ def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_
         max_concurrent_batches=max_concurrent_batches,
         execution_mode=execution_mode,
         slurm_config=slurm_conf,
+        compare_engine=engine,
         tasks_per_batch=task_per_batch,
         poll_interval=poll_interval,
         ani_method=ani_method,
         duckdb_memory_limit=duckdb_memory_limit,
+        duckdb_threads=duckdb_threads,
     )
         
 @cli.command("test")

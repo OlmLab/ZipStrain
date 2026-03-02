@@ -182,20 +182,24 @@ See [GenomeDBFromSylph.md](GenomeDBFromSylph.md) for a full walkthrough.
 Build a comparison configuration JSON file:
 
 ```
-zipstrain utilities build-comparison-config [OPTIONS]
+zipstrain utilities build-genome-comparison-config [OPTIONS]
+```
+
+For gene-level comparison config objects, use:
+
+```
+zipstrain utilities build-gene-comparison-config [OPTIONS]
 ```
 
 **Options:**
 
 - `-p, --profile-db TEXT`: Path to the profile database Parquet file [required]
 - `-g, --gene-db-id TEXT`: Gene database ID [required]
-- `-r, --reference-db-id TEXT`: Reference fasta ID [required]
+- `-r, --reference-genome-id TEXT`: Reference fasta ID [required]
 - `-s, --scope TEXT`: Genome scope for comparison (default: "all")
 - `-c, --min-cov INTEGER`: Minimum coverage to consider a position (default: 5)
 - `-l, --min-gene-compare-len INTEGER`: Minimum gene length to consider for comparison (default: 200)
-- `-n, --null-model-p-value FLOAT`: Deprecated for compare; retained for compatibility (default: 0.05)
 - `-t, --stb-file-loc TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-m, --null-model-loc TEXT`: Deprecated for compare; ignored (optional, default: empty)
 - `-a, --current-comp-table TEXT`: Path to existing comparison table in Parquet format (optional)
 - `-o, --output-file TEXT`: Path to save the output configuration JSON file [required]
 
@@ -354,7 +358,9 @@ zipstrain run compare_genomes [OPTIONS]
 - `-s, --slurm-config TEXT`: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')
 - `-c, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
 - `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
+- `--engine [polars|duckdb]`: Compare engine for per-pair tasks (default: `polars`)
 - `-d, --duckdb-memory-limit TEXT`: DuckDB memory limit for compare tasks (for example `2GB`)
+- `--duckdb-threads INTEGER`: Number of DuckDB threads for compare tasks
 
 #### Build Comparison Database
 
@@ -425,6 +431,7 @@ zipstrain compare single_compare_genome \
   -s scaffold_to_genome.tsv \
   --engine duckdb \
   --duckdb-memory-limit 2GB \
+  --duckdb-threads 8 \
   --duckdb-temp-directory /tmp \
   -o comparison_results.parquet
 ```
@@ -442,7 +449,7 @@ zipstrain utilities build-profile-db \
 2. **Build comparison configuration:**
 
 ```
-zipstrain utilities build-comparison-config \
+zipstrain utilities build-genome-comparison-config \
   -p profiles.parquet \
   -g genes_v1 \
   -r gtdb_r214 \
@@ -450,7 +457,6 @@ zipstrain utilities build-comparison-config \
   -c 5 \
   -l 200 \
   -t scaffold_to_genome.tsv \
-  -m null_model.parquet \
   -o comparison_config.json
 ```
 
@@ -472,7 +478,9 @@ zipstrain run compare_genomes \
   -m 10 \
   -e slurm \
   -s slurm_config.json \
-  -c apptainer
+  -c apptainer \
+  --engine duckdb \
+  --duckdb-threads 8
 ```
 
 ### Strain Analysis Workflow
@@ -511,6 +519,7 @@ zipstrain utilities genome_breadth_matrix \
 ## Performance Considerations
 
 - Set `--duckdb-memory-limit` to constrain memory usage on smaller machines
+- Set `--duckdb-threads` to cap CPU parallelism for DuckDB compare tasks
 - Use container engines for consistent environments across platforms
 - Consider SLURM execution mode for large-scale HPC analyses
 

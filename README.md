@@ -98,7 +98,7 @@ nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv> 
 
 #### Output files
 
-Profiling each sample creates three main files regardless of the execution workflow (ZipStrain CLI or Nextflow):
+Profiling each sample creates two main files regardless of the execution workflow (ZipStrain CLI or Nextflow):
 
 - ##### profile (sample_name.parquet by default)
 
@@ -114,10 +114,6 @@ Profiling each sample creates three main files regardless of the execution workf
     |genome|breadth|
     |------|-------|
 
-- ##### Scaffolds (sample_name.parquet.scaffolds by default)
-
-    Just a simple text file that has the name of any scaffold in the reference fasta that has been covered at least by a single base. This might be helpful in the comparison space if you run it in light memory mode
-
 --------------
 
 ### Compare genomes in multiple profiled samples 
@@ -128,7 +124,7 @@ You can compare multiple profiled samples using either the ZipStrain command-lin
 To compare multiple profiled samples using the ZipStrain CLI, first you need to build a profile database that contains all the profiled samples you want to compare. You can do this by running the following command:
 
 ```bash
-zipstrain utilities build-profile-db --profile-db-csv <path/to/profiles/csv> --output-db <path/to/save/profile/db>
+zipstrain utilities build-profile-db --profile-db-csv <path/to/profiles/csv> --output-file <path/to/save/profile/db>
 ```
 The input CSV file should have the following columns:
 
@@ -136,8 +132,6 @@ The input CSV file should have the following columns:
     - profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
     
     - profile_location: The location of the profile
-    
-    - scaffold_location: The location of the scaffold
     
     - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
     
@@ -148,10 +142,10 @@ Running this command will perform the necessary checks and if successful, it wil
 Next, You use this profile database build a configuration json file that will be used to calculate the pairs that need to be compared. In this step you need to define the required parameters for comparison such as min_coverage, etc. You can make the configuration file by running the following command:
 
 ```bash
-zipstrain utilities build-comparison-config \
+zipstrain utilities build-genome-comparison-config \
 --profile-db <path/to/profile/db> \
 --gene-db-id <gene_db_id_used_in_profile_db> \
---reference-db-id <reference_db_id_used_in_profile_db> \
+--reference-genome-id <reference_db_id_used_in_profile_db> \
 --scope "all" \
 --min-cov 5 \
 --min-gene-compare-len 200 \
@@ -161,18 +155,18 @@ zipstrain utilities build-comparison-config \
 ```
 Note that providing current-comp-table is optional. If provided, the comparison config will only include pairs that are not already compared in the current comparison table.
 
-For direct CLI pairwise comparison, `--null-model` is no longer used in `zipstrain compare single_compare_genome` and `zipstrain compare single_compare_gene`.
-
 Finally, you can run the comparison using the generated configuration file and the profile database:
 
 ```bash
 zipstrain run compare_genomes \
 --genome-comparison-object <path/to/comparison/config.json> \
 --run-dir <path/to/save/comparison/outputs> \
---max-concurrent-batches 1
+--engine duckdb \
+--max-concurrent-batches 1 \
+--duckdb-threads 8
 ```
 
-`single_compare_genome` supports `--engine polars|duckdb` (default: `polars`). You can optionally cap DuckDB memory:
+`single_compare_genome` supports `--engine polars|duckdb` (default: `polars`). You can optionally cap DuckDB memory and threads:
 
 ```bash
 zipstrain compare single_compare_genome \
@@ -182,6 +176,7 @@ zipstrain compare single_compare_genome \
 --engine duckdb \
 --output-file <out.parquet> \
 --duckdb-memory-limit 2GB \
+--duckdb-threads 8 \
 --duckdb-temp-directory /tmp
 ```
 

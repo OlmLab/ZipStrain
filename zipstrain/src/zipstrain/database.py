@@ -14,6 +14,18 @@ import json
 import copy
 from pydantic import BaseModel, Field, field_validator,ConfigDict
 
+_DEPRECATED_GENOME_COMPARE_CONFIG_FIELDS = {"null_model_p_value", "null_model_loc"}
+_DEPRECATED_GENE_COMPARE_CONFIG_FIELDS = {"null_model_loc"}
+_PROFILE_DB_COLUMNS = ["profile_name", "profile_location", "reference_db_id", "gene_db_id"]
+
+
+def _drop_deprecated_fields(config_dict: dict, deprecated_fields: set[str]) -> dict:
+    """Return config dict without deprecated keys."""
+    cleaned = copy.copy(config_dict)
+    for field in deprecated_fields:
+        cleaned.pop(field, None)
+    return cleaned
+
 
 class ProfileItem(BaseModel):
     """
@@ -22,11 +34,10 @@ class ProfileItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
     profile_name: str = Field(description="An arbitrary name given to the profile (Usually sample name or name of the parquet file)")
     profile_location: str = Field(description="The location of the profile")
-    scaffold_location: str = Field(description="The location of the scaffold")
     reference_db_id: str = Field(description="The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.")
     gene_db_id:str= Field(default="",description="The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.")
     
-    @field_validator("profile_location","scaffold_location")
+    @field_validator("profile_location")
     def check_file_exists(cls, v):
         if not os.path.exists(v):
             raise ValueError(f"The file {v} does not exist.")
@@ -49,8 +60,6 @@ class ProfileDatabase:
     
     - profile_location: The location of the profile
     
-    - scaffold_location: The location of the scaffold
-    
     - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
     
     - gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.
@@ -64,18 +73,16 @@ class ProfileDatabase:
                  ):
         if db_loc is not None:
             self.db_loc = pathlib.Path(db_loc)
-            self._db = pl.scan_parquet(self.db_loc)
+            self._db = pl.scan_parquet(self.db_loc).select(_PROFILE_DB_COLUMNS)
         else:
             self._db=pl.LazyFrame({
                 "profile_name": [],
                 "profile_location": [],
-                "scaffold_location": [],
                 "reference_db_id": [],
                 "gene_db_id": []
             }, schema={
                 "profile_name": pl.Utf8,
                 "profile_location": pl.Utf8,
-                "scaffold_location": pl.Utf8,
                 "reference_db_id": pl.Utf8,
                 "gene_db_id": pl.Utf8
             })
@@ -85,11 +92,11 @@ class ProfileDatabase:
     def db(self):
         return self._db
 
-    def _validate_db(self,check_profile_exists: bool=True,check_scaffold_exists:bool=True)->None:
+    def _validate_db(self,check_profile_exists: bool=True)->None:
         """Simple method to see if the database has the minimum required structure."""
 
         ### Next check if the database has the required columns
-        required_columns = ["profile_name","profile_location", "scaffold_location", "reference_db_id", "gene_db_id"]
+        required_columns = _PROFILE_DB_COLUMNS
         for col in required_columns:
             if col not in self.db.collect_schema().names():
                 raise ValueError(f"Missing required column: {col}")
@@ -102,13 +109,6 @@ class ProfileDatabase:
             if db_path_validated.height != 0:
                 raise ValueError(f"There are {db_path_validated.height} profiles that do not exist: {db_path_validated['profile_location'].to_list()}")
             ### add log later
-        if check_scaffold_exists:
-            db_path_validated= self.db.select(pl.col("scaffold_location")).collect(engine="streaming").with_columns(
-                (pl.col("scaffold_location").map_elements(lambda x: pathlib.Path(x).exists(),return_dtype=pl.Boolean)).alias("scaffold_exists")
-            ).filter(~ pl.col("scaffold_exists"))
-            if db_path_validated.height != 0:
-                raise ValueError(f"There are {db_path_validated.height} scaffolds that do not exist: {db_path_validated['scaffold_location'].to_list()}")
-            ### add log later
         
     def add_profile(self,
                     data: dict
@@ -119,8 +119,6 @@ class ProfileDatabase:
         - profile_name
         
         - profile_location
-        
-        - scaffold_location
         
         - reference_db_id
 
@@ -134,7 +132,6 @@ class ProfileDatabase:
             lf=pl.LazyFrame({
                 "profile_name": [profile_item.profile_name],
                 "profile_location": [profile_item.profile_location],
-                "scaffold_location": [profile_item.scaffold_location],
                 "reference_db_id": [profile_item.reference_db_id],
                 "gene_db_id": [profile_item.gene_db_id]
             })
@@ -198,7 +195,7 @@ class ProfileDatabase:
         Returns:
             ProfileDatabase: The created ProfileDatabase instance.
         """
-        lf=pl.scan_csv(csv_path).collect().lazy() # To avoid clash when using to_csv on same file
+        lf=pl.scan_csv(csv_path).select(_PROFILE_DB_COLUMNS).collect().lazy() # To avoid clash when using to_csv on same file
         prof_db=cls()
         prof_db._db=lf
         prof_db._validate_db()
@@ -230,10 +227,8 @@ class GenomeComparisonConfig(BaseModel):
         reference_id (str): The ID of the reference fasta database to use for the comparison. The file name is perfect.
         scope (str): The scope of the comparison- 'all' if all covered positions are desired. Otherwise, a bunch of genome names separated by commas.
         min_cov (int): Minimum coverage a base on the reference fasta that must have in order to be compared.
-        null_model_p_value(float): P_value above which a base call is counted as sequencing error
         min_gene_compare_len (int): Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations
         stb_file_loc (str): The location of the scaffold to bin file.
-        null_model_loc (str): The location of the null model file.
     """
     model_config = ConfigDict(extra="forbid")
     gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
@@ -241,9 +236,7 @@ class GenomeComparisonConfig(BaseModel):
     scope: str =Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
     min_cov: int =Field(description="Minimum coverage a base on the reference fasta that must have in order to be compared.")
     min_gene_compare_len: int=Field(description="Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
-    null_model_p_value:float=Field(default=0.05,description="P_value above which a base call is counted as sequencing error")
     stb_file_loc:str=Field(description="The location of the scaffold to bin file.")
-    null_model_loc:str=Field(default="", description="Deprecated: null model path is no longer used in compare.")
 
     def is_compatible(self, other: GenomeComparisonConfig) -> bool:
         """
@@ -265,11 +258,23 @@ class GenomeComparisonConfig(BaseModel):
         return True
 
     @classmethod
+    def from_dict(cls, config_dict: dict) -> GenomeComparisonConfig:
+        """Create a GenomeComparisonConfig from a dictionary.
+
+        Deprecated fields are ignored for backward compatibility.
+        """
+        cleaned_config = _drop_deprecated_fields(config_dict, _DEPRECATED_GENOME_COMPARE_CONFIG_FIELDS)
+        return cls(**cleaned_config)
+
+    @classmethod
     def from_json(cls,json_file_dir:str)->GenomeComparisonConfig:
-        """Create a GenomeComparisonConfig instance from a json file."""
+        """Create a GenomeComparisonConfig instance from a json file.
+
+        Deprecated fields are ignored for backward compatibility.
+        """
         with open(json_file_dir, 'r') as f:
             config_dict = json.load(f)
-        return cls(**config_dict)
+        return cls.from_dict(config_dict)
     
     def to_json(self,json_file_dir:str)->None:
         """Writes the the current object to a json file"""
@@ -316,7 +321,6 @@ class GeneComparisonConfig(BaseModel):
         scope (str): The scope of the comparison in format "GENOME:GENE" (e.g., "all:gene1" compares gene1 across all genomes, "genome1:gene1" compares gene1 only in genome1 across samples).
         gene_db_id (str): An ID given to the gene fasta file used for profiling.
         reference_genome_id (str): An ID given to the reference fasta file used for profiling.
-        null_model_loc (str): Location of the null model parquet file.
         stb_file_loc (str): Location of the scaffold-to-genome mapping file.
         min_cov (int): Minimum coverage threshold for considering a position.
         min_gene_compare_len (int): Minimum gene length required for comparison.
@@ -325,7 +329,6 @@ class GeneComparisonConfig(BaseModel):
     gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
     reference_genome_id:str= Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
     scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
-    null_model_loc: str = Field(default="", description="Deprecated: null model path is no longer used in compare.")
     stb_file_loc: str = Field(description="Location of the scaffold-to-genome mapping file")
     min_cov: int = Field(default=5, description="Minimum coverage threshold")
     min_gene_compare_len: int = Field(default=100, description="Minimum gene length for comparison")
@@ -365,11 +368,23 @@ class GeneComparisonConfig(BaseModel):
         return self_genome_scope == other_genome_scope and self_gene_scope == other_gene_scope
 
     @classmethod
+    def from_dict(cls, config_dict: dict) -> GeneComparisonConfig:
+        """Create a GeneComparisonConfig from a dictionary.
+
+        Deprecated fields are ignored for backward compatibility.
+        """
+        cleaned_config = _drop_deprecated_fields(config_dict, _DEPRECATED_GENE_COMPARE_CONFIG_FIELDS)
+        return cls(**cleaned_config)
+
+    @classmethod
     def from_json(cls,json_file_dir:str)->GeneComparisonConfig:
-        """Create a GeneComparisonConfig instance from a json file."""
+        """Create a GeneComparisonConfig instance from a json file.
+
+        Deprecated fields are ignored for backward compatibility.
+        """
         with open(json_file_dir, 'r') as f:
             config_dict = json.load(f)
-        return cls(**config_dict)
+        return cls.from_dict(config_dict)
     
     def to_json(self,json_file_dir:str)->None:
         """Writes the the current object to a json file"""
@@ -614,7 +629,7 @@ class GenomeComparisonDatabase:
             obj_dict = json.load(f)
         
         return cls(profile_db=ProfileDatabase(db_loc=obj_dict["profile_db_loc"]) , 
-                   config=GenomeComparisonConfig(**obj_dict["config"]), 
+                   config=GenomeComparisonConfig.from_dict(obj_dict["config"]), 
                    comp_db_loc=obj_dict["comp_db_loc"])
     
     
@@ -626,21 +641,17 @@ class GenomeComparisonDatabase:
         - sample_name_2
         
         - profile_location_1
-        
-        - scaffold_location_1
-        
+
         - profile_location_2
-        
-        - scaffold_location_2
-        
+
         Returns:
             pl.LazyFrame: The table of all pairwise comparisons needed to complete the comparison database.
         """
         lf=self.get_remaining_pairs().rename({"profile_1":"sample_name_1","profile_2":"sample_name_2"})
-        return (lf.join(self.profile_db.db.select(["profile_name","profile_location","scaffold_location"]),left_on="sample_name_1",right_on="profile_name",how="left")
-                .rename({"profile_location":"profile_location_1","scaffold_location":"scaffold_location_1"})
-                .join(self.profile_db.db.select(["profile_name","profile_location","scaffold_location"]),left_on="sample_name_2",right_on="profile_name",how="left")
-                .rename({"profile_location":"profile_location_2","scaffold_location":"scaffold_location_2"})
+        return (lf.join(self.profile_db.db.select(["profile_name","profile_location"]),left_on="sample_name_1",right_on="profile_name",how="left")
+                .rename({"profile_location":"profile_location_1"})
+                .join(self.profile_db.db.select(["profile_name","profile_location"]),left_on="sample_name_2",right_on="profile_name",how="left")
+                .rename({"profile_location":"profile_location_2"})
                ).sort(["sample_name_1","sample_name_2"])
 
 
@@ -846,7 +857,7 @@ class GeneComparisonDatabase:
         
         return cls(
             profile_db=ProfileDatabase(db_loc=obj_dict["profile_db_loc"]),
-            config=GeneComparisonConfig(**obj_dict["config"]),
+            config=GeneComparisonConfig.from_dict(obj_dict["config"]),
             comp_db_loc=obj_dict["comp_db_loc"]
         )
     
@@ -857,18 +868,16 @@ class GeneComparisonDatabase:
         - sample_name_1
         - sample_name_2
         - profile_location_1
-        - scaffold_location_1
         - profile_location_2
-        - scaffold_location_2
         
         Returns:
             pl.LazyFrame: The table of all pairwise comparisons needed to complete the comparison database.
         """
         lf = self.get_remaining_pairs().rename({"profile_1": "sample_name_1", "profile_2": "sample_name_2"})
-        return (lf.join(self.profile_db.db.select(["profile_name", "profile_location", "scaffold_location"]), 
+        return (lf.join(self.profile_db.db.select(["profile_name", "profile_location"]), 
                        left_on="sample_name_1", right_on="profile_name", how="left")
-                .rename({"profile_location": "profile_location_1", "scaffold_location": "scaffold_location_1"})
-                .join(self.profile_db.db.select(["profile_name", "profile_location", "scaffold_location"]), 
+                .rename({"profile_location": "profile_location_1"})
+                .join(self.profile_db.db.select(["profile_name", "profile_location"]), 
                       left_on="sample_name_2", right_on="profile_name", how="left")
-                .rename({"profile_location": "profile_location_2", "scaffold_location": "scaffold_location_2"})
+                .rename({"profile_location": "profile_location_2"})
                ).sort(["sample_name_1", "sample_name_2"])

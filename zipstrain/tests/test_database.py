@@ -137,13 +137,6 @@ def stb_4_5()->pl.LazyFrame:
     }).lazy()
 
 @pytest.fixture(scope="module")
-def null_model()->pl.LazyFrame:
-    return pl.DataFrame({
-        "cov":list(range(100)),
-        "max_error_count":[int(i*0.1) for i in range(100)],
-    }).lazy()
-
-@pytest.fixture(scope="module")
 def comps_lf_1_2(profile_1,profile_2)->pl.LazyFrame:
     comp_1_2=compare.compare_genomes(
         mpile_contig_1=profile_1,
@@ -200,14 +193,12 @@ def profile_1_2_database(tmp_path_factory, profile_1, scaffold_1, profile_2, sca
     db.add_profile({
         "profile_name": "profile_1",
         "profile_location": str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "ref_1",
         "gene_db_id": "gene_ref_1"
     })
     db.add_profile({
         "profile_name": "profile_2",
         "profile_location": str(profile_2_dir),
-        "scaffold_location": str(scaffold_2_dir),
         "reference_db_id": "ref_2",
         "gene_db_id": "gene_ref_2"
     })
@@ -232,21 +223,18 @@ def profile_1_2_3_database(tmp_path_factory, profile_1, scaffold_1, profile_2, s
     db.add_profile({
         "profile_name": "profile_1",
         "profile_location": str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "ref_1",
         "gene_db_id": "gene_ref_1"
     })
     db.add_profile({
         "profile_name": "profile_2",
         "profile_location": str(profile_2_dir),
-        "scaffold_location": str(scaffold_2_dir),
         "reference_db_id": "ref_2",
         "gene_db_id": "gene_ref_2"
     })
     db.add_profile({
         "profile_name": "profile_3",
         "profile_location": str(profile_3_dir),
-        "scaffold_location": str(scaffold_3_dir),
         "reference_db_id": "ref_3",
         "gene_db_id": "gene_ref_3"
     })
@@ -267,14 +255,12 @@ def profile_4_5_database(tmp_path_factory, profile_4_random, scaffold_4, profile
     db.add_profile({
         "profile_name": "profile_4",
         "profile_location": str(profile_4_dir),
-        "scaffold_location": str(scaffold_4_dir),
         "reference_db_id": "ref_4",
         "gene_db_id": "gene_ref_4"
     })
     db.add_profile({
         "profile_name": "profile_5",
         "profile_location": str(profile_5_dir),
-        "scaffold_location": str(scaffold_5_dir),
         "reference_db_id": "ref_5",
         "gene_db_id": "gene_ref_5"
     })
@@ -284,44 +270,39 @@ def profile_4_5_database(tmp_path_factory, profile_4_random, scaffold_4, profile
 
 
 @pytest.fixture(scope="module")
-def simple_genome_compare_config(stb,null_model,tmp_path_factory):
+def simple_genome_compare_config(stb,tmp_path_factory):
     tmp_path=tmp_path_factory.mktemp("genome_compare")
     stb_dir = tmp_path / "stb.tsv"
     stb.sink_csv(stb_dir, separator="\t")
-    null_model_dir = tmp_path / "null_model.parquet"
-    null_model.sink_parquet(null_model_dir)
     return database.GenomeComparisonConfig(
-            reference_id="ref_1",
-            gene_db_id="gene_ref_1",
-            min_cov=5, 
-            scope="all",
-            min_gene_compare_len=100,
-            stb_file_loc=str(stb_dir),
-            null_model_loc=str(null_model_dir),
-        )
+        reference_id="ref_1",
+        gene_db_id="gene_ref_1",
+        min_cov=5,
+        scope="all",
+        min_gene_compare_len=100,
+        stb_file_loc=str(stb_dir),
+    )
     
 
 @pytest.fixture(scope="module")
-def simple_gene_compare_config(stb,null_model,tmp_path_factory):
+def simple_gene_compare_config(stb,tmp_path_factory):
     """Create a simple gene comparison config for testing"""
     tmp_path=tmp_path_factory.mktemp("gene_compare")
     stb_dir = tmp_path / "stb.tsv"
     stb.sink_csv(stb_dir, separator="\t")
-    null_model_dir = tmp_path / "null_model.parquet"
-    null_model.sink_parquet(null_model_dir)
     return database.GeneComparisonConfig(
-            gene_db_id="gene_ref_1",
-            reference_genome_id="ref_1",
-            scope="all:gene1",
-            min_cov=5,
-            min_gene_compare_len=100,
-            stb_file_loc=str(stb_dir),
-            null_model_loc=str(null_model_dir),
-        )
+        gene_db_id="gene_ref_1",
+        reference_genome_id="ref_1",
+        scope="all:gene1",
+        min_cov=5,
+        min_gene_compare_len=100,
+        stb_file_loc=str(stb_dir),
+    )
+
 def test_profile_create_new_empty_database():
     db = database.ProfileDatabase()
     assert db.db.collect().height == 0
-    assert db.db.collect().columns == ["profile_name", "profile_location", "scaffold_location", "reference_db_id", "gene_db_id"]
+    assert db.db.collect().columns == ["profile_name", "profile_location", "reference_db_id", "gene_db_id"]
     assert isinstance(db.db, pl.LazyFrame)
     db._validate_db()
     
@@ -334,7 +315,6 @@ def test_profile_add_profile_1_to_empty_database(tmp_path,profile_1,scaffold_1):
     db.add_profile({
         "profile_name": "profile_1",
         "profile_location": str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "ref_1",
         "gene_db_id": "gene_ref_1"
     })
@@ -344,7 +324,6 @@ def test_profile_add_profile_1_to_empty_database(tmp_path,profile_1,scaffold_1):
     assert set(df["reference_db_id"].to_list()) == {"ref_1"}
     assert set(df["gene_db_id"].to_list()) == {"gene_ref_1"}
     assert all(isinstance(x, str) for x in df["profile_location"].to_list())
-    assert all(isinstance(x, str) for x in df["scaffold_location"].to_list())
 
 def test_profile_add_faulty_profile_1_to_empty_database(tmp_path,profile_1,scaffold_1):
     db = database.ProfileDatabase()
@@ -353,17 +332,15 @@ def test_profile_add_faulty_profile_1_to_empty_database(tmp_path,profile_1,scaff
     scaffold_1_dir = tmp_path / "profile_1.parquet.scaffold"
     scaffold_1_dir.write_text(scaffold_1)
     
-    bad_profile_scaffold_and_profile = {
+    bad_profile_missing_profile_path = {
         "profile_name": "faulty_profile",
         "profile_location": "/does/not/exist.parquet",
-        "scaffold_location": "/does/not/exist.scaffold",
         "reference_db_id": "ref_bad",
         "gene_db_id": "gene_ref_bad"
     }
     
     bad_profile_missing_attr = {
         "profile_location":str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "ref_bad",
         "gene_db_id": "gene_ref_bad"
     }     
@@ -371,35 +348,31 @@ def test_profile_add_faulty_profile_1_to_empty_database(tmp_path,profile_1,scaff
         "extra_attr":"some stuf",
         "profile_name": "faulty_profile",
         "profile_location":str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "ref_bad",
         "gene_db_id": "gene_ref_bad"
     }     
     bad_profile_wrong_attr = {
         "profile_nam": "faulty_profile",
         "profile_location":str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "ref_bad",
         "gene_db_id": "gene_ref_bad"
     }
     bad_profile_empty_ref_db_id = {
         "profile_name": "faulty_profile",
         "profile_location":str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "",
         "gene_db_id": "gene_ref_bad"
     }     
     bad_profile_empty_gene_db_id = {
         "profile_name": "faulty_profile",
         "profile_location":str(profile_1_dir),
-        "scaffold_location": str(scaffold_1_dir),
         "reference_db_id": "ref_bad",
         "gene_db_id": ""
     }
 
-    #Fails for both scaffold and profile
-    with pytest.raises(ValueError, match="The profile data provided is not valid: 2 validation errors"):
-        db.add_profile(bad_profile_scaffold_and_profile)
+    # Fails for missing profile path
+    with pytest.raises(ValueError, match="The profile data provided is not valid: 1 validation error"):
+        db.add_profile(bad_profile_missing_profile_path)
     
     with pytest.raises(ValueError, match="The profile data provided is not valid: 2 validation error"):
         db.add_profile(bad_profile_wrong_attr)
@@ -422,7 +395,7 @@ def test_profile_read_from_csv(profile_1_2_database,tmp_path):
     profile_1_2_database.db.sink_csv(tmp_path/"profile_1_2.csv")
     new_db=database.ProfileDatabase.from_csv(tmp_path/"profile_1_2.csv")
     assert new_db.db.collect().height == 2
-    assert new_db.db.collect().columns == ["profile_name", "profile_location", "scaffold_location", "reference_db_id", "gene_db_id"]
+    assert new_db.db.collect().columns == ["profile_name", "profile_location", "reference_db_id", "gene_db_id"]
     assert isinstance(new_db.db, pl.LazyFrame)
 
     
@@ -432,7 +405,7 @@ def test_profile_test_write_database(profile_1_2_database,tmp_path):
     assert profile_1_2_database.db_loc==pathlib.Path(tmp_path/"db_12.parquet")
     db=database.ProfileDatabase(tmp_path/"db_12.parquet")
     assert db.db.collect().height == 2
-    assert db.db.collect().columns == ["profile_name", "profile_location", "scaffold_location", "reference_db_id", "gene_db_id"]
+    assert db.db.collect().columns == ["profile_name", "profile_location", "reference_db_id", "gene_db_id"]
     assert isinstance(db.db, pl.LazyFrame)
 
 def test_profile_update_database(profile_1_2_database,tmp_path):
@@ -459,7 +432,6 @@ def test_profile_add_profile_1_2_to_empty_database(profile_1_2_database):
     assert set(df["profile_name"].to_list()) == {"profile_1", "profile_2"}
     assert set(df["reference_db_id"].to_list()) == {"ref_1", "ref_2"}
     assert all(isinstance(x, str) for x in df["profile_location"].to_list())
-    assert all(isinstance(x, str) for x in df["scaffold_location"].to_list())
     db._validate_db()
 
 
@@ -479,7 +451,6 @@ def test_genome_compare_config_faulty()->None:
             scope="all",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
     ### An extra attribute that is not expected
     with pytest.raises(ValueError, match="1 validation error for GenomeComparisonConfig"):
@@ -490,7 +461,6 @@ def test_genome_compare_config_faulty()->None:
             scope="all",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
 
     ### A missing attr that must be provided
@@ -500,7 +470,6 @@ def test_genome_compare_config_faulty()->None:
             scope="all",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
         
 def test_genome_compare_config_compatibility(simple_genome_compare_config):
@@ -536,9 +505,7 @@ def test_genome_compare_config_io(tmp_path,simple_genome_compare_config):
         "min_cov": 5,
         "scope": "all",
         "min_gene_compare_len": 100,
-        "null_model_p_value":simple_genome_compare_config.null_model_p_value,
         "stb_file_loc": simple_genome_compare_config.stb_file_loc,
-        "null_model_loc": simple_genome_compare_config.null_model_loc,
     }
     # Test to_json
     json_path = tmp_path / "config.json"
@@ -547,6 +514,29 @@ def test_genome_compare_config_io(tmp_path,simple_genome_compare_config):
     # Test from_json
     loaded_config = database.GenomeComparisonConfig.from_json(json_path)
     assert loaded_config == simple_genome_compare_config
+
+def test_genome_compare_config_from_json_legacy_null_model_keys(tmp_path):
+    """Legacy config JSON files with null-model keys should still load."""
+    config_path = tmp_path / "legacy_genome_config.json"
+    config_path.write_text(json.dumps({
+        "reference_id": "ref_1",
+        "gene_db_id": "gene_ref_1",
+        "scope": "all",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": "some_stb.tsv",
+        "null_model_p_value": 0.05,
+        "null_model_loc": "null_model.parquet",
+    }))
+    loaded_config = database.GenomeComparisonConfig.from_json(config_path)
+    assert loaded_config.to_dict() == {
+        "reference_id": "ref_1",
+        "gene_db_id": "gene_ref_1",
+        "scope": "all",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": "some_stb.tsv",
+    }
 
 def test_genome_compare_config_get_maximal_scope(simple_genome_compare_config):
     """This test examines the get_maximal_scope method of the GenomeComparisonConfig class"""
@@ -718,7 +708,6 @@ def test_genome_comparison_database_add_comp_database_invalid(profile_1_2_3_data
         scope="all",
         min_gene_compare_len=100,
         stb_file_loc="Somefile",
-        null_model_loc="Somefile"
     )
     config_4_5=database.GenomeComparisonConfig(
         reference_id="ref_2",
@@ -727,7 +716,6 @@ def test_genome_comparison_database_add_comp_database_invalid(profile_1_2_3_data
         scope="all",
         min_gene_compare_len=100,
         stb_file_loc="Somefile",
-        null_model_loc="Somefile"
     )
     comp_db_1_2_dir = tmp_path / "comp_db_1_2.parquet"
     comps_lf_1_2.sink_parquet(comp_db_1_2_dir)
@@ -833,6 +821,35 @@ def test_genome_comparison_database_load_and_dump(profile_1_2_3_database,comps_l
     db_obj=database.GenomeComparisonDatabase.load_obj(dump_path)
     assert db_obj.comp_db.collect().height == 6
 
+def test_genome_comparison_database_load_obj_legacy_null_model_keys(profile_1_2_database, tmp_path):
+    """Legacy comparison objects with null-model config keys should still load."""
+    profile_db_path = tmp_path / "profile_db.parquet"
+    profile_1_2_database.save_as_new_database(profile_db_path)
+    legacy_obj_path = tmp_path / "legacy_genome_comp_obj.json"
+    legacy_obj_path.write_text(json.dumps({
+        "profile_db_loc": str(profile_db_path),
+        "comp_db_loc": None,
+        "config": {
+            "reference_id": "ref_1",
+            "gene_db_id": "gene_ref_1",
+            "scope": "all",
+            "min_cov": 5,
+            "min_gene_compare_len": 100,
+            "stb_file_loc": "some_stb.tsv",
+            "null_model_p_value": 0.05,
+            "null_model_loc": "null_model.parquet",
+        },
+    }))
+    db_obj = database.GenomeComparisonDatabase.load_obj(legacy_obj_path)
+    assert db_obj.config.to_dict() == {
+        "reference_id": "ref_1",
+        "gene_db_id": "gene_ref_1",
+        "scope": "all",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": "some_stb.tsv",
+    }
+
 def test_genome_comparison_database_to_complete_input_table(profile_1_2_3_database,simple_genome_compare_config):
     db = database.GenomeComparisonDatabase(
         profile_db=profile_1_2_3_database,
@@ -840,7 +857,7 @@ def test_genome_comparison_database_to_complete_input_table(profile_1_2_3_databa
         comp_db_loc=None
     )
     assert db.to_complete_input_table().collect().height == 3
-    assert set(db.to_complete_input_table().collect_schema().keys()) == {"sample_name_1","profile_location_1","scaffold_location_1","sample_name_2","profile_location_2","scaffold_location_2"}
+    assert set(db.to_complete_input_table().collect_schema().keys()) == {"sample_name_1","profile_location_1","sample_name_2","profile_location_2"}
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_1")=="profile_1").height == 2
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_1")=="profile_2").height == 1
     assert db.to_complete_input_table().collect().filter(pl.col("sample_name_1")=="profile_3").height == 0
@@ -866,7 +883,6 @@ def test_gene_compare_config_faulty()->None:
             scope="all:gene1",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
     ### An extra attribute that is not expected
     with pytest.raises(ValueError, match="1 validation error for GeneComparisonConfig"):
@@ -878,7 +894,6 @@ def test_gene_compare_config_faulty()->None:
             scope="all:gene1",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
 
     ### A missing attr that must be provided
@@ -889,7 +904,6 @@ def test_gene_compare_config_faulty()->None:
             min_cov="5",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
     
     ### Invalid scope format (missing colon)
@@ -901,7 +915,6 @@ def test_gene_compare_config_faulty()->None:
             scope="allgene1",  # Missing colon
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
     
     ### Invalid scope format (too many colons)
@@ -911,7 +924,6 @@ def test_gene_compare_config_faulty()->None:
             scope="all:gene1:extra",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
     
     ### Invalid scope format (empty parts)
@@ -921,7 +933,6 @@ def test_gene_compare_config_faulty()->None:
             scope=":gene1",
             min_gene_compare_len=100,
             stb_file_loc="Somefile",
-            null_model_loc="Somefile"
         )
 
 
@@ -936,7 +947,6 @@ def test_gene_compare_config_io(tmp_path,simple_gene_compare_config):
         "min_cov": 5,
         "min_gene_compare_len": 100,
         "stb_file_loc": simple_gene_compare_config.stb_file_loc,
-        "null_model_loc": simple_gene_compare_config.null_model_loc,
     }
     # Test to_json (save)
     json_path = tmp_path / "gene_config.json"
@@ -945,6 +955,28 @@ def test_gene_compare_config_io(tmp_path,simple_gene_compare_config):
     # Test from_json (load)
     loaded_config = database.GeneComparisonConfig.from_json(json_path)
     assert loaded_config == simple_gene_compare_config
+
+def test_gene_compare_config_from_json_legacy_null_model_key(tmp_path):
+    """Legacy gene config JSON files with null-model key should still load."""
+    config_path = tmp_path / "legacy_gene_config.json"
+    config_path.write_text(json.dumps({
+        "gene_db_id": "gene_ref_1",
+        "reference_genome_id": "ref_1",
+        "scope": "all:gene1",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": "some_stb.tsv",
+        "null_model_loc": "null_model.parquet",
+    }))
+    loaded_config = database.GeneComparisonConfig.from_json(config_path)
+    assert loaded_config.to_dict() == {
+        "gene_db_id": "gene_ref_1",
+        "reference_genome_id": "ref_1",
+        "scope": "all:gene1",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": "some_stb.tsv",
+    }
 
 
 def test_gene_comparison_database_create_new_empty_database(profile_1_2_database,simple_gene_compare_config):
@@ -1182,7 +1214,6 @@ def test_gene_comparison_database_add_incompatible_comp_database(profile_1_2_dat
         min_cov=10,  
         min_gene_compare_len=100,
         stb_file_loc=simple_gene_compare_config.stb_file_loc,
-        null_model_loc=simple_gene_compare_config.null_model_loc
     )
     
     db_2 = database.GeneComparisonDatabase(
@@ -1366,8 +1397,7 @@ def test_gene_comparison_database_to_complete_input_table(profile_1_2_3_database
     assert set(input_table.columns) == {
         "sample_name_1", "sample_name_2",
         "profile_location_1", "profile_location_2",
-        "scaffold_location_1", "scaffold_location_2"
-    }
+            }
     
     pairs = set(zip(input_table["sample_name_1"].to_list(), input_table["sample_name_2"].to_list()))
     assert pairs == {("profile_1", "profile_3"), ("profile_2", "profile_3")}
@@ -1418,3 +1448,31 @@ def test_gene_comparison_database_load_and_dump(profile_1_2_3_database,tmp_path,
     db_12.update_compare_database()
     
     assert db_12.comp_db.collect().height == 2
+
+def test_gene_comparison_database_load_obj_legacy_null_model_key(profile_1_2_database, tmp_path):
+    """Legacy gene comparison objects with null-model config key should still load."""
+    profile_db_path = tmp_path / "profile_db.parquet"
+    profile_1_2_database.save_as_new_database(profile_db_path)
+    legacy_obj_path = tmp_path / "legacy_gene_comp_obj.json"
+    legacy_obj_path.write_text(json.dumps({
+        "profile_db_loc": str(profile_db_path),
+        "comp_db_loc": None,
+        "config": {
+            "gene_db_id": "gene_ref_1",
+            "reference_genome_id": "ref_1",
+            "scope": "all:gene1",
+            "min_cov": 5,
+            "min_gene_compare_len": 100,
+            "stb_file_loc": "some_stb.tsv",
+            "null_model_loc": "null_model.parquet",
+        },
+    }))
+    db_obj = database.GeneComparisonDatabase.load_obj(legacy_obj_path)
+    assert db_obj.config.to_dict() == {
+        "gene_db_id": "gene_ref_1",
+        "reference_genome_id": "ref_1",
+        "scope": "all:gene1",
+        "min_cov": 5,
+        "min_gene_compare_len": 100,
+        "stb_file_loc": "some_stb.tsv",
+    }

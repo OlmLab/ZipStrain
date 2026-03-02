@@ -122,6 +122,150 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     
 
 
+def test_single_compare_genome_duckdb_scope_skips_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    def _should_not_prefilter(*args, **kwargs):
+        raise AssertionError("duckdb_prefilter_by_scope should not be called for --engine duckdb")
+
+    monkeypatch.setattr(cli.cp, "duckdb_prefilter_by_scope", _should_not_prefilter)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "compare",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            "duckdb",
+            "--genome",
+            "genome1",
+            "--output-file",
+            str(tmp_path / "scoped_duckdb.parquet"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert (tmp_path / "scoped_duckdb.parquet").exists()
+
+
+def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    def _should_not_prefilter(*args, **kwargs):
+        raise AssertionError("duckdb_prefilter_by_scope should not be called for --engine duckdb")
+
+    monkeypatch.setattr(cli.cp, "duckdb_prefilter_by_scope", _should_not_prefilter)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "compare",
+            "single_compare_gene",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            "duckdb",
+            "--scope",
+            "genome1:gene1",
+            "--output-file",
+            str(tmp_path / "scoped_gene_duckdb.parquet"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert (tmp_path / "scoped_gene_duckdb.parquet").exists()
+
+
+def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
+    comp_obj = tmp_path / "genome_comp.json"
+    comp_obj.write_text("{}")
+    captured = {}
+
+    monkeypatch.setattr(
+        cli.db.GenomeComparisonDatabase,
+        "load_obj",
+        classmethod(lambda cls, path: object()),
+    )
+
+    def _fake_lazy_run_compares(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", _fake_lazy_run_compares)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "run",
+            "compare_genomes",
+            "--genome-comparison-object",
+            str(comp_obj),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--engine",
+            "duckdb",
+            "--duckdb-threads",
+            "7",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["duckdb_threads"] == 7
+    assert captured["compare_engine"] == "duckdb"
+
+
+def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
+    comp_obj = tmp_path / "gene_comp.json"
+    comp_obj.write_text("{}")
+    captured = {}
+
+    monkeypatch.setattr(
+        cli.db.GeneComparisonDatabase,
+        "load_obj",
+        classmethod(lambda cls, path: object()),
+    )
+
+    def _fake_lazy_run_gene_compares(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", _fake_lazy_run_gene_compares)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "run",
+            "compare_genes",
+            "--gene-comparison-object",
+            str(comp_obj),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--engine",
+            "duckdb",
+            "--duckdb-threads",
+            "9",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["duckdb_threads"] == 9
+    assert captured["compare_engine"] == "duckdb"
+
+
 def test_generate_stb(tmp_path):
     # Create multiple fasta files in a temporary directory
     fasta1 = tmp_path / "genome1.fasta"
@@ -180,3 +324,44 @@ def test_cli_build_genome_db_no_download(tmp_path):
     db_df = pl.read_parquet(db_path)
     assert set(db_df["accession"].to_list()) == {"GCF_000001405.40", "GCA_123456.1"}
     assert report_file.exists()
+
+
+def test_cli_build_profile_db_minimal_columns(tmp_path):
+    profile_path = tmp_path / "sample_profile.parquet"
+    pl.DataFrame({
+        "chrom": ["chr2", "chr1", "chr1"],
+        "genome": ["genome1", "genome1", "genome1"],
+        "pos": [0, 1, 2],
+        "gene": ["NA", "NA", "NA"],
+        "A": [1, 0, 0],
+        "T": [0, 1, 0],
+        "C": [0, 0, 1],
+        "G": [0, 0, 0],
+    }).write_parquet(profile_path)
+
+    input_csv = tmp_path / "profiles.csv"
+    pl.DataFrame({
+        "profile_name": ["sample_1"],
+        "profile_location": [str(profile_path)],
+        "reference_db_id": ["ref_1"],
+        "gene_db_id": ["gene_ref_1"],
+    }).write_csv(input_csv)
+
+    output_db = tmp_path / "profiles.parquet"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-profile-db",
+            "-p",
+            str(input_csv),
+            "-o",
+            str(output_db),
+        ],
+    )
+    assert result.exit_code == 0
+    assert output_db.exists()
+
+    built_db = pl.read_parquet(output_db)
+    assert set(built_db.columns) == {"profile_name", "profile_location", "reference_db_id", "gene_db_id"}
