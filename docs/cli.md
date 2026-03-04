@@ -157,9 +157,9 @@ zipstrain utilities build-profile-db -p PROFILE_DB_CSV -o OUTPUT_FILE
 - `-p, --profile-db-csv TEXT`: Path to the profile database CSV file [required]
 - `-o, --output-file TEXT`: Path to save the output Parquet file [required]
 
-#### Build Genome Database (from Sylph)
+#### Build Genome Reference Bundle (from Sylph)
 
-Build or update a local genome database from an abundance table:
+Build a concatenated reference FASTA and STB from an abundance table with cache reuse:
 
 ```
 zipstrain utilities build-genome-db [OPTIONS]
@@ -169,11 +169,8 @@ zipstrain utilities build-genome-db [OPTIONS]
 
 - `-t, --tool [sylph]`: Abundance-tool parser to use [required]
 - `-a, --abundance-table TEXT`: Path to abundance table (`csv`/`tsv`/`parquet`) [required]
-- `-d, --db-file TEXT`: Path to local genome DB parquet [required]
-- `-g, --genomes-dir TEXT`: Directory to store downloaded genomes [required]
-- `--download / --no-download`: Download missing genomes or only update DB index (default: `--download`)
-- `--overwrite`: Redownload even if local genome file already exists
-- `-r, --report-file TEXT`: Optional path to write download report CSV
+- `-c, --cache-dir TEXT`: Persistent genome cache directory [required]
+- `-o, --output-dir TEXT`: Output directory for `reference_genomes.fna` and `reference_genomes.stb` [required]
 
 See [GenomeDBFromSylph.md](GenomeDBFromSylph.md) for a full walkthrough.
 

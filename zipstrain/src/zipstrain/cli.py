@@ -12,6 +12,10 @@ import zipstrain.database as db
 import zipstrain.build_db as bdb
 import polars as pl
 import pathlib
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich import box
 
 
 @click.group()
@@ -213,33 +217,38 @@ def build_profile_db(profile_db_csv, output_file):
 @utilities.command("build-genome-db")
 @click.option('--tool', '-t', required=True, type=click.Choice(sorted(bdb.ADAPTERS.keys())), help="Abundance tool format to parse (for example, sylph).")
 @click.option('--abundance-table', '-a', required=True, help="Path to abundance table (csv/tsv/parquet).")
-@click.option('--db-file', '-d', required=True, help="Path to local genome DB parquet file.")
-@click.option('--genomes-dir', '-g', required=True, help="Directory to store downloaded genomes.")
-@click.option('--download/--no-download', default=True, help="Whether to download missing genomes.")
-@click.option('--overwrite', is_flag=True, default=False, help="Redownload genomes even if existing files are found.")
-@click.option('--report-file', '-r', default=None, help="Optional path to save a download report csv.")
-def build_genome_db(tool, abundance_table, db_file, genomes_dir, download, overwrite, report_file):
+@click.option('--cache-dir', '-c', required=True, help="Genome cache directory. Reuses already-downloaded genomes.")
+@click.option('--output-dir', '-o', required=True, help="Directory where concatenated reference FASTA and STB are written.")
+def build_genome_db(tool, abundance_table, cache_dir, output_dir):
     """
-    Build or update a local genome database from an abundance table.
+    Build a reference bundle from an abundance table.
 
-    The parser is selected by `--tool` and currently supports Sylph.
+    This command extracts genomes with non-zero abundance in at least one sample,
+    reuses/downloads them via a local cache directory, and writes:
+      - reference_genomes.fna
+      - reference_genomes.stb
+    into the output directory.
     """
-    local_db, extracted, report = bdb.build_local_genome_db(
+    out_fasta, out_stb, extracted, report, summary = bdb.build_reference_from_abundance(
         tool_name=tool,
         abundance_table=pathlib.Path(abundance_table),
-        db_path=pathlib.Path(db_file),
-        genomes_dir=pathlib.Path(genomes_dir),
-        download=download,
-        overwrite=overwrite,
+        cache_dir=pathlib.Path(cache_dir),
+        output_dir=pathlib.Path(output_dir),
     )
-    _ = local_db
-    if report_file is not None:
-        bdb.write_report_csv(report, pathlib.Path(report_file))
-    click.echo(f"Extracted {extracted.height} genome accessions.")
-    if download:
-        downloaded = report.filter(pl.col("status") == "downloaded").height if report.height else 0
-        failed = report.filter(pl.col("status") == "failed").height if report.height else 0
-        click.echo(f"Downloaded: {downloaded}; Failed: {failed}.")
+    report_table = Table(box=box.SIMPLE_HEAVY, show_header=False, pad_edge=False)
+    report_table.add_column("metric", style="bold cyan")
+    report_table.add_column("value", style="white")
+    report_table.add_row("Tool", tool)
+    report_table.add_row("Selected genomes (non-zero)", str(summary["selected_genomes"]))
+    report_table.add_row("Cached before run", str(summary["cached_before_download"]))
+    report_table.add_row("Download attempts (new)", str(summary["attempted_downloads"]))
+    report_table.add_row("Downloaded now", str(summary["downloaded_now"]))
+    report_table.add_row("Failed downloads", str(summary["failed_downloads"]))
+    report_table.add_row("Available in cache after run", str(summary["cached_after_download"]))
+    report_table.add_row("Concatenated FASTA", str(out_fasta))
+    report_table.add_row("STB file", str(out_stb))
+    report_table.add_row("Cache directory", str(pathlib.Path(cache_dir)))
+    Console().print(Panel(report_table, title="Genome DB Build Report", border_style="green"))
 
 
 @utilities.command("build-genome-comparison-config")

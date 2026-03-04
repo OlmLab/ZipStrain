@@ -289,16 +289,37 @@ def test_generate_stb(tmp_path):
     assert result_dict["chr1_2"]["genome"] == "genome2"
 
 
-def test_cli_build_genome_db_no_download(tmp_path):
+def test_cli_build_genome_db_from_cache(tmp_path):
     abundance = tmp_path / "sylph.csv"
     abundance.write_text(
-        "Genome_file,abundance\n"
-        "/ref/GCF_000001405.40_genomic.fna.gz,0.6\n"
-        "/ref/GCA_123456.1_genomic.fna.gz,0.4\n"
+        "Genome_file,sample1,sample2\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,0.6,0.0\n"
+        "/ref/GCA_123456.1_genomic.fna.gz,0.0,0.4\n"
     )
-    db_path = tmp_path / ".genome_db.parquet"
-    genomes_dir = tmp_path / "genomes"
-    report_file = tmp_path / "report.csv"
+    cache_dir = tmp_path / "cache"
+    output_dir = tmp_path / "out"
+    genomes_dir = cache_dir / "genomes"
+    genomes_dir.mkdir(parents=True, exist_ok=True)
+    fasta_1 = genomes_dir / "GCF_000001405.40.fna"
+    fasta_1.write_text(">chr1\nATCG\n")
+    fasta_2 = genomes_dir / "GCA_123456.1.fna"
+    fasta_2.write_text(">chr2\nGGTT\n")
+
+    local_db = cli.bdb.LocalGenomeDB(cache_dir / cli.bdb.LocalGenomeDB.DEFAULT_DB_NAME)
+    local_db.add_or_update_genomes(
+        pl.DataFrame(
+            {
+                "accession": ["GCF_000001405.40", "GCA_123456.1"],
+                "genome_name": ["GCF_000001405.40", "GCA_123456.1"],
+                "download_url": [None, None],
+            }
+        ),
+        source_tool="sylph",
+    )
+    local_db.set_location("GCF_000001405.40", fasta_1)
+    local_db.set_location("GCA_123456.1", fasta_2)
+    local_db.sync()
+    local_db.save()
 
     runner = CliRunner()
     result = runner.invoke(
@@ -310,20 +331,18 @@ def test_cli_build_genome_db_no_download(tmp_path):
             "sylph",
             "--abundance-table",
             str(abundance),
-            "--db-file",
-            str(db_path),
-            "--genomes-dir",
-            str(genomes_dir),
-            "--no-download",
-            "--report-file",
-            str(report_file),
+            "--cache-dir",
+            str(cache_dir),
+            "--output-dir",
+            str(output_dir),
         ],
     )
     assert result.exit_code == 0
-    assert db_path.exists()
-    db_df = pl.read_parquet(db_path)
-    assert set(db_df["accession"].to_list()) == {"GCF_000001405.40", "GCA_123456.1"}
-    assert report_file.exists()
+    assert "Genome DB Build Report" in result.output
+    assert "Selected genomes (non-zero)" in result.output
+    assert "Cache directory" in result.output
+    assert (output_dir / "reference_genomes.fna").exists()
+    assert (output_dir / "reference_genomes.stb").exists()
 
 
 def test_cli_build_profile_db_minimal_columns(tmp_path):

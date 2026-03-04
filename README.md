@@ -250,17 +250,25 @@ Comparison runners create structured run directories. Typical files include:
 - `<run_dir>/batch_*/batch.log` (per-batch log)
 - `<run_dir>/Outputs/all_comparisons.parquet` or `<run_dir>/Outputs/all_gene_comparisons.parquet`
 
-## Build a Genome DB from Sylph Abundances
+## Build Reference FASTA/STB from Abundances
 
 ```bash
 zipstrain utilities build-genome-db \
   --tool sylph \
   --abundance-table <sylph_abundance.csv> \
-  --db-file <genome_db.parquet> \
-  --genomes-dir <genomes_dir> \
-  --download \
-  --report-file <genome_download_report.csv>
+  --cache-dir <genome_cache_dir> \
+  --output-dir <reference_output_dir>
 ```
+
+This writes:
+
+- `<reference_output_dir>/reference_genomes.fna`
+- `<reference_output_dir>/reference_genomes.stb`
+
+The cache directory stores downloaded genomes and reuses existing files across runs.
+Only genomes with non-zero abundance in at least one sample are included.
+For Sylph input, accessions are read from the `Genome_file` column (GTDB path versions supported).
+If `Genome_file` paths are local, they are cached directly before any download fallback.
 
 Detailed walkthrough: [docs/GenomeDBFromSylph.md](docs/GenomeDBFromSylph.md)
 

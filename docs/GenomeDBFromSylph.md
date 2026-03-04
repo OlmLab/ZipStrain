@@ -1,6 +1,6 @@
-# Build a Genome Database from Sylph Abundances
+# Build Reference FASTA/STB from Sylph Abundances
 
-This guide shows how to build and maintain a local genome database from a Sylph abundance table using:
+This guide shows how to build a reference bundle directly from a Sylph abundance table using:
 
 ```bash
 zipstrain utilities build-genome-db
@@ -10,69 +10,66 @@ zipstrain utilities build-genome-db
 
 Given a Sylph abundance table, ZipStrain will:
 
-1. Parse genome accessions from the table (for example `GCF_000001405.40`).
-2. Store/update them in a local DB parquet file.
-3. Optionally download missing reference genomes into a local directory.
+1. Keep genomes with non-zero abundance in at least one sample.
+2. Resolve/download those genomes into a persistent cache directory.
+3. Reuse genomes already present in that cache (no redownload).
+4. Write a concatenated reference FASTA and STB file in your output directory.
+
+## Command
+
+```bash
+zipstrain utilities build-genome-db \
+  --tool sylph \
+  --abundance-table /path/to/sylph_abundance.csv \
+  --cache-dir /path/to/genome_cache \
+  --output-dir /path/to/reference_bundle
+```
 
 ## Inputs
 
-- A Sylph abundance table (`.csv`, `.tsv`, or `.parquet`).
-- The table should contain genome identifiers that include assembly accessions (for example values like `.../GCF_000001405.40_genomic.fna.gz`).
+- `--tool`: abundance parser to use (currently `sylph`).
+- `--abundance-table`: `.csv`, `.tsv`, or `.parquet` table.
+- `--cache-dir`: persistent genome cache directory.
+- `--output-dir`: output directory for the final reference bundle.
 
-## Quick start
+For Sylph tables, ZipStrain extracts genome accessions from the `Genome_file` column
+(case-insensitive), including GTDB-style paths such as:
+`gtdb_genomes_reps_r220/database/GCA/.../GCA_949068525.1_genomic.fna.gz`.
 
-```bash
-zipstrain utilities build-genome-db \
-  --tool sylph \
-  --abundance-table /path/to/sylph_abundance.csv \
-  --db-file /path/to/.genome_db.parquet \
-  --genomes-dir /path/to/genomes \
-  --download \
-  --report-file /path/to/genome_download_report.csv
-```
-
-## Dry run (no downloads)
-
-Use this to only parse/update the DB index:
-
-```bash
-zipstrain utilities build-genome-db \
-  --tool sylph \
-  --abundance-table /path/to/sylph_abundance.csv \
-  --db-file /path/to/.genome_db.parquet \
-  --genomes-dir /path/to/genomes \
-  --no-download
-```
+If `Genome_file` points to a local file (absolute path or path relative to the abundance-table directory),
+ZipStrain loads it directly into cache first, then only downloads what is still missing.
 
 ## Outputs
 
-### 1) Local genome DB parquet (`--db-file`)
+The command writes:
 
-Columns:
+- `/path/to/reference_bundle/reference_genomes.fna`
+- `/path/to/reference_bundle/reference_genomes.stb`
 
-- `accession`
-- `genome_name`
-- `location`
-- `download_url`
-- `source_tool`
-- `exists`
+### STB format
 
-### 2) Genome FASTA files (`--genomes-dir`)
+`reference_genomes.stb` has two columns (tab-separated, no header):
 
-Downloaded genomes are stored as accession-named fasta files (for example `GCF_000001405.40.fna`).
+- scaffold ID in the concatenated FASTA
+- genome ID
 
-### 3) Optional report CSV (`--report-file`)
+Genome IDs are accessions (for example `GCF_000001405.40`).
 
-Download report columns:
+## Cache behavior
 
-- `accession`
-- `status` (`downloaded`, `already_present`, or `failed`)
-- `location`
-- `url`
-- `error`
+Inside `--cache-dir`, ZipStrain maintains:
 
-## Notes
+- a local DB index (`.genome_db.parquet`)
+- downloaded genomes under `genomes/`
 
-- Current tool support is `sylph`.
-- By default, missing genomes are resolved/downloaded using accession-based NCBI Datasets endpoints.
-- Re-run the same command on updated Sylph tables to incrementally update the local genome DB.
+Re-running with the same cache directory avoids redownloading genomes that already exist.
+
+## Console summary
+
+`build-genome-db` prints a short run summary:
+
+- selected genomes (non-zero abundance)
+- genomes already cached before the run
+- new download attempts
+- downloaded now / failed
+- genomes available in cache after the run
