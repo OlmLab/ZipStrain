@@ -9,10 +9,10 @@
       
       
       
-        <link rel="prev" href="..">
+        <link rel="prev" href="../Tutorial/">
       
       
-        <link rel="next" href="../Tutorial/">
+        <link rel="next" href="../NextflowPipeline/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -20,7 +20,7 @@
     
     
       
-        <title>Installation - ZipStrain</title>
+        <title>Build Reference FASTA/STB from Sylph Abundances - ZipStrain</title>
       
     
     
@@ -64,7 +64,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#installation" class="md-skip">
+        <a href="#build-reference-fastastb-from-sylph-abundances" class="md-skip">
           Skip to content
         </a>
       
@@ -100,7 +100,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Installation
+              Build Reference FASTA/STB from Sylph Abundances
             
           </span>
         </div>
@@ -175,32 +175,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Installation
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
         
   
   
@@ -211,53 +189,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#install-using-pip" class="md-nav__link">
-    <span class="md-ellipsis">
-      Install using pip
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#install-using-conda" class="md-nav__link">
-    <span class="md-ellipsis">
-      Install using Conda
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#use-docker" class="md-nav__link">
-    <span class="md-ellipsis">
-      Use Docker
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -288,10 +219,32 @@
       
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../GenomeDBFromSylph/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Build Reference FASTA/STB from Sylph Abundances
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -302,6 +255,95 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      What this does
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command" class="md-nav__link">
+    <span class="md-ellipsis">
+      Command
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Inputs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outputs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Outputs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stb-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      STB format
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cache-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cache behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#console-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Console summary
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -399,27 +441,69 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#install-using-pip" class="md-nav__link">
+  <a href="#what-this-does" class="md-nav__link">
     <span class="md-ellipsis">
-      Install using pip
+      What this does
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#install-using-conda" class="md-nav__link">
+  <a href="#command" class="md-nav__link">
     <span class="md-ellipsis">
-      Install using Conda
+      Command
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#use-docker" class="md-nav__link">
+  <a href="#inputs" class="md-nav__link">
     <span class="md-ellipsis">
-      Use Docker
+      Inputs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outputs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Outputs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stb-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      STB format
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cache-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cache behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#console-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Console summary
     </span>
   </a>
   
@@ -441,32 +525,66 @@
 
 
 
-<h1 id="installation">Installation</h1>
-<p>Welcome to the installation guide! Follow the steps below to set up ZipStrain on your system</p>
-<h2 id="install-using-pip">Install using pip</h2>
-<p>To install ZipStrain using pip, follow these steps:</p>
-<p>1- Make sure you have Python 3.12 or higher installed in your Python environment and activate it.</p>
-<p>2- Open your terminal and run the following command to install ZipStrain:</p>
-<pre><code>pip install zipstrain
+<h1 id="build-reference-fastastb-from-sylph-abundances">Build Reference FASTA/STB from Sylph Abundances</h1>
+<p>This guide shows how to build a reference bundle directly from a Sylph abundance table using:</p>
+<pre><code class="language-bash">zipstrain utilities build-genome-db
 </code></pre>
-<p>This will install all the necessary dependencies along with ZipStrain <strong>except samtools</strong>. Refer to samtools website for installation instructions: http://www.htslib.org/download/</p>
-<p>3- Make sure the installation was successful by testing ZipStrain:</p>
-<pre><code>zipstrain test
+<h2 id="what-this-does">What this does</h2>
+<p>Given a Sylph abundance table, ZipStrain will:</p>
+<ol>
+<li>Keep genomes with non-zero abundance in at least one sample.</li>
+<li>Resolve/download those genomes into a persistent cache directory.</li>
+<li>Reuse genomes already present in that cache (no redownload).</li>
+<li>Write a concatenated reference FASTA and STB file in your output directory.</li>
+</ol>
+<h2 id="command">Command</h2>
+<pre><code class="language-bash">zipstrain utilities build-genome-db \
+  --tool sylph \
+  --abundance-table /path/to/sylph_abundance.csv \
+  --cache-dir /path/to/genome_cache \
+  --output-dir /path/to/reference_bundle
 </code></pre>
-<h2 id="install-using-conda">Install using Conda</h2>
-<p>To install ZipStrain using Conda, run the following command in your conda environment with Python 3.12 or higher:</p>
-<pre><code>conda install -c conda-forge -c bioconda -c defaults zipstrain
-</code></pre>
-<p>This will install all the necessary dependencies along with ZipStrain <strong>including samtools</strong>.</p>
-<h2 id="use-docker">Use Docker</h2>
-<p>To use ZipStrain with Docker, follow these steps:</p>
-<p>1- Make sure you have Docker installed on your system. </p>
-<p>2- Run ZipStrain using the Docker image:</p>
-<pre><code>docker run -it parsaghadermazi/zipstrain:latest zipstrain test
-</code></pre>
-<p><strong><em>Note</em></strong>: Apptainer works in a very similar way to Docker:</p>
-<pre><code>apptainer run docker://parsaghadermazi/zipstrain:latest zipstrain test
-</code></pre>
+<h2 id="inputs">Inputs</h2>
+<ul>
+<li><code>--tool</code>: abundance parser to use (currently <code>sylph</code>).</li>
+<li><code>--abundance-table</code>: <code>.csv</code>, <code>.tsv</code>, or <code>.parquet</code> table.</li>
+<li><code>--cache-dir</code>: persistent genome cache directory.</li>
+<li><code>--output-dir</code>: output directory for the final reference bundle.</li>
+</ul>
+<p>For Sylph tables, ZipStrain extracts genome accessions from the <code>Genome_file</code> column
+(case-insensitive), including GTDB-style paths such as:
+<code>gtdb_genomes_reps_r220/database/GCA/.../GCA_949068525.1_genomic.fna.gz</code>.</p>
+<p>If <code>Genome_file</code> points to a local file (absolute path or path relative to the abundance-table directory),
+ZipStrain loads it directly into cache first, then only downloads what is still missing.</p>
+<h2 id="outputs">Outputs</h2>
+<p>The command writes:</p>
+<ul>
+<li><code>/path/to/reference_bundle/reference_genomes.fna</code></li>
+<li><code>/path/to/reference_bundle/reference_genomes.stb</code></li>
+</ul>
+<h3 id="stb-format">STB format</h3>
+<p><code>reference_genomes.stb</code> has two columns (tab-separated, no header):</p>
+<ul>
+<li>scaffold ID in the concatenated FASTA</li>
+<li>genome ID</li>
+</ul>
+<p>Genome IDs are accessions (for example <code>GCF_000001405.40</code>).</p>
+<h2 id="cache-behavior">Cache behavior</h2>
+<p>Inside <code>--cache-dir</code>, ZipStrain maintains:</p>
+<ul>
+<li>a local DB index (<code>.genome_db.parquet</code>)</li>
+<li>downloaded genomes under <code>genomes/</code></li>
+</ul>
+<p>Re-running with the same cache directory avoids redownloading genomes that already exist.</p>
+<h2 id="console-summary">Console summary</h2>
+<p><code>build-genome-db</code> prints a short run summary:</p>
+<ul>
+<li>selected genomes (non-zero abundance)</li>
+<li>genomes already cached before the run</li>
+<li>new download attempts</li>
+<li>downloaded now / failed</li>
+<li>genomes available in cache after the run</li>
+</ul>
 
 
 

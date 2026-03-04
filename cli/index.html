@@ -222,6 +222,28 @@
   
   
     <li class="md-nav__item">
+      <a href="../GenomeDBFromSylph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Build Reference FASTA/STB from Sylph Abundances
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../NextflowPipeline/" class="md-nav__link">
         
   
@@ -407,6 +429,15 @@
   <a href="#build-profile-database" class="md-nav__link">
     <span class="md-ellipsis">
       Build Profile Database
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-genome-reference-bundle-from-sylph" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build Genome Reference Bundle (from Sylph)
     </span>
   </a>
   
@@ -841,6 +872,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#build-genome-reference-bundle-from-sylph" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build Genome Reference Bundle (from Sylph)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#build-comparison-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       Build Comparison Configuration
@@ -1218,21 +1258,34 @@
 <li><code>-p, --profile-db-csv TEXT</code>: Path to the profile database CSV file [required]</li>
 <li><code>-o, --output-file TEXT</code>: Path to save the output Parquet file [required]</li>
 </ul>
+<h4 id="build-genome-reference-bundle-from-sylph">Build Genome Reference Bundle (from Sylph)</h4>
+<p>Build a concatenated reference FASTA and STB from an abundance table with cache reuse:</p>
+<pre><code>zipstrain utilities build-genome-db [OPTIONS]
+</code></pre>
+<p><strong>Options:</strong></p>
+<ul>
+<li><code>-t, --tool [sylph]</code>: Abundance-tool parser to use [required]</li>
+<li><code>-a, --abundance-table TEXT</code>: Path to abundance table (<code>csv</code>/<code>tsv</code>/<code>parquet</code>) [required]</li>
+<li><code>-c, --cache-dir TEXT</code>: Persistent genome cache directory [required]</li>
+<li><code>-o, --output-dir TEXT</code>: Output directory for <code>reference_genomes.fna</code> and <code>reference_genomes.stb</code> [required]</li>
+</ul>
+<p>See <a href="../GenomeDBFromSylph/">GenomeDBFromSylph.md</a> for a full walkthrough.</p>
 <h4 id="build-comparison-configuration">Build Comparison Configuration</h4>
 <p>Build a comparison configuration JSON file:</p>
-<pre><code>zipstrain utilities build-comparison-config [OPTIONS]
+<pre><code>zipstrain utilities build-genome-comparison-config [OPTIONS]
+</code></pre>
+<p>For gene-level comparison config objects, use:</p>
+<pre><code>zipstrain utilities build-gene-comparison-config [OPTIONS]
 </code></pre>
 <p><strong>Options:</strong></p>
 <ul>
 <li><code>-p, --profile-db TEXT</code>: Path to the profile database Parquet file [required]</li>
 <li><code>-g, --gene-db-id TEXT</code>: Gene database ID [required]</li>
-<li><code>-r, --reference-db-id TEXT</code>: Reference fasta ID [required]</li>
+<li><code>-r, --reference-genome-id TEXT</code>: Reference fasta ID [required]</li>
 <li><code>-s, --scope TEXT</code>: Genome scope for comparison (default: "all")</li>
 <li><code>-c, --min-cov INTEGER</code>: Minimum coverage to consider a position (default: 5)</li>
 <li><code>-l, --min-gene-compare-len INTEGER</code>: Minimum gene length to consider for comparison (default: 200)</li>
-<li><code>-n, --null-model-p-value FLOAT</code>: P-value threshold for the null model (default: 0.05)</li>
 <li><code>-t, --stb-file-loc TEXT</code>: Path to the scaffold-to-genome mapping file [required]</li>
-<li><code>-m, --null-model-loc TEXT</code>: Path to the null model Parquet file [required]</li>
 <li><code>-a, --current-comp-table TEXT</code>: Path to existing comparison table in Parquet format (optional)</li>
 <li><code>-o, --output-file TEXT</code>: Path to save the output configuration JSON file [required]</li>
 </ul>
@@ -1276,18 +1329,19 @@
 <ul>
 <li><code>-m1, --mpileup-contig-1 TEXT</code>: Path to the first mpileup file [required]</li>
 <li><code>-m2, --mpileup-contig-2 TEXT</code>: Path to the second mpileup file [required]</li>
-<li><code>-s1, --scaffolds-1 TEXT</code>: Path to the list of scaffolds for the first mpileup file [required]</li>
-<li><code>-s2, --scaffolds-2 TEXT</code>: Path to the list of scaffolds for the second mpileup file [required]</li>
-<li><code>-n, --null-model TEXT</code>: Path to the null model Parquet file [required]</li>
 <li><code>-s, --stb-file TEXT</code>: Path to the scaffold to genome mapping file [required]</li>
 <li><code>-c, --min-cov INTEGER</code>: Minimum coverage to consider a position (default: 5)</li>
 <li><code>-l, --min-gene-compare-len INTEGER</code>: Minimum gene length to consider for comparison (default: 100)</li>
-<li><code>-m, --memory-mode [heavy|light]</code>: Memory mode for processing (default: heavy)</li>
-<li><code>-b, --chrom-batch-size INTEGER</code>: Batch size for processing chromosomes (default: 10000)</li>
 <li><code>-o, --output-file TEXT</code>: Path to save the parquet file [required]</li>
 <li><code>-g, --genome TEXT</code>: If provided, do comparison only for the specified genome (default: all)</li>
-<li><code>-e, --engine [streaming|gpu|auto]</code>: Engine to use for processing (default: streaming)</li>
+<li><code>-a, --ani-method TEXT</code>: ANI method (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;threshold&gt;</code>)</li>
+<li><code>--engine [polars|duckdb]</code>: Compare engine (default: <code>polars</code>)</li>
+<li><code>--duckdb-memory-limit TEXT</code>: DuckDB memory limit (for example <code>2GB</code>, <code>1024MB</code>)</li>
+<li><code>--duckdb-temp-directory TEXT</code>: Directory for DuckDB spill files</li>
+<li><code>--duckdb-threads INTEGER</code>: Number of DuckDB threads</li>
 </ul>
+<p>When <code>--engine polars</code> is used, comparison runs in Polars after optional DuckDB scope prefiltering.
+When <code>--engine duckdb</code> is used, comparison runs end-to-end in DuckDB and writes parquet directly.</p>
 <h3 id="4-profile-profile">4. Profile (<code>profile</code>)</h3>
 <p>Commands for profiling BAM files.</p>
 <h4 id="prepare-profiling">Prepare Profiling</h4>
@@ -1349,9 +1403,9 @@
 <li><code>-s, --slurm-config TEXT</code>: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')</li>
 <li><code>-c, --container-engine TEXT</code>: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)</li>
 <li><code>-t, --task-per-batch INTEGER</code>: Number of tasks to include in each batch (default: 10)</li>
-<li><code>-a, --polars-engine [streaming|gpu|auto]</code>: Polars engine to use (default: streaming)</li>
-<li><code>-b, --chrom-batch-size INTEGER</code>: Batch size for processing chromosomes (default: 10000)</li>
-<li><code>-h, --memory-mode [heavy|light]</code>: Memory mode for processing (default: heavy)</li>
+<li><code>--engine [polars|duckdb]</code>: Compare engine for per-pair tasks (default: <code>polars</code>)</li>
+<li><code>-d, --duckdb-memory-limit TEXT</code>: DuckDB memory limit for compare tasks (for example <code>2GB</code>)</li>
+<li><code>--duckdb-threads INTEGER</code>: Number of DuckDB threads for compare tasks</li>
 </ul>
 <h4 id="build-comparison-database">Build Comparison Database</h4>
 <p>Build a genome comparison database from profiles:</p>
@@ -1404,10 +1458,11 @@
 <pre><code>zipstrain compare single_compare_genome \
   -m1 sample1_profile/sample1.parquet \
   -m2 sample2_profile/sample2.parquet \
-  -s1 sample1_profile/sample1.parquet.scaffolds \
-  -s2 sample2_profile/sample2.parquet.scaffolds \
-  -n null_model.parquet \
   -s scaffold_to_genome.tsv \
+  --engine duckdb \
+  --duckdb-memory-limit 2GB \
+  --duckdb-threads 8 \
+  --duckdb-temp-directory /tmp \
   -o comparison_results.parquet
 </code></pre>
 <h3 id="large-scale-analysis-workflow">Large-scale Analysis Workflow</h3>
@@ -1421,7 +1476,7 @@
 <ol>
 <li><strong>Build comparison configuration:</strong></li>
 </ol>
-<pre><code>zipstrain utilities build-comparison-config \
+<pre><code>zipstrain utilities build-genome-comparison-config \
   -p profiles.parquet \
   -g genes_v1 \
   -r gtdb_r214 \
@@ -1429,7 +1484,6 @@
   -c 5 \
   -l 200 \
   -t scaffold_to_genome.tsv \
-  -m null_model.parquet \
   -o comparison_config.json
 </code></pre>
 <ol>
@@ -1449,7 +1503,9 @@
   -m 10 \
   -e slurm \
   -s slurm_config.json \
-  -c apptainer
+  -c apptainer \
+  --engine duckdb \
+  --duckdb-threads 8
 </code></pre>
 <h3 id="strain-analysis-workflow">Strain Analysis Workflow</h3>
 <ol>
@@ -1483,9 +1539,8 @@
 </ul>
 <h2 id="performance-considerations">Performance Considerations</h2>
 <ul>
-<li>Use <code>--memory-mode light</code> for large datasets with limited memory</li>
-<li>Choose appropriate <code>--engine</code> based on available hardware (GPU vs CPU)</li>
-<li>Adjust <code>--chrom-batch-size</code> based on available memory</li>
+<li>Set <code>--duckdb-memory-limit</code> to constrain memory usage on smaller machines</li>
+<li>Set <code>--duckdb-threads</code> to cap CPU parallelism for DuckDB compare tasks</li>
 <li>Use container engines for consistent environments across platforms</li>
 <li>Consider SLURM execution mode for large-scale HPC analyses</li>
 </ul>
