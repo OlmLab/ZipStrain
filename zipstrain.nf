@@ -89,9 +89,9 @@ process build_db_from_Sylph{
     input:
     path sylph_abundance
     output:
-    path "reference_genomes.fna"
-    path "reference_genomes.stb"
-    path "reference_genomes_gene.fasta"
+    path "reference_genomes.fna", emit:reference_genome
+    path "reference_genomes.stb",emit:stb
+    path "reference_genomes_gene.fasta",emit:reference_genome_genes
     script:
     """
     zipstrain utilities build-genome-db \
@@ -523,24 +523,27 @@ workflow
                 download_sylph_db()
                 download_sylph_db.out.sylph_db.set{ sylph_db }
             }
-            reads_1=Channel.fromPath(table["reads1"].transpose()[0].collect{t->file(t)})
-            reads_2=Channel.fromPath(table["reads2"].transpose()[0].collect{t->file(t)})
-            estimate_abundance_sylph(reads_1, reads_2, sylph_db)
+            reads.collect().transpose().multiMap{t->
+                reads_1_s:t[0]
+                reads_2_s:t[1]
+            }.set{sylph_reads}
+            estimate_abundance_sylph(sylph_reads.reads_1_s, sylph_reads.reads_2_s, sylph_db)
             estimate_abundance_sylph.out.abundance.set{ abundance }
-            build_db_from_Sylph(abundance, file(params.reference_genome_fasta), file(params.reference_genome_stb), file(params.reference_genome_gene_fasta))
+            build_db_from_Sylph(abundance)
             build_db_from_Sylph.out.reference_genome.set{ reference_genome }
-            build_db_from_Sylph.out.index_files.set{ index_files }
+            index_reference(reference_genome)
+            index_files = index_reference.out.index_files
         }
         else
         {
             reference_genome = file(params.reference_genome)
                 if (params.index_files) {
             index_files = files(params.index_files)
-        }
-        else {
+                                        }
+                else {
             index_reference(reference_genome)
             index_files = index_reference.out.index_files
-        }
+                     }
 
         }
 
