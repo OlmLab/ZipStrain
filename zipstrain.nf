@@ -15,7 +15,9 @@ params.compare_genome_scope="all"
 params.compare_gene_scope="all:all"
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
-
+params.sylph_db = null
+params.sylph_db_link="http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb"
+params.genome_db_cache_dir="genome_cache"
 def tableToDict(file, delimiter = ',') {
     /*
     * This function reads a CSV file and converts it into a dictionary (map) where the keys are the headers
@@ -48,6 +50,61 @@ def tableToDict(file, delimiter = ',') {
     
     return result
 }
+
+process download_sylph_db{
+    output:
+    path "*.syldb", emit: sylph_db
+    script:
+    """
+    wget ${params.sylph_db_link}
+    
+    """
+}
+process estimate_abundance_sylph{
+    /*
+    * This process estimates the abundance of bins using Sylph. It takes the reads and prepared database.
+    * For paired-end reads.
+    */
+    publishDir "${params.output_dir}/sylph_abundance/", mode: 'copy'
+    
+    input:
+    path reads_1
+    path reads_2
+    path sylph_db
+
+    output:
+    path "sylph_abundance.tsv", emit: abundance
+    script:
+    """
+    sylph profile ${sylph_db} -1 ${reads_1} -2 ${reads_2} -t ${task.cpus} > sylph_abundance.tsv
+    """
+}
+
+process build_db_from_Sylph{
+    /*
+    * This process builds a Bowtie2 database from the Sylph database. It takes the Sylph database as input and outputs the indexed files.
+    */
+    publishDir "${params.output_dir}/db_from_sylph/", mode: 'link'
+    
+    input:
+    path sylph_abundance
+    output:
+    path "reference_genomes.fna"
+    path "reference_genomes.stb"
+    path "reference_genomes_gene.fasta"
+    script:
+    """
+    zipstrain utilities build-genome-db \
+        --tool sylph \
+        --abundance-table ${sylph_abundance} \
+        --cache-dir ${params.genome_db_cache_dir}  \
+        --output-dir .
+    
+    prodigal -i reference_genomes.fna -d reference_genomes_gene.fasta  -p meta
+
+    """
+}
+
 process get_sequences_from_sra {
     /*
     * This process retrieves sequences from the SRA database using the fastq-dump tool.
@@ -438,13 +495,14 @@ process fromSRAtoProfile{
 }
 workflow
 {
+
     if (params.mode == 'map_reads') {
         
         if (params.input_type=="sra")
         {
             table=tableToDict(file("${params.input_table}"))
             get_sequences_from_sra(Channel.fromList(table["Run"]))
-            get_sequences_from_sra.out.fastq_files.map{t-> [t]}.set{reads}
+            get_sequences_from_sra.out.fastq_files.set{reads}
             get_sequences_from_sra.out.sra_ids.set{sample_names}
 
         }
@@ -456,15 +514,36 @@ workflow
             reads=reads_1.merge(reads_2)
             sample_names=Channel.fromList(table["sample_name"])
         }
-        reference_genome = file(params.reference_genome)
-        if (params.index_files) {
+        if (!params.reference_genome)
+        {
+            if (params.sylph_db) {
+                sylph_db = file(params.sylph_db)
+            }
+            else {
+                download_sylph_db()
+                download_sylph_db.out.sylph_db.set{ sylph_db }
+            }
+            reads_1=Channel.fromPath(table["reads1"].transpose()[0].collect{t->file(t)})
+            reads_2=Channel.fromPath(table["reads2"].transpose()[0].collect{t->file(t)})
+            estimate_abundance_sylph(reads_1, reads_2, sylph_db)
+            estimate_abundance_sylph.out.abundance.set{ abundance }
+            build_db_from_Sylph(abundance, file(params.reference_genome_fasta), file(params.reference_genome_stb), file(params.reference_genome_gene_fasta))
+            build_db_from_Sylph.out.reference_genome.set{ reference_genome }
+            build_db_from_Sylph.out.index_files.set{ index_files }
+        }
+        else
+        {
+            reference_genome = file(params.reference_genome)
+                if (params.index_files) {
             index_files = files(params.index_files)
         }
         else {
             index_reference(reference_genome)
             index_files = index_reference.out.index_files
         }
-        
+
+        }
+
         map_reads(sample_names,reference_genome,index_files,reads)
     }
     if (params.mode == "from_sra_to_profile") {

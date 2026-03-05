@@ -59,6 +59,28 @@ def build_gene_loc_table(fasta_file:pathlib.Path,scaffold:set)->pl.DataFrame:
         "gene":gene_ids,
         "pos":pos
     })
+
+def adjust_for_sequence_errors(mpile_frame:pl.LazyFrame, null_model:pl.LazyFrame) -> pl.LazyFrame:
+    """
+    Adjust the mpile frame for sequence errors based on the null model.
+    
+    Args:
+        mpile_frame (pl.LazyFrame): The input LazyFrame containing coverage data.
+        null_model (pl.LazyFrame): The null model LazyFrame containing error counts.
+    
+    Returns:
+        pl.LazyFrame: Adjusted LazyFrame with sequence errors accounted for.
+    """
+    mpile_frame = mpile_frame.with_columns(
+        pl.sum_horizontal(["A", "T", "C", "G"]).alias("cov")
+    )
+    return mpile_frame.join(null_model, on="cov", how="left").with_columns([
+        pl.when(pl.col(base) >= pl.col("max_error_count"))
+        .then(pl.col(base))
+        .otherwise(0)
+        .alias(base)
+        for base in ["A", "T", "C", "G"]
+    ]).drop("max_error_count")
     
 def build_gene_range_table(fasta_file:pathlib.Path)->pl.DataFrame:
     """
@@ -74,7 +96,11 @@ def build_gene_range_table(fasta_file:pathlib.Path)->pl.DataFrame:
         out.append(parsed_annot)
     return pl.DataFrame(out, schema=["gene", "scaffold", "start", "end"],orient='row')
 
-
+def add_genome_info_to_mpileup(mpileup_df:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame)->pl.LazyFrame:
+    mpileup_df=mpileup_df.join(scaffold_to_genome,
+                               left_on="chrom", right_on="scaffold", how="left").with_columns(
+        pl.col("genome").fill_null("NA")    )
+    return mpileup_df
 
 def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->pl.LazyFrame:
     mpileup_df=mpileup_df.sort(["chrom", "pos"])
@@ -139,6 +165,8 @@ async def _profile_chunk_task(
     bed_file:pathlib.Path,
     bam_file:pathlib.Path,
     gene_range_table:pathlib.Path,
+    stb:pl.LazyFrame,
+    null_model:pl.LazyFrame,
     output_dir:pathlib.Path,
     chunk_id:int
 )->None:
@@ -157,6 +185,14 @@ async def _profile_chunk_task(
         mpileup=pl.scan_parquet(output_dir/f"{bam_file.stem}_{chunk_id}_pre.parquet")
         scaffolds=pl.scan_csv(bed_file,has_header=False,separator="\t").select("column_1").unique().collect().to_series().to_list()
         if pathlib.Path(output_dir/f"{bam_file.stem}_{chunk_id}_pre.parquet").exists():
+            mpileup=adjust_for_sequence_errors(
+                mpile_frame=mpileup,
+                null_model=null_model
+            )
+            mpileup=add_genome_info_to_mpileup(
+                mpileup_df=mpileup,
+                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold","genome"])
+            )
             mpileup_with_gene=add_gene_info_to_mpileup(
                 mpileup_df=mpileup,
                 gene_range=pl.scan_csv(
@@ -171,8 +207,9 @@ async def _profile_chunk_task(
                 }).filter(pl.col("scaffold").is_in(scaffolds))
             ).drop(["start","end"]).select([
                 "chrom",
-                "pos",
+                "genome",
                 "gene",
+                "pos",
                 "A",
                 "C",
                 "G",
@@ -199,6 +236,7 @@ async def profile_bam_in_chunks(
     bam_file:str,
     gene_range_table:str,
     stb:pl.LazyFrame,
+    null_model:pl.LazyFrame,
     output_dir:str,
     num_workers:int=4,
 )->None:
@@ -209,6 +247,8 @@ async def profile_bam_in_chunks(
     bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
     bam_file (pathlib.Path): Path to the BAM file.
     gene_range_table (pathlib.Path): Path to the gene range table.
+    stb (pl.LazyFrame): The scaffold-to-genome mapping table.
+    null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
     num_workers (int): Number of concurrent workers to use.
     """
@@ -232,6 +272,8 @@ async def profile_bam_in_chunks(
             bed_file=bed_chunk_file,
             bam_file=bam_file,
             gene_range_table=gene_range_table,
+            stb=stb,
+            null_model=null_model,
             output_dir=output_dir/"tmp",
             chunk_id=chunk_id
         ))
@@ -250,7 +292,15 @@ async def profile_bam_in_chunks(
             read_loc_pfs.append(pl.scan_parquet(read_loc_pf).lazy())
     if mpile_container:
         mpileup_df = pl.concat(mpile_container)
+        mpileup_df=mpileup_df.sort(["genome", "chrom", "pos"],descending=[False, False, False])
+        with pl.StringCache():
+            mpileup_df = mpileup_df.with_columns([
+                pl.col("chrom").cast(pl.Categorical),
+                pl.col("genome").cast(pl.Categorical),
+                pl.col("gene").cast(pl.Categorical),
+            ])
         mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
+    
     if read_loc_pfs:
         read_loc_df = pl.concat(read_loc_pfs).rename(
             {
@@ -275,6 +325,7 @@ def profile_bam(
     bam_file:str,
     gene_range_table:str,
     stb:pl.LazyFrame,
+    null_model:pl.LazyFrame,
     output_dir:str,
     num_workers:int=4,
 )->None:
@@ -285,7 +336,8 @@ def profile_bam(
     bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
     bam_file (pathlib.Path): Path to the BAM file.
     gene_range_table (pathlib.Path): Path to the gene range table.
-    stb (pl.LazyFrame): Scaffold-to-bin mapping table.
+    stb (pl.LazyFrame): Scaffold-to-genome mapping table.
+    null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
     num_workers (int): Number of concurrent workers to use.
     """
@@ -294,6 +346,7 @@ def profile_bam(
         bam_file=bam_file,
         gene_range_table=gene_range_table,
         stb=stb,
+        null_model=null_model,
         output_dir=output_dir,
         num_workers=num_workers,
     ))
