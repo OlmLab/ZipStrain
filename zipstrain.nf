@@ -112,7 +112,7 @@ process get_sequences_from_sra {
     * @param sra_ids: SRA ID to retrieve.
     */
     
-    publishDir "${params.output_dir}/sra_sequences", mode: 'copy'
+    publishDir "${params.output_dir}/sra_sequences", mode: 'link'
     
     input:
     val sra_ids
@@ -523,11 +523,9 @@ workflow
                 download_sylph_db()
                 download_sylph_db.out.sylph_db.set{ sylph_db }
             }
-            reads.collect().transpose().multiMap{t->
-                reads_1_s:t[0]
-                reads_2_s:t[1]
-            }.set{sylph_reads}
-            estimate_abundance_sylph(sylph_reads.reads_1_s, sylph_reads.reads_2_s, sylph_db)
+            reads.collect{t->t[0]}.collect().set{reads1}
+            reads.collect{t->t[1]}.collect().set{reads2}
+            estimate_abundance_sylph(reads1,reads2, sylph_db)
             estimate_abundance_sylph.out.abundance.set{ abundance }
             build_db_from_Sylph(abundance)
             build_db_from_Sylph.out.reference_genome.set{ reference_genome }
