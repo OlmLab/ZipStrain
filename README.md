@@ -257,13 +257,17 @@ zipstrain utilities build-genome-db \
   --tool sylph \
   --abundance-table <sylph_abundance.csv> \
   --cache-dir <genome_cache_dir> \
-  --output-dir <reference_output_dir>
+  --output-dir <reference_output_dir> \
+  --download-retries 3 \
+  --retry-backoff-seconds 1.0 \
+  --download-workers 4
 ```
 
 This writes:
 
 - `<reference_output_dir>/reference_genomes.fna`
 - `<reference_output_dir>/reference_genomes.stb`
+- `<reference_output_dir>/genome_db_build_report.txt` (includes failed accession IDs, if any)
 
 The cache directory stores downloaded genomes and reuses existing files across runs.
 Only genomes with non-zero abundance in at least one sample are included.

@@ -22,7 +22,10 @@ zipstrain utilities build-genome-db \
   --tool sylph \
   --abundance-table /path/to/sylph_abundance.csv \
   --cache-dir /path/to/genome_cache \
-  --output-dir /path/to/reference_bundle
+  --output-dir /path/to/reference_bundle \
+  --download-retries 3 \
+  --retry-backoff-seconds 1.0 \
+  --download-workers 4
 ```
 
 ## Inputs
@@ -45,6 +48,7 @@ The command writes:
 
 - `/path/to/reference_bundle/reference_genomes.fna`
 - `/path/to/reference_bundle/reference_genomes.stb`
+- `/path/to/reference_bundle/genome_db_build_report.txt`
 
 ### STB format
 
@@ -64,6 +68,12 @@ Inside `--cache-dir`, ZipStrain maintains:
 
 Re-running with the same cache directory avoids redownloading genomes that already exist.
 
+## Retry behavior
+
+For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 3 attempts per genome).  
+If a genome still fails after retries, it is skipped, and the reference bundle is built from successfully fetched genomes.
+Parallelism for remote fetch is controlled with `--download-workers`.
+
 ## Console summary
 
 `build-genome-db` prints a short run summary:
@@ -73,3 +83,5 @@ Re-running with the same cache directory avoids redownloading genomes that alrea
 - new download attempts
 - downloaded now / failed
 - genomes available in cache after the run
+
+The same summary is saved to `genome_db_build_report.txt` and includes explicit failed accession IDs (with error messages) when downloads fail.

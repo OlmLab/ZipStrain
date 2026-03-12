@@ -63,20 +63,42 @@ process download_sylph_db{
 process estimate_abundance_sylph{
     /*
     * This process estimates the abundance of bins using Sylph. It takes the reads and prepared database.
-    * For paired-end reads.
+    * One task per sample.
     */
     publishDir "${params.output_dir}/sylph_abundance/", mode: 'copy'
     
     input:
-    path reads_1
-    path reads_2
+    tuple val(sample_name), path(reads)
     path sylph_db
 
+    output:
+    path "${sample_name}_sylph_abundance.tsv", emit: abundance
+    script:
+    """
+    num_reads=\$(ls ${reads} | wc -l)
+    if [ \$num_reads -eq 2 ]; then
+        r1=\$(ls ${reads} | head -n 1)
+        r2=\$(ls ${reads} | tail -n 1)
+        sylph profile ${sylph_db} -1 \$r1 -2 \$r2 -t ${task.cpus} > ${sample_name}_sylph_abundance.tsv
+    else
+        r1=\$(ls ${reads} | head -n 1)
+        sylph profile ${sylph_db} -U \$r1 -t ${task.cpus} > ${sample_name}_sylph_abundance.tsv
+    fi
+    """
+}
+
+process merge_sylph_abundance_tables {
+    /*
+    * Merge per-sample Sylph abundance tables into one table.
+    */
+    publishDir "${params.output_dir}/sylph_abundance/", mode: 'copy'
+    input:
+    path abundance_tables
     output:
     path "sylph_abundance.tsv", emit: abundance
     script:
     """
-    sylph profile ${sylph_db} -1 ${reads_1} -2 ${reads_2} -t ${task.cpus} > sylph_abundance.tsv
+    awk 'FNR==1 && NR!=1 {next} 1' ${abundance_tables} > sylph_abundance.tsv
     """
 }
 
@@ -120,6 +142,7 @@ process get_sequences_from_sra {
     output:
     path "${sra_ids}/${sra_ids}*.fastq.gz",emit: fastq_files
     val sra_ids, emit: sra_ids
+    tuple val(sra_ids), path("${sra_ids}/${sra_ids}*.fastq.gz"), emit: sample_reads
     
     script:
     """
@@ -155,10 +178,9 @@ process map_reads{
     */
     publishDir "${params.output_dir}", mode: 'link'
     input:
-    val sample_name
+    tuple val(sample_name), path(reads)
     path reference_genome
     path index_files
-    path reads
     output:
     path "${sample_name}.bam", emit: bamfile
     script:
@@ -502,17 +524,26 @@ workflow
         {
             table=tableToDict(file("${params.input_table}"))
             get_sequences_from_sra(Channel.fromList(table["Run"]))
-            get_sequences_from_sra.out.fastq_files.set{reads}
-            get_sequences_from_sra.out.sra_ids.set{sample_names}
+            get_sequences_from_sra.out.sample_reads.set{sample_reads}
 
         }
         if (params.input_type=="local")
         {
             table=tableToDict(file("${params.input_table}"))
-            reads_1=Channel.fromPath(table["reads1"].collect{t->file(t)})
-            reads_2=Channel.fromPath(table["reads2"].collect{t->file(t)})
-            reads=reads_1.merge(reads_2)
-            sample_names=Channel.fromList(table["sample_name"])
+            if (table.containsKey("reads2")) {
+                sample_reads = Channel.from(
+                    [table["sample_name"], table["reads1"], table["reads2"]]
+                        .transpose()
+                        .collect { row -> tuple(row[0], [file(row[1]), file(row[2])]) }
+                )
+            }
+            else {
+                sample_reads = Channel.from(
+                    [table["sample_name"], table["reads1"]]
+                        .transpose()
+                        .collect { row -> tuple(row[0], [file(row[1])]) }
+                )
+            }
         }
         if (!params.reference_genome)
         {
@@ -523,10 +554,9 @@ workflow
                 download_sylph_db()
                 download_sylph_db.out.sylph_db.set{ sylph_db }
             }
-            reads.collect{t->t[0]}.collect().set{reads1}
-            reads.collect{t->t[1]}.collect().set{reads2}
-            estimate_abundance_sylph(reads1,reads2, sylph_db)
-            estimate_abundance_sylph.out.abundance.set{ abundance }
+            estimate_abundance_sylph(sample_reads, sylph_db)
+            merge_sylph_abundance_tables(estimate_abundance_sylph.out.abundance.collect())
+            merge_sylph_abundance_tables.out.abundance.set{ abundance }
             build_db_from_Sylph(abundance)
             build_db_from_Sylph.out.reference_genome.set{ reference_genome }
             index_reference(reference_genome)
@@ -545,7 +575,7 @@ workflow
 
         }
 
-        map_reads(sample_names,reference_genome,index_files,reads)
+        map_reads(sample_reads,reference_genome,index_files)
     }
     if (params.mode == "from_sra_to_profile") {
         table=tableToDict(file("${params.input_table}"))

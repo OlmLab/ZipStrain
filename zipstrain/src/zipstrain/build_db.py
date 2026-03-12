@@ -7,12 +7,14 @@ external tools (for example, Sylph).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 import gzip
 import pathlib
 import re
 import shutil
 import tempfile
+import time
 from typing import Callable
 from urllib.parse import urlparse
 from urllib.request import urlopen
@@ -37,6 +39,9 @@ NUMERIC_DTYPES = {
     pl.Float32,
     pl.Float64,
 }
+
+# event, fetched_count, remaining_count, total_count, accession(optional)
+ProgressCallback = Callable[[str, int, int, int, str | None], None]
 
 
 def _normalize_accession(accession: str) -> str:
@@ -587,15 +592,27 @@ def fetch_missing_genomes(
     downloader: Callable[[str, str, pathlib.Path], pathlib.Path] | None = None,
     overwrite: bool = False,
     only_accessions: list[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    initial_fetched: int = 0,
+    total_selected: int | None = None,
+    max_download_attempts: int = 3,
+    backoff_base_seconds: float = 1.0,
+    download_workers: int = 4,
 ) -> pl.DataFrame:
     """Download missing genomes and update DB locations/existence.
 
     Returns a report with columns:
       accession, status, location, url, error
+
+    Downloads are executed with a bounded thread pool (`download_workers`).
     """
     resolver = url_resolver or _default_url_resolver
     dl = downloader or _download_single_genome
     genomes_path = pathlib.Path(genomes_dir)
+    if max_download_attempts < 1:
+        raise ValueError("max_download_attempts must be >= 1")
+    if download_workers < 1:
+        raise ValueError("download_workers must be >= 1")
 
     records: list[dict[str, str | None]] = []
     missing_df = local_db.missing()
@@ -603,47 +620,165 @@ def fetch_missing_genomes(
         normalized = [_normalize_accession(acc) for acc in only_accessions]
         missing_df = missing_df.filter(pl.col("accession").is_in(normalized))
 
-    for row in missing_df.iter_rows(named=True):
+    completed_count = initial_fetched
+    selected_total = total_selected if total_selected is not None else initial_fetched + missing_df.height
+    if progress_callback is not None:
+        progress_callback(
+            "start",
+            completed_count,
+            max(selected_total - completed_count, 0),
+            selected_total,
+            None,
+        )
+
+    records_by_index: dict[int, dict[str, str | None]] = {}
+    pending_rows: list[tuple[int, dict[str, str | None]]] = []
+    for row_idx, row in enumerate(missing_df.iter_rows(named=True)):
         accession = row["accession"]
         location = row["location"]
         if location and pathlib.Path(location).exists() and not overwrite:
-            records.append(
-                {
-                    "accession": accession,
-                    "status": "already_present",
-                    "location": location,
-                    "url": row.get("download_url"),
-                    "error": None,
-                }
-            )
+            records_by_index[row_idx] = {
+                "accession": accession,
+                "status": "already_present",
+                "location": location,
+                "url": row.get("download_url"),
+                "error": None,
+            }
+            completed_count += 1
+            if progress_callback is not None:
+                progress_callback(
+                    "already_present",
+                    completed_count,
+                    max(selected_total - completed_count, 0),
+                    selected_total,
+                    accession,
+                )
             continue
+        pending_rows.append((row_idx, row))
+    pending_rows_by_index = {idx: row for idx, row in pending_rows}
 
-        try:
-            url = resolver(accession, row)
-            out_file = dl(url, accession, genomes_path)
-            local_db.set_location(accession, out_file, download_url=url)
-            records.append(
-                {
+    def _download_with_retries(row: dict[str, str | None]) -> dict[str, str | int | None]:
+        accession = _normalize_accession(str(row["accession"]))
+        last_exc: Exception | None = None
+        url: str | None = None
+        for attempt in range(1, max_download_attempts + 1):
+            try:
+                url = resolver(accession, row)
+                out_file = dl(url, accession, genomes_path)
+                return {
                     "accession": accession,
                     "status": "downloaded",
                     "location": str(out_file),
                     "url": url,
                     "error": None,
+                    "retry_count": attempt - 1,
                 }
-            )
-        except Exception as exc:
-            records.append(
-                {
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_download_attempts and backoff_base_seconds > 0:
+                    time.sleep(backoff_base_seconds * (2 ** (attempt - 1)))
+
+        failed_url = url if url is not None else row.get("download_url")
+        failed_error = (
+            f"{last_exc} (after {max_download_attempts} attempts)"
+            if last_exc is not None
+            else f"failed after {max_download_attempts} attempts"
+        )
+        return {
+            "accession": accession,
+            "status": "failed",
+            "location": None,
+            "url": failed_url,
+            "error": failed_error,
+            "retry_count": max_download_attempts - 1,
+        }
+
+    if pending_rows:
+        max_workers = max(1, min(download_workers, len(pending_rows)))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_index = {
+                pool.submit(_download_with_retries, row): row_idx for row_idx, row in pending_rows
+            }
+            for future in as_completed(future_to_index):
+                row_idx = future_to_index[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    row = pending_rows_by_index[row_idx]
+                    accession = _normalize_accession(str(row["accession"]))
+                    result = {
+                        "accession": accession,
+                        "status": "failed",
+                        "location": None,
+                        "url": row.get("download_url"),
+                        "error": f"unexpected worker failure: {exc}",
+                        "retry_count": 0,
+                    }
+                accession = str(result["accession"])
+                retry_count = int(result.get("retry_count", 0))
+                if progress_callback is not None:
+                    for _ in range(retry_count):
+                        progress_callback(
+                            "retry",
+                            completed_count,
+                            max(selected_total - completed_count, 0),
+                            selected_total,
+                            accession,
+                        )
+
+                status = str(result["status"])
+                if status == "downloaded":
+                    location = str(result["location"])
+                    url = None if result.get("url") is None else str(result["url"])
+                    local_db.set_location(accession, location, download_url=url)
+                    records_by_index[row_idx] = {
+                        "accession": accession,
+                        "status": "downloaded",
+                        "location": location,
+                        "url": url,
+                        "error": None,
+                    }
+                    completed_count += 1
+                    if progress_callback is not None:
+                        progress_callback(
+                            "downloaded",
+                            completed_count,
+                            max(selected_total - completed_count, 0),
+                            selected_total,
+                            accession,
+                        )
+                    continue
+
+                records_by_index[row_idx] = {
                     "accession": accession,
                     "status": "failed",
                     "location": None,
-                    "url": row.get("download_url"),
-                    "error": str(exc),
+                    "url": None if result.get("url") is None else str(result["url"]),
+                    "error": None if result.get("error") is None else str(result["error"]),
                 }
-            )
+                completed_count += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        "failed",
+                        completed_count,
+                        max(selected_total - completed_count, 0),
+                        selected_total,
+                        accession,
+                    )
+
+    if records_by_index:
+        records = [records_by_index[idx] for idx in sorted(records_by_index)]
 
     local_db.sync()
     local_db.save()
+
+    report_schema = {
+        "accession": pl.Utf8,
+        "status": pl.Utf8,
+        "location": pl.Utf8,
+        "url": pl.Utf8,
+        "error": pl.Utf8,
+    }
     if not records:
         return pl.DataFrame(
             {
@@ -653,15 +788,29 @@ def fetch_missing_genomes(
                 "url": [],
                 "error": [],
             },
-            schema={
-                "accession": pl.Utf8,
-                "status": pl.Utf8,
-                "location": pl.Utf8,
-                "url": pl.Utf8,
-                "error": pl.Utf8,
-            },
+            schema=report_schema,
         )
-    return pl.DataFrame(records)
+
+    def _as_str_or_none(value):
+        return None if value is None else str(value)
+
+    report_columns = {
+        "accession": [_as_str_or_none(row.get("accession")) for row in records],
+        "status": [_as_str_or_none(row.get("status")) for row in records],
+        "location": [_as_str_or_none(row.get("location")) for row in records],
+        "url": [_as_str_or_none(row.get("url")) for row in records],
+        "error": [_as_str_or_none(row.get("error")) for row in records],
+    }
+    out_df = pl.DataFrame(report_columns, schema=report_schema)
+    if progress_callback is not None:
+        progress_callback(
+            "done",
+            completed_count,
+            max(selected_total - completed_count, 0),
+            selected_total,
+            None,
+        )
+    return out_df
 
 
 def load_abundance_table(table_source: str | pathlib.Path | pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
@@ -690,6 +839,10 @@ def build_local_genome_db(
     nonzero_only: bool = True,
     url_resolver: Callable[[str, dict], str] | None = None,
     downloader: Callable[[str, str, pathlib.Path], pathlib.Path] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    max_download_attempts: int = 3,
+    backoff_base_seconds: float = 1.0,
+    download_workers: int = 4,
 ) -> tuple[LocalGenomeDB, pl.DataFrame, pl.DataFrame]:
     """Build/update a local genome DB from an abundance table.
 
@@ -713,6 +866,25 @@ def build_local_genome_db(
         genomes_dir=genomes_dir,
         base_dir=table_base_dir,
     )
+
+    selected = genomes.select("accession").unique()
+    selected_total = selected.height
+    if selected_total > 0:
+        selected_state = (
+            selected.join(
+                local_db.db.select("accession", "exists"),
+                on="accession",
+                how="left",
+            )
+            .with_columns(pl.col("exists").fill_null(False))
+        )
+        initial_fetched = selected_state.filter(pl.col("exists")).height
+    else:
+        initial_fetched = 0
+
+    if progress_callback is not None and selected_total == 0:
+        progress_callback("start", 0, 0, 0, None)
+        progress_callback("done", 0, 0, 0, None)
 
     report = pl.DataFrame(
         {
@@ -738,7 +910,16 @@ def build_local_genome_db(
             downloader=downloader,
             overwrite=overwrite,
             only_accessions=genomes["accession"].to_list(),
+            progress_callback=progress_callback,
+            initial_fetched=initial_fetched,
+            total_selected=selected_total,
+            max_download_attempts=max_download_attempts,
+            backoff_base_seconds=backoff_base_seconds,
+            download_workers=download_workers,
         )
+    elif progress_callback is not None:
+        progress_callback("start", initial_fetched, max(selected_total - initial_fetched, 0), selected_total, None)
+        progress_callback("done", initial_fetched, max(selected_total - initial_fetched, 0), selected_total, None)
     return local_db, genomes, report
 
 
@@ -841,6 +1022,11 @@ def build_reference_from_abundance(
     output_dir: str | pathlib.Path,
     url_resolver: Callable[[str, dict], str] | None = None,
     downloader: Callable[[str, str, pathlib.Path], pathlib.Path] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    max_download_attempts: int = 3,
+    backoff_base_seconds: float = 1.0,
+    download_workers: int = 4,
+    continue_on_missing: bool = True,
 ) -> tuple[pathlib.Path, pathlib.Path, pl.DataFrame, pl.DataFrame, dict[str, int]]:
     """Build a reference bundle (concatenated FASTA + STB) from an abundance table.
 
@@ -865,6 +1051,10 @@ def build_reference_from_abundance(
         nonzero_only=True,
         url_resolver=url_resolver,
         downloader=downloader,
+        progress_callback=progress_callback,
+        max_download_attempts=max_download_attempts,
+        backoff_base_seconds=backoff_base_seconds,
+        download_workers=download_workers,
     )
 
     selected = extracted.select("accession").unique()
@@ -878,6 +1068,7 @@ def build_reference_from_abundance(
         .select("accession", "location")
     )
 
+    missing_count = selected.height - resolved.height
     if resolved.height != selected.height:
         missing = selected.join(resolved.select("accession"), on="accession", how="anti")
         missing_ids = missing["accession"].to_list()
@@ -895,10 +1086,20 @@ def build_reference_from_abundance(
             else:
                 details.append(f"{acc} (not found in local source path or download)")
         detail_msg = "; ".join(details)
-        raise RuntimeError(
-            "Failed to resolve all requested genomes in cache/download step. "
-            f"Missing count={len(missing_ids)}. "
-            f"Examples: {detail_msg}"
+        if not continue_on_missing or resolved.height == 0:
+            raise RuntimeError(
+                "Failed to resolve all requested genomes in cache/download step. "
+                f"Missing count={len(missing_ids)}. "
+                f"Examples: {detail_msg}"
+            )
+
+    if progress_callback is not None and selected.height > 0:
+        progress_callback(
+            "assembling_reference",
+            selected.height,
+            0,
+            selected.height,
+            None,
         )
 
     out_fasta, out_stb = write_concatenated_reference(
@@ -919,7 +1120,18 @@ def build_reference_from_abundance(
         "downloaded_now": downloaded_now,
         "failed_downloads": failed_downloads,
         "cached_after_download": cached_after_download,
+        "missing_after_retries": missing_count,
+        "max_download_attempts": max_download_attempts,
+        "download_workers": download_workers,
     }
+    if progress_callback is not None and selected.height > 0:
+        progress_callback(
+            "completed",
+            selected.height,
+            0,
+            selected.height,
+            None,
+        )
     return out_fasta, out_stb, extracted, report, summary
 
 

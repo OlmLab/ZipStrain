@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich import box
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 
 
 @click.group()
@@ -219,7 +220,10 @@ def build_profile_db(profile_db_csv, output_file):
 @click.option('--abundance-table', '-a', required=True, help="Path to abundance table (csv/tsv/parquet).")
 @click.option('--cache-dir', '-c', required=True, help="Genome cache directory. Reuses already-downloaded genomes.")
 @click.option('--output-dir', '-o', required=True, help="Directory where concatenated reference FASTA and STB are written.")
-def build_genome_db(tool, abundance_table, cache_dir, output_dir):
+@click.option('--download-retries', type=int, default=3, show_default=True, help="Max download attempts per genome before skipping.")
+@click.option('--retry-backoff-seconds', type=float, default=1.0, show_default=True, help="Base seconds for exponential retry backoff.")
+@click.option('--download-workers', type=int, default=4, show_default=True, help="Parallel genome download workers.")
+def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retries, retry_backoff_seconds, download_workers):
     """
     Build a reference bundle from an abundance table.
 
@@ -229,12 +233,114 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir):
       - reference_genomes.stb
     into the output directory.
     """
-    out_fasta, out_stb, extracted, report, summary = bdb.build_reference_from_abundance(
-        tool_name=tool,
-        abundance_table=pathlib.Path(abundance_table),
-        cache_dir=pathlib.Path(cache_dir),
-        output_dir=pathlib.Path(output_dir),
-    )
+    if download_retries < 1:
+        raise ValueError("--download-retries must be >= 1")
+    if retry_backoff_seconds < 0:
+        raise ValueError("--retry-backoff-seconds must be >= 0")
+    if download_workers < 1:
+        raise ValueError("--download-workers must be >= 1")
+
+    console = Console()
+    progress_callback = None
+    if console.is_terminal:
+        progress = Progress(
+            TextColumn("[bold cyan]Genome Cache"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total} processed"),
+            TextColumn("remaining: {task.fields[remaining]}"),
+            TextColumn("{task.fields[last_event]}"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        )
+        progress_state = {"task_id": None}
+
+        def _progress_callback(event: str, fetched: int, remaining: int, total: int, accession: str | None) -> None:
+            total_display = max(total, 1)
+            if event == "downloaded":
+                last_event = f"downloaded {accession}"
+            elif event == "failed":
+                last_event = f"failed {accession}"
+            elif event == "already_present":
+                last_event = f"cached {accession}"
+            elif event == "retry":
+                last_event = f"retrying {accession}"
+            elif event == "done":
+                last_event = "downloads complete"
+            elif event == "assembling_reference":
+                last_event = "building concatenated reference"
+            elif event == "completed":
+                last_event = "done"
+            else:
+                last_event = "starting"
+
+            if progress_state["task_id"] is None:
+                progress_state["task_id"] = progress.add_task(
+                    "genomes",
+                    total=total_display,
+                    completed=min(fetched, total_display),
+                    remaining=max(remaining, 0),
+                    last_event=last_event,
+                )
+            else:
+                progress.update(
+                    progress_state["task_id"],
+                    total=total_display,
+                    completed=min(fetched, total_display),
+                    remaining=max(remaining, 0),
+                    last_event=last_event,
+                )
+
+        progress_callback = _progress_callback
+        with progress:
+            out_fasta, out_stb, extracted, report, summary = bdb.build_reference_from_abundance(
+                tool_name=tool,
+                abundance_table=pathlib.Path(abundance_table),
+                cache_dir=pathlib.Path(cache_dir),
+                output_dir=pathlib.Path(output_dir),
+                progress_callback=progress_callback,
+                max_download_attempts=download_retries,
+                backoff_base_seconds=retry_backoff_seconds,
+                download_workers=download_workers,
+            )
+    else:
+        out_fasta, out_stb, extracted, report, summary = bdb.build_reference_from_abundance(
+            tool_name=tool,
+            abundance_table=pathlib.Path(abundance_table),
+            cache_dir=pathlib.Path(cache_dir),
+            output_dir=pathlib.Path(output_dir),
+            max_download_attempts=download_retries,
+            backoff_base_seconds=retry_backoff_seconds,
+            download_workers=download_workers,
+        )
+    failed_rows = report.filter(pl.col("status") == "failed") if report.height else report
+    report_file = pathlib.Path(output_dir) / "genome_db_build_report.txt"
+    report_lines = [
+        "Genome DB Build Report",
+        f"Tool: {tool}",
+        f"Selected genomes (non-zero): {summary['selected_genomes']}",
+        f"Cached before run: {summary['cached_before_download']}",
+        f"Download attempts (new): {summary['attempted_downloads']}",
+        f"Downloaded now: {summary['downloaded_now']}",
+        f"Failed downloads: {summary['failed_downloads']}",
+        f"Skipped after retries: {summary['missing_after_retries']}",
+        f"Retry attempts/genome: {download_retries}",
+        f"Retry backoff base (s): {retry_backoff_seconds}",
+        f"Download workers: {download_workers}",
+        f"Available in cache after run: {summary['cached_after_download']}",
+        f"Concatenated FASTA: {out_fasta}",
+        f"STB file: {out_stb}",
+        f"Cache directory: {pathlib.Path(cache_dir)}",
+        "",
+        f"Failed IDs ({failed_rows.height}):",
+    ]
+    if failed_rows.height == 0:
+        report_lines.append("- none")
+    else:
+        for row in failed_rows.select("accession", "error").iter_rows(named=True):
+            error = row["error"] if row["error"] not in (None, "") else "no error message"
+            report_lines.append(f"- {row['accession']}: {error}")
+    report_file.write_text("\n".join(report_lines) + "\n")
     report_table = Table(box=box.SIMPLE_HEAVY, show_header=False, pad_edge=False)
     report_table.add_column("metric", style="bold cyan")
     report_table.add_column("value", style="white")
@@ -244,10 +350,15 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir):
     report_table.add_row("Download attempts (new)", str(summary["attempted_downloads"]))
     report_table.add_row("Downloaded now", str(summary["downloaded_now"]))
     report_table.add_row("Failed downloads", str(summary["failed_downloads"]))
+    report_table.add_row("Skipped after retries", str(summary["missing_after_retries"]))
+    report_table.add_row("Retry attempts/genome", str(download_retries))
+    report_table.add_row("Retry backoff base (s)", str(retry_backoff_seconds))
+    report_table.add_row("Download workers", str(download_workers))
     report_table.add_row("Available in cache after run", str(summary["cached_after_download"]))
     report_table.add_row("Concatenated FASTA", str(out_fasta))
     report_table.add_row("STB file", str(out_stb))
     report_table.add_row("Cache directory", str(pathlib.Path(cache_dir)))
+    report_table.add_row("Report file", str(report_file))
     Console().print(Panel(report_table, title="Genome DB Build Report", border_style="green"))
 
 

@@ -171,8 +171,12 @@ zipstrain utilities build-genome-db [OPTIONS]
 - `-a, --abundance-table TEXT`: Path to abundance table (`csv`/`tsv`/`parquet`) [required]
 - `-c, --cache-dir TEXT`: Persistent genome cache directory [required]
 - `-o, --output-dir TEXT`: Output directory for `reference_genomes.fna` and `reference_genomes.stb` [required]
+- `--download-retries INTEGER`: Max attempts per genome download before skipping (default: `3`)
+- `--retry-backoff-seconds FLOAT`: Base backoff seconds for exponential retry waits (default: `1.0`)
+- `--download-workers INTEGER`: Number of parallel download workers (default: `4`)
 
 See [GenomeDBFromSylph.md](GenomeDBFromSylph.md) for a full walkthrough.
+The command also writes `genome_db_build_report.txt` in `--output-dir`, including failed accession IDs when present.
 
 #### Build Comparison Configuration
 
