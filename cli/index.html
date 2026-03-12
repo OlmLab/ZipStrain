@@ -1268,8 +1268,12 @@
 <li><code>-a, --abundance-table TEXT</code>: Path to abundance table (<code>csv</code>/<code>tsv</code>/<code>parquet</code>) [required]</li>
 <li><code>-c, --cache-dir TEXT</code>: Persistent genome cache directory [required]</li>
 <li><code>-o, --output-dir TEXT</code>: Output directory for <code>reference_genomes.fna</code> and <code>reference_genomes.stb</code> [required]</li>
+<li><code>--download-retries INTEGER</code>: Max attempts per genome download before skipping (default: <code>3</code>)</li>
+<li><code>--retry-backoff-seconds FLOAT</code>: Base backoff seconds for exponential retry waits (default: <code>1.0</code>)</li>
+<li><code>--download-workers INTEGER</code>: Number of parallel download workers (default: <code>4</code>)</li>
 </ul>
-<p>See <a href="../GenomeDBFromSylph/">GenomeDBFromSylph.md</a> for a full walkthrough.</p>
+<p>See <a href="../GenomeDBFromSylph/">GenomeDBFromSylph.md</a> for a full walkthrough.
+The command also writes <code>genome_db_build_report.txt</code> in <code>--output-dir</code>, including failed accession IDs when present.</p>
 <h4 id="build-comparison-configuration">Build Comparison Configuration</h4>
 <p>Build a comparison configuration JSON file:</p>
 <pre><code>zipstrain utilities build-genome-comparison-config [OPTIONS]

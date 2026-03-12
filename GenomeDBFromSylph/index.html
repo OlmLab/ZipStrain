@@ -332,6 +332,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#retry-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Retry behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#console-summary" class="md-nav__link">
     <span class="md-ellipsis">
       Console summary
@@ -501,6 +510,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#retry-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Retry behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#console-summary" class="md-nav__link">
     <span class="md-ellipsis">
       Console summary
@@ -542,7 +560,10 @@
   --tool sylph \
   --abundance-table /path/to/sylph_abundance.csv \
   --cache-dir /path/to/genome_cache \
-  --output-dir /path/to/reference_bundle
+  --output-dir /path/to/reference_bundle \
+  --download-retries 3 \
+  --retry-backoff-seconds 1.0 \
+  --download-workers 4
 </code></pre>
 <h2 id="inputs">Inputs</h2>
 <ul>
@@ -561,6 +582,7 @@ ZipStrain loads it directly into cache first, then only downloads what is still 
 <ul>
 <li><code>/path/to/reference_bundle/reference_genomes.fna</code></li>
 <li><code>/path/to/reference_bundle/reference_genomes.stb</code></li>
+<li><code>/path/to/reference_bundle/genome_db_build_report.txt</code></li>
 </ul>
 <h3 id="stb-format">STB format</h3>
 <p><code>reference_genomes.stb</code> has two columns (tab-separated, no header):</p>
@@ -576,6 +598,10 @@ ZipStrain loads it directly into cache first, then only downloads what is still 
 <li>downloaded genomes under <code>genomes/</code></li>
 </ul>
 <p>Re-running with the same cache directory avoids redownloading genomes that already exist.</p>
+<h2 id="retry-behavior">Retry behavior</h2>
+<p>For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 3 attempts per genome).<br />
+If a genome still fails after retries, it is skipped, and the reference bundle is built from successfully fetched genomes.
+Parallelism for remote fetch is controlled with <code>--download-workers</code>.</p>
 <h2 id="console-summary">Console summary</h2>
 <p><code>build-genome-db</code> prints a short run summary:</p>
 <ul>
@@ -585,6 +611,7 @@ ZipStrain loads it directly into cache first, then only downloads what is still 
 <li>downloaded now / failed</li>
 <li>genomes available in cache after the run</li>
 </ul>
+<p>The same summary is saved to <code>genome_db_build_report.txt</code> and includes explicit failed accession IDs (with error messages) when downloads fail.</p>
 
 
 
