@@ -9,13 +9,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import gzip
 import pathlib
+import random
 import re
 import shutil
 import tempfile
 import time
 from typing import Callable
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import urlopen
 import zipfile
@@ -455,6 +459,32 @@ def _write_response_to_file(url: str, destination: pathlib.Path, timeout_seconds
         shutil.copyfileobj(response, out)
 
 
+def _parse_retry_after_seconds(retry_after_value: str | None) -> float | None:
+    if retry_after_value is None:
+        return None
+    value = str(retry_after_value).strip()
+    if value == "":
+        return None
+    if value.isdigit():
+        return float(value)
+    try:
+        dt = parsedate_to_datetime(value)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    seconds = (dt - datetime.now(timezone.utc)).total_seconds()
+    return max(seconds, 0.0)
+
+
+def _retry_after_from_rate_limit_error(exc: Exception) -> float | None:
+    if not isinstance(exc, HTTPError) or exc.code != 429:
+        return None
+    headers = getattr(exc, "headers", None) or getattr(exc, "hdrs", None)
+    header_value = headers.get("Retry-After") if headers is not None and hasattr(headers, "get") else None
+    return _parse_retry_after_seconds(header_value)
+
+
 def _extract_first_fasta_from_zip(zip_path: pathlib.Path, destination_fasta: pathlib.Path) -> pathlib.Path:
     with zipfile.ZipFile(zip_path, "r") as zf:
         candidates = [
@@ -661,6 +691,7 @@ def fetch_missing_genomes(
         accession = _normalize_accession(str(row["accession"]))
         last_exc: Exception | None = None
         url: str | None = None
+        default_rate_limit_wait_seconds = 15.0
         for attempt in range(1, max_download_attempts + 1):
             try:
                 url = resolver(accession, row)
@@ -676,7 +707,17 @@ def fetch_missing_genomes(
             except Exception as exc:
                 last_exc = exc
                 if attempt < max_download_attempts and backoff_base_seconds > 0:
-                    time.sleep(backoff_base_seconds * (2 ** (attempt - 1)))
+                    delay_seconds = backoff_base_seconds * (2 ** (attempt - 1))
+                    retry_after_seconds = _retry_after_from_rate_limit_error(exc)
+                    if retry_after_seconds is not None:
+                        delay_seconds = max(delay_seconds, retry_after_seconds, default_rate_limit_wait_seconds)
+                    jitter_seconds = random.uniform(0.0, min(1.0, max(delay_seconds * 0.1, 0.1)))
+                    time.sleep(delay_seconds + jitter_seconds)
+                elif attempt < max_download_attempts:
+                    retry_after_seconds = _retry_after_from_rate_limit_error(exc)
+                    if retry_after_seconds is not None:
+                        jitter_seconds = random.uniform(0.0, 1.0)
+                        time.sleep(max(retry_after_seconds, default_rate_limit_wait_seconds) + jitter_seconds)
 
         failed_url = url if url is not None else row.get("download_url")
         failed_error = (

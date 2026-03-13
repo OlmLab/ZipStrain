@@ -107,9 +107,19 @@ process build_db_from_Sylph{
     * This process builds a Bowtie2 database from the Sylph database. It takes the Sylph database as input and outputs the indexed files.
     */
     publishDir "${params.output_dir}/db_from_sylph/", mode: 'link'
-    
+    containerOptions {
+        switch( workflow.containerEngine ) {
+            case 'docker':
+                return "--volume ${genome_cache_dir}:${genome_cache_dir}"
+            case 'apptainer':
+                return "--bind ${genome_cache_dir}:${genome_cache_dir}"
+            default:
+                return ''
+        }
+    }
     input:
     path sylph_abundance
+    val genome_cache_dir
     output:
     path "reference_genomes.fna", emit:reference_genome
     path "reference_genomes.stb",emit:stb
@@ -119,7 +129,7 @@ process build_db_from_Sylph{
     zipstrain utilities build-genome-db \
         --tool sylph \
         --abundance-table ${sylph_abundance} \
-        --cache-dir ${params.genome_db_cache_dir}  \
+        --cache-dir ${genome_cache_dir}  \
         --output-dir .
     
     prodigal -i reference_genomes.fna -d reference_genomes_gene.fasta  -p meta
@@ -557,7 +567,7 @@ workflow
             estimate_abundance_sylph(sample_reads, sylph_db)
             merge_sylph_abundance_tables(estimate_abundance_sylph.out.abundance.collect())
             merge_sylph_abundance_tables.out.abundance.set{ abundance }
-            build_db_from_Sylph(abundance)
+            build_db_from_Sylph(abundance,params.genome_db_cache_dir)
             build_db_from_Sylph.out.reference_genome.set{ reference_genome }
             index_reference(reference_genome)
             index_files = index_reference.out.index_files

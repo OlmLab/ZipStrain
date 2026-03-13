@@ -2,6 +2,7 @@ import pathlib
 import gzip
 import threading
 import time
+from urllib.error import HTTPError
 
 import polars as pl
 
@@ -283,6 +284,60 @@ def test_build_local_genome_db_progress_reaches_total_with_failures(tmp_path):
     assert progress_events[-1][1] == 2
     assert progress_events[-1][2] == 0
     assert progress_events[-1][3] == 2
+
+
+def test_build_local_genome_db_honors_retry_after_on_rate_limit(tmp_path, monkeypatch):
+    input_csv = tmp_path / "sylph_abundance.csv"
+    input_csv.write_text(
+        "Genome_file,abundance\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,1.0\n"
+    )
+    db_path = tmp_path / ".genome_db.parquet"
+    genomes_dir = tmp_path / "genomes"
+    attempts = {"count": 0}
+    sleep_calls: list[float] = []
+
+    def fake_resolver(accession: str, _: dict) -> str:
+        return f"https://example.test/{accession}.zip"
+
+    def rate_limited_then_ok(url: str, accession: str, destination_dir: pathlib.Path) -> pathlib.Path:
+        _ = url
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise HTTPError(
+                url=f"https://example.test/{accession}.zip",
+                code=429,
+                msg="Too Many Requests",
+                hdrs={"Retry-After": "2"},
+                fp=None,
+            )
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        out = destination_dir / f"{accession}.fna"
+        out.write_text(f">{accession}\nATCG\n")
+        return out
+
+    monkeypatch.setattr(build_db.random, "uniform", lambda _a, _b: 0.0)
+    monkeypatch.setattr(build_db.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    _, extracted, report = build_db.build_local_genome_db(
+        tool_name="sylph",
+        abundance_table=input_csv,
+        db_path=db_path,
+        genomes_dir=genomes_dir,
+        download=True,
+        url_resolver=fake_resolver,
+        downloader=rate_limited_then_ok,
+        max_download_attempts=3,
+        backoff_base_seconds=0,
+        download_workers=1,
+    )
+
+    assert extracted.height == 1
+    assert report.height == 1
+    assert report["status"].to_list() == ["downloaded"]
+    assert attempts["count"] == 2
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] >= 15.0
 
 
 def test_build_local_genome_db_filters_zero_abundance_rows(tmp_path):

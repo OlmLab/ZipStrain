@@ -314,6 +314,11 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retri
             download_workers=download_workers,
         )
     failed_rows = report.filter(pl.col("status") == "failed") if report.height else report
+    rate_limited_failures = (
+        failed_rows.filter(pl.col("error").fill_null("").str.contains("Too Many Requests", literal=True)).height
+        if failed_rows.height
+        else 0
+    )
     report_file = pathlib.Path(output_dir) / "genome_db_build_report.txt"
     report_lines = [
         "Genome DB Build Report",
@@ -340,6 +345,16 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retri
         for row in failed_rows.select("accession", "error").iter_rows(named=True):
             error = row["error"] if row["error"] not in (None, "") else "no error message"
             report_lines.append(f"- {row['accession']}: {error}")
+    if rate_limited_failures > 0:
+        report_lines.extend(
+            [
+                "",
+                "Rate-limit hint:",
+                "- Reduce --download-workers (for example, 1-2)",
+                "- Increase --download-retries (for example, 8)",
+                "- Increase --retry-backoff-seconds (for example, 3-5)",
+            ]
+        )
     report_file.write_text("\n".join(report_lines) + "\n")
     report_table = Table(box=box.SIMPLE_HEAVY, show_header=False, pad_edge=False)
     report_table.add_column("metric", style="bold cyan")
@@ -355,6 +370,8 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retri
     report_table.add_row("Retry backoff base (s)", str(retry_backoff_seconds))
     report_table.add_row("Download workers", str(download_workers))
     report_table.add_row("Available in cache after run", str(summary["cached_after_download"]))
+    if rate_limited_failures > 0:
+        report_table.add_row("Rate-limited failures", str(rate_limited_failures))
     report_table.add_row("Concatenated FASTA", str(out_fasta))
     report_table.add_row("STB file", str(out_stb))
     report_table.add_row("Cache directory", str(pathlib.Path(cache_dir)))

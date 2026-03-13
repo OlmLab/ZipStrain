@@ -74,6 +74,12 @@ For genomes that are not available locally/in-cache, ZipStrain retries each down
 If a genome still fails after retries, it is skipped, and the reference bundle is built from successfully fetched genomes.
 Parallelism for remote fetch is controlled with `--download-workers`.
 
+If you see repeated `Too Many Requests` errors on large runs:
+
+- lower `--download-workers` (for example `1` or `2`)
+- increase `--download-retries` (for example `8`)
+- increase `--retry-backoff-seconds` (for example `3` to `5`)
+
 ## Console summary
 
 `build-genome-db` prints a short run summary:

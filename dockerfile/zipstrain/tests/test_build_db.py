@@ -1,5 +1,7 @@
 import pathlib
 import gzip
+import threading
+import time
 
 import polars as pl
 
@@ -103,6 +105,184 @@ def test_build_local_genome_db_with_mock_download(tmp_path):
     assert local_db.db.filter(pl.col("exists")).height == 2
     assert (genomes_dir / "GCF_000001405.40.fna").exists()
     assert (genomes_dir / "GCA_123456.1.fna").exists()
+
+
+def test_build_local_genome_db_report_handles_mixed_success_failure(tmp_path):
+    input_csv = tmp_path / "sylph_abundance.csv"
+    input_csv.write_text(
+        "Genome_file,abundance\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,0.6\n"
+        "/ref/GCA_123456.1_genomic.fna.gz,0.4\n"
+    )
+    db_path = tmp_path / ".genome_db.parquet"
+    genomes_dir = tmp_path / "genomes"
+
+    def fake_resolver(accession: str, _: dict) -> str:
+        return f"https://example.test/{accession}.zip"
+
+    def mixed_downloader(url: str, accession: str, destination_dir: pathlib.Path) -> pathlib.Path:
+        _ = url
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        if accession == "GCF_000001405.40":
+            out = destination_dir / f"{accession}.fna"
+            out.write_text(f">{accession}\nATCG\n")
+            return out
+        raise ValueError("No FASTA files found in archive: fake.zip")
+
+    local_db, extracted, report = build_db.build_local_genome_db(
+        tool_name="sylph",
+        abundance_table=input_csv,
+        db_path=db_path,
+        genomes_dir=genomes_dir,
+        download=True,
+        url_resolver=fake_resolver,
+        downloader=mixed_downloader,
+    )
+
+    assert extracted.height == 2
+    assert report.height == 2
+    assert set(report["status"].to_list()) == {"downloaded", "failed"}
+    error_map = {r["accession"]: r["error"] for r in report.to_dicts()}
+    assert error_map["GCF_000001405.40"] is None
+    assert "No FASTA files found in archive" in error_map["GCA_123456.1"]
+    assert local_db.db.filter(pl.col("exists")).height == 1
+
+
+def test_build_local_genome_db_retries_download_until_success(tmp_path):
+    input_csv = tmp_path / "sylph_abundance.csv"
+    input_csv.write_text(
+        "Genome_file,abundance\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,1.0\n"
+    )
+    db_path = tmp_path / ".genome_db.parquet"
+    genomes_dir = tmp_path / "genomes"
+    attempts = {"count": 0}
+
+    def fake_resolver(accession: str, _: dict) -> str:
+        return f"https://example.test/{accession}.fna"
+
+    def flaky_downloader(url: str, accession: str, destination_dir: pathlib.Path) -> pathlib.Path:
+        _ = url
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise OSError("temporary network failure")
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        out = destination_dir / f"{accession}.fna"
+        out.write_text(f">{accession}\nATCG\n")
+        return out
+
+    _, extracted, report = build_db.build_local_genome_db(
+        tool_name="sylph",
+        abundance_table=input_csv,
+        db_path=db_path,
+        genomes_dir=genomes_dir,
+        download=True,
+        url_resolver=fake_resolver,
+        downloader=flaky_downloader,
+        max_download_attempts=3,
+        backoff_base_seconds=0,
+    )
+
+    assert extracted.height == 1
+    assert attempts["count"] == 3
+    assert report.height == 1
+    assert report["status"].to_list() == ["downloaded"]
+    assert (genomes_dir / "GCF_000001405.40.fna").exists()
+
+
+def test_build_local_genome_db_uses_parallel_download_workers(tmp_path):
+    input_csv = tmp_path / "sylph_abundance.csv"
+    input_csv.write_text(
+        "Genome_file,abundance\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,1.0\n"
+        "/ref/GCA_123456.1_genomic.fna.gz,1.0\n"
+        "/ref/GCF_000009999.1_genomic.fna.gz,1.0\n"
+        "/ref/GCA_999999.1_genomic.fna.gz,1.0\n"
+    )
+    db_path = tmp_path / ".genome_db.parquet"
+    genomes_dir = tmp_path / "genomes"
+    thread_ids: set[int] = set()
+    lock = threading.Lock()
+
+    def fake_resolver(accession: str, _: dict) -> str:
+        return f"https://example.test/{accession}.fna"
+
+    def slow_downloader(url: str, accession: str, destination_dir: pathlib.Path) -> pathlib.Path:
+        _ = url
+        with lock:
+            thread_ids.add(threading.get_ident())
+        time.sleep(0.05)
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        out = destination_dir / f"{accession}.fna"
+        out.write_text(f">{accession}\nATCG\n")
+        return out
+
+    _, extracted, report = build_db.build_local_genome_db(
+        tool_name="sylph",
+        abundance_table=input_csv,
+        db_path=db_path,
+        genomes_dir=genomes_dir,
+        download=True,
+        url_resolver=fake_resolver,
+        downloader=slow_downloader,
+        download_workers=3,
+        backoff_base_seconds=0,
+    )
+
+    assert extracted.height == 4
+    assert report.height == 4
+    assert set(report["status"].to_list()) == {"downloaded"}
+    assert len(thread_ids) >= 2
+
+
+def test_build_local_genome_db_progress_reaches_total_with_failures(tmp_path):
+    input_csv = tmp_path / "sylph_abundance.csv"
+    input_csv.write_text(
+        "Genome_file,abundance\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,1.0\n"
+        "/ref/GCA_123456.1_genomic.fna.gz,1.0\n"
+    )
+    db_path = tmp_path / ".genome_db.parquet"
+    genomes_dir = tmp_path / "genomes"
+    progress_events: list[tuple[str, int, int, int, str | None]] = []
+
+    def fake_resolver(accession: str, _: dict) -> str:
+        return f"https://example.test/{accession}.fna"
+
+    def mixed_downloader(url: str, accession: str, destination_dir: pathlib.Path) -> pathlib.Path:
+        _ = url
+        if accession == "GCA_123456.1":
+            raise OSError("network issue")
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        out = destination_dir / f"{accession}.fna"
+        out.write_text(f">{accession}\nATCG\n")
+        return out
+
+    def progress_callback(event: str, completed: int, remaining: int, total: int, accession: str | None) -> None:
+        progress_events.append((event, completed, remaining, total, accession))
+
+    _, _, report = build_db.build_local_genome_db(
+        tool_name="sylph",
+        abundance_table=input_csv,
+        db_path=db_path,
+        genomes_dir=genomes_dir,
+        download=True,
+        url_resolver=fake_resolver,
+        downloader=mixed_downloader,
+        progress_callback=progress_callback,
+        max_download_attempts=1,
+        backoff_base_seconds=0,
+        download_workers=2,
+    )
+
+    assert report.height == 2
+    assert set(report["status"].to_list()) == {"downloaded", "failed"}
+    assert progress_events[0][0] == "start"
+    assert progress_events[0][1] == 0
+    assert progress_events[-1][0] == "done"
+    assert progress_events[-1][1] == 2
+    assert progress_events[-1][2] == 0
+    assert progress_events[-1][3] == 2
 
 
 def test_build_local_genome_db_filters_zero_abundance_rows(tmp_path):
@@ -264,3 +444,49 @@ def test_build_reference_from_abundance_writes_concat_and_stb(tmp_path):
     )
     assert stb.height == 4
     assert set(stb["genome"].to_list()) == {"GCA_123456.1", "GCF_000001405.40"}
+
+
+def test_build_reference_from_abundance_skips_failed_after_retries(tmp_path):
+    input_csv = tmp_path / "sylph_abundance.csv"
+    input_csv.write_text(
+        "Genome_file,sample_1\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,1.0\n"
+        "/ref/GCA_123456.1_genomic.fna.gz,1.0\n"
+    )
+    cache_dir = tmp_path / "cache"
+    output_dir = tmp_path / "output"
+
+    def fake_resolver(accession: str, _: dict) -> str:
+        return f"https://example.test/{accession}.fna"
+
+    def partly_failing_downloader(url: str, accession: str, destination_dir: pathlib.Path) -> pathlib.Path:
+        _ = url
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        if accession == "GCA_123456.1":
+            raise ConnectionError("persistent download failure")
+        out = destination_dir / f"{accession}.fna"
+        out.write_text(f">{accession}_contig1\nATCG\n")
+        return out
+
+    out_fasta, out_stb, extracted, report, summary = build_db.build_reference_from_abundance(
+        tool_name="sylph",
+        abundance_table=input_csv,
+        cache_dir=cache_dir,
+        output_dir=output_dir,
+        url_resolver=fake_resolver,
+        downloader=partly_failing_downloader,
+        max_download_attempts=3,
+        backoff_base_seconds=0,
+        continue_on_missing=True,
+    )
+
+    assert extracted.height == 2
+    assert report.height == 2
+    assert set(report["status"].to_list()) == {"downloaded", "failed"}
+    assert summary["missing_after_retries"] == 1
+    assert summary["cached_after_download"] == 1
+    assert out_fasta.exists()
+    assert out_stb.exists()
+    fasta_text = out_fasta.read_text()
+    assert "GCF_000001405.40" in fasta_text
+    assert "GCA_123456.1" not in fasta_text

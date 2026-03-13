@@ -343,6 +343,83 @@ def test_cli_build_genome_db_from_cache(tmp_path):
     assert "Cache directory" in result.output
     assert (output_dir / "reference_genomes.fna").exists()
     assert (output_dir / "reference_genomes.stb").exists()
+    report_file = output_dir / "genome_db_build_report.txt"
+    assert report_file.exists()
+    report_text = report_file.read_text()
+    assert "Genome DB Build Report" in report_text
+    assert "Failed IDs (0):" in report_text
+
+
+def test_cli_build_genome_db_passes_retry_options(tmp_path, monkeypatch):
+    abundance = tmp_path / "sylph.csv"
+    abundance.write_text(
+        "Genome_file,Eff_cov\n"
+        "/ref/GCF_000001405.40_genomic.fna.gz,0.6\n"
+    )
+    cache_dir = tmp_path / "cache"
+    output_dir = tmp_path / "out"
+    captured = {}
+
+    def _fake_build_reference_from_abundance(**kwargs):
+        captured.update(kwargs)
+        out_dir = kwargs["output_dir"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_fasta = out_dir / "reference_genomes.fna"
+        out_stb = out_dir / "reference_genomes.stb"
+        out_fasta.write_text(">x\nATCG\n")
+        out_stb.write_text("x\tg\n")
+        extracted = pl.DataFrame({"accession": ["GCF_000001405.40"]})
+        report = pl.DataFrame(
+            {
+                "accession": ["GCF_000001405.40"],
+                "status": ["failed"],
+                "location": [None],
+                "url": ["https://example.test/GCF_000001405.40.fna"],
+                "error": ["simulated error"],
+            }
+        )
+        summary = {
+            "selected_genomes": 1,
+            "cached_before_download": 0,
+            "attempted_downloads": 1,
+            "downloaded_now": 0,
+            "failed_downloads": 1,
+            "cached_after_download": 0,
+            "missing_after_retries": 1,
+            "max_download_attempts": kwargs["max_download_attempts"],
+        }
+        return out_fasta, out_stb, extracted, report, summary
+
+    monkeypatch.setattr(cli.bdb, "build_reference_from_abundance", _fake_build_reference_from_abundance)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-genome-db",
+            "--tool",
+            "sylph",
+            "--abundance-table",
+            str(abundance),
+            "--cache-dir",
+            str(cache_dir),
+            "--output-dir",
+            str(output_dir),
+            "--download-retries",
+            "5",
+            "--retry-backoff-seconds",
+            "0.25",
+            "--download-workers",
+            "6",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["max_download_attempts"] == 5
+    assert captured["backoff_base_seconds"] == 0.25
+    assert captured["download_workers"] == 6
+    report_text = (output_dir / "genome_db_build_report.txt").read_text()
+    assert "Failed IDs (1):" in report_text
+    assert "GCF_000001405.40" in report_text
 
 
 def test_cli_build_profile_db_minimal_columns(tmp_path):

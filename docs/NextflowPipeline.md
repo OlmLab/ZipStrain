@@ -1,194 +1,243 @@
 # Nextflow Pipeline for ZipStrain
 
-The nextflow pipeline for ZipStrain supports:
+This page reflects the current `zipstrain.nf` workflow in this repository.
 
-- Mapping metagenomics reads to a reference fasta file using Bowtie2.
+## What the Pipeline Supports
 
-- Generating ZipStrain profiles from the mapped reads (BAM files).
+- Read mapping with Bowtie2 (`map_reads`)
+- Profile generation from BAM files (`profile`)
+- End-to-end SRA to profile (`from_sra_to_profile`)
+- Pairwise genome comparison across profiles (`compare_genomes`)
+- Pairwise gene comparison across profiles (`compare_genes`)
 
-- Comparing ZipStrain profiles with each other and generating a merged comparison file.
+## Running Pattern
 
-In the following sections, we will describe how to use the nextflow pipeline to perform each of these steps.
-
-## Installation of Nextflow
-
-You can install Nextflow by following the instructions on the [Nextflow website](https://www.nextflow.io/docs/latest/getstarted.html#installation).
-
-An easy way to install Nextflow creating a conda environment and installing Nextflow using conda:
-
-```
-conda create -n nextflow -c bioconda nextflow
-```
-Activate the environment using:
-
-```
-conda activate nextflow
+```bash
+nextflow run zipstrain.nf \
+  --mode <mode> \
+  --input_table <path/to/input.csv> \
+  --output_dir <path/to/output_dir> \
+  -c conf.config \
+  -profile <docker|alpine|gutbot|blanca> \
+  -resume
 ```
 
-Now create a directory for your Nextflow pipeline and navigate to it:
+`conf.config` already defines resources for the current process set and includes example execution profiles.
 
+## Key Pipeline Parameters
+
+- `--mode`: `map_reads`, `profile`, `from_sra_to_profile`, `compare_genomes`, `compare_genes`
+- `--input_type`: depends on mode (`local`, `sra`, `profile_table`, `pair_table`)
+- `--parallel_mode`: `single` or `batched` for comparison workflows
+- `--batch_size`: number of pairs per batch when `--parallel_mode batched`
+- `--batch_compare_n_parallel`: parallel jobs inside each batched comparison task
+- `--compare_genome_scope`: genome scope for genome comparisons (`all` or genome ID)
+- `--compare_gene_scope`: gene scope for gene comparisons (`all:all`, `<genome>:all`, `all:<gene>`, `<genome>:<gene>`)
+- `--compare_duckdb_memory_limit`: forwarded to single compare commands
+
+## 1) Map Reads (`mode=map_reads`)
+
+### Input Table (`--input_type local`)
+
+Paired-end:
+
+```csv
+sample_name,reads1,reads2
+S1,/data/S1_R1.fastq.gz,/data/S1_R2.fastq.gz
+S2,/data/S2_R1.fastq.gz,/data/S2_R2.fastq.gz
 ```
-mkdir zipstrain_nextflow
-cd zipstrain_nextflow
-```
-You can then download the `zipstrain.nf` file and the `conf.config` file from the ZipStrain GitHub repository into this directory.
 
-## Deciding on the Execution Environment
+Single-end:
 
-ZipStrain is provieded as a containerized application using Docker and can be run using Apptainer as well. For this to work, you need to have either Docker or Apptainer installed on your system. You can run all the nextflow commands by using the config file provided in the ZipStrain GitHub repository (conf.config).
-
-```
-Nextflow run zipstrain.nf <command> -c conf.config -profile <docker|apptainer> -resume
+```csv
+sample_name,reads1
+S1,/data/S1.fastq.gz
+S2,/data/S2.fastq.gz
 ```
 
-Nextflow also supports running on various cloud platforms. Please refer to the Nextflow documentation for more details on setting up your execution environment.
-Once you build a profile for your execution environment, you can put that in another config file and  use the commands above with adding that config file to ZipStrain's config file.
+### Input Table (`--input_type sra`)
 
+```csv
+Run
+SRR12345678
+SRR12345679
 ```
-Nextflow run zipstrain.nf <command> -c conf.config,<your_config_file> -profile <your_profile_defined_in_<your_config_file>> -resume
+
+### A) Use Existing Reference Genome
+
+```bash
+nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --reference_genome reference_genomes.fna \
+  --stb reference_genomes.stb \
+  --output_dir out_map \
+  -c conf.config \
+  -profile docker \
+  -resume
 ```
 
-## Mapping Reads
+Optional:
 
-ZipStrain Nextflow pipeline supports mapping reads using Bowtie2. Here is an example command to map reads:
+- `--index_files` to reuse existing Bowtie2 index files
+- `--bowtie2_non_competitive_mapping true` to pass `-a` to Bowtie2
 
+### B) Build Reference from Sylph Automatically
+
+If `--reference_genome` is not provided, the pipeline does:
+
+1. per-sample `sylph profile`
+2. merge all per-sample Sylph abundance tables
+3. `zipstrain utilities build-genome-db --tool sylph ...`
+4. `prodigal` gene prediction on the generated reference FASTA
+5. Bowtie2 indexing
+6. mapping
+
+```bash
+nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --output_dir out_map \
+  --genome_db_cache_dir genome_cache \
+  --sylph_db /path/to/custom.syldb \
+  -c conf.config \
+  -profile docker \
+  -resume
 ```
-nextflow run zipstrain.nf --mode "map_reads" --input_table <input_table.csv> --input_type <"local"|"sra"> --reference_genome <reference_genomes.fasta> -c conf.config,<your_config_file> -profile <your_profile_defined_in_<your_config_file>> -resume
-```
-If you have your reads, in this command, replace `<input_table.csv>` with the path to your input table file. This will be a table in CSV format with three columns: `sample_id`, `reads1`, and `reads2`. The `reads1` and `reads2` columns should contain the paths to the FASTQ files for each sample. In this case `<input_type>` should be set to `local`. Alternatively, if you have SRA accessions, you can provide those in a table that must have a "Run" column containing the SRA accessions (In complience with SRA metadata). In this case, set `<input_type>` to `sra`.
 
-Reference genomes should be the result of concatenating all the reference genome FASTA files into a single FASTA file. 
+If `--sylph_db` is omitted, `--sylph_db_link` is used for download.
 
-Running this command will generate BAM files for each of your samples in the specified output directory.
+### Map Outputs
 
-## Profile Generation
+- BAM files: `<output_dir>/*.bam`
+- Sylph tables: `<output_dir>/sylph_abundance/`
+- Built reference bundle (when auto-built): `<output_dir>/db_from_sylph/`
 
-Once you have your BAM files, you can generate profiles using the nextflow pipeline. For this, you need to prepare a simple input table in CSV format as follows:
+## 2) Generate Profiles from BAM (`mode=profile`)
+
+### Input Table
 
 ```csv
 sample_name,bamfile
-sample1,/path/to/sample1.bam
-sample2,/path/to/sample2.bam
-sample3,/path/to/sample3.bam
+S1,/data/S1.bam
+S2,/data/S2.bam
 ```
 
-Now you can run the following command to generate profiles:
-nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv>  --gene_file <path/to/reference/fasta/genes> --stb <path/to/stb/file>  --output_dir <path/to/save/generated/files> --reference_genome <path/to/reference/fasta> -c conf.config,<your_config_file> -profile <your_profile_defined_in_<your_config_file>> -resume
+### Command
 
+```bash
+nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table bams.csv \
+  --reference_genome reference_genomes.fna \
+  --gene_file reference_genomes_gene.fasta \
+  --stb reference_genomes.stb \
+  --output_dir out_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
 ```
 
-- `--gene_file`: Path to the gene file in Prodigal NUCLEOTIDE format.
-- `--stb`: Path to the STB file. This is a tab-separated file with two columns: scaffold name and genome file name. This table should not have a header line.
-```
-This command will generate profile, breadth, and scaffols files for each of your samples in the specified output directory.
+### Profile Outputs
 
-## From SRA to profiles
+- `<output_dir>/*_profile.parquet`
+- `<output_dir>/*_genome_stats.parquet`
 
-To save some time and space, you can directly go from SRA accessions to profiles using the following command:
+## 3) End-to-End SRA to Profile (`mode=from_sra_to_profile`)
 
-```
+### Input Table
 
-nextflow run instrain2.nf --mode "from_sra_to_profile" --input_table <path/to/sra/csv> --gene_file <path/to/reference/fasta/genes>  --reference_genome <path/to/reference/fasta>   --stb <path/to/stb/file> -c conf.config,<your_config_file>   -profile <your_profile_defined_in_<your_config_file>> --output_dir <path/to/save/generated/files>   -resume
-
-```
-This command will download the SRA files, map the reads to the reference genome, and generate profiles in one step and then DELETEs all the intermediate files to save space.
-
-## Comparing Profiles
-
-Once you have generated profiles, you have two options to compare them using the nextflow pipeline.
-
-### Comparing genomes a list of profile pairs
-
-First, you have a CSV file that includes the pairs of profiles to compare. The table must have the following columns:
-
-- sample_name_1
-
-- sample_name_2
-
-- profile_location_1
-
-- profile_location_2
-
-
-```
-nextflow run zipstrain.nf --mode compare_genomes \
- --input_table <path/to/output/remaining_pairs.csv> \
- --input_type "pair_table" --gene_file <path/to/gene/fasta/file> \
- --reference_genome <path/to/reference/genome.fasta> \
- --stb <path/to/stb/file.stb> -c conf.config,<your_config_file> \
- --output_dir "<path/to/output/directory>" \
- --compare_genome_scope "all" \
- --compare_memory_mode "heavy" \
- --parallel_mode "batched" \
- --batch_size <batch_size> -profile <profile_name> \
- -resume
-
+```csv
+Run
+SRR12345678
+SRR12345679
 ```
 
-If you want to perform the comparison for a specific genome only, you can use the ` --compare_genome_scope` and give the genome name as follows:
+### Command
 
-```
---compare_genome_scope "<genome_name>"
-```
-<genome_name> should be the exact name of the genome as it appears in the STB file.
-
-If your reference database is very big, you might hit memory issues during comparison. In that case, you can use the `--compare_memory_mode` option to reduce memory usage. There are two modes available: "light" and "heavy". The "light" mode uses less memory but is slower. If this still happens you can provide also --compare_chrom_batch_size parameter to limit the number of scaffolds loaded into memory at once.
-
-Finally, you can also control the parallelization of the comparison step using the `--parallel_mode` option. There are two modes available: "single" and "batched". In batched mode, multiple number of pairs will be processed in a single task controlled by `--batch_size` parameter. "single" mode submits one comparison per task. When performin huge number of comparisons, batched mode is recommended to reduce the overhead of task submission as well as number of small output files generated.
-
-### Comparing all profiles against each other
-
-In this case, you provide a CSV file that has all the profiles you want to compare and nextflow will do every possible non-redundant pairwise comparison.
-
-```
-nextflow run zipstrain.nf --mode compare_genomes \
- --input_table <path/to/profiles/csv> \
- --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
- --reference_genome <path/to/reference/genome.fasta> \
- --stb <path/to/stb/file.stb> -c conf.config \
- --output_dir "<path/to/output/directory>" \
- --compare_genome_scope "all" \
- --compare_memory_mode "heavy" \
- --parallel_mode "batched" \
- --batch_size <batch_size> -profile <profile_name> \
- -resume
+```bash
+nextflow run zipstrain.nf \
+  --mode from_sra_to_profile \
+  --input_table sra.csv \
+  --reference_genome reference_genomes.fna \
+  --gene_file reference_genomes_gene.fasta \
+  --stb reference_genomes.stb \
+  --output_dir out_sra_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
 ```
 
-### Compare genes within genomes from a list of profile pairs
+## 4) Compare Genomes (`mode=compare_genomes`)
 
-This is similar to the first comparison option, but instead of comparing genomes, it compares genes within the genomes. The final table has a row for each gene comparison.
+### Input Option A: All-vs-All from Profile List (`--input_type profile_table`)
 
-```
-nextflow run zipstrain.nf --mode compare_genes \
- --input_table <path/to/output/remaining_pairs.csv> \
- --input_type "pair_table" --gene_file <path/to/gene/fasta/file> \
- --reference_genome <path/to/reference/genome.fasta> \
- --stb <path/to/stb/file.stb> -c conf.config,<your_config_file> \
- --output_dir "<path/to/output/directory>" \
- --scope "all:all" \
- --compare_memory_mode "heavy" \
- --parallel_mode "batched" \
- --batch_size <batch_size> -profile <profile_name> \
- -resume
-
+```csv
+sample_names,mpileup_files
+S1,/profiles/S1_profile.parquet
+S2,/profiles/S2_profile.parquet
+S3,/profiles/S3_profile.parquet
 ```
 
-Note that in this command, the `--scope` parameter is used to specify which genome-gene pairs to compare. The format is `<genome_name>:<gene_name>`. You can use "all" to compare all genomes or genes. For example, to compare all genes within a specific genome, you would use `<specific_genome_name>:all`. To compare a specific gene across all genomes, you would use `all:<specific_gene_name>`. 
+### Input Option B: Explicit Pairs (`--input_type pair_table`)
 
-### Comparing all genes within genomes from a list of profiles
-
-In this case, you provide a CSV file that has all the profiles you want to compare and nextflow will do every possible non-redundant pairwise gene comparison within the genomes.
-
+```csv
+sample_name_1,sample_name_2,profile_location_1,profile_location_2
+S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
+S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
 ```
-nextflow run zipstrain.nf --mode compare_genes \
- --input_table <path/to/profiles/csv> \
- --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
- --reference_genome <path/to/reference/genome.fasta> \
- --stb <path/to/stb/file.stb> -c conf.config \
- --output_dir "<path/to/output/directory>" \
- --scope "all:all" \
- --compare_memory_mode "heavy" \
- --parallel_mode "batched" \
- --batch_size <batch_size> -profile <profile_name> \
- -resume
-```     
+
+### Command
+
+```bash
+nextflow run zipstrain.nf \
+  --mode compare_genomes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference_genomes.stb \
+  --compare_genome_scope all \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --compare_duckdb_memory_limit 4GB \
+  --output_dir out_compare_genomes \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+## 5) Compare Genes (`mode=compare_genes`)
+
+Input-table formats are the same as genome compare (`profile_table` or `pair_table`).
+
+### Command
+
+```bash
+nextflow run zipstrain.nf \
+  --mode compare_genes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference_genomes.stb \
+  --compare_gene_scope all:all \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --compare_duckdb_memory_limit 4GB \
+  --output_dir out_compare_genes \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+## Comparison Outputs
+
+- Final merged table: `<output_dir>/merged_comparisons.parquet`
+- Intermediate batched outputs (when `parallel_mode=batched`): `<output_dir>/batch_comparisons/`
+
+## Important Notes
+
+- The old `--compare_memory_mode` and `--compare_chrom_batch_size` parameters are not part of the current `zipstrain.nf`.
+- The pipeline currently forwards DuckDB memory limit via `--compare_duckdb_memory_limit` but does not expose compare engine/threads as Nextflow params in this script.
+- For auto-built references, genome selection comes from the merged Sylph abundance table through `zipstrain utilities build-genome-db`.
