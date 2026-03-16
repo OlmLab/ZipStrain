@@ -880,7 +880,7 @@ sample3,/path/to/sample3.bam
 </code></pre>
 <h4 id="zipstrain-cli">ZipStrain CLI</h4>
 <p>To profile multiple BAM files using the ZipStrain CLI, you should first prepare some files:</p>
-<pre><code class="language-bash">zipstrain run prepare-profiling  --reference-fasta &lt;path/to/reference/fasta&gt; --gene-fasta &lt;path/to/reference/fasta/genes&gt; --stb-file  &lt;path/to/stb/file&gt; --output-dir &lt;directory/to/save/outputs&gt;
+<pre><code class="language-bash">zipstrain utilities prepare_profiling  --reference-fasta &lt;path/to/reference/fasta&gt; --gene-fasta &lt;path/to/reference/fasta/genes&gt; --stb-file  &lt;path/to/stb/file&gt; --output-dir &lt;directory/to/save/outputs&gt;
 </code></pre>
 <p>Your output directory should contain the following files:</p>
 <ul>
@@ -889,17 +889,17 @@ sample3,/path/to/sample3.bam
 <li>gene_range_table.tsv</li>
 </ul>
 <p>Now you can profile your bam files:</p>
-<pre><code>zipstrain run profile --input-table &lt;path/to/bam/csv&gt; --stb-file &lt;path/to/stb/file&gt; --gene-range-table &lt;path/to/gene/range&gt; --bed-file &lt;path/to/bed/file&gt; --genome-length-file &lt;path/to/bed/file&gt; --run-dir &lt;path/to/save/generated/files&gt;
+<pre><code>zipstrain profile --input-table &lt;path/to/bam/csv&gt; --stb-file &lt;path/to/stb/file&gt; --gene-range-table &lt;path/to/gene/range&gt; --bed-file &lt;path/to/bed/file&gt; --genome-length-file &lt;path/to/bed/file&gt; --run-dir &lt;path/to/save/generated/files&gt;
 
 </code></pre>
 <h4 id="nextflow-pipeline">Nextflow Pipeline</h4>
 <p>To profile multiple BAM files using Nextflow, you can create a Nextflow script as follows:</p>
 <pre><code>
-nextflow run zipstrain.nf --mode &quot;fast_profile&quot; --input_table &lt;path/to/bam/csv&gt;  --gene_file &lt;path/to/reference/fasta/genes&gt; --stb &lt;path/to/stb/file&gt;  --output_dir &lt;path/to/save/generated/files&gt; --reference_genome &lt;path/to/reference/fasta&gt; -c conf.config -profile &lt;your/system/specific/profile&gt; -resume
+nextflow run zipstrain.nf --mode &quot;profile&quot; --input_table &lt;path/to/bam/csv&gt;  --gene_file &lt;path/to/reference/fasta/genes&gt; --stb &lt;path/to/stb/file&gt;  --output_dir &lt;path/to/save/generated/files&gt; --reference_genome &lt;path/to/reference/fasta&gt; -c conf.config -profile &lt;your/system/specific/profile&gt; -resume
 
 </code></pre>
 <p><strong>Note</strong>  With the nextflow pipeline, you don't need the preparation step and those will be made along the way.</p>
-<p><strong>Note</strong> fast_profile mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:</p>
+<p><strong>Note</strong> <code>profile</code> mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:</p>
 <p><code>zipstrain utilities generate_stb --genomes-dir-file &lt;path/to/genomes_dir_file&gt;</code></p>
 <p>If you have trouble generating the STB file, you can simply make one using a custom script. The STB file is a tab-separated file with two columns: scaffold name and genome file name. </p>
 <h3 id="compare-genomes-in-multiple-profiled-samples">Compare genomes in multiple profiled samples</h3>
@@ -932,18 +932,20 @@ nextflow run zipstrain.nf --mode &quot;fast_profile&quot; --input_table &lt;path
 </code></pre>
 <p>Note that providing current-comp-table is optional. If provided, the comparison config will only include pairs that are not already compared in the current comparison table.</p>
 <p>Finally, you can run the comparison using the generated configuration file and the profile database:</p>
-<pre><code class="language-bash">zipstrain run compare_genomes \
+<pre><code class="language-bash">zipstrain compare genomes \
 --genome-comparison-object &lt;path/to/comparison/config.json&gt; \
 --run-dir &lt;path/to/save/comparison/outputs&gt; \
 --engine duckdb \
+--calculate ani+ibs+identical_genes \
 --max-concurrent-batches 1 \
 --duckdb-threads 8
 </code></pre>
-<p><code>single_compare_genome</code> supports <code>--engine polars|duckdb</code> (default: <code>polars</code>). For lower-memory machines, set DuckDB's memory limit, and for CPU control set DuckDB threads:</p>
-<pre><code class="language-bash">zipstrain compare single_compare_genome \
+<p><code>single_compare_genome</code> supports <code>--engine polars|duckdb</code> (default: <code>polars</code>) and metric selection via <code>--calculate</code> (default: <code>all</code>). For lower-memory machines, set DuckDB's memory limit, and for CPU control set DuckDB threads:</p>
+<pre><code class="language-bash">zipstrain utilities single_compare_genome \
 --mpileup-contig-1 &lt;profile_1.parquet&gt; \
 --mpileup-contig-2 &lt;profile_2.parquet&gt; \
 --stb-file &lt;path/to/stb.tsv&gt; \
+--calculate ani+ibs+identical_genes \
 --engine duckdb \
 --output-file &lt;out.parquet&gt; \
 --duckdb-memory-limit 2GB \
@@ -1230,7 +1232,7 @@ sample2,/path/to/sample2_R1.fastq,/path/to/sample2_R2.fastq
 </tbody>
 </table>
 <p>You can use ZipStrain to prepare the necessary files for profiling using the following command:</p>
-<pre><code class="language-bash">zipstrain profile prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
+<pre><code class="language-bash">zipstrain utilities prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
 </code></pre>
 <p>This will generate the following files in the <code>preprofiles/</code> directory:</p>
 <ul>
@@ -1282,12 +1284,12 @@ sample2,/path/to/sample2_R1.fastq,/path/to/sample2_R2.fastq
 <td><a href="TOBEIMPLEMENTED">profile_link</a></td>
 </tr>
 <tr>
-<td>Scaffold TSV files</td>
-<td><a href="TOBEIMPLEMENTED">scaffold_link</a></td>
-</tr>
-<tr>
 <td>Genome Statistics parquet files</td>
 <td><a href="TOBEIMPLEMENTED">genome_stats_link</a></td>
+</tr>
+<tr>
+<td>Gene Statistics parquet files</td>
+<td><a href="TOBEIMPLEMENTED">gene_stats_link</a></td>
 </tr>
 </tbody>
 </table>
@@ -1297,11 +1299,11 @@ sample1,/path/to/mapping_output/sample1.bam
 sample2,/path/to/mapping_output/sample2.bam
 </code></pre>
 <p>You can profile the mapped BAM files using ZipStrain with the following command:</p>
-<pre><code class="language-bash">zipstrain run profile --input-table &lt;path/to/bam/csv&gt; --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+<pre><code class="language-bash">zipstrain profile --input-table &lt;path/to/bam/csv&gt; --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
 </code></pre>
-<p>This will generate profile parquet files and genome statistics parquet files for each sample in the <code>profiling_output/</code> directory.</p>
+<p>This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the <code>profiling_output/</code> directory.</p>
 <p>As an alternative, you can use the Nextflow pipeline to perform the profiling:</p>
-<pre><code class="language-bash">nextflow run zipstrain.nf --mode &quot;fast_profile&quot; --input_table &lt;path/to/bam/csv&gt;  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile &lt;your/system/specific/profile&gt; -resume
+<pre><code class="language-bash">nextflow run zipstrain.nf --mode &quot;profile&quot; --input_table &lt;path/to/bam/csv&gt;  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile &lt;your/system/specific/profile&gt; -resume
 </code></pre>
 <h3 id="step-6-compare-the-profiled-samples-at-the-genome-level">Step 6- Compare the profiled samples at the genome level</h3>
 <h3 id="step-7-compare-the-profiled-samples-at-the-gene-level">Step 7- Compare the profiled samples at the gene level</h3>

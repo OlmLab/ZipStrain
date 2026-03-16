@@ -602,6 +602,12 @@ ZipStrain loads it directly into cache first, then only downloads what is still 
 <p>For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 3 attempts per genome).<br />
 If a genome still fails after retries, it is skipped, and the reference bundle is built from successfully fetched genomes.
 Parallelism for remote fetch is controlled with <code>--download-workers</code>.</p>
+<p>If you see repeated <code>Too Many Requests</code> errors on large runs:</p>
+<ul>
+<li>lower <code>--download-workers</code> (for example <code>1</code> or <code>2</code>)</li>
+<li>increase <code>--download-retries</code> (for example <code>8</code>)</li>
+<li>increase <code>--retry-backoff-seconds</code> (for example <code>3</code> to <code>5</code>)</li>
+</ul>
 <h2 id="console-summary">Console summary</h2>
 <p><code>build-genome-db</code> prints a short run summary:</p>
 <ul>

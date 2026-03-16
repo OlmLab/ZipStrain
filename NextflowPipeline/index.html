@@ -450,6 +450,15 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outputs
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -774,6 +783,15 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outputs
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -909,6 +927,7 @@
 <li><code>--compare_genome_scope</code>: genome scope for genome comparisons (<code>all</code> or genome ID)</li>
 <li><code>--compare_gene_scope</code>: gene scope for gene comparisons (<code>all:all</code>, <code>&lt;genome&gt;:all</code>, <code>all:&lt;gene&gt;</code>, <code>&lt;genome&gt;:&lt;gene&gt;</code>)</li>
 <li><code>--compare_duckdb_memory_limit</code>: forwarded to single compare commands</li>
+<li><code>--compare_calculate</code>: genome metrics for genome compare (<code>ani</code>, <code>ibs</code>, <code>identical_genes</code>, <code>all</code>, or <code>+</code> combinations). Default: <code>all</code></li>
 </ul>
 <h2 id="1-map-reads-modemap_reads">1) Map Reads (<code>mode=map_reads</code>)</h2>
 <h3 id="input-table-input_type-local">Input Table (<code>--input_type local</code>)</h3>
@@ -994,6 +1013,7 @@ S2,/data/S2.bam
 <ul>
 <li><code>&lt;output_dir&gt;/*_profile.parquet</code></li>
 <li><code>&lt;output_dir&gt;/*_genome_stats.parquet</code></li>
+<li><code>&lt;output_dir&gt;/*_gene_stats.parquet</code></li>
 </ul>
 <h2 id="3-end-to-end-sra-to-profile-modefrom_sra_to_profile">3) End-to-End SRA to Profile (<code>mode=from_sra_to_profile</code>)</h2>
 <h3 id="input-table_1">Input Table</h3>
@@ -1013,6 +1033,12 @@ SRR12345679
   -profile docker \
   -resume
 </code></pre>
+<h3 id="outputs">Outputs</h3>
+<ul>
+<li><code>&lt;output_dir&gt;/profiles/*_profile.parquet</code></li>
+<li><code>&lt;output_dir&gt;/profiles/*_genome_stats.parquet</code></li>
+<li><code>&lt;output_dir&gt;/profiles/*_gene_stats.parquet</code></li>
+</ul>
 <h2 id="4-compare-genomes-modecompare_genomes">4) Compare Genomes (<code>mode=compare_genomes</code>)</h2>
 <h3 id="input-option-a-all-vs-all-from-profile-list-input_type-profile_table">Input Option A: All-vs-All from Profile List (<code>--input_type profile_table</code>)</h3>
 <pre><code class="language-csv">sample_names,mpileup_files
@@ -1032,6 +1058,7 @@ S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
   --input_table profiles.csv \
   --stb reference_genomes.stb \
   --compare_genome_scope all \
+  --compare_calculate ani+ibs+identical_genes \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
