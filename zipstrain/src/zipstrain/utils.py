@@ -651,37 +651,61 @@ def get_gene_stats(
     gene_bed: pl.LazyFrame,
     stb: pl.LazyFrame,
 )->pl.LazyFrame:
-    gene_length=gene_bed.with_columns(
-        gene_length=pl.col("end")-pl.col("start")
-    ).select(
-        pl.col("scaffold").alias("chrom"),
-        pl.col("gene"),
-        pl.col("gene_length")
+    gene_lengths = (
+        gene_bed
+        .select("gene", "scaffold", "start", "end")
+        .with_columns(
+            pl.col("start").cast(pl.Int64),
+            pl.col("end").cast(pl.Int64),
+            pl.when(pl.col("end") >= pl.col("start"))
+            .then(pl.col("end") - pl.col("start") + 1)
+            .otherwise(pl.lit(0))
+            .alias("length"),
+        )
+        .join(
+            stb.select("scaffold", "genome"),
+            on="scaffold",
+            how="left",
+        )
+        .select("genome", "gene", "length")
+        .unique(subset=["genome", "gene"], keep="first")
     )
-    profile=profile.join(
-        stb,
-        left_on="chrom",
-        right_on="scaffold",
-        how="left"
-    ).select(
-        pl.col("chrom"),
-        pl.col("gene"),
-        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage")
-    ).group_by("gene").agg(
-        pl.len().alias("total_covered_sites"),
-        pl.col("coverage").sum().alias("coverage")
-    ).join(
-        gene_length,
-        on="gene",
-        how="left"
-    ).with_columns(
-        coverage=(pl.col("coverage")/pl.col("gene_length")),
-        breadth=(pl.col("total_covered_sites")/pl.col("gene_length"))
+
+    covered_stats = (
+        profile
+        .filter(pl.col("gene").is_not_null() & (pl.col("gene") != "NA"))
+        .select(
+            pl.col("genome"),
+            pl.col("gene"),
+            (pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")).alias("site_coverage"),
+        )
+        .group_by(["genome", "gene"])
+        .agg(
+            pl.len().alias("total_covered_sites"),
+            pl.col("site_coverage").sum().alias("covered_bases"),
+        )
     )
-    return profile.select(
-        pl.col("gene"),
-        pl.col("genome"),
-        pl.col("coverage"),
-        pl.col("breadth"),
-        pl.col("gene_length")
+
+    return (
+        gene_lengths
+        .join(covered_stats, on=["genome", "gene"], how="left")
+        .with_columns(
+            pl.col("total_covered_sites").fill_null(0),
+            pl.col("covered_bases").fill_null(0),
+        )
+        .with_columns(
+            breadth=(pl.col("total_covered_sites") / pl.col("length").cast(pl.Float64)),
+            coverage=(pl.col("covered_bases") / pl.col("length").cast(pl.Float64)),
+        )
+        .with_columns(
+            pl.col("breadth").fill_null(0.0),
+            pl.col("coverage").fill_null(0.0),
+        )
+        .select(
+            pl.col("genome"),
+            pl.col("gene"),
+            pl.col("length"),
+            pl.col("breadth"),
+            pl.col("coverage"),
+        )
     )

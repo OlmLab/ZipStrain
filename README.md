@@ -184,6 +184,7 @@ Each profile task produces:
 
 - `<sample_name>.parquet`
 - `<sample_name>_genome_stats.parquet`
+- `<sample_name>_gene_stats.parquet`
 
 For `zipstrain run profile`, these files are written inside task directories under `<run_dir>/batch_*/<sample_name>/`.
 
@@ -206,6 +207,14 @@ Rows are sorted by `genome`, `chrom`, `pos` ascending.
 - `ber`
 - `fug`
 - `reads_mapped`
+
+`<sample_name>_gene_stats.parquet` columns:
+
+- `genome`
+- `gene`
+- `length`
+- `breadth`
+- `coverage`
 
 ### Genome comparison outputs
 

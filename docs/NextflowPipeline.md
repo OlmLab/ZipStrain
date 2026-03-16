@@ -144,6 +144,7 @@ nextflow run zipstrain.nf \
 
 - `<output_dir>/*_profile.parquet`
 - `<output_dir>/*_genome_stats.parquet`
+- `<output_dir>/*_gene_stats.parquet`
 
 ## 3) End-to-End SRA to Profile (`mode=from_sra_to_profile`)
 
@@ -169,6 +170,12 @@ nextflow run zipstrain.nf \
   -profile docker \
   -resume
 ```
+
+### Outputs
+
+- `<output_dir>/profiles/*_profile.parquet`
+- `<output_dir>/profiles/*_genome_stats.parquet`
+- `<output_dir>/profiles/*_gene_stats.parquet`
 
 ## 4) Compare Genomes (`mode=compare_genomes`)
 

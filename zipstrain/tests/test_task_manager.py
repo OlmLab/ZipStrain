@@ -270,6 +270,49 @@ def test_batch_initial_status_reads_success_marker(tmp_path):
     assert batch.status == task_manager.Status.SUCCESS.value
 
 
+def test_profile_task_generator_includes_gene_stats_output(tmp_path):
+    bam = tmp_path / "sample_1.bam"
+    bam.write_text("dummy")
+    stb_file = tmp_path / "stb.tsv"
+    stb_file.write_text("chr1\tgenome1\n")
+    bed_file = tmp_path / "genomes.bed"
+    bed_file.write_text("chr1\t0\t10\n")
+    gene_range_file = tmp_path / "gene_ranges.tsv"
+    gene_range_file.write_text("chr1\t0\t10\tgene1\n")
+    genome_length_file = tmp_path / "genome_lengths.parquet"
+    genome_length_file.write_text("dummy")
+
+    data = pl.DataFrame({"sample_name": ["sample_1"], "bamfile": [str(bam)]}).lazy()
+    generator = task_manager.ProfileTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        stb_file=str(stb_file),
+        profile_bed_file=str(bed_file),
+        gene_range_file=str(gene_range_file),
+        genome_length_file=str(genome_length_file),
+    )
+
+    async def _collect():
+        out = []
+        async for chunk in generator.generate_tasks():
+            out.extend(chunk)
+        return out
+
+    tasks = asyncio.run(_collect())
+    assert len(tasks) == 1
+    expected_outputs = tasks[0].expected_outputs
+    assert set(expected_outputs.keys()) == {"profile", "genome-stats", "gene-stats"}
+    assert expected_outputs["profile"]._expected_file_name == "sample_1.parquet"
+    assert expected_outputs["genome-stats"]._expected_file_name == "sample_1_genome_stats.parquet"
+    assert expected_outputs["gene-stats"]._expected_file_name == "sample_1_gene_stats.parquet"
+
+
+def test_profile_bam_task_template_moves_gene_stats():
+    cmd = task_manager.ProfileBamTask.TEMPLATE_CMD
+    assert "mv input_gene_stats.parquet <sample-name>_gene_stats.parquet" in cmd
+
+
 def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
     profile_1 = tmp_path / "sample_1.parquet"
     profile_2 = tmp_path / "sample_2.parquet"

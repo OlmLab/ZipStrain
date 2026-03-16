@@ -309,9 +309,17 @@ zipstrain profile profile-single [OPTIONS]
 
 - `-b, --bed-file TEXT`: Path to the BED file describing regions to be profiled [required]
 - `-a, --bam-file TEXT`: Path to the BAM file to be profiled [required]
+- `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
+- `-m, --null-model TEXT`: Path to the null model parquet file [required]
 - `-g, --gene-range-table TEXT`: Path to the gene range table [required]
 - `-n, --num-workers INTEGER`: Number of workers to use for profiling (default: 1)
 - `-o, --output-dir TEXT`: Directory to save the profiling output [required]
+
+`profile-single` writes three parquet outputs in `--output-dir`:
+
+- `<bam_stem>_profile.parquet`
+- `<bam_stem>_genome_stats.parquet`
+- `<bam_stem>_gene_stats.parquet`
 
 ### 5. Run (`run`)
 
@@ -418,6 +426,8 @@ zipstrain utilities build-null-model \
 zipstrain profile profile-single \
   -b profiling_db/genomes_bed_file.bed \
   -a sample1.bam \
+  -s scaffold_to_genome.tsv \
+  -m null_model.parquet \
   -g profiling_db/gene_range_table.tsv \
   -n 4 \
   -o sample1_profile
@@ -427,8 +437,8 @@ zipstrain profile profile-single \
 
 ```
 zipstrain compare single_compare_genome \
-  -m1 sample1_profile/sample1.parquet \
-  -m2 sample2_profile/sample2.parquet \
+  -m1 sample1_profile/sample1_profile.parquet \
+  -m2 sample2_profile/sample2_profile.parquet \
   -s scaffold_to_genome.tsv \
   --engine duckdb \
   --duckdb-memory-limit 2GB \

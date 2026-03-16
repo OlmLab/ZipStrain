@@ -261,6 +261,16 @@ async def profile_bam_in_chunks(
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir/"tmp").mkdir(exist_ok=True)
     bed_lf=pl.scan_csv(bed_file,has_header=False,separator="\t")
+    gene_range_lf = pl.scan_csv(
+        gene_range_table,
+        has_header=False,
+        separator="\t",
+    ).rename({
+        "column_1": "gene",
+        "column_2": "scaffold",
+        "column_3": "start",
+        "column_4": "end",
+    })
     bed_chunks=utils.split_lf_to_chunks(bed_lf,num_workers)
     bed_chunk_files=[]
     for chunk_id, bed_file in enumerate(bed_chunks):
@@ -300,6 +310,15 @@ async def profile_bam_in_chunks(
                 pl.col("gene").cast(pl.Categorical),
             ])
         mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
+        utils.get_gene_stats(
+            profile=mpileup_df,
+            gene_bed=gene_range_lf,
+            stb=stb,
+        ).sink_parquet(
+            output_dir/f"{bam_file.stem}_gene_stats.parquet",
+            compression='zstd',
+            engine='streaming',
+        )
     
     if read_loc_pfs:
         read_loc_df = pl.concat(read_loc_pfs).rename(
@@ -350,4 +369,3 @@ def profile_bam(
         output_dir=output_dir,
         num_workers=num_workers,
     ))
-

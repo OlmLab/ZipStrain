@@ -385,8 +385,8 @@ This will generate the following files in the `preprofiles/` directory:
 |Outputs                          |Link                                 |
 |---------------------------------|-------------------------------------|
 | Profile parquet files           |[profile_link](TOBEIMPLEMENTED)      |
-| Scaffold TSV files              |[scaffold_link](TOBEIMPLEMENTED)     |
 | Genome Statistics parquet files |[genome_stats_link](TOBEIMPLEMENTED) |
+| Gene Statistics parquet files   |[gene_stats_link](TOBEIMPLEMENTED)   |
 
 Now we have to make a CSV file containing the sample names and paths to the BAM files:
 
@@ -402,12 +402,12 @@ You can profile the mapped BAM files using ZipStrain with the following command:
 zipstrain run profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
 ```
 
-This will generate profile parquet files and genome statistics parquet files for each sample in the `profiling_output/` directory.
+This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the `profiling_output/` directory.
 
 As an alternative, you can use the Nextflow pipeline to perform the profiling:
 
 ```bash
-nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv>  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile <your/system/specific/profile> -resume
+nextflow run zipstrain.nf --mode "profile" --input_table <path/to/bam/csv>  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile <your/system/specific/profile> -resume
 ```
 
 ### Step 6- Compare the profiled samples at the genome level

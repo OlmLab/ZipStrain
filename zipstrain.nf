@@ -175,9 +175,8 @@ process index_reference {
     path reference_genome, emit: reference_genome
     script:
     """
-    bowtie2-build \\
-            -f ${reference_genome} \\
-            ${reference_genome}
+    bowtie2-build --threads ${task.cpus} ${reference_genome} ${reference_genome}
+
     """
 }
 
@@ -258,6 +257,7 @@ process profile_bam {
     output:
     path "${bamfile.baseName}_profile.parquet", emit: profile
     path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
+    path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats
     val sample_name, emit: sample_name
     script:
     """
@@ -501,6 +501,7 @@ process fromSRAtoProfile{
     output:
     path "${sra_id}_profile.parquet", emit: profiles
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
+    path "${sra_id}_gene_stats.parquet", emit: gene_stats
     val sra_id, emit: sample_name
     script:
     """

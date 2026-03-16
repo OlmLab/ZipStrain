@@ -548,6 +548,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+".parquet" ),
                 "genome-stats": FileOutput(row["sample_name"]+"_genome_stats.parquet" ),
+                "gene-stats": FileOutput(row["sample_name"]+"_gene_stats.parquet" ),
                 }
                 task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
                 tasks.append(task)
@@ -1612,6 +1613,7 @@ class ProfileBamTask(Task):
     --output-dir .
     mv input_profile.parquet <sample-name>.parquet
     mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
+    mv input_gene_stats.parquet <sample-name>_gene_stats.parquet
     """
     
 class FastCompareTask(Task):
