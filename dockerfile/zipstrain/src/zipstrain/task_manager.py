@@ -575,6 +575,7 @@ class CompareTaskGenerator(TaskGenerator):
         duckdb_memory_limit: str | None = None,
         duckdb_threads: int | None = None,
         compare_engine: str = "polars",
+        calculate: str = "ani",
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
@@ -582,6 +583,7 @@ class CompareTaskGenerator(TaskGenerator):
         self.duckdb_memory_limit = duckdb_memory_limit
         self.duckdb_threads = duckdb_threads
         self.compare_engine = compare_engine
+        self.calculate = calculate
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         if self.compare_engine not in {"polars", "duckdb"}:
@@ -619,6 +621,7 @@ class CompareTaskGenerator(TaskGenerator):
                 "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
                 "duckdb-threads-arg": StringInput(duckdb_threads_arg),
                 "compare-engine-arg": StringInput(compare_engine_arg),
+                "calculate-arg": StringInput(f"--calculate {self.calculate}"),
                 "genome-name": StringInput(self.comp_config.scope),
                 }
                 expected_outputs ={
@@ -1626,7 +1629,7 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    zipstrain compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
+    zipstrain utilities single_compare_genome --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \
@@ -1634,6 +1637,7 @@ class FastCompareTask(Task):
     <duckdb-memory-limit-arg> \
     <duckdb-threads-arg> \
     <compare-engine-arg> \
+    <calculate-arg> \
     --output-file <output-file> \
     --genome <genome-name>
     """
@@ -1762,6 +1766,7 @@ def lazy_run_compares(
     duckdb_memory_limit: str | None = None,
     duckdb_threads: int | None = None,
     compare_engine: str = "polars",
+    calculate: str = "ani",
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -1784,6 +1789,7 @@ def lazy_run_compares(
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_threads=duckdb_threads,
         compare_engine=compare_engine,
+        calculate=calculate,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -1814,7 +1820,7 @@ class FastGeneCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
     """
     TEMPLATE_CMD="""
-    zipstrain compare single_compare_gene --mpileup-contig-1 <mpile_1_file> \
+    zipstrain utilities single_compare_gene --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \

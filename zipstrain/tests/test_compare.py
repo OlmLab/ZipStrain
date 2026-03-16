@@ -136,6 +136,7 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_ge
         mpile_contig_2=profile_2,
         min_cov=min_cov ,
         min_gene_compare_len=min_gene_compare_len,
+        calculate="all",
     ).collect().fill_null(-1).rows_by_key(key="genome",unique=True,named=True)
 
     a_genome_1=a_chr1 + a_chr2 
@@ -271,6 +272,7 @@ def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
         min_gene_compare_len=3,
         genome_scope="all",
         ani_method="popani",
+        calculate="all",
         memory_limit="512MB",
         temp_directory=tmp_path,
     )
@@ -350,3 +352,54 @@ def test_compare_genomes_polars_with_categorical_keys(tmp_path):
 
     assert out.shape[0] == 2
     assert set(out["genome"].to_list()) == {"genome1", "genome2"}
+
+
+def test_compare_genomes_default_calculate_is_all_metrics(profile_1, profile_2, tmp_path):
+    stb_path = tmp_path / "stb.tsv"
+    pl.DataFrame({"scaffold": ["chr1", "chr2", "chr3"], "genome": ["genome1", "genome1", "genome2"]}).write_csv(
+        stb_path, separator="\t", include_header=False
+    )
+    out = compare.compare_genomes(
+        mpile_contig_1=profile_1,
+        mpile_contig_2=profile_2,
+        min_cov=5,
+        min_gene_compare_len=3,
+        engine="polars",
+        stb_file=stb_path,
+    ).collect()
+    assert set(out.columns) == {
+        "genome",
+        "total_positions",
+        "share_allele_pos",
+        "genome_pop_ani",
+        "max_consecutive_length",
+        "shared_genes_count",
+        "identical_gene_count",
+        "perc_id_genes",
+    }
+
+
+def test_compare_genomes_calculate_all_matches_between_engines(profile_1, profile_2, tmp_path):
+    stb_path = tmp_path / "stb.tsv"
+    pl.DataFrame({"scaffold": ["chr1", "chr2", "chr3"], "genome": ["genome1", "genome1", "genome2"]}).write_csv(
+        stb_path, separator="\t", include_header=False
+    )
+    out_polars = compare.compare_genomes(
+        mpile_contig_1=profile_1,
+        mpile_contig_2=profile_2,
+        min_cov=5,
+        min_gene_compare_len=3,
+        engine="polars",
+        calculate="all",
+        stb_file=stb_path,
+    ).collect().sort("genome")
+    out_duckdb = compare.compare_genomes(
+        mpile_contig_1=profile_1,
+        mpile_contig_2=profile_2,
+        min_cov=5,
+        min_gene_compare_len=3,
+        engine="duckdb",
+        calculate="all",
+        stb_file=stb_path,
+    ).collect().sort("genome")
+    assert out_polars.equals(out_duckdb)

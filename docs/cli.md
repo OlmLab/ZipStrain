@@ -8,10 +8,10 @@ First, ensure ZipStrain is installed (see [Installation.md](installation.md) for
 
 ## Usage
 
-The main CLI command is `zipstrain` with various subcommands organized into functional groups:
+The main CLI command is `zipstrain` with top-level commands and grouped subcommands:
 
 ```
-zipstrain [GROUP] [COMMAND] [OPTIONS]
+zipstrain [COMMAND|GROUP] [ARGS] [OPTIONS]
 ```
 
 ## Command Groups
@@ -65,8 +65,6 @@ zipstrain utilities process_mpileup [OPTIONS]
 
 **Options:**
 
-- `-g, --gene-range-table-loc TEXT`: Location of the gene range table in TSV format [required]
-- `-b, --batch-bed TEXT`: Location of the batch BED file [required]
 - `-s, --batch-size INTEGER`: Buffer size for processing stdin from samtools (default: 10000)
 - `-o, --output-file TEXT`: Location to save the output Parquet file [required]
 
@@ -217,7 +215,7 @@ zipstrain utilities to-complete-table -g GENOME_COMPARISON_OBJECT -o OUTPUT_FILE
 - `-g, --genome-comparison-object TEXT`: Path to the genome comparison object in JSON format [required]
 - `-o, --output-file TEXT`: Path to save the completed pairs CSV file [required]
 
-### 2. Gene Tools (`gene_tools`)
+### 2. Gene Tools (`utilities`)
 
 Commands for working with gene annotations and locations.
 
@@ -226,7 +224,7 @@ Commands for working with gene annotations and locations.
 Build a gene range table from gene files:
 
 ```
-zipstrain gene_tools gene-range-table -g GENE_FILE -o OUTPUT_FILE
+zipstrain utilities gene-range-table -g GENE_FILE -o OUTPUT_FILE
 ```
 
 **Options:**
@@ -239,7 +237,7 @@ zipstrain gene_tools gene-range-table -g GENE_FILE -o OUTPUT_FILE
 Build a gene location table for specified scaffolds:
 
 ```
-zipstrain gene_tools gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
+zipstrain utilities gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
 ```
 
 **Options:**
@@ -248,16 +246,14 @@ zipstrain gene_tools gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
 - `-s, --scaffold-list TEXT`: Location of scaffold list (text file with scaffold names) [required]
 - `-o, --output-file TEXT`: Location to save output Parquet file [required]
 
-### 3. Compare (`compare`)
+### 3. Utilities Single-Compare Commands (`utilities`)
 
-Commands for comparing genomes and samples.
+Single-pair compare commands (used directly or by workflow engines):
 
 #### Single Genome Compare
 
-Compare two mpileup files for genome analysis:
-
 ```
-zipstrain compare single_compare_genome [OPTIONS]
+zipstrain utilities single_compare_genome [OPTIONS]
 ```
 
 **Options:**
@@ -270,6 +266,7 @@ zipstrain compare single_compare_genome [OPTIONS]
 - `-o, --output-file TEXT`: Path to save the parquet file [required]
 - `-g, --genome TEXT`: If provided, do comparison only for the specified genome (default: all)
 - `-a, --ani-method TEXT`: ANI method (`popani`, `conani`, `cosani_<threshold>`)
+- `--calculate TEXT`: Genome metrics to compute. Supported: `ani`, `ibs`, `identical_genes`, `all`. Combine metrics with `+` (default: `all`).
 - `--engine [polars|duckdb]`: Compare engine (default: `polars`)
 - `--duckdb-memory-limit TEXT`: DuckDB memory limit (for example `2GB`, `1024MB`)
 - `--duckdb-temp-directory TEXT`: Directory for DuckDB spill files
@@ -278,16 +275,37 @@ zipstrain compare single_compare_genome [OPTIONS]
 When `--engine polars` is used, comparison runs in Polars after optional DuckDB scope prefiltering.
 When `--engine duckdb` is used, comparison runs end-to-end in DuckDB and writes parquet directly.
 
-### 4. Profile (`profile`)
+#### Single Gene Compare
 
-Commands for profiling BAM files.
+```
+zipstrain utilities single_compare_gene [OPTIONS]
+```
+
+**Options:**
+
+- `-m1, --mpileup-contig-1 TEXT`: Path to the first mpileup file [required]
+- `-m2, --mpileup-contig-2 TEXT`: Path to the second mpileup file [required]
+- `-s, --stb-file TEXT`: Path to the scaffold to genome mapping file [required]
+- `-c, --min-cov INTEGER`: Minimum coverage to consider a position (default: 5)
+- `-l, --min-gene-compare-len INTEGER`: Minimum gene length to consider for comparison (default: 100)
+- `-o, --output-file TEXT`: Path to save the parquet file [required]
+- `-g, --scope TEXT`: Genome/gene scope (`GENOME:GENE`; default: `all:all`)
+- `-a, --ani-method TEXT`: ANI method (`popani`, `conani`, `cosani_<threshold>`)
+- `--engine [polars|duckdb]`: Compare engine (default: `polars`)
+- `--duckdb-memory-limit TEXT`: DuckDB memory limit (for example `2GB`, `1024MB`)
+- `--duckdb-temp-directory TEXT`: Directory for DuckDB spill files
+- `--duckdb-threads INTEGER`: Number of DuckDB threads
+
+### 4. Profiling Commands (`utilities` and `profile`)
+
+Profiling setup and single-sample commands live under `utilities`. Batch profiling runs via top-level `profile`.
 
 #### Prepare Profiling
 
 Prepare files needed for profiling BAM files:
 
 ```
-zipstrain profile prepare_profiling [OPTIONS]
+zipstrain utilities prepare_profiling [OPTIONS]
 ```
 
 **Options:**
@@ -302,7 +320,7 @@ zipstrain profile prepare_profiling [OPTIONS]
 Profile a single BAM file:
 
 ```
-zipstrain profile profile-single [OPTIONS]
+zipstrain utilities profile-single [OPTIONS]
 ```
 
 **Options:**
@@ -321,16 +339,14 @@ zipstrain profile profile-single [OPTIONS]
 - `<bam_stem>_genome_stats.parquet`
 - `<bam_stem>_gene_stats.parquet`
 
-### 5. Run (`run`)
-
-Commands for running large-scale analyses and managing workflows.
+### 5. Batch Workflows (`profile` and `compare`)
 
 #### Profile
 
 Run BAM file profiling in batches:
 
 ```
-zipstrain run profile [OPTIONS]
+zipstrain profile [OPTIONS]
 ```
 
 **Options:**
@@ -354,7 +370,7 @@ zipstrain run profile [OPTIONS]
 Run genome comparisons in batches:
 
 ```
-zipstrain run compare_genomes [OPTIONS]
+zipstrain compare genomes [OPTIONS]
 ```
 
 **Options:**
@@ -368,6 +384,30 @@ zipstrain run compare_genomes [OPTIONS]
 - `-c, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
 - `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
 - `--engine [polars|duckdb]`: Compare engine for per-pair tasks (default: `polars`)
+- `--calculate TEXT`: Genome metrics for per-pair tasks (`ani`, `ibs`, `identical_genes`, or `all`; default: `all`)
+- `-d, --duckdb-memory-limit TEXT`: DuckDB memory limit for compare tasks (for example `2GB`)
+- `--duckdb-threads INTEGER`: Number of DuckDB threads for compare tasks
+
+#### Compare Genes
+
+Run gene comparisons in batches:
+
+```
+zipstrain compare genes [OPTIONS]
+```
+
+**Options:**
+
+- `-g, --gene-comparison-object TEXT`: Path to the gene comparison object in JSON format [required]
+- `-r, --run-dir TEXT`: Directory to save the run data [required]
+- `-m, --max-concurrent-batches INTEGER`: Maximum number of concurrent batches to run (default: 5)
+- `-p, --poll-interval INTEGER`: Polling interval in seconds to check batch status (default: 1)
+- `-e, --execution-mode TEXT`: Execution mode: 'local' or 'slurm' (default: local)
+- `-s, --slurm-config TEXT`: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')
+- `-c, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
+- `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
+- `-n, --ani-method TEXT`: ANI method (`popani`, `conani`, `cosani_<threshold>`)
+- `--engine [polars|duckdb]`: Compare engine for per-pair tasks (default: `polars`)
 - `-d, --duckdb-memory-limit TEXT`: DuckDB memory limit for compare tasks (for example `2GB`)
 - `--duckdb-threads INTEGER`: Number of DuckDB threads for compare tasks
 
@@ -376,7 +416,7 @@ zipstrain run compare_genomes [OPTIONS]
 Build a genome comparison database from profiles:
 
 ```
-zipstrain run build-comp-database [OPTIONS]
+zipstrain compare build-comp-database [OPTIONS]
 ```
 
 **Options:**
@@ -405,7 +445,7 @@ This command checks if all required dependencies (like samtools) are properly in
 1. **Prepare profiling files:**
 
 ```
-zipstrain profile prepare_profiling \
+zipstrain utilities prepare_profiling \
   -r reference.fasta \
   -g genes.fasta \
   -s scaffold_to_genome.tsv \
@@ -423,7 +463,7 @@ zipstrain utilities build-null-model \
 3. **Profile single BAM file:**
 
 ```
-zipstrain profile profile-single \
+zipstrain utilities profile-single \
   -b profiling_db/genomes_bed_file.bed \
   -a sample1.bam \
   -s scaffold_to_genome.tsv \
@@ -436,10 +476,11 @@ zipstrain profile profile-single \
 4. **Compare two profiles:**
 
 ```
-zipstrain compare single_compare_genome \
+zipstrain utilities single_compare_genome \
   -m1 sample1_profile/sample1_profile.parquet \
   -m2 sample2_profile/sample2_profile.parquet \
   -s scaffold_to_genome.tsv \
+  --calculate ani+ibs+identical_genes \
   --engine duckdb \
   --duckdb-memory-limit 2GB \
   --duckdb-threads 8 \
@@ -474,7 +515,7 @@ zipstrain utilities build-genome-comparison-config \
 3. **Build comparison database:**
 
 ```
-zipstrain run build-comp-database \
+zipstrain compare build-comp-database \
   -p profiles.parquet \
   -c comparison_config.json \
   -o comparison_db.json
@@ -483,7 +524,7 @@ zipstrain run build-comp-database \
 4. **Run batch comparisons:**
 
 ```
-zipstrain run compare_genomes \
+zipstrain compare genomes \
   -g comparison_db.json \
   -r run_results \
   -m 10 \

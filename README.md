@@ -4,7 +4,7 @@ ZipStrain is a strain-resolution metagenomics toolkit for:
 
 - profiling mapped reads into per-position nucleotide counts
 - comparing profiles at genome and gene levels
-- running large comparison jobs in local or Slurm batch mode
+- running large profiling/comparison jobs in local or Slurm batch mode
 - building local reference-genome databases from abundance outputs (currently Sylph)
 
 Official docs: [https://OlmLab.github.io/ZipStrain/](https://OlmLab.github.io/ZipStrain/)
@@ -27,7 +27,7 @@ Detailed setup: [docs/installation.md](docs/installation.md)
 ### 1. Prepare profiling assets
 
 ```bash
-zipstrain profile prepare_profiling \
+zipstrain utilities prepare_profiling \
   --reference-fasta <reference.fasta> \
   --gene-fasta <genes.fna> \
   --stb-file <mapping.stb> \
@@ -53,7 +53,7 @@ sample2,/path/to/sample2.bam
 Run profiling:
 
 ```bash
-zipstrain run profile \
+zipstrain profile \
   --input-table <samples.csv> \
   --stb-file <mapping.stb> \
   --gene-range-table <profiling_assets_dir/gene_range_table.tsv> \
@@ -121,10 +121,11 @@ zipstrain utilities build-gene-comparison-config \
 Genome comparisons:
 
 ```bash
-zipstrain run compare_genomes \
+zipstrain compare genomes \
   --genome-comparison-object <genome_compare.json> \
   --run-dir <compare_run_dir> \
   --engine polars \
+  --calculate ani+ibs+identical_genes \
   --duckdb-memory-limit 4GB \
   --duckdb-threads 8
 ```
@@ -132,7 +133,7 @@ zipstrain run compare_genomes \
 Gene comparisons:
 
 ```bash
-zipstrain run compare_genes \
+zipstrain compare genes \
   --gene-comparison-object <gene_compare.json> \
   --run-dir <gene_compare_run_dir> \
   --engine duckdb \
@@ -144,6 +145,7 @@ zipstrain run compare_genes \
 Notes:
 
 - `--engine` supports `polars` or `duckdb`.
+- `--calculate` controls genome metrics: `ani`, `ibs`, `identical_genes` (`all` supported). Default is `all`.
 - In scoped comparisons (`--genome` or `--scope` not `all`), the polars path uses DuckDB prefiltering first.
 - `--duckdb-memory-limit` and `--duckdb-threads` are available in both single and batch compare interfaces.
 
@@ -152,11 +154,12 @@ Notes:
 Genome-level single compare:
 
 ```bash
-zipstrain compare single_compare_genome \
+zipstrain utilities single_compare_genome \
   --mpileup-contig-1 <sampleA_profile.parquet> \
   --mpileup-contig-2 <sampleB_profile.parquet> \
   --stb-file <mapping.stb> \
   --genome all \
+  --calculate ani+ibs+identical_genes \
   --engine duckdb \
   --duckdb-memory-limit 2GB \
   --duckdb-threads 8 \
@@ -167,7 +170,7 @@ zipstrain compare single_compare_genome \
 Gene-level single compare:
 
 ```bash
-zipstrain compare single_compare_gene \
+zipstrain utilities single_compare_gene \
   --mpileup-contig-1 <sampleA_profile.parquet> \
   --mpileup-contig-2 <sampleB_profile.parquet> \
   --stb-file <mapping.stb> \
@@ -186,7 +189,7 @@ Each profile task produces:
 - `<sample_name>_genome_stats.parquet`
 - `<sample_name>_gene_stats.parquet`
 
-For `zipstrain run profile`, these files are written inside task directories under `<run_dir>/batch_*/<sample_name>/`.
+For `zipstrain profile`, these files are written inside task directories under `<run_dir>/batch_*/<sample_name>/`.
 
 `<sample_name>.parquet` columns:
 
@@ -224,16 +227,10 @@ Batch runs write final merged results to:
 
 Columns:
 
-- `genome`
-- `total_positions`
-- `share_allele_pos`
-- `genome_pop_ani`
-- `max_consecutive_length`
-- `shared_genes_count`
-- `identical_gene_count`
-- `perc_id_genes`
-- `sample_1`
-- `sample_2`
+- Always: `genome`, `sample_1`, `sample_2`
+- If `ani` requested: `total_positions`, `share_allele_pos`, `genome_pop_ani`
+- If `ibs` requested: `max_consecutive_length`
+- If `identical_genes` requested: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`
 
 ### Gene comparison outputs
 
