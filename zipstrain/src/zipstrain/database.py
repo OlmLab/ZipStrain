@@ -480,6 +480,18 @@ class GenomeComparisonDatabase:
         "sample_1",
         "sample_2"
     ]
+    COLUMN_DTYPES = {
+        "genome": pl.Utf8,
+        "total_positions": pl.Int64,
+        "share_allele_pos": pl.Int64,
+        "genome_pop_ani": pl.Float64,
+        "max_consecutive_length": pl.Int64,
+        "shared_genes_count": pl.Int64,
+        "identical_gene_count": pl.Int64,
+        "perc_id_genes": pl.Float64,
+        "sample_1": pl.Utf8,
+        "sample_2": pl.Utf8,
+    }
 
     def __init__(self,
                  profile_db: ProfileDatabase,
@@ -490,7 +502,7 @@ class GenomeComparisonDatabase:
         self.config = config
         if comp_db_loc is not None:
             self.comp_db_loc = pathlib.Path(comp_db_loc)
-            self._comp_db = pl.scan_parquet(self.comp_db_loc)
+            self._comp_db = self._normalize_comp_db_columns(pl.scan_parquet(self.comp_db_loc))
         else:
             self.comp_db_loc = None
             self._comp_db=pl.LazyFrame({
@@ -504,23 +516,29 @@ class GenomeComparisonDatabase:
                 "perc_id_genes": [],
                 "sample_1": [],
                 "sample_2": []
-            }, schema={
-                "genome": pl.Utf8,
-                "total_positions": pl.Int64,
-                "share_allele_pos": pl.Int64,
-                "genome_pop_ani": pl.Float64,
-                "max_consecutive_length": pl.Int64,
-                "shared_genes_count": pl.Int64,
-                "identical_gene_count": pl.Int64,
-                "perc_id_genes": pl.Float64,
-                "sample_1": pl.Utf8,
-                "sample_2": pl.Utf8
-            })
+            }, schema=self.COLUMN_DTYPES)
             self.comp_db_loc=None
 
     @property
     def comp_db(self):
         return self._comp_db
+
+    def _normalize_comp_db_columns(self, comp_db: pl.LazyFrame) -> pl.LazyFrame:
+        schema = comp_db.collect_schema()
+        casts = [
+            pl.col(col_name).cast(dtype, strict=False)
+            for col_name, dtype in self.COLUMN_DTYPES.items()
+            if col_name in schema
+        ]
+        if casts:
+            comp_db = comp_db.with_columns(casts)
+
+        missing = [col_name for col_name in self.COLUMN_NAMES if col_name not in schema]
+        if missing:
+            comp_db = comp_db.with_columns(
+                [pl.lit(None).cast(self.COLUMN_DTYPES[col_name]).alias(col_name) for col_name in missing]
+            )
+        return comp_db.select(self.COLUMN_NAMES)
     
     def _validate_db(self)->None:
         self.profile_db._validate_db()

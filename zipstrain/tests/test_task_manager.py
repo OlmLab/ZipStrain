@@ -359,6 +359,7 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == ""
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == ""
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine polars"
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
     assert tasks[0].expected_outputs["output-file"]._expected_file_name == "s1_s2_comparison.parquet"
 
 
@@ -408,6 +409,7 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == "--duckdb-memory-limit 2GB"
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == "--duckdb-threads 6"
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine duckdb"
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
 
 
 def test_gene_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
@@ -456,6 +458,11 @@ def test_gene_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_pat
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == "--duckdb-memory-limit 3GB"
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == "--duckdb-threads 4"
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine duckdb"
+
+
+def test_fast_compare_templates_call_utilities_single_compare():
+    assert "zipstrain utilities single_compare_genome" in task_manager.FastCompareTask.TEMPLATE_CMD
+    assert "zipstrain utilities single_compare_gene" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
 
 
 def test_slurm_config_validation_and_args():
