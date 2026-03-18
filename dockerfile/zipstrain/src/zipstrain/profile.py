@@ -10,6 +10,7 @@ from typing import Generator
 from zipstrain import utils
 import asyncio
 import os
+import duckdb
 
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
@@ -122,6 +123,106 @@ def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->
     return annotated_mpileup
 
 
+def _duckdb_quote_sql_string(value: str) -> str:
+    """Quote a string literal for embedding in DuckDB SQL."""
+    return value.replace("'", "''")
+
+
+def _annotate_mpileup_chunk_with_duckdb(
+    adjusted_mpileup_parquet: pathlib.Path,
+    output_parquet: pathlib.Path,
+    scaffold_to_genome: pl.LazyFrame,
+    gene_range: pl.LazyFrame,
+) -> None:
+    """Annotate one adjusted mpileup chunk with genome+gene in DuckDB."""
+    conn = duckdb.connect()
+    try:
+        conn.register(
+            "stb_src",
+            scaffold_to_genome.select(["scaffold", "genome"]).collect().to_arrow(),
+        )
+        conn.register(
+            "gene_src",
+            gene_range.select(["gene", "scaffold", "start", "end"]).collect().to_arrow(),
+        )
+        in_sql = _duckdb_quote_sql_string(str(adjusted_mpileup_parquet))
+        out_sql = _duckdb_quote_sql_string(str(output_parquet))
+        conn.execute(
+            f"""
+            COPY (
+              WITH mpileup AS (
+                SELECT
+                  CAST(chrom AS VARCHAR) AS chrom,
+                  CAST(pos AS INTEGER) AS pos,
+                  CAST(A AS INTEGER) AS A,
+                  CAST(C AS INTEGER) AS C,
+                  CAST(G AS INTEGER) AS G,
+                  CAST(T AS INTEGER) AS T
+                FROM read_parquet('{in_sql}')
+              ),
+              stb AS (
+                SELECT
+                  CAST(scaffold AS VARCHAR) AS scaffold,
+                  CAST(genome AS VARCHAR) AS genome
+                FROM stb_src
+              ),
+              gene_range AS (
+                SELECT
+                  CAST(gene AS VARCHAR) AS gene,
+                  CAST(scaffold AS VARCHAR) AS scaffold,
+                  CAST(start AS INTEGER) AS start,
+                  CAST("end" AS INTEGER) AS "end"
+                FROM gene_src
+                ORDER BY scaffold, start
+              ),
+              mp_with_genome AS (
+                SELECT
+                  mp.chrom,
+                  COALESCE(stb.genome, 'NA') AS genome,
+                  mp.pos,
+                  mp.A,
+                  mp.C,
+                  mp.G,
+                  mp.T
+                FROM mpileup AS mp
+                LEFT JOIN stb ON mp.chrom = stb.scaffold
+              ),
+              annotated AS (
+                SELECT
+                  mg.chrom,
+                  mg.genome,
+                  CASE
+                    WHEN mg.pos <= gr."end" THEN gr.gene
+                    ELSE 'NA'
+                  END AS gene,
+                  mg.pos,
+                  mg.A,
+                  mg.C,
+                  mg.G,
+                  mg.T
+                FROM mp_with_genome AS mg
+                ASOF LEFT JOIN gene_range AS gr
+                  ON mg.chrom = gr.scaffold
+                 AND mg.pos >= gr.start
+              )
+              SELECT
+                chrom,
+                genome,
+                gene,
+                pos,
+                A,
+                C,
+                G,
+                T
+              FROM annotated
+              ORDER BY genome, chrom, pos
+            ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """
+        )
+    finally:
+        conn.close()
+
+
 def get_strain_hetrogeneity(profile:pl.LazyFrame,
                             stb:pl.LazyFrame, 
                             min_cov=5,
@@ -191,12 +292,16 @@ async def _profile_chunk_task(
                 mpile_frame=mpileup,
                 null_model=null_model
             )
-            mpileup=add_genome_info_to_mpileup(
-                mpileup_df=mpileup,
-                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold","genome"])
+            adjusted_path = output_dir/f"{bam_file.stem}_{chunk_id}_adj.parquet"
+            mpileup.select(["chrom", "pos", "A", "C", "G", "T"]).sink_parquet(
+                adjusted_path,
+                compression='zstd',
+                engine='streaming',
             )
-            mpileup_with_gene=add_gene_info_to_mpileup(
-                mpileup_df=mpileup,
+            _annotate_mpileup_chunk_with_duckdb(
+                adjusted_mpileup_parquet=adjusted_path,
+                output_parquet=output_dir/f"{bam_file.stem}_{chunk_id}.parquet",
+                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold","genome"]),
                 gene_range=pl.scan_csv(
                     gene_range_table,
                     has_header=False,
@@ -207,20 +312,6 @@ async def _profile_chunk_task(
                     "column_3":"start",
                     "column_4":"end",
                 }).filter(pl.col("scaffold").is_in(scaffolds))
-            ).drop(["start","end"]).select([
-                "chrom",
-                "genome",
-                "gene",
-                "pos",
-                "A",
-                "C",
-                "G",
-                "T",
-            ])
-            mpileup_with_gene.sink_parquet(
-                output_dir/f"{bam_file.stem}_{chunk_id}.parquet",
-                compression='zstd',
-                engine='streaming'
             )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(
