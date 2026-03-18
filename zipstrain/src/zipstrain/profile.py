@@ -111,7 +111,9 @@ def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->
         right_on="start",
         by_left="chrom",
         by_right="scaffold",
-        strategy="backward").with_columns(
+        strategy="backward",
+        check_sortedness=False,
+    ).with_columns(
             pl.when(pl.col("pos") <= pl.col("end"))
             .then(pl.col("gene"))
             .otherwise(pl.lit("NA"))
@@ -303,12 +305,11 @@ async def profile_bam_in_chunks(
     if mpile_container:
         mpileup_df = pl.concat(mpile_container)
         mpileup_df=mpileup_df.sort(["genome", "chrom", "pos"],descending=[False, False, False])
-        with pl.StringCache():
-            mpileup_df = mpileup_df.with_columns([
-                pl.col("chrom").cast(pl.Categorical),
-                pl.col("genome").cast(pl.Categorical),
-                pl.col("gene").cast(pl.Categorical),
-            ])
+        mpileup_df = mpileup_df.with_columns([
+            pl.col("chrom").cast(pl.Utf8),
+            pl.col("genome").cast(pl.Utf8),
+            pl.col("gene").cast(pl.Utf8),
+        ])
         mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
         utils.get_gene_stats(
             profile=mpileup_df,

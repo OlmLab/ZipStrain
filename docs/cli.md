@@ -14,6 +14,14 @@ The main CLI command is `zipstrain` with various subcommands organized into func
 zipstrain [GROUP] [COMMAND] [OPTIONS]
 ```
 
+Lightweight command:
+
+```
+zipstrain-light [COMMAND] [OPTIONS]
+```
+
+See [ZipStrainLight.md](ZipStrainLight.md) for the full light workflow.
+
 ## Command Groups
 
 ### 1. Utilities (`utilities`)

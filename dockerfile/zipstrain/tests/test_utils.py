@@ -73,6 +73,15 @@ def bed_table()->pl.LazyFrame:
     }).lazy()
 
 @pytest.fixture(scope="module")
+def gene_bed()->pl.LazyFrame:
+    return pl.DataFrame({
+        "gene": ["gene1", "gene2", "gene3", "gene1", "gene2", "gene3"],
+        "scaffold": ["chr1", "chr2", "chr2", "chr3", "chr3", "chr3"],
+        "start": [2, 2, 11, 3, 11, 22],
+        "end": [5, 6, 15, 6, 15, 26],
+    }).lazy()
+
+@pytest.fixture(scope="module")
 def genome_length_lf()->pl.LazyFrame:
     return pl.DataFrame({
         "genome":["genome1","genome2"],
@@ -84,6 +93,41 @@ def test_get_genome_stats(stb,bed_table):
     result = utils.extract_genome_length(stb, bed_table).collect().rows_by_key("genome",unique=True,named=True)
     assert result["genome1"]["genome_length"] == 30
     assert result["genome2"]["genome_length"] == 30
+
+
+def test_get_gene_stats(profile_1, gene_bed, stb):
+    result = utils.get_gene_stats(
+        profile=profile_1,
+        gene_bed=gene_bed,
+        stb=stb,
+    ).collect()
+
+    assert result.columns == ["genome", "gene", "length", "breadth", "coverage"]
+    g1 = result.filter((pl.col("genome") == "genome1") & (pl.col("gene") == "gene1")).to_dicts()[0]
+    g2 = result.filter((pl.col("genome") == "genome2") & (pl.col("gene") == "gene1")).to_dicts()[0]
+    assert g1["length"] == 4
+    assert g1["breadth"] == pytest.approx(1.0)
+    assert g1["coverage"] == pytest.approx(13 / 4)
+    assert g2["length"] == 4
+    assert g2["breadth"] == pytest.approx(1.0)
+    assert g2["coverage"] == pytest.approx(76 / 4)
+
+
+def test_get_gene_stats_handles_categorical_join_keys(profile_1, gene_bed, stb):
+    profile_cat = profile_1.with_columns(
+        pl.col("chrom").cast(pl.Categorical),
+        pl.col("genome").cast(pl.Categorical),
+        pl.col("gene").cast(pl.Categorical),
+    )
+    result = utils.get_gene_stats(
+        profile=profile_cat,
+        gene_bed=gene_bed,
+        stb=stb,
+    ).collect()
+
+    assert result.height > 0
+    assert "genome" in result.columns
+    assert "gene" in result.columns
 
 def test_estimate_genome_presence_interface(profile_1,
                                   bed_table,

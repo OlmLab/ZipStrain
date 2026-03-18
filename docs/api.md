@@ -16,6 +16,11 @@ ZipStrain provides a Python API for programmatic access, enabling integration in
 :::zipstrain.compare
 
 ---------------------
+## Light
+
+:::zipstrain.light
+
+---------------------
 ## Utils
 
 :::zipstrain.utils
@@ -33,7 +38,6 @@ For more advanced users, new workflows can be developed using the task_manager m
 ## Task Manager
 
 :::zipstrain.task_manager
-
 
 
 

@@ -642,7 +642,7 @@ def get_genome_stats(
         pl.col("fug"),
         pl.col("rn").alias("reads_mapped")
     ).with_columns(
-        pl.col("genome").cast(pl.Categorical)
+        pl.col("genome").cast(pl.Utf8)
     )
 
 
@@ -667,6 +667,10 @@ def get_gene_stats(
             on="scaffold",
             how="left",
         )
+        .with_columns(
+            pl.col("genome").cast(pl.Utf8),
+            pl.col("gene").cast(pl.Utf8),
+        )
         .select("genome", "gene", "length")
         .unique(subset=["genome", "gene"], keep="first")
     )
@@ -683,6 +687,10 @@ def get_gene_stats(
         .agg(
             pl.len().alias("total_covered_sites"),
             pl.col("site_coverage").sum().alias("covered_bases"),
+        )
+        .with_columns(
+            pl.col("genome").cast(pl.Utf8),
+            pl.col("gene").cast(pl.Utf8),
         )
     )
 

@@ -829,7 +829,7 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file describing regions to be profiled.")
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model', '-m', required=True, help="Path to the null model file. If not provided, the null model will be generated from the data.") 
+@click.option('--null-model', '-m', required=True, help="Path to the null model parquet file.") 
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
 @click.option('--num-workers', '-n', default=1, help="Number of workers to use for profiling.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")

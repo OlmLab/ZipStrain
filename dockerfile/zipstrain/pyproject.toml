@@ -34,3 +34,4 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 zipstrain = "zipstrain.cli:cli"
+zipstrain-light = "zipstrain.light_cli:cli"

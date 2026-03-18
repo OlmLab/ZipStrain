@@ -15,6 +15,6 @@ ZipStrain is a tool designed for efficient and scalable strain-level analysis of
 - **Workflow Management**: ZipStrain utilizes Nextflow for workflow management, allowing for easy customization, reproducibility, and scalability of analyses.
 
 - **Command-Line Interface (CLI)**: ZipStrain offers a user-friendly CLI for easy interaction and execution of tasks.
+- **ZipStrain-Light**: A separate lightweight CLI (`zipstrain-light`) with DuckDB profile databases (`coverage` + `snp`) for backbone-aware genome comparisons.
 
 - **Python API**: ZipStrain provides a Python API for programmatic access, enabling integration into larger bioinformatics pipelines and workflows. The API also allows for downstream analyses and visualizations.
-

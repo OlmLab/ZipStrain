@@ -112,6 +112,23 @@ def test_get_gene_stats(profile_1, gene_bed, stb):
     assert g2["breadth"] == pytest.approx(1.0)
     assert g2["coverage"] == pytest.approx(76 / 4)
 
+
+def test_get_gene_stats_handles_categorical_join_keys(profile_1, gene_bed, stb):
+    profile_cat = profile_1.with_columns(
+        pl.col("chrom").cast(pl.Categorical),
+        pl.col("genome").cast(pl.Categorical),
+        pl.col("gene").cast(pl.Categorical),
+    )
+    result = utils.get_gene_stats(
+        profile=profile_cat,
+        gene_bed=gene_bed,
+        stb=stb,
+    ).collect()
+
+    assert result.height > 0
+    assert "genome" in result.columns
+    assert "gene" in result.columns
+
 def test_estimate_genome_presence_interface(profile_1,
                                   bed_table,
                                   stb,):
