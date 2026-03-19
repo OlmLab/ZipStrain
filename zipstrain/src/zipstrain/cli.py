@@ -831,9 +831,10 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model', '-m', required=True, help="Path to the null model parquet file.") 
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
-@click.option('--num-workers', '-n', default=1, help="Number of workers to use for profiling.")
+@click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
+@click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, num_workers, output_dir):
+def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, num_chunks, max_concurrency, output_dir):
     """
     Profile a single BAM file using the provided BED file and gene range table.
     
@@ -852,7 +853,8 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, n
         stb=stb,
         null_model=null_model,
         output_dir=output_dir,
-        num_workers=num_workers,
+        num_chunks=num_chunks,
+        max_concurrency=max_concurrency,
     )
 
 @cli.group()

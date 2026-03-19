@@ -462,7 +462,8 @@ def build_light_profile_bundle_from_bam(
     output_dir: Union[str, Path],
     profile_engine: Literal["duckdb", "polars"] = "duckdb",
     min_cov: int = 5,
-    num_workers: int = 4,
+    num_chunks: int = 24,
+    max_concurrency: int = 4,
     memory_limit: Optional[str] = None,
     temp_directory: Optional[Union[str, Path]] = None,
     threads: Optional[int] = None,
@@ -482,7 +483,8 @@ def build_light_profile_bundle_from_bam(
             stb=stb,
             null_model=null_model_lf,
             output_dir=str(tmp_path),
-            num_workers=num_workers,
+            num_chunks=num_chunks,
+            max_concurrency=max_concurrency,
         )
         profile_parquet = tmp_path / f"{Path(bam_file).stem}_profile.parquet"
         if not profile_parquet.exists():

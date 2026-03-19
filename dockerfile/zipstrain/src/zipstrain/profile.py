@@ -215,7 +215,6 @@ def _annotate_mpileup_chunk_with_duckdb(
                 G,
                 T
               FROM annotated
-              ORDER BY genome, chrom, pos
             ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION ZSTD)
             """
         )
@@ -324,6 +323,29 @@ async def _profile_chunk_task(
     if proc.returncode != 0:
         raise Exception(f"Command failed with error: {stderr.decode().strip()}")
 
+async def _run_profile_chunk_with_semaphore(
+    semaphore: asyncio.Semaphore,
+    *,
+    bed_file: pathlib.Path,
+    bam_file: pathlib.Path,
+    gene_range_table: pathlib.Path,
+    stb: pl.LazyFrame,
+    null_model: pl.LazyFrame,
+    output_dir: pathlib.Path,
+    chunk_id: int,
+) -> None:
+    """Bound chunk-level profiling concurrency."""
+    async with semaphore:
+        await _profile_chunk_task(
+            bed_file=bed_file,
+            bam_file=bam_file,
+            gene_range_table=gene_range_table,
+            stb=stb,
+            null_model=null_model,
+            output_dir=output_dir,
+            chunk_id=chunk_id,
+        )
+
 async def profile_bam_in_chunks(
     bed_file:str,
     bam_file:str,
@@ -331,7 +353,8 @@ async def profile_bam_in_chunks(
     stb:pl.LazyFrame,
     null_model:pl.LazyFrame,
     output_dir:str,
-    num_workers:int=4,
+    num_chunks:int=24,
+    max_concurrency:int=4,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -343,7 +366,8 @@ async def profile_bam_in_chunks(
     stb (pl.LazyFrame): The scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
-    num_workers (int): Number of concurrent workers to use.
+    num_chunks (int): Number of BED chunks to create.
+    max_concurrency (int): Maximum number of chunks to process concurrently.
     """
     
     output_dir=pathlib.Path(output_dir)
@@ -364,14 +388,16 @@ async def profile_bam_in_chunks(
         "column_3": "start",
         "column_4": "end",
     })
-    bed_chunks=utils.split_lf_to_chunks(bed_lf,num_workers)
+    bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
     for chunk_id, bed_file in enumerate(bed_chunks):
         bed_file.sink_csv(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
         bed_chunk_files.append(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed")
     tasks = []
+    semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
     for chunk_id, bed_chunk_file in enumerate(bed_chunk_files):
-        tasks.append(_profile_chunk_task(
+        tasks.append(_run_profile_chunk_with_semaphore(
+            semaphore,
             bed_file=bed_chunk_file,
             bam_file=bam_file,
             gene_range_table=gene_range_table,
@@ -395,12 +421,6 @@ async def profile_bam_in_chunks(
             read_loc_pfs.append(pl.scan_parquet(read_loc_pf).lazy())
     if mpile_container:
         mpileup_df = pl.concat(mpile_container)
-        mpileup_df=mpileup_df.sort(["genome", "chrom", "pos"],descending=[False, False, False])
-        mpileup_df = mpileup_df.with_columns([
-            pl.col("chrom").cast(pl.Utf8),
-            pl.col("genome").cast(pl.Utf8),
-            pl.col("gene").cast(pl.Utf8),
-        ])
         mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
         utils.get_gene_stats(
             profile=mpileup_df,
@@ -438,7 +458,8 @@ def profile_bam(
     stb:pl.LazyFrame,
     null_model:pl.LazyFrame,
     output_dir:str,
-    num_workers:int=4,
+    num_chunks:int=24,
+    max_concurrency:int=4,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -450,7 +471,8 @@ def profile_bam(
     stb (pl.LazyFrame): Scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
-    num_workers (int): Number of concurrent workers to use.
+    num_chunks (int): Number of BED chunks to create.
+    max_concurrency (int): Maximum number of chunks to process concurrently.
     """
     asyncio.run(profile_bam_in_chunks(
         bed_file=bed_file,
@@ -459,5 +481,6 @@ def profile_bam(
         stb=stb,
         null_model=null_model,
         output_dir=output_dir,
-        num_workers=num_workers,
+        num_chunks=num_chunks,
+        max_concurrency=max_concurrency,
     ))

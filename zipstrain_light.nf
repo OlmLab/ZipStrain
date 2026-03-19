@@ -271,7 +271,7 @@ process profile_bam {
                         --gene-range-table ${gene_range_table} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
-                        --num-workers ${task.cpus} \\
+                        --max-concurrency ${task.cpus} \\
                         --output-dir .
 
     zipstrain-light profile \\
@@ -628,7 +628,7 @@ process fromSRAtoProfile{
                         --gene-range-table ${gene_range_file} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
-                        --num-workers ${task.cpus} \\
+                        --max-concurrency ${task.cpus} \\
                         --output-dir .
     zipstrain-light profile \\
                         --profile-parquet ${sra_id}_profile.parquet \\

@@ -320,7 +320,8 @@ zipstrain profile profile-single [OPTIONS]
 - `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
 - `-m, --null-model TEXT`: Path to the null model parquet file [required]
 - `-g, --gene-range-table TEXT`: Path to the gene range table [required]
-- `-n, --num-workers INTEGER`: Number of workers to use for profiling (default: 1)
+- `-n, --num-chunks INTEGER`: Number of BED chunks to create for profiling (default: 24)
+- `-c, --max-concurrency INTEGER`: Maximum number of profiling chunks to run concurrently (default: 4)
 - `-o, --output-dir TEXT`: Directory to save the profiling output [required]
 
 `profile-single` writes three parquet outputs in `--output-dir`:
@@ -437,7 +438,8 @@ zipstrain profile profile-single \
   -s scaffold_to_genome.tsv \
   -m null_model.parquet \
   -g profiling_db/gene_range_table.tsv \
-  -n 4 \
+  -n 24 \
+  -c 4 \
   -o sample1_profile
 ```
 

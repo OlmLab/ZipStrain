@@ -516,12 +516,17 @@ def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
     Returns:
     list[pl.LazyFrame]: A list of smaller LazyFrames.
     """
-    total_rows = lf.select(pl.count()).collect().item()
-    chunk_size = total_rows // num_chunks
+    total_rows = lf.select(pl.len()).collect().item()
+    if total_rows == 0:
+        return []
+    num_chunks = max(1, min(int(num_chunks), total_rows))
+    chunk_size = (total_rows + num_chunks - 1) // num_chunks
     chunks = []
     for i in range(num_chunks):
         start = i * chunk_size
-        end = (i + 1) * chunk_size if i < num_chunks - 1 else total_rows
+        end = min((i + 1) * chunk_size, total_rows)
+        if start >= total_rows:
+            break
         chunk = lf.slice(start, end - start)
         chunks.append(chunk)
     return chunks

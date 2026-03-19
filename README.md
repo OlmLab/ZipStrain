@@ -54,6 +54,10 @@ It also supports modular metric selection via `--calculate` (default `all`; exam
 
 If `zipstrain-light` is not found after updating source code, reinstall package entry points (for example `pip install -e .` in the `zipstrain/` project directory).
 
+`zipstrain profile profile-single` now separates chunking from concurrency:
+- `--num-chunks` controls how many BED chunks are created (default `24`)
+- `--max-concurrency` controls how many chunks run at once (default `4`)
+
 ## Quick Start (Current CLI)
 
 ### 1. Prepare profiling assets

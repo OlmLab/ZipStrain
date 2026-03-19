@@ -268,7 +268,7 @@ process profile_bam {
                         --gene-range-table ${gene_range_table} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
-                        --num-workers ${task.cpus} \\
+                        --max-concurrency ${task.cpus} \\
                         --output-dir .
     """
 }
@@ -524,7 +524,7 @@ process fromSRAtoProfile{
                         --gene-range-table ${gene_range_file} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
-                        --num-workers ${task.cpus} \\
+                        --max-concurrency ${task.cpus} \\
                         --output-dir .
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam

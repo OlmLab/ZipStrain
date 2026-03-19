@@ -31,7 +31,8 @@ def cli() -> None:
 @click.option("--stb-file", default=None, help="STB file for profiling (required with --bam-file).")
 @click.option("--null-model", default=None, help="Null model parquet (required with --bam-file).")
 @click.option("--gene-range-table", default=None, help="Gene range table TSV (required with --bam-file).")
-@click.option("--num-workers", type=int, default=4, show_default=True, help="Workers for BAM profiling mode.")
+@click.option("--num-chunks", type=int, default=24, show_default=True, help="Number of BED chunks to create in BAM profiling mode.")
+@click.option("--max-concurrency", type=int, default=4, show_default=True, help="Maximum number of BAM profiling chunks to run concurrently.")
 @click.option("--min-cov", type=int, default=5, show_default=True, help="Retain loci with coverage strictly greater than this value.")
 @click.option("--duckdb-memory-limit", default=None, help="DuckDB memory limit for writing profile DB (for example 2GB).")
 @click.option("--duckdb-temp-directory", default=None, help="DuckDB temp directory for spill files.")
@@ -46,7 +47,8 @@ def profile(
     stb_file: Optional[str],
     null_model: Optional[str],
     gene_range_table: Optional[str],
-    num_workers: int,
+    num_chunks: int,
+    max_concurrency: int,
     min_cov: int,
     duckdb_memory_limit: Optional[str],
     duckdb_temp_directory: Optional[str],
@@ -82,7 +84,8 @@ def profile(
             output_dir=output_dir,
             profile_engine=engine,
             min_cov=min_cov,
-            num_workers=num_workers,
+            num_chunks=num_chunks,
+            max_concurrency=max_concurrency,
             memory_limit=duckdb_memory_limit,
             temp_directory=duckdb_temp_directory,
             threads=duckdb_threads,

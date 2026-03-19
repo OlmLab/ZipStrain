@@ -542,7 +542,8 @@ class ProfileTaskGenerator(TaskGenerator):
                 "bed-file": FileInput(self.profile_bed_file),
                 "gene-range-table": FileInput(self.gene_range_file),
                 "genome-length-file": FileInput(self.genome_length_file),
-                "num-workers": IntInput(self.num_procs),
+                "num-chunks": IntInput(24),
+                "max-concurrency": IntInput(self.num_procs),
                 "breadth-min-cov": IntInput(self.breadth_min_cov),
                 }
                 expected_outputs ={
@@ -1588,7 +1589,9 @@ class ProfileBamTask(Task):
 
         - gene-range-table: A BED file specifying the gene ranges for the sample.
 
-        - num-workers: The number of concurrent workers to use for processing.
+        - num-chunks: The number of BED chunks to create for processing.
+
+        - max-concurrency: The number of chunks that may run concurrently.
 
         - genome-length-file: A file containing the lengths of the genomes in the reference fasta.
 
@@ -1609,7 +1612,8 @@ class ProfileBamTask(Task):
     --bed-file bed_file.bed \
     --gene-range-table gene-range-table.bed \
     --stb-file <stb-file> \
-    --num-workers <num-workers> \
+    --num-chunks <num-chunks> \
+    --max-concurrency <max-concurrency> \
     --output-dir .
     mv input_profile.parquet <sample-name>.parquet
     mv input_genome_stats.parquet <sample-name>_genome_stats.parquet

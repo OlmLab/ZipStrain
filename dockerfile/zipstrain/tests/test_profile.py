@@ -243,7 +243,8 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
         stb=stb_lf,
         null_model=pl.scan_parquet(null_model_file),
         output_dir=str(tmp_path),
-        num_workers=2,
+        num_chunks=2,
+        max_concurrency=2,
     )
 
     profile_file = tmp_path / "sample_profile.parquet"
@@ -260,7 +261,6 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
     assert prof.schema["gene"] == pl.Utf8
-    assert prof.equals(prof.sort(["genome", "chrom", "pos"]))
 
     gene_stats = pl.read_parquet(gene_stats_file)
     g1 = gene_stats.filter((pl.col("genome") == "genome1") & (pl.col("gene") == "geneA")).to_dicts()[0]
@@ -302,7 +302,9 @@ def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.Monk
             str(null_model_file),
             "--gene-range-table",
             str(gene_range_table),
-            "--num-workers",
+            "--num-chunks",
+            "2",
+            "--max-concurrency",
             "2",
             "--output-dir",
             str(out_dir),
@@ -331,7 +333,8 @@ def test_light_profile_from_bam_uses_profile_pipeline(tmp_path: Path, monkeypatc
         output_dir=duckdb_dir,
         profile_engine="duckdb",
         min_cov=5,
-        num_workers=2,
+        num_chunks=2,
+        max_concurrency=2,
     )
     assert duckdb_summary.coverage_rows == 5
     assert duckdb_summary.snp_rows == 4
@@ -348,7 +351,8 @@ def test_light_profile_from_bam_uses_profile_pipeline(tmp_path: Path, monkeypatc
         output_dir=polars_dir,
         profile_engine="polars",
         min_cov=5,
-        num_workers=2,
+        num_chunks=2,
+        max_concurrency=2,
     )
     assert polars_summary.coverage_rows == 5
     assert polars_summary.snp_rows == 4

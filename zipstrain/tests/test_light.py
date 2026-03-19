@@ -70,9 +70,10 @@ def _install_fake_light_bam_profiler(monkeypatch: pytest.MonkeyPatch) -> None:
         stb,
         null_model,
         output_dir: str,
-        num_workers: int = 4,
+        num_chunks: int = 24,
+        max_concurrency: int = 4,
     ) -> None:
-        _ = (bed_file, gene_range_table, stb, null_model, num_workers)
+        _ = (bed_file, gene_range_table, stb, null_model, num_chunks, max_concurrency)
         out = Path(output_dir) / f"{Path(bam_file).stem}_profile.parquet"
         pl.DataFrame(
             {
@@ -271,6 +272,8 @@ def test_light_profile_from_bam_writes_expected_outputs(tmp_path: Path, monkeypa
         output_dir=polars_dir,
         profile_engine="polars",
         min_cov=5,
+        num_chunks=2,
+        max_concurrency=2,
     )
     assert polars_summary.coverage_rows == 6
     assert polars_summary.snp_rows == 2
@@ -304,6 +307,10 @@ def test_light_cli_profile_from_bam(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             str(reference_fasta),
             "--engine",
             "polars",
+            "--num-chunks",
+            "2",
+            "--max-concurrency",
+            "2",
             "--min-cov",
             "5",
             "--output-dir",
