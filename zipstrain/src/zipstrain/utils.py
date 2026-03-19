@@ -453,7 +453,7 @@ def get_genome_breadth_matrix(
     """
     profile = profile.filter((pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")) >= min_cov)
     profile=profile.group_by("chrom").agg(
-        breadth=pl.count()
+        breadth=pl.len()
     ).select(
         pl.col("chrom").alias("scaffold"),
         pl.col("breadth")
@@ -516,7 +516,7 @@ def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
     Returns:
     list[pl.LazyFrame]: A list of smaller LazyFrames.
     """
-    total_rows = lf.select(pl.count()).collect().item()
+    total_rows = lf.select(pl.len()).collect().item()
     chunk_size = total_rows // num_chunks
     chunks = []
     for i in range(num_chunks):
