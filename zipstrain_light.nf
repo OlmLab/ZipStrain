@@ -2,7 +2,7 @@ params.error_rate=0.001
 params.max_total_reads=10000
 params.p_threshold=0.05
 params.mode = 'fast_compare' // 'fast_compare' or 'profile_genes' or
-params.parallel_mode="multiple"
+params.parallel_mode="batched"
 params.min_cov=5
 params.min_gene_compare_len=200
 params.batch_size=10
@@ -11,7 +11,9 @@ params.bed_max_scaffold_length=500000
 params.compare_duckdb_memory_limit=""
 params.light_profile_engine="duckdb"
 params.light_compare_engine="duckdb"
+params.light_compare_calculate="all"
 params.light_profile_min_cov=5
+params.reference_genome = null
 params.batch_compare_n_parallel=4
 params.publish_mode="link"
 params.compare_genome_scope="all"
@@ -290,12 +292,13 @@ process profile_bam {
 
 process compare_genome_fast_profiles_single {
     /*
-    * This process compares fast profiles.
-    * It takes in the mpileup files and outputs the comparison results.
+    * This process compares light-profile directories.
     */
     input:
-    path mpileup_file1
-    path mpileup_file2
+    path profile_dir_1
+    val sample_name_1
+    path profile_dir_2
+    val sample_name_2
     path stb
     val pair_name
     output:
@@ -304,74 +307,19 @@ process compare_genome_fast_profiles_single {
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
-    profile_1=${mpileup_file1}
-    profile_2=${mpileup_file2}
-    created_profile_1=0
-    created_profile_2=0
-
-    if [ -d "${mpileup_file1}" ]; then
-        if [ ! -f "${mpileup_file1}/profile.duckdb" ] && { [ ! -f "${mpileup_file1}/coverage.parquet" ] || [ ! -f "${mpileup_file1}/snp.parquet" ]; }; then
-            echo "ERROR: ${mpileup_file1} is a directory but not a valid zipstrain-light profile." >&2
-            exit 1
-        fi
-    else
-        if [ -z "${params.reference_genome}" ]; then
-            echo "ERROR: --reference_genome is required when compare input is a parquet profile file." >&2
-            exit 1
-        fi
-        profile_1=${mpileup_file1.baseName}.light_profile
-        created_profile_1=1
-        zipstrain-light profile \
-                            --profile-parquet ${mpileup_file1} \
-                            --reference-fasta ${params.reference_genome} \
-                            --engine ${params.light_profile_engine} \
-                            --min-cov ${params.light_profile_min_cov} \
-                            --output-dir ${profile_1} \
-                            ${add_duckdb_memory_limit}
-    fi
-
-    if [ -d "${mpileup_file2}" ]; then
-        if [ ! -f "${mpileup_file2}/profile.duckdb" ] && { [ ! -f "${mpileup_file2}/coverage.parquet" ] || [ ! -f "${mpileup_file2}/snp.parquet" ]; }; then
-            echo "ERROR: ${mpileup_file2} is a directory but not a valid zipstrain-light profile." >&2
-            exit 1
-        fi
-    else
-        if [ -z "${params.reference_genome}" ]; then
-            echo "ERROR: --reference_genome is required when compare input is a parquet profile file." >&2
-            exit 1
-        fi
-        profile_2=${mpileup_file2.baseName}.light_profile
-        created_profile_2=1
-        zipstrain-light profile \
-                            --profile-parquet ${mpileup_file2} \
-                            --reference-fasta ${params.reference_genome} \
-                            --engine ${params.light_profile_engine} \
-                            --min-cov ${params.light_profile_min_cov} \
-                            --output-dir ${profile_2} \
-                            ${add_duckdb_memory_limit}
-    fi
-
     zipstrain-light compare \
-                        --profile-1 ${profile_1} \
-                        --profile-2 ${profile_2} \
+                        --profile-1 ${profile_dir_1} \
+                        --profile-2 ${profile_dir_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
-                        --calculate all \
+                        --calculate ${params.light_compare_calculate} \
                         --engine ${params.light_compare_engine} \
                         ${add_duckdb_memory_limit} \
                         ${add_genome_scope} \
-                        --sample-1 ${mpileup_file1.baseName} \
-                        --sample-2 ${mpileup_file2.baseName} \
+                        --sample-1 ${sample_name_1} \
+                        --sample-2 ${sample_name_2} \
                         -o ${pair_name}_comparison.parquet
-
-    if [ ${created_profile_1} -eq 1 ]; then
-        rm -rf ${profile_1}
-    fi
-    if [ ${created_profile_2} -eq 1 ]; then
-        rm -rf ${profile_2}
-    fi
-
     """
 }
 process compare_gene_fast_profiles_single {
@@ -429,13 +377,8 @@ process get_genome_breadth {
 
 process compare_genome_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: 'link'
-    afterScript """
-    rm -rf comps pairs.txt
-    rm -rf ${mpiles.collect{t->t.join(' ')}}
-    rm -f ${stb}
-    """
     input:
-    path mpiles
+    path profile_dirs
     val pairs
     path stb
 
@@ -445,58 +388,28 @@ process compare_genome_batched {
 
     script:
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
-    remove_mpiles = mpiles.join(' ')
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     echo -e "${pairs_text}" > pairs.txt
 
-    for mpile in ${remove_mpiles}; do
-        if [ -d "\$mpile" ]; then
-            if [ ! -f "\$mpile/profile.duckdb" ] && { [ ! -f "\$mpile/coverage.parquet" ] || [ ! -f "\$mpile/snp.parquet" ]; }; then
-                echo "ERROR: \$mpile is a directory but not a valid zipstrain-light profile." >&2
-                exit 1
-            fi
-            continue
-        fi
-        if [ -z "${params.reference_genome}" ]; then
-            echo "ERROR: --reference_genome is required when compare input includes parquet profile files." >&2
-            exit 1
-        fi
-        zipstrain-light profile \
-                        --profile-parquet \$mpile \
-                        --reference-fasta ${params.reference_genome} \
-                        --engine ${params.light_profile_engine} \
-                        --min-cov ${params.light_profile_min_cov} \
-                        --output-dir \${mpile}.light_profile \
-                        ${add_duckdb_memory_limit}
-    done
-
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} '
-                        profile_1={1}
-                        profile_2={2}
-                        if [ ! -d "$profile_1" ]; then profile_1={1}.light_profile; fi
-                        if [ ! -d "$profile_2" ]; then profile_2={2}.light_profile; fi
                         zipstrain-light compare \
-                        --profile-1 $profile_1 \
-                        --profile-2 $profile_2 \
+                        --profile-1 {1} \
+                        --profile-2 {3} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
-                        --calculate all \
+                        --calculate ${params.light_compare_calculate} \
                         --engine ${params.light_compare_engine} \
                         ${add_duckdb_memory_limit} \
-                        --sample-1 {1} \
-                        --sample-2 {2} \
-                        -o {1}_{2}_comparison.parquet' ${add_genome_scope}
+                        --sample-1 {2} \
+                        --sample-2 {4} \
+                        -o {2}_{4}_comparison.parquet' ${add_genome_scope}
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
     mv *_comparison.parquet comps/
     zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
-    rm -rf comps
-    rm -f pairs.txt
-    rm -rf ${remove_mpiles}
-    rm -rf *.light_profile
 
     """
 
@@ -765,13 +678,15 @@ workflow
     
     else if (params.mode =='compare_genomes') {
         input_table = tableToDict(file(params.input_table))
-        profile_col = input_table.containsKey("mpileup_files") ? "mpileup_files" : (input_table.containsKey("profile_dirs") ? "profile_dirs" : null)
-        if (profile_col == null) {
-            error "compare_genomes input table must contain one of: mpileup_files or profile_dirs"
+        if (params.input_type=="profile_table" && !input_table.containsKey("profile_dirs")) {
+            error "compare_genomes profile_table input must contain columns: sample_names,profile_dirs"
+        }
+        if (params.input_type=="pair_table" && (!input_table.containsKey("profile_location_1") || !input_table.containsKey("profile_location_2"))) {
+            error "compare_genomes pair_table input must contain columns: sample_name_1,profile_location_1,sample_name_2,profile_location_2"
         }
         
         if (params.input_type=="profile_table"){
-            mpileup_files_list = input_table[profile_col].collect{t->file(t)}
+            mpileup_files_list = input_table['profile_dirs'].collect{t->file(t)}
             sample_names_list = input_table['sample_names']
             profiles=[mpileup_files_list,sample_names_list].transpose()
             def profile_pairs = []
@@ -828,10 +743,12 @@ workflow compare_genomes
 
     profile_pairs.multiMap{ v ->
         mpile_1: v[0]
+        sample_1: v[1]
         mpile_2: v[2]
+        sample_2: v[3]
         pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_genome_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, stb, profile_pairs.pair_name)
+    compare_genome_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.sample_1, profile_pairs.mpile_2, profile_pairs.sample_2, stb, profile_pairs.pair_name)
     merge_comparison_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
@@ -839,11 +756,14 @@ workflow compare_genomes
     batch.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
         unique_mpiles: (v[0]+v[2]).unique().sort()
-        pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
+        pairs: [v[0].collect{t->t.name}, v[1], v[2].collect{t->t.name}, v[3]].transpose()
     }.set{batch_pairs}
 
     compare_genome_batched(batch_pairs.unique_mpiles, batch_pairs.pairs, stb)
     merge_comparison_tables(compare_genome_batched.out.comparison_results.collect() )
+    }
+    else {
+    error "Unsupported --parallel_mode '${params.parallel_mode}'. Use 'single' or 'batched'."
     }
 
 
@@ -875,6 +795,9 @@ workflow compare_genes{
 
     compare_gene_batched(batch_pairs.unique_mpiles, batch_pairs.pairs, stb)
     merge_comparison_tables(compare_gene_batched.out.comparison_results.collect() )
+    }
+    else {
+    error "Unsupported --parallel_mode '${params.parallel_mode}'. Use 'single' or 'batched'."
     }
 
 }

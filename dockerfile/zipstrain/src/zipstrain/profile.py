@@ -291,26 +291,27 @@ async def _profile_chunk_task(
                 mpile_frame=mpileup,
                 null_model=null_model
             )
-            adjusted_path = output_dir/f"{bam_file.stem}_{chunk_id}_adj.parquet"
-            mpileup.select(["chrom", "pos", "A", "C", "G", "T"]).sink_parquet(
-                adjusted_path,
-                compression='zstd',
-                engine='streaming',
+            mpileup = add_genome_info_to_mpileup(
+                mpileup_df=mpileup.select(["chrom", "pos", "A", "C", "G", "T"]),
+                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold", "genome"]),
             )
-            _annotate_mpileup_chunk_with_duckdb(
-                adjusted_mpileup_parquet=adjusted_path,
-                output_parquet=output_dir/f"{bam_file.stem}_{chunk_id}.parquet",
-                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold","genome"]),
+            mpileup = add_gene_info_to_mpileup(
+                mpileup_df=mpileup,
                 gene_range=pl.scan_csv(
                     gene_range_table,
                     has_header=False,
                     separator="\t",
                 ).rename({
-                    "column_1":"gene",
-                    "column_2":"scaffold",
-                    "column_3":"start",
-                    "column_4":"end",
-                }).filter(pl.col("scaffold").is_in(scaffolds))
+                    "column_1": "gene",
+                    "column_2": "scaffold",
+                    "column_3": "start",
+                    "column_4": "end",
+                }).filter(pl.col("scaffold").is_in(scaffolds)),
+            )
+            mpileup.select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]).sink_parquet(
+                output_dir / f"{bam_file.stem}_{chunk_id}.parquet",
+                compression="zstd",
+                engine="streaming",
             )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(
