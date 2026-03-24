@@ -92,6 +92,7 @@ Run profiling:
 zipstrain profile \
   --input-table <samples.csv> \
   --stb-file <mapping.stb> \
+  --null-model <null_model.parquet> \
   --gene-range-table <profiling_assets_dir/gene_range_table.tsv> \
   --bed-file <profiling_assets_dir/genomes_bed_file.bed> \
   --genome-length-file <profiling_assets_dir/genome_lengths.parquet> \
@@ -160,6 +161,8 @@ Genome comparisons:
 zipstrain compare_genome \
   --genome-comparison-object <genome_compare.json> \
   --run-dir <compare_run_dir> \
+  --calculate ani \
+  --ani-method popani \
   --engine polars \
   --duckdb-memory-limit 4GB \
   --duckdb-threads 8
@@ -180,6 +183,7 @@ zipstrain compare_gene \
 Notes:
 
 - `--engine` supports `polars` or `duckdb`.
+- `--calculate ani` restricts genome compare to ANI-only output columns and skips the IBS/gene-identity work.
 - In scoped comparisons (`--genome` or `--scope` not `all`), the polars path uses DuckDB prefiltering first.
 - `--duckdb-memory-limit` and `--duckdb-threads` are available in both single and batch compare interfaces.
 
@@ -193,6 +197,7 @@ zipstrain utilities single_compare_genome \
   --mpileup-contig-2 <sampleB_profile.parquet> \
   --stb-file <mapping.stb> \
   --genome all \
+  --calculate ani \
   --engine duckdb \
   --duckdb-memory-limit 2GB \
   --duckdb-threads 8 \

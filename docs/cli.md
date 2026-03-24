@@ -1,6 +1,6 @@
 # ZipStrain Command Line Interface
 
-ZipStrain provides a comprehensive command-line interface for strain-level analysis of metagenomic data. The CLI is organized into several command groups for different functionalities.
+ZipStrain provides a command-line interface for strain-level analysis of metagenomic data. The current surface is centered on profile workflows, compare workflows, utilities, and test.
 
 ## Installation
 
@@ -279,6 +279,7 @@ zipstrain utilities single_compare_genome [OPTIONS]
 - `-o, --output-file TEXT`: Path to save the parquet file [required]
 - `-g, --genome TEXT`: If provided, do comparison only for the specified genome (default: all)
 - `-a, --ani-method TEXT`: ANI method (`popani`, `conani`, `cosani_<threshold>`)
+- `--calculate [all|ani]`: Genome metrics to compute (default: `all`)
 - `--engine [polars|duckdb]`: Compare engine (default: `polars`)
 - `--duckdb-memory-limit TEXT`: DuckDB memory limit (for example `2GB`, `1024MB`)
 - `--duckdb-temp-directory TEXT`: Directory for DuckDB spill files
@@ -347,6 +348,7 @@ zipstrain profile [OPTIONS]
 
 - `-i, --input-table TEXT`: Path to the input table in TSV format containing sample names and BAM file paths [required]
 - `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
+- `-u, --null-model TEXT`: Path to the null model parquet file [required]
 - `-g, --gene-range-table TEXT`: Path to the gene range table file [required]
 - `-b, --bed-file TEXT`: Path to the BED file for profiling regions [required]
 - `-l, --genome-length-file TEXT`: Path to the genome length file [required]
@@ -377,6 +379,31 @@ zipstrain compare_genome [OPTIONS]
 - `-s, --slurm-config TEXT`: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')
 - `-c, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
 - `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
+- `-a, --ani-method TEXT`: ANI method used by genome compare tasks (default: `popani`)
+- `--calculate [all|ani]`: Genome metrics to compute for each pair (default: `all`)
+- `--engine [polars|duckdb]`: Compare engine for per-pair tasks (default: `polars`)
+- `-d, --duckdb-memory-limit TEXT`: DuckDB memory limit for compare tasks (for example `2GB`)
+- `--duckdb-threads INTEGER`: Number of DuckDB threads for compare tasks
+
+#### Compare Genes
+
+Run gene comparisons in batches:
+
+```
+zipstrain compare_gene [OPTIONS]
+```
+
+**Options:**
+
+- `-g, --gene-comparison-object TEXT`: Path to the gene comparison object in JSON format [required]
+- `-r, --run-dir TEXT`: Directory to save the run data [required]
+- `-m, --max-concurrent-batches INTEGER`: Maximum number of concurrent batches to run (default: 5)
+- `-p, --poll-interval INTEGER`: Polling interval in seconds to check batch status (default: 1)
+- `-e, --execution-mode TEXT`: Execution mode: 'local' or 'slurm' (default: local)
+- `-s, --slurm-config TEXT`: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')
+- `-c, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
+- `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
+- `-n, --ani-method TEXT`: ANI method used by gene compare tasks (default: `popani`)
 - `--engine [polars|duckdb]`: Compare engine for per-pair tasks (default: `polars`)
 - `-d, --duckdb-memory-limit TEXT`: DuckDB memory limit for compare tasks (for example `2GB`)
 - `--duckdb-threads INTEGER`: Number of DuckDB threads for compare tasks
@@ -451,6 +478,7 @@ zipstrain utilities single_compare_genome \
   -m1 sample1_profile/sample1_profile.parquet \
   -m2 sample2_profile/sample2_profile.parquet \
   -s scaffold_to_genome.tsv \
+  --calculate ani \
   --engine duckdb \
   --duckdb-memory-limit 2GB \
   --duckdb-threads 8 \
@@ -501,6 +529,8 @@ zipstrain compare_genome \
   -e slurm \
   -s slurm_config.json \
   -c apptainer \
+  --ani-method popani \
+  --calculate ani \
   --engine duckdb \
   --duckdb-threads 8
 ```

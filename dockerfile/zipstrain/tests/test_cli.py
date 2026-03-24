@@ -69,6 +69,13 @@ def stb()->pl.LazyFrame:
         "genome":["genome1","genome1","genome2"],
     }).lazy()
 
+def test_cli_top_level_layout():
+    commands = set(cli.cli.commands)
+    assert {"compare_gene", "compare_genome", "profile", "test", "utilities"} <= commands
+    assert "run" not in commands
+    assert "compare" not in commands
+    assert "gene_tools" not in commands
+
 def test_cli_profile_compare(profile_1:pl.LazyFrame,
                              profile_2:pl.LazyFrame,
                              profile_3:pl.LazyFrame,
@@ -108,6 +115,25 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     lf1_duckdb = pl.read_parquet(tmp_path/"output_duckdb.parquet")
     assert result.exit_code == 0
     assert lf1.sort("genome").equals(lf1_duckdb.sort("genome"))
+    result = runner.invoke(cli.cli, [
+        "utilities",
+        "single_compare_genome",
+        "--mpileup-contig-1", str(profile_1_dir),
+        "--mpileup-contig-2", str(profile_2_dir),
+        "--stb-file", str(stb_path),
+        "--calculate", "ani",
+        "--output-file", str(tmp_path/"output_ani.parquet"),
+    ])
+    lf1_ani = pl.read_parquet(tmp_path/"output_ani.parquet")
+    assert result.exit_code == 0
+    assert set(lf1_ani.columns) == {
+        "genome",
+        "total_positions",
+        "share_allele_pos",
+        "genome_pop_ani",
+        "sample_1",
+        "sample_2",
+    }
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome", 
@@ -218,6 +244,10 @@ def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
             str(comp_obj),
             "--run-dir",
             str(tmp_path / "run"),
+            "--ani-method",
+            "conani",
+            "--calculate",
+            "ani",
             "--engine",
             "duckdb",
             "--duckdb-threads",
@@ -227,6 +257,8 @@ def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert captured["duckdb_threads"] == 7
     assert captured["compare_engine"] == "duckdb"
+    assert captured["ani_method"] == "conani"
+    assert captured["calculate"] == "ani"
 
 
 def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
@@ -262,6 +294,49 @@ def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert captured["duckdb_threads"] == 9
     assert captured["compare_engine"] == "duckdb"
+
+
+def test_profile_command_passes_null_model(tmp_path, monkeypatch):
+    input_table = tmp_path / "bams.csv"
+    input_table.write_text("sample_name,bamfile\ns1,/tmp/a.bam\n")
+    stb_file = tmp_path / "stb.tsv"
+    null_model = tmp_path / "null_model.parquet"
+    gene_range = tmp_path / "genes.tsv"
+    bed_file = tmp_path / "regions.bed"
+    genome_lengths = tmp_path / "genome_lengths.parquet"
+    for path in [stb_file, null_model, gene_range, bed_file, genome_lengths]:
+        path.write_text("x\n")
+
+    captured = {}
+
+    def _fake_lazy_run_profile(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table",
+            str(input_table),
+            "--stb-file",
+            str(stb_file),
+            "--null-model",
+            str(null_model),
+            "--gene-range-table",
+            str(gene_range),
+            "--bed-file",
+            str(bed_file),
+            "--genome-length-file",
+            str(genome_lengths),
+            "--run-dir",
+            str(tmp_path / "run"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["null_model_file"] == null_model
 
 
 def test_generate_stb(tmp_path):

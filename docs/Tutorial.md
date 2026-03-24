@@ -63,7 +63,7 @@ sample3,/path/to/sample3.bam
 To profile multiple BAM files using the ZipStrain CLI, you should first prepare some files:
 
 ```bash
-zipstrain run prepare-profiling  --reference-fasta <path/to/reference/fasta> --gene-fasta <path/to/reference/fasta/genes> --stb-file  <path/to/stb/file> --output-dir <directory/to/save/outputs>
+zipstrain utilities prepare_profiling --reference-fasta <path/to/reference/fasta> --gene-fasta <path/to/reference/fasta/genes> --stb-file <path/to/stb/file> --output-dir <directory/to/save/outputs>
 ```
 
 Your output directory should contain the following files:
@@ -75,7 +75,7 @@ Your output directory should contain the following files:
 Now you can profile your bam files:
 
 ```
-zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
+zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --null-model <path/to/null/model.parquet> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
 
 ```
 
@@ -143,6 +143,8 @@ Finally, you can run the comparison using the generated configuration file and t
 zipstrain compare_genome \
 --genome-comparison-object <path/to/comparison/config.json> \
 --run-dir <path/to/save/comparison/outputs> \
+--calculate ani \
+--ani-method popani \
 --engine duckdb \
 --max-concurrent-batches 1 \
 --duckdb-threads 8
@@ -155,6 +157,7 @@ zipstrain utilities single_compare_genome \
 --mpileup-contig-1 <profile_1.parquet> \
 --mpileup-contig-2 <profile_2.parquet> \
 --stb-file <path/to/stb.tsv> \
+--calculate ani \
 --engine duckdb \
 --output-file <out.parquet> \
 --duckdb-memory-limit 2GB \
@@ -399,7 +402,7 @@ sample2,/path/to/mapping_output/sample2.bam
 You can profile the mapped BAM files using ZipStrain with the following command:
 
 ```bash
-zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --null-model null_model.parquet --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
 ```
 
 This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the `profiling_output/` directory.

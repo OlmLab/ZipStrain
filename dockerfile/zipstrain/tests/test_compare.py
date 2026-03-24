@@ -293,6 +293,76 @@ def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
     assert set(out["sample_2"].to_list()) == {"s2"}
 
 
+def test_duckdb_compare_genomes_to_parquet_ani_only(profile_1, profile_2, stb, tmp_path):
+    p1 = tmp_path / "p1.parquet"
+    p2 = tmp_path / "p2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    out_path = tmp_path / "genome_comp_ani.parquet"
+    profile_1.sink_parquet(p1)
+    profile_2.sink_parquet(p2)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    compare.duckdb_compare_genomes_to_parquet(
+        mpile1=p1,
+        mpile2=p2,
+        output_file=out_path,
+        stb_file=stb_path,
+        sample_1_name="s1",
+        sample_2_name="s2",
+        min_cov=5,
+        min_gene_compare_len=3,
+        genome_scope="all",
+        ani_method="popani",
+        calculate="ani",
+        memory_limit="512MB",
+        temp_directory=tmp_path,
+    )
+
+    out = pl.read_parquet(out_path)
+    assert set(out.columns) == {
+        "genome",
+        "total_positions",
+        "share_allele_pos",
+        "genome_pop_ani",
+        "sample_1",
+        "sample_2",
+    }
+
+
+def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb, tmp_path):
+    stb_path = tmp_path / "stb.tsv"
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    full = (
+        compare.compare_genomes(
+            mpile_contig_1=profile_1,
+            mpile_contig_2=profile_2,
+            min_cov=5,
+            min_gene_compare_len=3,
+            engine="polars",
+            stb_file=stb_path,
+            calculate="all",
+        )
+        .collect()
+        .select("genome", "total_positions", "share_allele_pos", "genome_pop_ani")
+        .sort("genome")
+    )
+    ani_only = (
+        compare.compare_genomes(
+            mpile_contig_1=profile_1,
+            mpile_contig_2=profile_2,
+            min_cov=5,
+            min_gene_compare_len=3,
+            engine="polars",
+            stb_file=stb_path,
+            calculate="ani",
+        )
+        .collect()
+        .sort("genome")
+    )
+    assert ani_only.equals(full)
+
+
 def test_compare_genomes_polars_with_categorical_keys(tmp_path):
     p1 = (
         pl.DataFrame(

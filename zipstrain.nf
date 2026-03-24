@@ -13,6 +13,8 @@ params.batch_compare_n_parallel=4
 params.publish_mode="link"
 params.compare_genome_scope="all"
 params.compare_gene_scope="all:all"
+params.compare_genome_calculate="all"
+params.compare_ani_method="popani"
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
 params.sylph_db = null
@@ -288,6 +290,7 @@ process compare_genome_fast_profiles_single {
     script:
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_calculate = params.compare_genome_calculate ? "--calculate ${params.compare_genome_calculate}" : ""
     """
     zipstrain utilities single_compare_genome  \
                         --mpileup-contig-1 ${mpileup_file1} \
@@ -295,6 +298,8 @@ process compare_genome_fast_profiles_single {
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        --ani-method ${params.compare_ani_method} \
+                        ${add_calculate} \
                         ${add_duckdb_memory_limit} \
                         ${add_genome_scope} \
                         -o ${pair_name}_comparison.parquet
@@ -322,6 +327,7 @@ process compare_gene_fast_profiles_single {
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        --ani-method ${params.compare_ani_method} \
                         ${add_duckdb_memory_limit} \
                         --scope ${params.compare_gene_scope} \
                         -o ${pair_name}_comparison.parquet
@@ -375,6 +381,7 @@ process compare_genome_batched {
     remove_mpiles = mpiles.join(' ')
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_calculate = params.compare_genome_calculate ? "--calculate ${params.compare_genome_calculate}" : ""
     """
     echo -e "${pairs_text}" > pairs.txt
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_genome \
@@ -383,6 +390,8 @@ process compare_genome_batched {
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        --ani-method ${params.compare_ani_method} \
+                        ${add_calculate} \
                         ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_genome_scope}
     mkdir comps
@@ -424,6 +433,7 @@ process compare_gene_batched {
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        --ani-method ${params.compare_ani_method} \
                         ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_gene_scope}
     mkdir comps

@@ -498,6 +498,7 @@ class ProfileTaskGenerator(TaskGenerator):
         yield_size: int,
         container_engine: Engine,
         stb_file: str,
+        null_model_file: str,
         profile_bed_file: str,
         gene_range_file: str,
         genome_length_file: str,
@@ -506,6 +507,7 @@ class ProfileTaskGenerator(TaskGenerator):
     ) -> None:
         super().__init__(data, yield_size)
         self.stb_file = pathlib.Path(stb_file)
+        self.null_model_file = pathlib.Path(null_model_file)
         self.profile_bed_file = pathlib.Path(profile_bed_file)
         self.gene_range_file = pathlib.Path(gene_range_file)
         self.genome_length_file = pathlib.Path(genome_length_file)
@@ -516,6 +518,7 @@ class ProfileTaskGenerator(TaskGenerator):
             raise ValueError("data must be a polars LazyFrame.")
         for path_attr in [
             self.stb_file,
+            self.null_model_file,
             self.profile_bed_file,
             self.gene_range_file,
             self.genome_length_file,
@@ -539,6 +542,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 "bam-file": FileInput(row["bamfile"]),
                 "sample-name": StringInput(row["sample_name"]),
                 "stb-file": FileInput(self.stb_file),
+                "null-model": FileInput(self.null_model_file),
                 "bed-file": FileInput(self.profile_bed_file),
                 "gene-range-table": FileInput(self.gene_range_file),
                 "genome-length-file": FileInput(self.genome_length_file),
@@ -563,6 +567,8 @@ class CompareTaskGenerator(TaskGenerator):
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
+        ani_method (str): ANI method passed to single genome compare tasks.
+        calculate (str): Genome metric set passed to single genome compare tasks ("all" or "ani").
         duckdb_memory_limit (str | None): Optional DuckDB memory limit (for example "2GB").
         duckdb_threads (int | None): Optional DuckDB thread cap (for example 8).
         compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
@@ -573,6 +579,8 @@ class CompareTaskGenerator(TaskGenerator):
         yield_size: int,
         container_engine: Engine,
         comp_config: database.GenomeComparisonConfig,
+        ani_method: str = "popani",
+        calculate: str = "all",
         duckdb_memory_limit: str | None = None,
         duckdb_threads: int | None = None,
         compare_engine: str = "polars",
@@ -580,6 +588,8 @@ class CompareTaskGenerator(TaskGenerator):
         super().__init__(data, yield_size)
         self.comp_config = comp_config
         self.engine = container_engine
+        self.ani_method = ani_method
+        self.calculate = calculate
         self.duckdb_memory_limit = duckdb_memory_limit
         self.duckdb_threads = duckdb_threads
         self.compare_engine = compare_engine
@@ -587,6 +597,8 @@ class CompareTaskGenerator(TaskGenerator):
             raise ValueError("data must be a polars LazyFrame.")
         if self.compare_engine not in {"polars", "duckdb"}:
             raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
+        if self.calculate not in {"all", "ani"}:
+            raise ValueError("calculate must be one of {'all', 'ani'}.")
         
     def get_total_tasks(self) -> int:
         """Returns total number of pairwise comparisons to be made."""
@@ -610,6 +622,8 @@ class CompareTaskGenerator(TaskGenerator):
                     if self.duckdb_threads is not None
                     else ""
                 )
+                ani_method_arg = f"--ani-method {self.ani_method}"
+                calculate_arg = f"--calculate {self.calculate}"
                 compare_engine_arg = f"--engine {self.compare_engine}"
                 inputs = {
                 "mpile_1_file": FileInput(row["profile_location_1"]),
@@ -617,6 +631,8 @@ class CompareTaskGenerator(TaskGenerator):
                 "stb_file": FileInput(self.comp_config.stb_file_loc),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
+                "ani-method-arg": StringInput(ani_method_arg),
+                "calculate-arg": StringInput(calculate_arg),
                 "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
                 "duckdb-threads-arg": StringInput(duckdb_threads_arg),
                 "compare-engine-arg": StringInput(compare_engine_arg),
@@ -1578,7 +1594,7 @@ class CompareRunner(Runner):
 
 
 class ProfileBamTask(Task):
-    """A Task that generates a mpileup file and genome breadth file in parquet format for a given BAM file using the fast_profile profile_bam command.
+    """A Task that profiles a BAM file into the standard ZipStrain parquet outputs.
     The inputs to this task includes:
 
         - bam-file: The input BAM file to be profiled.
@@ -1586,6 +1602,8 @@ class ProfileBamTask(Task):
         - bed-file: The BED file specifying the regions to profile.
         
         - sample-name: The name of the sample being processed.
+
+        - null-model: The null-model parquet file used for sequencing-error adjustment.
 
         - gene-range-table: A BED file specifying the gene ranges for the sample.
 
@@ -1607,11 +1625,13 @@ class ProfileBamTask(Task):
     ln -s <bam-file> input.bam
     ln -s <bed-file> bed_file.bed
     ln -s <gene-range-table> gene-range-table.bed
+    ln -s <null-model> null_model.parquet
     samtools index <bam-file>
     zipstrain utilities profile-single --bam-file input.bam \
     --bed-file bed_file.bed \
     --gene-range-table gene-range-table.bed \
     --stb-file <stb-file> \
+    --null-model null_model.parquet \
     --num-chunks <num-chunks> \
     --max-concurrency <max-concurrency> \
     --output-dir .
@@ -1621,7 +1641,7 @@ class ProfileBamTask(Task):
     """
     
 class FastCompareTask(Task):
-    """A Task that performs a fast genome comparison using the fast_profile compare single_compare_genome command.
+    """A Task that performs a genome comparison using `zipstrain utilities single_compare_genome`.
     
     Args:
         id (str): Unique identifier for the task.
@@ -1635,6 +1655,8 @@ class FastCompareTask(Task):
     --stb-file <stb_file> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
+    <ani-method-arg> \
+    <calculate-arg> \
     <duckdb-memory-limit-arg> \
     <duckdb-threads-arg> \
     <compare-engine-arg> \
@@ -1714,6 +1736,7 @@ def lazy_run_profile(
     container_engine: Engine,
     bams_lf:pl.LazyFrame,
     stb_file:pathlib.Path,
+    null_model_file:pathlib.Path,
     gene_range_table:pathlib.Path,
     bed_file:pathlib.Path,
     genome_length_file:pathlib.Path,
@@ -1729,6 +1752,7 @@ def lazy_run_profile(
         yield_size=tasks_per_batch,
         container_engine=container_engine,
         stb_file=stb_file,
+        null_model_file=null_model_file,
         profile_bed_file=bed_file,
         gene_range_file=gene_range_table,
         genome_length_file=genome_length_file,
@@ -1763,6 +1787,8 @@ def lazy_run_compares(
     poll_interval: float = 5.0,
     execution_mode: str = "local",
     slurm_config: SlurmConfig | None = None,
+    ani_method: str = "popani",
+    calculate: str = "all",
     duckdb_memory_limit: str | None = None,
     duckdb_threads: int | None = None,
     compare_engine: str = "polars",
@@ -1777,6 +1803,8 @@ def lazy_run_compares(
         max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
         poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
         execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
+        ani_method (str): ANI method passed to single genome compare tasks.
+        calculate (str): Genome metric set passed to single genome compare tasks ("all" or "ani").
         duckdb_threads (int | None): Optional DuckDB thread cap passed to compare tasks.
         compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
     """
@@ -1785,6 +1813,8 @@ def lazy_run_compares(
         yield_size=tasks_per_batch,
         container_engine=container_engine,
         comp_config=comps_db.config,
+        ani_method=ani_method,
+        calculate=calculate,
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_threads=duckdb_threads,
         compare_engine=compare_engine,
@@ -1809,7 +1839,7 @@ def lazy_run_compares(
 
 
 class FastGeneCompareTask(Task):
-    """A Task that performs a fast gene comparison using the compare single_compare_gene command.
+    """A Task that performs a gene comparison using `zipstrain utilities single_compare_gene`.
     
     Args:
         id (str): Unique identifier for the task.

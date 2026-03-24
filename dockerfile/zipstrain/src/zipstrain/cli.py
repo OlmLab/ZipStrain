@@ -607,11 +607,12 @@ def get_gene_loc_table(gene_file, scaffold_list, output_file):
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option('--calculate', type=click.Choice(["all", "ani"]), default="all", show_default=True, help="Genome metrics to compute.")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """
     Main function to compare two mpileup files and calculate genome and gene statistics.
     
@@ -653,6 +654,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome,
             ani_method=ani_method,
+            calculate=calculate,
             memory_limit=duckdb_memory_limit,
             temp_directory=duckdb_temp_directory,
             threads=duckdb_threads,
@@ -666,6 +668,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         min_gene_compare_len=min_gene_compare_len,
         genome_scope=genome,
         ani_method=ani_method,
+        calculate=calculate,
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_temp_directory=duckdb_temp_directory,
         duckdb_threads=duckdb_threads,
@@ -674,18 +677,18 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
     ).with_columns(
         sample_1=pl.lit(mpile_contig_1_name),
         sample_2=pl.lit(mpile_contig_2_name),
-    ).select(
-        "genome",
-        "total_positions",
-        "share_allele_pos",
-        "genome_pop_ani",
-        "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
-        "sample_1",
-        "sample_2",
     )
+    selected_cols = ["genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
+    if calculate == "all":
+        selected_cols.extend(
+            [
+                "max_consecutive_length",
+                "shared_genes_count",
+                "identical_gene_count",
+                "perc_id_genes",
+            ]
+        )
+    comp = comp.select(*selected_cols, "sample_1", "sample_2")
     comp.sink_parquet(output_file, compression='zstd')
 
 @utilities.command("single_compare_gene")
@@ -844,6 +847,7 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, n
 @cli.command("profile")
 @click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--null-model', '-u', required=True, help="Path to the null model parquet file.")
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table file.")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file for profiling regions.")
 @click.option('--genome-length-file', '-l', required=True, help="Path to the genome length file.")
@@ -855,13 +859,14 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, n
 @click.option('--slurm-config', '-c', default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option('--container-engine', '-o', default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option('--task-per-batch', '-t', default=10, help="Number of tasks to include in each batch.")
-def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch):
+def profile(input_table, stb_file, null_model, gene_range_table, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
     Args:
     input_table (str): Path to the input table in TSV format containing sample names and BAM file paths.
     stb_file (str): Path to the scaffold-to-genome mapping file.
+    null_model (str): Path to the null model parquet file.
     gene_range_table (str): Path to the gene range table file.
     bed_file (str): Path to the BED file for profiling regions.
     genome_length_file (str): Path to the genome length file.
@@ -905,6 +910,7 @@ def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_fil
         container_engine=container_engine_obj,
         bams_lf=bams_lf,
         stb_file=pathlib.Path(stb_file),
+        null_model_file=pathlib.Path(null_model),
         gene_range_table=pathlib.Path(gene_range_table),
         bed_file=pathlib.Path(bed_file),
         genome_length_file=pathlib.Path(genome_length_file),
@@ -926,10 +932,12 @@ def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_fil
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
+@click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method passed to genome compare tasks.")
+@click.option("--calculate", type=click.Choice(["all", "ani"]), default="all", show_default=True, help="Genome metrics to compute for each pair.")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, engine, duckdb_memory_limit, duckdb_threads):
+def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, calculate, engine, duckdb_memory_limit, duckdb_threads):
     """
     Run genome comparisons in batches using the specified execution mode and container engine.
 
@@ -968,6 +976,8 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
         max_concurrent_batches=max_concurrent_batches,
         execution_mode=execution_mode,
         slurm_config=slurm_conf,
+        ani_method=ani_method,
+        calculate=calculate,
         compare_engine=engine,
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_threads=duckdb_threads,
