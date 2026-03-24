@@ -232,7 +232,7 @@ process prepare_profile{
     path "genome_lengths.parquet", emit: genome_lengths
     script:
 """
-zipstrain profile prepare_profiling \\
+zipstrain utilities prepare_profiling \\
         --reference-fasta ${reference_genome} \\
         --gene-fasta ${gene_fasta} \\
         --stb-file ${stb_file} \\
@@ -262,7 +262,7 @@ process profile_bam {
     val sample_name, emit: sample_name
     script:
     """
-    zipstrain profile profile-single \\
+    zipstrain utilities profile-single \\
                         --bam-file ${bamfile} \\
                         --bed-file ${bed_file} \\
                         --gene-range-table ${gene_range_table} \\
@@ -289,7 +289,7 @@ process compare_genome_fast_profiles_single {
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
-    zipstrain compare single_compare_genome  \
+    zipstrain utilities single_compare_genome  \
                         --mpileup-contig-1 ${mpileup_file1} \
                         --mpileup-contig-2 ${mpileup_file2} \
                         -s ${stb} \
@@ -316,7 +316,7 @@ process compare_gene_fast_profiles_single {
     script:
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
-    zipstrain compare single_compare_gene  \
+    zipstrain utilities single_compare_gene  \
                         --mpileup-contig-1 ${mpileup_file1} \
                         --mpileup-contig-2 ${mpileup_file2} \
                         -s ${stb} \
@@ -377,7 +377,7 @@ process compare_genome_batched {
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain compare single_compare_genome \
+    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_genome \
                         --mpileup-contig-1 {1} \
                         --mpileup-contig-2 {2} \
                         -s ${stb} \
@@ -418,7 +418,7 @@ process compare_gene_batched {
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain compare single_compare_gene \
+    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_gene \
                         --mpileup-contig-1 {1} \
                         --mpileup-contig-2 {2} \
                         -s ${stb} \
@@ -518,7 +518,7 @@ process fromSRAtoProfile{
     else
     bowtie2 -x ${reference_genome} -U ${sra_id}/${sra_id}*.fastq.gz --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
     fi
-    zipstrain profile profile-single \\
+    zipstrain utilities profile-single \\
                         --bam-file ${sra_id}.bam \\
                         --bed-file ${bed_file} \\
                         --gene-range-table ${gene_range_file} \\

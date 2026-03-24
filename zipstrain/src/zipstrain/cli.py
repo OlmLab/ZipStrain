@@ -538,11 +538,6 @@ def process_read_locs(output_file):
     """
     ut.process_read_location(output_file=pathlib.Path(output_file))
 
-@cli.group()
-def gene_tools():
-    """Holds anything related to gene analysis."""
-    pass
-
 @utilities.command("generate_stb")
 @click.option('--genomes-dir-file', '-g', required=True, help="Path to the genomes directory file. A text file with each line containing a genome fasta file path.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output scaffold-to-genome mapping file.")
@@ -569,7 +564,7 @@ def generate_stb(genomes_dir_file, output_file, extension):
     
 
 
-@gene_tools.command("gene-range-table")
+@utilities.command("gene-range-table")
 @click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
 @click.option('--output-file', '-o', required=True, help="location to save output tsv file")
 def get_gene_range_table(gene_file, output_file):
@@ -584,7 +579,7 @@ def get_gene_range_table(gene_file, output_file):
     gene_locs.sink_csv(pathlib.Path(output_file), separator="\t", include_header=False)
 
 
-@gene_tools.command("gene-loc-table")
+@utilities.command("gene-loc-table")
 @click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
 @click.option('--scaffold-list', '-s', required=True, help="location of scaffold list. A text file with each line containing a scaffold name.")
 @click.option('--output-file', '-o', required=True, help="location to save output parquet file")
@@ -603,12 +598,7 @@ def get_gene_loc_table(gene_file, scaffold_list, output_file):
 
 
 
-@cli.group()
-def compare():
-    """The commands in this group are related to comparing profiled samples."""
-    pass
-
-@compare.command("single_compare_genome")
+@utilities.command("single_compare_genome")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
 @click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
@@ -698,7 +688,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
     )
     comp.sink_parquet(output_file, compression='zstd')
 
-@compare.command("single_compare_gene")
+@utilities.command("single_compare_gene")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
 @click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
@@ -793,13 +783,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     )
     gene_comp.sink_parquet(output_file, compression='zstd')
 
-@cli.group()
-def profile():
-    """The commands in this group are related to profiling bam files."""
-    pass
-
-
-@profile.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
+@utilities.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
 @click.option('--gene-fasta', '-g', required=True, help="Path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
@@ -825,7 +809,7 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
     genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
 
 
-@profile.command("profile-single")
+@utilities.command("profile-single")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file describing regions to be profiled.")
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
@@ -857,13 +841,7 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, n
         max_concurrency=max_concurrency,
     )
 
-@cli.group()
-def run():
-    """The commands in this group are related to running zipstrain workflows."""
-    pass
-
-
-@run.command("profile")
+@cli.command("profile")
 @click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table file.")
@@ -939,7 +917,7 @@ def profile(input_table, stb_file, gene_range_table, bed_file, genome_length_fil
     )
 
 
-@run.command("compare_genomes")
+@cli.command("compare_genome")
 @click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
@@ -999,7 +977,7 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
 
 
 
-@run.command("build-comp-database")
+@utilities.command("build-comp-database")
 @click.option("--profile-db-dir", "-p", required=True, help="Directory containing profile either in parquet format.")
 @click.option("--config-file", "-c", required=True, help="Path to the  genome comparsion database config file in json format.")
 @click.option("--output-dir", "-o", required=True, help="Directory to genome comparison database object.")
@@ -1027,7 +1005,7 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
     obj.dump_obj(pathlib.Path(output_dir))
 
 
-@run.command("compare_genes")
+@cli.command("compare_gene")
 @click.option("--gene-comparison-object", "-g", required=True, help="Path to the gene comparison object in json format.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")

@@ -84,7 +84,7 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     stb.sink_csv(stb_path,separator="\t",include_header=False)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
-        "compare",
+        "utilities",
         "single_compare_genome", 
         "--mpileup-contig-1", str(profile_1_dir),
         "--mpileup-contig-2", str(profile_2_dir),
@@ -97,7 +97,7 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     assert result.exit_code == 0 
     assert lf1.shape[0] == 2
     result = runner.invoke(cli.cli, [
-        "compare",
+        "utilities",
         "single_compare_genome",
         "--mpileup-contig-1", str(profile_1_dir),
         "--mpileup-contig-2", str(profile_2_dir),
@@ -109,7 +109,7 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     assert result.exit_code == 0
     assert lf1.sort("genome").equals(lf1_duckdb.sort("genome"))
     result = runner.invoke(cli.cli, [
-        "compare",
+        "utilities",
         "single_compare_genome", 
         "--mpileup-contig-1", str(profile_1_dir),
         "--mpileup-contig-2", str(profile_3_dir),
@@ -138,7 +138,7 @@ def test_single_compare_genome_duckdb_scope_skips_prefilter(profile_1: pl.LazyFr
     result = runner.invoke(
         cli.cli,
         [
-            "compare",
+            "utilities",
             "single_compare_genome",
             "--mpileup-contig-1",
             str(profile_1_dir),
@@ -174,7 +174,7 @@ def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFram
     result = runner.invoke(
         cli.cli,
         [
-            "compare",
+            "utilities",
             "single_compare_gene",
             "--mpileup-contig-1",
             str(profile_1_dir),
@@ -213,8 +213,7 @@ def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
     result = runner.invoke(
         cli.cli,
         [
-            "run",
-            "compare_genomes",
+            "compare_genome",
             "--genome-comparison-object",
             str(comp_obj),
             "--run-dir",
@@ -249,8 +248,7 @@ def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
     result = runner.invoke(
         cli.cli,
         [
-            "run",
-            "compare_genes",
+            "compare_gene",
             "--gene-comparison-object",
             str(comp_obj),
             "--run-dir",

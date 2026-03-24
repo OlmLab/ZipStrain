@@ -1608,7 +1608,7 @@ class ProfileBamTask(Task):
     ln -s <bed-file> bed_file.bed
     ln -s <gene-range-table> gene-range-table.bed
     samtools index <bam-file>
-    zipstrain profile profile-single --bam-file input.bam \
+    zipstrain utilities profile-single --bam-file input.bam \
     --bed-file bed_file.bed \
     --gene-range-table gene-range-table.bed \
     --stb-file <stb-file> \
@@ -1630,7 +1630,7 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    zipstrain compare single_compare_genome --mpileup-contig-1 <mpile_1_file> \
+    zipstrain utilities single_compare_genome --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \
@@ -1818,7 +1818,7 @@ class FastGeneCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
     """
     TEMPLATE_CMD="""
-    zipstrain compare single_compare_gene --mpileup-contig-1 <mpile_1_file> \
+    zipstrain utilities single_compare_gene --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
     --stb-file <stb_file> \
     --min-cov <min_cov> \

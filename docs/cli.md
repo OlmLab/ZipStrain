@@ -8,10 +8,11 @@ First, ensure ZipStrain is installed (see [Installation.md](installation.md) for
 
 ## Usage
 
-The main CLI command is `zipstrain` with various subcommands organized into functional groups:
+The main CLI command is `zipstrain`. Top-level workflow commands are exposed directly, while lower-level single-file operations live under `utilities`:
 
 ```
-zipstrain [GROUP] [COMMAND] [OPTIONS]
+zipstrain [COMMAND] [OPTIONS]
+zipstrain utilities [COMMAND] [OPTIONS]
 ```
 
 Lightweight command:
@@ -22,7 +23,7 @@ zipstrain-light [COMMAND] [OPTIONS]
 
 See [ZipStrainLight.md](ZipStrainLight.md) for the full light workflow.
 
-## Command Groups
+## Command Overview
 
 ### 1. Utilities (`utilities`)
 
@@ -225,7 +226,7 @@ zipstrain utilities to-complete-table -g GENOME_COMPARISON_OBJECT -o OUTPUT_FILE
 - `-g, --genome-comparison-object TEXT`: Path to the genome comparison object in JSON format [required]
 - `-o, --output-file TEXT`: Path to save the completed pairs CSV file [required]
 
-### 2. Gene Tools (`gene_tools`)
+### 2. Gene Annotation Helpers
 
 Commands for working with gene annotations and locations.
 
@@ -234,7 +235,7 @@ Commands for working with gene annotations and locations.
 Build a gene range table from gene files:
 
 ```
-zipstrain gene_tools gene-range-table -g GENE_FILE -o OUTPUT_FILE
+zipstrain utilities gene-range-table -g GENE_FILE -o OUTPUT_FILE
 ```
 
 **Options:**
@@ -247,7 +248,7 @@ zipstrain gene_tools gene-range-table -g GENE_FILE -o OUTPUT_FILE
 Build a gene location table for specified scaffolds:
 
 ```
-zipstrain gene_tools gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
+zipstrain utilities gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
 ```
 
 **Options:**
@@ -256,7 +257,7 @@ zipstrain gene_tools gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
 - `-s, --scaffold-list TEXT`: Location of scaffold list (text file with scaffold names) [required]
 - `-o, --output-file TEXT`: Location to save output Parquet file [required]
 
-### 3. Compare (`compare`)
+### 3. Single-File Compare Utilities
 
 Commands for comparing genomes and samples.
 
@@ -265,7 +266,7 @@ Commands for comparing genomes and samples.
 Compare two mpileup files for genome analysis:
 
 ```
-zipstrain compare single_compare_genome [OPTIONS]
+zipstrain utilities single_compare_genome [OPTIONS]
 ```
 
 **Options:**
@@ -286,7 +287,7 @@ zipstrain compare single_compare_genome [OPTIONS]
 When `--engine polars` is used, comparison runs in Polars after optional DuckDB scope prefiltering.
 When `--engine duckdb` is used, comparison runs end-to-end in DuckDB and writes parquet directly.
 
-### 4. Profile (`profile`)
+### 4. Single-File Profiling Utilities
 
 Commands for profiling BAM files.
 
@@ -295,7 +296,7 @@ Commands for profiling BAM files.
 Prepare files needed for profiling BAM files:
 
 ```
-zipstrain profile prepare_profiling [OPTIONS]
+zipstrain utilities prepare_profiling [OPTIONS]
 ```
 
 **Options:**
@@ -310,7 +311,7 @@ zipstrain profile prepare_profiling [OPTIONS]
 Profile a single BAM file:
 
 ```
-zipstrain profile profile-single [OPTIONS]
+zipstrain utilities profile-single [OPTIONS]
 ```
 
 **Options:**
@@ -330,7 +331,7 @@ zipstrain profile profile-single [OPTIONS]
 - `<bam_stem>_genome_stats.parquet`
 - `<bam_stem>_gene_stats.parquet`
 
-### 5. Run (`run`)
+### 5. Workflow Commands
 
 Commands for running large-scale analyses and managing workflows.
 
@@ -339,7 +340,7 @@ Commands for running large-scale analyses and managing workflows.
 Run BAM file profiling in batches:
 
 ```
-zipstrain run profile [OPTIONS]
+zipstrain profile [OPTIONS]
 ```
 
 **Options:**
@@ -363,7 +364,7 @@ zipstrain run profile [OPTIONS]
 Run genome comparisons in batches:
 
 ```
-zipstrain run compare_genomes [OPTIONS]
+zipstrain compare_genome [OPTIONS]
 ```
 
 **Options:**
@@ -385,7 +386,7 @@ zipstrain run compare_genomes [OPTIONS]
 Build a genome comparison database from profiles:
 
 ```
-zipstrain run build-comp-database [OPTIONS]
+zipstrain utilities build-comp-database [OPTIONS]
 ```
 
 **Options:**
@@ -414,7 +415,7 @@ This command checks if all required dependencies (like samtools) are properly in
 1. **Prepare profiling files:**
 
 ```
-zipstrain profile prepare_profiling \
+zipstrain utilities prepare_profiling \
   -r reference.fasta \
   -g genes.fasta \
   -s scaffold_to_genome.tsv \
@@ -432,7 +433,7 @@ zipstrain utilities build-null-model \
 3. **Profile single BAM file:**
 
 ```
-zipstrain profile profile-single \
+zipstrain utilities profile-single \
   -b profiling_db/genomes_bed_file.bed \
   -a sample1.bam \
   -s scaffold_to_genome.tsv \
@@ -446,7 +447,7 @@ zipstrain profile profile-single \
 4. **Compare two profiles:**
 
 ```
-zipstrain compare single_compare_genome \
+zipstrain utilities single_compare_genome \
   -m1 sample1_profile/sample1_profile.parquet \
   -m2 sample2_profile/sample2_profile.parquet \
   -s scaffold_to_genome.tsv \
@@ -484,7 +485,7 @@ zipstrain utilities build-genome-comparison-config \
 3. **Build comparison database:**
 
 ```
-zipstrain run build-comp-database \
+zipstrain utilities build-comp-database \
   -p profiles.parquet \
   -c comparison_config.json \
   -o comparison_db.json
@@ -493,7 +494,7 @@ zipstrain run build-comp-database \
 4. **Run batch comparisons:**
 
 ```
-zipstrain run compare_genomes \
+zipstrain compare_genome \
   -g comparison_db.json \
   -r run_results \
   -m 10 \
@@ -549,7 +550,8 @@ zipstrain utilities genome_breadth_matrix \
 For detailed help on any command:
 
 ```
-zipstrain [GROUP] [COMMAND] --help
+zipstrain [COMMAND] --help
+zipstrain utilities [COMMAND] --help
 ```
 
 For general help:

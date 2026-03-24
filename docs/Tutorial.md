@@ -75,7 +75,7 @@ Your output directory should contain the following files:
 Now you can profile your bam files:
 
 ```
-zipstrain run profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
+zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
 
 ```
 
@@ -140,7 +140,7 @@ Note that providing current-comp-table is optional. If provided, the comparison 
 Finally, you can run the comparison using the generated configuration file and the profile database:
 
 ```bash
-zipstrain run compare_genomes \
+zipstrain compare_genome \
 --genome-comparison-object <path/to/comparison/config.json> \
 --run-dir <path/to/save/comparison/outputs> \
 --engine duckdb \
@@ -151,7 +151,7 @@ zipstrain run compare_genomes \
 `single_compare_genome` supports `--engine polars|duckdb` (default: `polars`). For lower-memory machines, set DuckDB's memory limit, and for CPU control set DuckDB threads:
 
 ```bash
-zipstrain compare single_compare_genome \
+zipstrain utilities single_compare_genome \
 --mpileup-contig-1 <profile_1.parquet> \
 --mpileup-contig-2 <profile_2.parquet> \
 --stb-file <path/to/stb.tsv> \
@@ -363,7 +363,7 @@ This will generate BAM files for each sample in the `mapping_output/` directory.
 You can use ZipStrain to prepare the necessary files for profiling using the following command:
 
 ```bash
-zipstrain profile prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
+zipstrain utilities prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
 ``` 
 
 This will generate the following files in the `preprofiles/` directory:
@@ -399,7 +399,7 @@ sample2,/path/to/mapping_output/sample2.bam
 You can profile the mapped BAM files using ZipStrain with the following command:
 
 ```bash
-zipstrain run profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
 ```
 
 This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the `profiling_output/` directory.

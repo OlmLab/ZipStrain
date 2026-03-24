@@ -54,7 +54,7 @@ It also supports modular metric selection via `--calculate` (default `all`; exam
 
 If `zipstrain-light` is not found after updating source code, reinstall package entry points (for example `pip install -e .` in the `zipstrain/` project directory).
 
-`zipstrain profile profile-single` now separates chunking from concurrency:
+`zipstrain utilities profile-single` now separates chunking from concurrency:
 - `--num-chunks` controls how many BED chunks are created (default `24`)
 - `--max-concurrency` controls how many chunks run at once (default `4`)
 
@@ -63,7 +63,7 @@ If `zipstrain-light` is not found after updating source code, reinstall package 
 ### 1. Prepare profiling assets
 
 ```bash
-zipstrain profile prepare_profiling \
+zipstrain utilities prepare_profiling \
   --reference-fasta <reference.fasta> \
   --gene-fasta <genes.fna> \
   --stb-file <mapping.stb> \
@@ -89,7 +89,7 @@ sample2,/path/to/sample2.bam
 Run profiling:
 
 ```bash
-zipstrain run profile \
+zipstrain profile \
   --input-table <samples.csv> \
   --stb-file <mapping.stb> \
   --gene-range-table <profiling_assets_dir/gene_range_table.tsv> \
@@ -157,7 +157,7 @@ zipstrain utilities build-gene-comparison-config \
 Genome comparisons:
 
 ```bash
-zipstrain run compare_genomes \
+zipstrain compare_genome \
   --genome-comparison-object <genome_compare.json> \
   --run-dir <compare_run_dir> \
   --engine polars \
@@ -168,7 +168,7 @@ zipstrain run compare_genomes \
 Gene comparisons:
 
 ```bash
-zipstrain run compare_genes \
+zipstrain compare_gene \
   --gene-comparison-object <gene_compare.json> \
   --run-dir <gene_compare_run_dir> \
   --engine duckdb \
@@ -188,7 +188,7 @@ Notes:
 Genome-level single compare:
 
 ```bash
-zipstrain compare single_compare_genome \
+zipstrain utilities single_compare_genome \
   --mpileup-contig-1 <sampleA_profile.parquet> \
   --mpileup-contig-2 <sampleB_profile.parquet> \
   --stb-file <mapping.stb> \
@@ -203,7 +203,7 @@ zipstrain compare single_compare_genome \
 Gene-level single compare:
 
 ```bash
-zipstrain compare single_compare_gene \
+zipstrain utilities single_compare_gene \
   --mpileup-contig-1 <sampleA_profile.parquet> \
   --mpileup-contig-2 <sampleB_profile.parquet> \
   --stb-file <mapping.stb> \
@@ -222,7 +222,7 @@ Each profile task produces:
 - `<sample_name>_genome_stats.parquet`
 - `<sample_name>_gene_stats.parquet`
 
-For `zipstrain run profile`, these files are written inside task directories under `<run_dir>/batch_*/<sample_name>/`.
+For `zipstrain profile`, these files are written inside task directories under `<run_dir>/batch_*/<sample_name>/`.
 
 `<sample_name>.parquet` columns:
 
