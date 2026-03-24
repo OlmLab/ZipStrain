@@ -1,597 +1,323 @@
 # ZipStrain Command Line Interface
 
-ZipStrain provides a command-line interface for strain-level analysis of metagenomic data. The current surface is centered on profile workflows, compare workflows, utilities, and test.
+This page is organized by workflow area for easier navigation:
 
-## Installation
+- [Profile](#profile)
+- [Comparison](#comparison)
+- [Utilities](#utilities)
 
-First, ensure ZipStrain is installed (see [Installation.md](installation.md) for details).
+General usage:
 
-## Usage
-
-The main CLI command is `zipstrain`. Top-level workflow commands are exposed directly, while lower-level single-file operations live under `utilities`:
-
-```
-zipstrain [COMMAND] [OPTIONS]
-zipstrain utilities [COMMAND] [OPTIONS]
-```
-
-Lightweight command:
-
-```
-zipstrain-light [COMMAND] [OPTIONS]
-```
-
-See [ZipStrainLight.md](ZipStrainLight.md) for the full light workflow.
-
-## Command Overview
-
-### 1. Utilities (`utilities`)
-
-General utility commands for data processing and preparation.
-
-#### Build Null Model
-
-Create a null model for sequencing errors based on statistical distributions:
-
-```
-zipstrain utilities build-null-model [OPTIONS]
-```
-
-**Options:**
-
-- `-e, --error-rate FLOAT`: Error rate for the sequencing technology (default: 0.001)
-- `-m, --max-total-reads INTEGER`: Maximum coverage to consider for a base (default: 10000)
-- `-p, --p-threshold FLOAT`: Significance threshold for the Poisson distribution (default: 0.05)
-- `-o, --output-file TEXT`: Path to save the output Parquet file [required]
-- `-t, --model-type [poisson]`: Type of null model to build (default: poisson)
-
-**Example:**
-
-```
-zipstrain utilities build-null-model -e 0.001 -m 10000 -p 0.05 -o null_model.parquet
-```
-
-#### Merge Parquet Files
-
-Merge multiple Parquet files into a single file:
-
-```
-zipstrain utilities merge_parquet -i INPUT_DIR -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-i, --input-dir TEXT`: Directory containing Parquet files to merge [required]
-- `-o, --output-file TEXT`: Path to save the merged Parquet file [required]
-
-#### Process Mpileup
-
-Process mpileup files and save results in Parquet format:
-
-```
-zipstrain utilities process_mpileup [OPTIONS]
-```
-
-**Options:**
-
-- `-g, --gene-range-table-loc TEXT`: Location of the gene range table in TSV format [required]
-- `-b, --batch-bed TEXT`: Location of the batch BED file [required]
-- `-s, --batch-size INTEGER`: Buffer size for processing stdin from samtools (default: 10000)
-- `-o, --output-file TEXT`: Location to save the output Parquet file [required]
-
-#### Make BED File
-
-Create a BED file from a FASTA database:
-
-```
-zipstrain utilities make_bed -d DB_FASTA_DIR -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-d, --db-fasta-dir TEXT`: Path to the database in FASTA format [required]
-- `-m, --max-scaffold-length INTEGER`: Maximum scaffold length to split into multiple entries (default: 500000)
-- `-o, --output-file TEXT`: Path to save the output BED file [required]
-
-#### Get Genome Lengths
-
-Extract genome length information from scaffold-to-genome mapping:
-
-```
-zipstrain utilities get_genome_lengths -s STB_FILE -b BED_FILE -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-b, --bed-file TEXT`: Path to the BED file [required]
-- `-o, --output-file TEXT`: Path to save the output Parquet file [required]
-
-#### Genome Breadth Matrix
-
-Generate a genome breadth matrix from profiles:
-
-```
-zipstrain utilities genome_breadth_matrix [OPTIONS]
-```
-
-**Options:**
-
-- `-p, --profile TEXT`: Path to the profile Parquet file [required]
-- `-g, --genome-length TEXT`: Path to the genome length Parquet file [required]
-- `-s, --stb TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-c, --min-cov INTEGER`: Minimum coverage to consider a position (default: 1)
-- `-o, --output-file TEXT`: Path to save the output Parquet file [required]
-
-#### Collect Breadth Tables
-
-Collect multiple genome breadth tables into a single file:
-
-```
-zipstrain utilities collect_breadth_tables -d BREADTH_TABLES_DIR -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-d, --breadth-tables-dir TEXT`: Directory containing breadth tables in Parquet format [required]
-- `-e, --extension TEXT`: File extension of the breadth tables (default: parquet)
-- `-o, --output-file TEXT`: Path to save the collected breadth tables [required]
-
-#### Strain Heterogeneity
-
-Calculate strain heterogeneity for each genome based on nucleotide frequencies:
-
-```
-zipstrain utilities strain_heterogeneity [OPTIONS]
-```
-
-**Options:**
-
-- `-p, --profile-file TEXT`: Path to the profile Parquet file [required]
-- `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-c, --min-cov INTEGER`: Minimum coverage to consider a position (default: 5)
-- `-f, --freq-threshold FLOAT`: Frequency threshold to define dominant nucleotide (default: 0.8)
-- `-o, --output-file TEXT`: Path to save the output Parquet file [required]
-
-#### Build Profile Database
-
-Build a profile database from a CSV file:
-
-```
-zipstrain utilities build-profile-db -p PROFILE_DB_CSV -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-p, --profile-db-csv TEXT`: Path to the profile database CSV file [required]
-- `-o, --output-file TEXT`: Path to save the output Parquet file [required]
-
-#### Build Genome Reference Bundle (from Sylph)
-
-Build a concatenated reference FASTA and STB from an abundance table with cache reuse:
-
-```
-zipstrain utilities build-genome-db [OPTIONS]
-```
-
-**Options:**
-
-- `-t, --tool [sylph]`: Abundance-tool parser to use [required]
-- `-a, --abundance-table TEXT`: Path to abundance table (`csv`/`tsv`/`parquet`) [required]
-- `-c, --cache-dir TEXT`: Persistent genome cache directory [required]
-- `-o, --output-dir TEXT`: Output directory for `reference_genomes.fna` and `reference_genomes.stb` [required]
-- `--download-retries INTEGER`: Max attempts per genome download before skipping (default: `3`)
-- `--retry-backoff-seconds FLOAT`: Base backoff seconds for exponential retry waits (default: `1.0`)
-- `--download-workers INTEGER`: Number of parallel download workers (default: `4`)
-
-See [GenomeDBFromSylph.md](GenomeDBFromSylph.md) for a full walkthrough.
-The command also writes `genome_db_build_report.txt` in `--output-dir`, including failed accession IDs when present.
-
-#### Build Comparison Configuration
-
-Build a comparison configuration JSON file:
-
-```
-zipstrain utilities build-genome-comparison-config [OPTIONS]
-```
-
-For gene-level comparison config objects, use:
-
-```
-zipstrain utilities build-gene-comparison-config [OPTIONS]
-```
-
-**Options:**
-
-- `-p, --profile-db TEXT`: Path to the profile database Parquet file [required]
-- `-g, --gene-db-id TEXT`: Gene database ID [required]
-- `-r, --reference-genome-id TEXT`: Reference fasta ID [required]
-- `-s, --scope TEXT`: Genome scope for comparison (default: "all")
-- `-c, --min-cov INTEGER`: Minimum coverage to consider a position (default: 5)
-- `-l, --min-gene-compare-len INTEGER`: Minimum gene length to consider for comparison (default: 200)
-- `-t, --stb-file-loc TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-a, --current-comp-table TEXT`: Path to existing comparison table in Parquet format (optional)
-- `-o, --output-file TEXT`: Path to save the output configuration JSON file [required]
-
-#### To Complete Table
-
-Generate a table of remaining genome comparison pairs:
-
-```
-zipstrain utilities to-complete-table -g GENOME_COMPARISON_OBJECT -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-g, --genome-comparison-object TEXT`: Path to the genome comparison object in JSON format [required]
-- `-o, --output-file TEXT`: Path to save the completed pairs CSV file [required]
-
-### 2. Gene Annotation Helpers
-
-Commands for working with gene annotations and locations.
-
-#### Gene Range Table
-
-Build a gene range table from gene files:
-
-```
-zipstrain utilities gene-range-table -g GENE_FILE -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-g, --gene-file TEXT`: Location of gene file (Prodigal's nucleotide FASTA output) [required]
-- `-o, --output-file TEXT`: Location to save output TSV file [required]
-
-#### Gene Location Table
-
-Build a gene location table for specified scaffolds:
-
-```
-zipstrain utilities gene-loc-table -g GENE_FILE -s SCAFFOLD_LIST -o OUTPUT_FILE
-```
-
-**Options:**
-
-- `-g, --gene-file TEXT`: Location of gene file (Prodigal's nucleotide FASTA output) [required]
-- `-s, --scaffold-list TEXT`: Location of scaffold list (text file with scaffold names) [required]
-- `-o, --output-file TEXT`: Location to save output Parquet file [required]
-
-### 3. Single-File Compare Utilities
-
-Commands for comparing genomes and samples.
-
-#### Single Genome Compare
-
-Compare two mpileup files for genome analysis:
-
-```
-zipstrain utilities single_compare_genome [OPTIONS]
-```
-
-**Options:**
-
-- `-m1, --mpileup-contig-1 TEXT`: Path to the first mpileup file [required]
-- `-m2, --mpileup-contig-2 TEXT`: Path to the second mpileup file [required]
-- `-s, --stb-file TEXT`: Path to the scaffold to genome mapping file [required]
-- `-c, --min-cov INTEGER`: Minimum coverage to consider a position (default: 5)
-- `-l, --min-gene-compare-len INTEGER`: Minimum gene length to consider for comparison (default: 100)
-- `-o, --output-file TEXT`: Path to save the parquet file [required]
-- `-g, --genome TEXT`: If provided, do comparison only for the specified genome (default: all)
-- `-a, --ani-method TEXT`: ANI method (`popani`, `conani`, `cosani_<threshold>`)
-- `--calculate [all|ani]`: Genome metrics to compute (default: `all`)
-- `--engine [polars|duckdb]`: Compare engine (default: `polars`)
-- `--duckdb-memory-limit TEXT`: DuckDB memory limit (for example `2GB`, `1024MB`)
-- `--duckdb-temp-directory TEXT`: Directory for DuckDB spill files
-- `--duckdb-threads INTEGER`: Number of DuckDB threads
-
-When `--engine polars` is used, comparison runs in Polars after optional DuckDB scope prefiltering.
-When `--engine duckdb` is used, comparison runs end-to-end in DuckDB and writes parquet directly.
-
-### 4. Single-File Profiling Utilities
-
-Commands for profiling BAM files.
-
-#### Prepare Profiling
-
-Prepare files needed for profiling BAM files:
-
-```
-zipstrain utilities prepare_profiling [OPTIONS]
-```
-
-**Options:**
-
-- `-r, --reference-fasta TEXT`: Path to the reference genome in FASTA format [required]
-- `-g, --gene-fasta TEXT`: Path to the gene annotations in FASTA format [required]
-- `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-o, --output-dir TEXT`: Directory to save the profiling database [required]
-
-#### Profile Single
-
-Profile a single BAM file:
-
-```
-zipstrain utilities profile-single [OPTIONS]
-```
-
-**Options:**
-
-- `-b, --bed-file TEXT`: Path to the BED file describing regions to be profiled [required]
-- `-a, --bam-file TEXT`: Path to the BAM file to be profiled [required]
-- `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-m, --null-model TEXT`: Path to the null model parquet file [required]
-- `-g, --gene-range-table TEXT`: Path to the gene range table [required]
-- `-n, --num-chunks INTEGER`: Number of BED chunks to create for profiling (default: 24)
-- `-c, --max-concurrency INTEGER`: Maximum number of profiling chunks to run concurrently (default: 4)
-- `-o, --output-dir TEXT`: Directory to save the profiling output [required]
-
-`profile-single` writes three parquet outputs in `--output-dir`:
-
-- `<bam_stem>_profile.parquet`
-- `<bam_stem>_genome_stats.parquet`
-- `<bam_stem>_gene_stats.parquet`
-
-### 5. Workflow Commands
-
-Commands for running large-scale analyses and managing workflows.
-
-#### Profile
-
-Run BAM file profiling in batches:
-
-```
-zipstrain profile [OPTIONS]
-```
-
-**Options:**
-
-- `-i, --input-table TEXT`: Path to the input table in TSV format containing sample names and BAM file paths [required]
-- `-s, --stb-file TEXT`: Path to the scaffold-to-genome mapping file [required]
-- `-u, --null-model TEXT`: Path to the null model parquet file [required]
-- `-g, --gene-range-table TEXT`: Path to the gene range table file [required]
-- `-b, --bed-file TEXT`: Path to the BED file for profiling regions [required]
-- `-l, --genome-length-file TEXT`: Path to the genome length file [required]
-- `-r, --run-dir TEXT`: Directory to save the run data [required]
-- `-n, --num-procs INTEGER`: Number of processors to use for each profiling task (default: 8)
-- `-m, --max-concurrent-batches INTEGER`: Maximum number of concurrent batches to run (default: 5)
-- `-p, --poll-interval INTEGER`: Polling interval in seconds to check batch status (default: 1)
-- `-e, --execution-mode TEXT`: Execution mode: 'local' or 'slurm' (default: local)
-- `-c, --slurm-config TEXT`: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')
-- `-o, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
-- `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
-
-#### Compare Genomes
-
-Run genome comparisons in batches:
-
-```
-zipstrain compare_genome [OPTIONS]
-```
-
-**Options:**
-
-- `-g, --genome-comparison-object TEXT`: Path to the genome comparison object in JSON format [required]
-- `-r, --run-dir TEXT`: Directory to save the run data [required]
-- `-m, --max-concurrent-batches INTEGER`: Maximum number of concurrent batches to run (default: 5)
-- `-p, --poll-interval INTEGER`: Polling interval in seconds to check batch status (default: 1)
-- `-e, --execution-mode TEXT`: Execution mode: 'local' or 'slurm' (default: local)
-- `-s, --slurm-config TEXT`: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')
-- `-c, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
-- `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
-- `-a, --ani-method TEXT`: ANI method used by genome compare tasks (default: `popani`)
-- `--calculate [all|ani]`: Genome metrics to compute for each pair (default: `all`)
-- `--engine [polars|duckdb]`: Compare engine for per-pair tasks (default: `polars`)
-- `-d, --duckdb-memory-limit TEXT`: DuckDB memory limit for compare tasks (for example `2GB`)
-- `--duckdb-threads INTEGER`: Number of DuckDB threads for compare tasks
-
-#### Compare Genes
-
-Run gene comparisons in batches:
-
-```
-zipstrain compare_gene [OPTIONS]
-```
-
-**Options:**
-
-- `-g, --gene-comparison-object TEXT`: Path to the gene comparison object in JSON format [required]
-- `-r, --run-dir TEXT`: Directory to save the run data [required]
-- `-m, --max-concurrent-batches INTEGER`: Maximum number of concurrent batches to run (default: 5)
-- `-p, --poll-interval INTEGER`: Polling interval in seconds to check batch status (default: 1)
-- `-e, --execution-mode TEXT`: Execution mode: 'local' or 'slurm' (default: local)
-- `-s, --slurm-config TEXT`: Path to the SLURM configuration file in JSON format (required if execution mode is 'slurm')
-- `-c, --container-engine TEXT`: Container engine to use: 'local', 'docker' or 'apptainer' (default: local)
-- `-t, --task-per-batch INTEGER`: Number of tasks to include in each batch (default: 10)
-- `-n, --ani-method TEXT`: ANI method used by gene compare tasks (default: `popani`)
-- `--engine [polars|duckdb]`: Compare engine for per-pair tasks (default: `polars`)
-- `-d, --duckdb-memory-limit TEXT`: DuckDB memory limit for compare tasks (for example `2GB`)
-- `--duckdb-threads INTEGER`: Number of DuckDB threads for compare tasks
-
-#### Build Comparison Database
-
-Build a genome comparison database from profiles:
-
-```
-zipstrain utilities build-comp-database [OPTIONS]
-```
-
-**Options:**
-
-- `-p, --profile-db-dir TEXT`: Directory containing profile in Parquet format [required]
-- `-c, --config-file TEXT`: Path to the genome comparison database config file in JSON format [required]
-- `-o, --output-dir TEXT`: Directory to save genome comparison database object [required]
-- `-f, --comp-db-file TEXT`: Path to initial database file (optional)
-
-## Test Command
-
-### Test Installation
-
-Verify ZipStrain setup and dependencies:
-
-```
-zipstrain test
-```
-
-This command checks if all required dependencies (like samtools) are properly installed and accessible.
-
-## Example Workflows
-
-### Basic Profiling and Analysis Workflow
-
-1. **Prepare profiling files:**
-
-```
-zipstrain utilities prepare_profiling \
-  -r reference.fasta \
-  -g genes.fasta \
-  -s scaffold_to_genome.tsv \
-  -o profiling_db
-```
-
-2. **Build null model:**
-
-```
-zipstrain utilities build-null-model \
-  -e 0.001 -m 10000 -p 0.05 \
-  -o null_model.parquet
-```
-
-3. **Profile single BAM file:**
-
-```
-zipstrain utilities profile-single \
-  -b profiling_db/genomes_bed_file.bed \
-  -a sample1.bam \
-  -s scaffold_to_genome.tsv \
-  -m null_model.parquet \
-  -g profiling_db/gene_range_table.tsv \
-  -n 24 \
-  -c 4 \
-  -o sample1_profile
-```
-
-4. **Compare two profiles:**
-
-```
-zipstrain utilities single_compare_genome \
-  -m1 sample1_profile/sample1_profile.parquet \
-  -m2 sample2_profile/sample2_profile.parquet \
-  -s scaffold_to_genome.tsv \
-  --calculate ani \
-  --engine duckdb \
-  --duckdb-memory-limit 2GB \
-  --duckdb-threads 8 \
-  --duckdb-temp-directory /tmp \
-  -o comparison_results.parquet
-```
-
-### Large-scale Analysis Workflow
-
-1. **Build profile database:**
-
-```
-zipstrain utilities build-profile-db \
-  -p profiles.csv \
-  -o profiles.parquet
-```
-
-2. **Build comparison configuration:**
-
-```
-zipstrain utilities build-genome-comparison-config \
-  -p profiles.parquet \
-  -g genes_v1 \
-  -r gtdb_r214 \
-  -s all \
-  -c 5 \
-  -l 200 \
-  -t scaffold_to_genome.tsv \
-  -o comparison_config.json
-```
-
-3. **Build comparison database:**
-
-```
-zipstrain utilities build-comp-database \
-  -p profiles.parquet \
-  -c comparison_config.json \
-  -o comparison_db.json
-```
-
-4. **Run batch comparisons:**
-
-```
-zipstrain compare_genome \
-  -g comparison_db.json \
-  -r run_results \
-  -m 10 \
-  -e slurm \
-  -s slurm_config.json \
-  -c apptainer \
-  --ani-method popani \
-  --calculate ani \
-  --engine duckdb \
-  --duckdb-threads 8
-```
-
-### Strain Analysis Workflow
-
-1. **Calculate strain heterogeneity:**
-
-```
-zipstrain utilities strain_heterogeneity \
-  -p sample_profile.parquet \
-  -s scaffold_to_genome.tsv \
-  -c 5 \
-  -f 0.8 \
-  -o strain_het.parquet
-```
-
-2. **Generate genome breadth matrix:**
-
-```
-zipstrain utilities genome_breadth_matrix \
-  -p sample_profile.parquet \
-  -g genome_lengths.parquet \
-  -s scaffold_to_genome.tsv \
-  -c 1 \
-  -o breadth_matrix.parquet
-```
-
-## File Formats
-
-- **Parquet**: Primary format for structured data storage and processing
-- **TSV**: Tab-separated values for simple tabular data
-- **BED**: Standard genomic interval format
-- **JSON**: Configuration files and object serialization
-- **FASTA**: Sequence data input
-- **CSV**: Simple data tables for input/output
-
-## Performance Considerations
-
-- Set `--duckdb-memory-limit` to constrain memory usage on smaller machines
-- Set `--duckdb-threads` to cap CPU parallelism for DuckDB compare tasks
-- Use container engines for consistent environments across platforms
-- Consider SLURM execution mode for large-scale HPC analyses
-
-## Getting Help
-
-For detailed help on any command:
-
-```
-zipstrain [COMMAND] --help
-zipstrain utilities [COMMAND] --help
-```
-
-For general help:
-
-```
+```bash
 zipstrain --help
 ```
 
-To test your installation:
+For command-specific help:
 
+```bash
+zipstrain <command-or-group> --help
+zipstrain <group> <command> --help
 ```
-zipstrain test
+
+## Profile
+
+### Profile Commands At A Glance
+
+| Command | Purpose |
+|---|---|
+| `zipstrain profile` | Batch profiling for multiple BAM files |
+| `zipstrain utilities prepare_profiling` | Build profiling assets (BED, gene ranges, genome lengths) |
+| `zipstrain utilities profile-single` | Profile one BAM file |
+
+### `zipstrain profile`
+
+Run BAM profiling in batch mode.
+
+```bash
+zipstrain profile \
+  --input-table samples.csv \
+  --stb-file mapping.stb \
+  --gene-range-table gene_range_table.tsv \
+  --bed-file genomes_bed_file.bed \
+  --genome-length-file genome_lengths.parquet \
+  --run-dir profile_run
+```
+
+Options:
+
+- `-i, --input-table` (required)
+- `-s, --stb-file` (required)
+- `-g, --gene-range-table` (required)
+- `-b, --bed-file` (required)
+- `-l, --genome-length-file` (required)
+- `-r, --run-dir` (required)
+- `-n, --num-procs` (default: `8`)
+- `-m, --max-concurrent-batches` (default: `5`)
+- `-p, --poll-interval` (default: `1`)
+- `-e, --execution-mode` (default: `local`)
+- `-c, --slurm-config`
+- `-o, --container-engine` (default: `local`)
+- `-t, --task-per-batch` (default: `10`)
+
+### `zipstrain utilities prepare_profiling`
+
+Prepare profiling database assets.
+
+```bash
+zipstrain utilities prepare_profiling \
+  --reference-fasta reference.fasta \
+  --gene-fasta genes.fasta \
+  --stb-file mapping.stb \
+  --output-dir profiling_assets
+```
+
+Options:
+
+- `-r, --reference-fasta` (required)
+- `-g, --gene-fasta` (required)
+- `-s, --stb-file` (required)
+- `-o, --output-dir` (required)
+
+### `zipstrain utilities profile-single`
+
+Profile a single BAM.
+
+```bash
+zipstrain utilities profile-single \
+  --bed-file genomes_bed_file.bed \
+  --bam-file sample.bam \
+  --stb-file mapping.stb \
+  --null-model null_model.parquet \
+  --gene-range-table gene_range_table.tsv \
+  --output-dir sample_profile
+```
+
+Options:
+
+- `-b, --bed-file` (required)
+- `-a, --bam-file` (required)
+- `-s, --stb-file` (required)
+- `-m, --null-model` (required)
+- `-g, --gene-range-table` (required)
+- `-n, --num-workers` (default: `1`)
+- `-o, --output-dir` (required)
+
+Outputs include:
+
+- `<sample>_profile.parquet`
+- `<sample>_genome_stats.parquet`
+- `<sample>_gene_stats.parquet`
+
+## Comparison
+
+### Comparison Commands At A Glance
+
+| Command | Purpose |
+|---|---|
+| `zipstrain compare genomes` | Batch genome-level comparisons |
+| `zipstrain compare genes` | Batch gene-level comparisons |
+| `zipstrain compare build-comp-database` | Build comparison DB object from profile DB + config |
+| `zipstrain utilities single_compare_genome` | Compare one pair at genome level |
+| `zipstrain utilities single_compare_gene` | Compare one pair at gene level |
+| `zipstrain utilities build-genome-comparison-config` | Build genome comparison config |
+| `zipstrain utilities build-gene-comparison-config` | Build gene comparison config |
+| `zipstrain utilities to-complete-table` | Emit not-yet-completed pair table |
+
+### `zipstrain compare genomes`
+
+```bash
+zipstrain compare genomes \
+  --genome-comparison-object genome_comp.json \
+  --run-dir compare_run \
+  --engine duckdb \
+  --calculate all
+```
+
+Options:
+
+- `-g, --genome-comparison-object` (required)
+- `-r, --run-dir` (required)
+- `-m, --max-concurrent-batches` (default: `5`)
+- `-p, --poll-interval` (default: `1`)
+- `-e, --execution-mode` (default: `local`)
+- `-s, --slurm-config`
+- `-c, --container-engine` (default: `local`)
+- `-t, --task-per-batch` (default: `10`)
+- `--engine` (`polars|duckdb`, default: `polars`)
+- `--calculate` (`ani`, `ibs`, `identical_genes`, `all`, default: `all`)
+- `-d, --duckdb-memory-limit`
+- `--duckdb-threads`
+
+### `zipstrain compare genes`
+
+```bash
+zipstrain compare genes \
+  --gene-comparison-object gene_comp.json \
+  --run-dir gene_compare_run
+```
+
+Options:
+
+- `-g, --gene-comparison-object` (required)
+- `-r, --run-dir` (required)
+- `-m, --max-concurrent-batches` (default: `5`)
+- `-p, --poll-interval` (default: `1`)
+- `-e, --execution-mode` (default: `local`)
+- `-s, --slurm-config`
+- `-c, --container-engine` (default: `local`)
+- `-t, --task-per-batch` (default: `10`)
+- `-n, --ani-method` (default: `popani`)
+- `--engine` (`polars|duckdb`, default: `polars`)
+- `-d, --duckdb-memory-limit`
+- `--duckdb-threads`
+
+### `zipstrain compare build-comp-database`
+
+```bash
+zipstrain compare build-comp-database \
+  --profile-db-dir profiles.parquet \
+  --config-file comparison_config.json \
+  --output-dir comparison_db
+```
+
+Options:
+
+- `-p, --profile-db-dir` (required)
+- `-c, --config-file` (required)
+- `-o, --output-dir` (required)
+- `-f, --comp-db-file`
+
+### `zipstrain utilities single_compare_genome`
+
+```bash
+zipstrain utilities single_compare_genome \
+  --mpileup-contig-1 sample_a.parquet \
+  --mpileup-contig-2 sample_b.parquet \
+  --stb-file mapping.stb \
+  --output-file out.parquet
+```
+
+Options:
+
+- `-m1, --mpileup-contig-1` (required)
+- `-m2, --mpileup-contig-2` (required)
+- `-s, --stb-file` (required)
+- `-c, --min-cov` (default: `5`)
+- `-l, --min-gene-compare-len` (default: `100`)
+- `-o, --output-file` (required)
+- `-g, --genome` (default: `all`)
+- `-a, --ani-method` (default: `popani`)
+- `--calculate` (default: `all`)
+- `--engine` (`polars|duckdb`, default: `polars`)
+- `--duckdb-memory-limit`
+- `--duckdb-temp-directory`
+- `--duckdb-threads`
+
+### `zipstrain utilities single_compare_gene`
+
+```bash
+zipstrain utilities single_compare_gene \
+  --mpileup-contig-1 sample_a.parquet \
+  --mpileup-contig-2 sample_b.parquet \
+  --stb-file mapping.stb \
+  --scope all:all \
+  --output-file out.parquet
+```
+
+Options:
+
+- `-m1, --mpileup-contig-1` (required)
+- `-m2, --mpileup-contig-2` (required)
+- `-s, --stb-file` (required)
+- `-c, --min-cov` (default: `5`)
+- `-l, --min-gene-compare-len` (default: `100`)
+- `-o, --output-file` (required)
+- `-g, --scope` (default: `all:all`)
+- `-a, --ani-method` (default: `popani`)
+- `--engine` (`polars|duckdb`, default: `polars`)
+- `--duckdb-memory-limit`
+- `--duckdb-temp-directory`
+- `--duckdb-threads`
+
+### Comparison Config Helpers
+
+`build-genome-comparison-config` and `build-gene-comparison-config` share the same option pattern:
+
+- `-p, --profile-db` (required)
+- `-g, --gene-db-id` (required)
+- `-r, --reference-genome-id` (required)
+- `-s, --scope` (default: `all` for genome, `all:all` for gene)
+- `-c, --min-cov` (default: `5`)
+- `-l, --min-gene-compare-len` (default: `200`)
+- `-t, --stb-file-loc` (required)
+- `-a, --current-comp-table`
+- `-o, --output-file` (required)
+
+### `zipstrain utilities to-complete-table`
+
+```bash
+zipstrain utilities to-complete-table \
+  --genome-comparison-object genome_comp.json \
+  --output-file remaining_pairs.csv
+```
+
+## Utilities
+
+### Utility Commands At A Glance
+
+| Command | Purpose |
+|---|---|
+| `zipstrain utilities build-null-model` | Build sequencing-error null model |
+| `zipstrain utilities merge_parquet` | Merge parquet files |
+| `zipstrain utilities process_mpileup` | Convert mpileup stream to parquet |
+| `zipstrain utilities make_bed` | Build bed chunks from fasta |
+| `zipstrain utilities get_genome_lengths` | Genome lengths from STB + BED |
+| `zipstrain utilities genome_breadth_matrix` | Per-genome breadth output |
+| `zipstrain utilities collect_breadth_tables` | Merge breadth tables |
+| `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
+| `zipstrain utilities build-profile-db` | Build profile DB parquet |
+| `zipstrain utilities build-genome-db` | Build local genome reference bundle from abundance table |
+| `zipstrain utilities presence-profile` | Presence profile from coverage + read locations |
+| `zipstrain utilities process-read-locs` | Process read-location stream |
+| `zipstrain utilities generate_stb` | Create scaffold-to-genome map from genome files |
+| `zipstrain utilities gene-range-table` | Create gene range table |
+| `zipstrain utilities gene-loc-table` | Create gene-location table for scaffold list |
+| `zipstrain test` | Validate local installation/dependencies |
+
+### `zipstrain utilities build-genome-db`
+
+```bash
+zipstrain utilities build-genome-db \
+  --tool sylph \
+  --abundance-table sylph_abundance.tsv \
+  --cache-dir genome_cache \
+  --output-dir .
+```
+
+Important options:
+
+- `--download-retries` (default: `3`)
+- `--retry-backoff-seconds` (default: `1.0`)
+- `--download-workers` (default: `4`)
+
+### Other Utility Commands
+
+Use `--help` on each command for full option details:
+
+```bash
+zipstrain utilities build-null-model --help
+zipstrain utilities merge_parquet --help
+zipstrain utilities process_mpileup --help
+zipstrain utilities make_bed --help
+zipstrain utilities get_genome_lengths --help
+zipstrain utilities genome_breadth_matrix --help
+zipstrain utilities collect_breadth_tables --help
+zipstrain utilities strain_heterogeneity --help
+zipstrain utilities build-profile-db --help
+zipstrain utilities presence-profile --help
+zipstrain utilities process-read-locs --help
+zipstrain utilities generate_stb --help
+zipstrain utilities gene-range-table --help
+zipstrain utilities gene-loc-table --help
+zipstrain test --help
 ```

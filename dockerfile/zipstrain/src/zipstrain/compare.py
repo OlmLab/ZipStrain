@@ -5,19 +5,75 @@ This module provides all comparison functions for zipstrain.
 """
 
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Iterable, Literal, Optional, Union
 
 import polars as pl
 import duckdb
 
-GenomeCalculate = Literal["all", "ani"]
+
+GENOME_COMPARISON_CALCULATIONS = ("ani", "ibs", "identical_genes")
+GENOME_COMPARISON_DEFAULT_CALCULATIONS = ("ani",)
+GENOME_COMPARISON_CALCULATION_ALIASES = {
+    "ani": "ani",
+    "popani": "ani",
+    "ibs": "ibs",
+    "max_block": "ibs",
+    "max_consecutive_length": "ibs",
+    "identical_genes": "identical_genes",
+    "gene_identity": "identical_genes",
+    "id_genes": "identical_genes",
+}
 
 
-def _normalize_genome_calculate(calculate: str) -> GenomeCalculate:
-    normalized = (calculate or "").strip().lower()
-    if normalized not in {"all", "ani"}:
-        raise ValueError("calculate must be one of {'all', 'ani'}")
-    return normalized  # type: ignore[return-value]
+def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = None) -> tuple[str, ...]:
+    """Parse and normalize genome metric selection tokens.
+
+    Accepted input formats:
+      - None -> default ("ani",)
+      - "ani+ibs+identical_genes"
+      - "all"
+      - iterable of token strings
+    """
+    if calculate is None:
+        return GENOME_COMPARISON_DEFAULT_CALCULATIONS
+
+    raw_tokens: list[str] = []
+    if isinstance(calculate, str):
+        for plus_part in calculate.split("+"):
+            for comma_part in plus_part.split(","):
+                token = comma_part.strip().lower()
+                if token:
+                    raw_tokens.append(token)
+    else:
+        raw_tokens = [str(token).strip().lower() for token in calculate if str(token).strip()]
+
+    if not raw_tokens:
+        return tuple()
+    if "all" in raw_tokens:
+        return GENOME_COMPARISON_CALCULATIONS
+
+    normalized: set[str] = set()
+    for token in raw_tokens:
+        mapped = GENOME_COMPARISON_CALCULATION_ALIASES.get(token)
+        if mapped is None:
+            supported = "all," + ",".join(GENOME_COMPARISON_CALCULATIONS)
+            raise ValueError(f"Unsupported calculation '{token}'. Supported values: {supported}")
+        normalized.add(mapped)
+    return tuple(metric for metric in GENOME_COMPARISON_CALCULATIONS if metric in normalized)
+
+
+def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
+    """Return ordered output columns for selected genome-level calculations."""
+    calculations = parse_genome_calculations(calculate)
+    cols = ["genome"]
+    if "ani" in calculations:
+        cols.extend(["total_positions", "share_allele_pos", "genome_pop_ani"])
+    if "ibs" in calculations:
+        cols.append("max_consecutive_length")
+    if "identical_genes" in calculations:
+        cols.extend(["shared_genes_count", "identical_gene_count", "perc_id_genes"])
+    return cols
+
 
 class PolarsANIExpressions:
     """ 
@@ -280,26 +336,24 @@ genomes AS (
 )""".strip()
 
 
-def _duckdb_contig_pop_max_ctes(shared_source: str = "shared") -> list[str]:
-    return [
-        f"""
-pop AS (
-  SELECT
-    genome,
-    COUNT(*)::BIGINT AS total_positions,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_pop_ani
-  FROM {shared_source}
-  GROUP BY genome
-)""".strip(),
-        f"""
+def _duckdb_contig_pop_max_ctes(
+    shared_source: str = "shared",
+    include_pop: bool = True,
+    include_max_blocks: bool = True,
+) -> list[str]:
+    ctes: list[str] = []
+    if not include_pop and not include_max_blocks:
+        return ctes
+    ctes.extend(
+        [
+            f"""
 contig_base AS (
   SELECT
     s.*,
     LAG(scaffold) OVER (PARTITION BY genome ORDER BY scaffold, pos) AS prev_scaffold
   FROM {shared_source} s
 )""".strip(),
-        """
+            """
 contig AS (
   SELECT
     *,
@@ -311,7 +365,24 @@ contig AS (
     ) OVER (PARTITION BY genome ORDER BY scaffold, pos ROWS UNBOUNDED PRECEDING) AS group_id
   FROM contig_base
 )""".strip(),
-        """
+        ]
+    )
+    if include_pop:
+        ctes.append(
+            """
+pop AS (
+  SELECT
+    genome,
+    COUNT(*)::BIGINT AS total_positions,
+    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
+    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_pop_ani
+  FROM contig
+  GROUP BY genome
+)""".strip()
+        )
+    if include_max_blocks:
+        ctes.append(
+            """
 max_blocks AS (
   SELECT
     genome,
@@ -323,7 +394,8 @@ max_blocks AS (
   ) blocks
   GROUP BY genome
 )""".strip(),
-    ]
+        )
+    return ctes
 
 
 def _duckdb_gene_stats_ctes(min_gene_compare_len: int, contig_source: str = "contig") -> list[str]:
@@ -404,18 +476,82 @@ ORDER BY genome
 """.strip()
 
 
-def _duckdb_genome_ani_output_select(sample_1_sql: str, sample_2_sql: str) -> str:
+def _duckdb_genomes_from_shared_cte(genome_scope_sql: str) -> str:
     return f"""
-SELECT
-  genome,
-  total_positions,
-  share_allele_pos,
-  genome_pop_ani,
-  '{sample_1_sql}' AS sample_1,
-  '{sample_2_sql}' AS sample_2
-FROM merged
-ORDER BY genome
-""".strip()
+genomes AS (
+  SELECT DISTINCT CAST(genome AS VARCHAR) AS genome
+  FROM shared
+  WHERE ('{genome_scope_sql}' = 'all' OR CAST(genome AS VARCHAR) = '{genome_scope_sql}')
+)""".strip()
+
+
+def _duckdb_genome_compare_query(
+    *,
+    shared_query: str,
+    min_gene_compare_len: int,
+    genome_scope: str,
+    calculate: Optional[Union[str, Iterable[str]]] = None,
+    stb_file: Optional[Union[str, Path]] = None,
+    sample_1_name: Optional[str] = None,
+    sample_2_name: Optional[str] = None,
+) -> str:
+    calculations = parse_genome_calculations(calculate)
+    need_ani = "ani" in calculations
+    need_ibs = "ibs" in calculations
+    need_identical_genes = "identical_genes" in calculations
+
+    genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
+    ctes = [f"shared AS (\n{shared_query}\n)"]
+    if stb_file is None:
+        ctes.append(_duckdb_genomes_from_shared_cte(genome_scope_sql=genome_scope_sql))
+    else:
+        stb_sql = _duckdb_quote_sql_string(str(stb_file))
+        ctes.append(_duckdb_genomes_scope_cte(stb_sql=stb_sql, genome_scope_sql=genome_scope_sql))
+
+    if need_ani or need_ibs:
+        ctes.extend(
+            _duckdb_contig_pop_max_ctes(
+                shared_source="shared",
+                include_pop=need_ani,
+                include_max_blocks=need_ibs,
+            )
+        )
+    if need_identical_genes:
+        ctes.extend(_duckdb_gene_stats_ctes(min_gene_compare_len=min_gene_compare_len, contig_source="shared"))
+
+    select_parts = ["g.genome AS genome"]
+    joins: list[str] = []
+    if need_ani:
+        select_parts.extend(
+            [
+                "COALESCE(p.total_positions, 0)::BIGINT AS total_positions",
+                "COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos",
+                "COALESCE(p.genome_pop_ani, 0.0)::DOUBLE AS genome_pop_ani",
+            ]
+        )
+        joins.append("LEFT JOIN pop p ON g.genome = p.genome")
+    if need_ibs:
+        select_parts.append("COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length")
+        joins.append("LEFT JOIN max_blocks m ON g.genome = m.genome")
+    if need_identical_genes:
+        select_parts.extend(
+            [
+                "COALESCE(gs.shared_genes_count, 0)::BIGINT AS shared_genes_count",
+                "COALESCE(gs.identical_gene_count, 0)::BIGINT AS identical_gene_count",
+                "COALESCE(gs.perc_id_genes, 0.0)::DOUBLE AS perc_id_genes",
+            ]
+        )
+        joins.append("LEFT JOIN gene_stats gs ON g.genome = gs.genome")
+    if sample_1_name is not None and sample_2_name is not None:
+        sample_1_sql = _duckdb_quote_sql_string(sample_1_name)
+        sample_2_sql = _duckdb_quote_sql_string(sample_2_name)
+        select_parts.extend([f"'{sample_1_sql}' AS sample_1", f"'{sample_2_sql}' AS sample_2"])
+
+    final_select = "SELECT\n  " + ",\n  ".join(select_parts) + "\nFROM genomes g\n"
+    if joins:
+        final_select += "\n".join(joins) + "\n"
+    final_select += "ORDER BY g.genome"
+    return _duckdb_build_query_with_ctes(ctes, final_select)
 
 
 def _as_lazy_profile(source: Union[str, Path, pl.LazyFrame]) -> pl.LazyFrame:
@@ -639,7 +775,7 @@ def duckdb_compare_genomes_to_parquet(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     ani_method: str = "popani",
-    calculate: GenomeCalculate = "all",
+    calculate: Optional[Union[str, Iterable[str]]] = None,
     memory_limit: Optional[str] = None,
     temp_directory: Optional[Union[str, Path]] = None,
     threads: Optional[int] = None,
@@ -666,47 +802,60 @@ def duckdb_compare_genomes_to_parquet(
             genome_scope=genome_scope,
             ani_method=ani_method,
         )
-        stb_sql = _duckdb_quote_sql_string(str(stb_file))
-        genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
-        sample_1_sql = _duckdb_quote_sql_string(sample_1_name)
-        sample_2_sql = _duckdb_quote_sql_string(sample_2_name)
-        if calculate == "all":
-            ctes = [
-                f"shared AS (\n{shared_query}\n)",
-                _duckdb_genomes_scope_cte(stb_sql=stb_sql, genome_scope_sql=genome_scope_sql),
-                *_duckdb_contig_pop_max_ctes(shared_source="shared"),
-                *_duckdb_gene_stats_ctes(min_gene_compare_len=min_gene_compare_len, contig_source="contig"),
-                _duckdb_merged_genome_stats_cte(),
-            ]
-            final_select = _duckdb_genome_output_select(sample_1_sql=sample_1_sql, sample_2_sql=sample_2_sql)
-        else:
-            ctes = [
-                f"shared AS (\n{shared_query}\n)",
-                _duckdb_genomes_scope_cte(stb_sql=stb_sql, genome_scope_sql=genome_scope_sql),
-                """
-pop AS (
-  SELECT
-    genome,
-    COUNT(*)::BIGINT AS total_positions,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_pop_ani
-  FROM shared
-  GROUP BY genome
-)""".strip(),
-                """
-merged AS (
-  SELECT
-    g.genome,
-    COALESCE(p.total_positions, 0)::BIGINT AS total_positions,
-    COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos,
-    COALESCE(p.genome_pop_ani, 0.0)::DOUBLE AS genome_pop_ani
-  FROM genomes g
-  LEFT JOIN pop p ON g.genome = p.genome
-)""".strip(),
-            ]
-            final_select = _duckdb_genome_ani_output_select(sample_1_sql=sample_1_sql, sample_2_sql=sample_2_sql)
-        query = _duckdb_build_query_with_ctes(ctes, final_select)
+        query = _duckdb_genome_compare_query(
+            shared_query=shared_query,
+            min_gene_compare_len=min_gene_compare_len,
+            genome_scope=genome_scope,
+            calculate=calculate,
+            stb_file=stb_file,
+            sample_1_name=sample_1_name,
+            sample_2_name=sample_2_name,
+        )
         _duckdb_copy_query_to_parquet(con, query, output_file)
+    finally:
+        con.close()
+
+
+def duckdb_compare_genomes(
+    mpile1: Union[str, Path, pl.LazyFrame],
+    mpile2: Union[str, Path, pl.LazyFrame],
+    min_cov: int = 5,
+    min_gene_compare_len: int = 100,
+    genome_scope: str = "all",
+    ani_method: str = "popani",
+    calculate: Optional[Union[str, Iterable[str]]] = None,
+    stb_file: Optional[Union[str, Path]] = None,
+    memory_limit: Optional[str] = None,
+    temp_directory: Optional[Union[str, Path]] = None,
+    threads: Optional[int] = None,
+) -> pl.LazyFrame:
+    """Run genome comparison in DuckDB and return selected metrics as a LazyFrame."""
+    con = duckdb.connect()
+    try:
+        _duckdb_configure_connection(
+            con,
+            memory_limit=memory_limit,
+            temp_directory=temp_directory,
+            threads=threads,
+        )
+        p1_source = _duckdb_from_source(con, mpile1, "mpile1_source")
+        p2_source = _duckdb_from_source(con, mpile2, "mpile2_source")
+        shared_query = _duckdb_shared_query(
+            p1_source=p1_source,
+            p2_source=p2_source,
+            min_cov=min_cov,
+            genome_scope=genome_scope,
+            ani_method=ani_method,
+        )
+        query = _duckdb_genome_compare_query(
+            shared_query=shared_query,
+            min_gene_compare_len=min_gene_compare_len,
+            genome_scope=genome_scope,
+            calculate=calculate,
+            stb_file=stb_file,
+        )
+        table = con.execute(query).fetch_arrow_table()
+        return pl.from_arrow(table).lazy()
     finally:
         con.close()
 
@@ -926,9 +1075,10 @@ def compare_genomes_polars(
     ani_method: str = "popani",
     calculate: GenomeCalculate = "all",
     stb_file: Optional[Union[str, Path]] = None,
+    calculate: Optional[Union[str, Iterable[str]]] = None,
 ) -> pl.LazyFrame:
     """Compare two profiles fully in Polars and return genome-level statistics."""
-    calculate = _normalize_genome_calculate(calculate)
+    calculations = parse_genome_calculations(calculate)
     shared = _shared_loci_polars(
         mpile1=mpile_contig_1,
         mpile2=mpile_contig_2,
@@ -936,17 +1086,51 @@ def compare_genomes_polars(
         genome_scope=genome_scope,
         ani_method=ani_method,
     )
-    genome_comp = calculate_pop_ani(shared)
-    if calculate == "all":
-        contig = add_contiguity_info(shared)
-        genome_comp = (
-            genome_comp
-            .join(get_longest_consecutive_blocks(contig), on="genome", how="left")
-            .join(get_gene_ani(contig, min_gene_compare_len), on="genome", how="left")
+    genome_comp_parts: list[pl.LazyFrame] = []
+    if "ani" in calculations:
+        genome_comp_parts.append(calculate_pop_ani(shared))
+    if "ibs" in calculations:
+        genome_comp_parts.append(get_longest_consecutive_blocks(add_contiguity_info(shared)))
+    if "identical_genes" in calculations:
+        genome_comp_parts.append(get_gene_ani(shared, min_gene_compare_len))
+
+    if genome_comp_parts:
+        genome_comp = genome_comp_parts[0]
+        for part in genome_comp_parts[1:]:
+            genome_comp = genome_comp.join(part, on="genome", how="left")
+    else:
+        genome_comp = shared.select("genome").unique()
+
+    if stb_file is not None:
+        genomes_utf8 = (
+            pl.scan_csv(stb_file, separator="\t", has_header=False)
+            .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
+            .unique()
         )
 
-    genome_comp = _join_all_requested_genomes(genome_comp, stb_file=stb_file, genome_scope=genome_scope)
-    return _finalize_genome_compare_output(genome_comp, calculate)
+    casts: list[pl.Expr] = []
+    if "ani" in calculations:
+        casts.extend(
+            [
+                pl.col("total_positions").fill_null(0).cast(pl.Int64),
+                pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
+                pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
+            ]
+        )
+    if "ibs" in calculations:
+        casts.append(pl.col("max_consecutive_length").fill_null(0).cast(pl.Int64))
+    if "identical_genes" in calculations:
+        casts.extend(
+            [
+                pl.col("shared_genes_count").fill_null(0).cast(pl.Int64),
+                pl.col("identical_gene_count").fill_null(0).cast(pl.Int64),
+                pl.col("perc_id_genes").fill_null(0.0).cast(pl.Float64),
+            ]
+        )
+    if casts:
+        genome_comp = genome_comp.with_columns(casts)
+
+    return genome_comp.select(genome_metric_output_columns(calculations))
 
 
 def compare_genes_polars(
@@ -1062,9 +1246,10 @@ def compare_genomes(
     duckdb_threads: Optional[int] = None,
     engine: Literal["polars", "duckdb"] = "polars",
     stb_file: Optional[Union[str, Path]] = None,
+    calculate: Optional[Union[str, Iterable[str]]] = None,
 ) -> pl.LazyFrame:
     """Compare two profiles with selectable execution engine."""
-    calculate = _normalize_genome_calculate(calculate)
+    calculations = parse_genome_calculations(calculate)
     if engine == "polars":
         return compare_genomes_polars(
             mpile_contig_1=mpile_contig_1,
@@ -1075,19 +1260,21 @@ def compare_genomes(
             ani_method=ani_method,
             calculate=calculate,
             stb_file=stb_file,
+            calculate=calculations,
         )
     if engine == "duckdb":
-        return _compare_genomes_mixed(
-            mpile_contig_1=mpile_contig_1,
-            mpile_contig_2=mpile_contig_2,
+        return duckdb_compare_genomes(
+            mpile1=mpile_contig_1,
+            mpile2=mpile_contig_2,
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
             ani_method=ani_method,
-            calculate=calculate,
-            duckdb_memory_limit=duckdb_memory_limit,
-            duckdb_temp_directory=duckdb_temp_directory,
-            duckdb_threads=duckdb_threads,
+            calculate=calculations,
+            stb_file=stb_file,
+            memory_limit=duckdb_memory_limit,
+            temp_directory=duckdb_temp_directory,
+            threads=duckdb_threads,
         )
     raise ValueError(f"Unsupported engine: {engine}")
 

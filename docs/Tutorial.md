@@ -63,7 +63,7 @@ sample3,/path/to/sample3.bam
 To profile multiple BAM files using the ZipStrain CLI, you should first prepare some files:
 
 ```bash
-zipstrain utilities prepare_profiling --reference-fasta <path/to/reference/fasta> --gene-fasta <path/to/reference/fasta/genes> --stb-file <path/to/stb/file> --output-dir <directory/to/save/outputs>
+zipstrain utilities prepare_profiling  --reference-fasta <path/to/reference/fasta> --gene-fasta <path/to/reference/fasta/genes> --stb-file  <path/to/stb/file> --output-dir <directory/to/save/outputs>
 ```
 
 Your output directory should contain the following files:
@@ -75,7 +75,7 @@ Your output directory should contain the following files:
 Now you can profile your bam files:
 
 ```
-zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --null-model <path/to/null/model.parquet> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
+zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
 
 ```
 
@@ -86,13 +86,13 @@ To profile multiple BAM files using Nextflow, you can create a Nextflow script a
 
 ```
 
-nextflow run zipstrain.nf --mode "fast_profile" --input_table <path/to/bam/csv>  --gene_file <path/to/reference/fasta/genes> --stb <path/to/stb/file>  --output_dir <path/to/save/generated/files> --reference_genome <path/to/reference/fasta> -c conf.config -profile <your/system/specific/profile> -resume
+nextflow run zipstrain.nf --mode "profile" --input_table <path/to/bam/csv>  --gene_file <path/to/reference/fasta/genes> --stb <path/to/stb/file>  --output_dir <path/to/save/generated/files> --reference_genome <path/to/reference/fasta> -c conf.config -profile <your/system/specific/profile> -resume
 
 ```
 
 **Note**  With the nextflow pipeline, you don't need the preparation step and those will be made along the way.
 
-**Note** fast_profile mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:
+**Note** `profile` mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:
 
 ```zipstrain utilities generate_stb --genomes-dir-file <path/to/genomes_dir_file>```
 
@@ -140,24 +140,25 @@ Note that providing current-comp-table is optional. If provided, the comparison 
 Finally, you can run the comparison using the generated configuration file and the profile database:
 
 ```bash
-zipstrain compare_genome \
+zipstrain compare genomes \
 --genome-comparison-object <path/to/comparison/config.json> \
 --run-dir <path/to/save/comparison/outputs> \
 --calculate ani \
 --ani-method popani \
 --engine duckdb \
+--calculate ani+ibs+identical_genes \
 --max-concurrent-batches 1 \
 --duckdb-threads 8
 ```
 
-`single_compare_genome` supports `--engine polars|duckdb` (default: `polars`). For lower-memory machines, set DuckDB's memory limit, and for CPU control set DuckDB threads:
+`single_compare_genome` supports `--engine polars|duckdb` (default: `polars`) and metric selection via `--calculate` (default: `all`). For lower-memory machines, set DuckDB's memory limit, and for CPU control set DuckDB threads:
 
 ```bash
 zipstrain utilities single_compare_genome \
 --mpileup-contig-1 <profile_1.parquet> \
 --mpileup-contig-2 <profile_2.parquet> \
 --stb-file <path/to/stb.tsv> \
---calculate ani \
+--calculate ani+ibs+identical_genes \
 --engine duckdb \
 --output-file <out.parquet> \
 --duckdb-memory-limit 2GB \
@@ -402,7 +403,7 @@ sample2,/path/to/mapping_output/sample2.bam
 You can profile the mapped BAM files using ZipStrain with the following command:
 
 ```bash
-zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --null-model null_model.parquet --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
 ```
 
 This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the `profiling_output/` directory.

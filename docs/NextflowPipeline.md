@@ -36,6 +36,7 @@ nextflow run zipstrain.nf \
 - `--compare_gene_scope`: gene scope for gene comparisons (`all:all`, `<genome>:all`, `all:<gene>`, `<genome>:<gene>`)
 - `--compare_ani_method`: ANI method forwarded to compare tasks (`popani`, `conani`, `cosani_<threshold>`)
 - `--compare_duckdb_memory_limit`: forwarded to single compare commands
+- `--compare_calculate`: genome metrics for genome compare (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations). Default: `all`
 
 ## 1) Map Reads (`mode=map_reads`)
 
@@ -207,8 +208,7 @@ nextflow run zipstrain.nf \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
   --compare_genome_scope all \
-  --compare_genome_calculate ani \
-  --compare_ani_method popani \
+  --compare_calculate ani+ibs+identical_genes \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \

@@ -117,25 +117,6 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     assert lf1.sort("genome").equals(lf1_duckdb.sort("genome"))
     result = runner.invoke(cli.cli, [
         "utilities",
-        "single_compare_genome",
-        "--mpileup-contig-1", str(profile_1_dir),
-        "--mpileup-contig-2", str(profile_2_dir),
-        "--stb-file", str(stb_path),
-        "--calculate", "ani",
-        "--output-file", str(tmp_path/"output_ani.parquet"),
-    ])
-    lf1_ani = pl.read_parquet(tmp_path/"output_ani.parquet")
-    assert result.exit_code == 0
-    assert set(lf1_ani.columns) == {
-        "genome",
-        "total_positions",
-        "share_allele_pos",
-        "genome_pop_ani",
-        "sample_1",
-        "sample_2",
-    }
-    result = runner.invoke(cli.cli, [
-        "utilities",
         "single_compare_genome", 
         "--mpileup-contig-1", str(profile_1_dir),
         "--mpileup-contig-2", str(profile_3_dir),
@@ -220,7 +201,39 @@ def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFram
     assert (tmp_path / "scoped_gene_duckdb.parquet").exists()
 
 
-def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
+def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    out_path = tmp_path / "calc_cols.parquet"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--stb-file",
+            str(stb_path),
+            "--calculate",
+            "ibs",
+            "--output-file",
+            str(out_path),
+        ],
+    )
+    assert result.exit_code == 0
+    out = pl.read_parquet(out_path)
+    assert set(out.columns) == {"genome", "max_consecutive_length", "sample_1", "sample_2"}
+
+
+def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
     comp_obj = tmp_path / "genome_comp.json"
     comp_obj.write_text("{}")
     captured = {}
@@ -239,7 +252,8 @@ def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
     result = runner.invoke(
         cli.cli,
         [
-            "compare_genome",
+            "compare",
+            "genomes",
             "--genome-comparison-object",
             str(comp_obj),
             "--run-dir",
@@ -257,11 +271,10 @@ def test_run_compare_genomes_passes_duckdb_threads(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert captured["duckdb_threads"] == 7
     assert captured["compare_engine"] == "duckdb"
-    assert captured["ani_method"] == "conani"
-    assert captured["calculate"] == "ani"
+    assert captured["calculate"] == "all"
 
 
-def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
+def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
     comp_obj = tmp_path / "gene_comp.json"
     comp_obj.write_text("{}")
     captured = {}
@@ -280,7 +293,8 @@ def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
     result = runner.invoke(
         cli.cli,
         [
-            "compare_gene",
+            "compare",
+            "genes",
             "--gene-comparison-object",
             str(comp_obj),
             "--run-dir",
@@ -296,24 +310,15 @@ def test_run_compare_genes_passes_duckdb_threads(tmp_path, monkeypatch):
     assert captured["compare_engine"] == "duckdb"
 
 
-def test_profile_command_passes_null_model(tmp_path, monkeypatch):
-    input_table = tmp_path / "bams.csv"
-    input_table.write_text("sample_name,bamfile\ns1,/tmp/a.bam\n")
-    stb_file = tmp_path / "stb.tsv"
-    null_model = tmp_path / "null_model.parquet"
-    gene_range = tmp_path / "genes.tsv"
-    bed_file = tmp_path / "regions.bed"
-    genome_lengths = tmp_path / "genome_lengths.parquet"
-    for path in [stb_file, null_model, gene_range, bed_file, genome_lengths]:
-        path.write_text("x\n")
-
+def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
     captured = {}
 
     def _fake_lazy_run_profile(**kwargs):
         captured.update(kwargs)
 
     monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
-
     runner = CliRunner()
     result = runner.invoke(
         cli.cli,
@@ -322,21 +327,53 @@ def test_profile_command_passes_null_model(tmp_path, monkeypatch):
             "--input-table",
             str(input_table),
             "--stb-file",
-            str(stb_file),
-            "--null-model",
-            str(null_model),
+            str(tmp_path / "stb.tsv"),
             "--gene-range-table",
-            str(gene_range),
+            str(tmp_path / "gene_range.tsv"),
             "--bed-file",
-            str(bed_file),
+            str(tmp_path / "bed.bed"),
             "--genome-length-file",
-            str(genome_lengths),
+            str(tmp_path / "genome_length.parquet"),
             "--run-dir",
             str(tmp_path / "run"),
         ],
     )
     assert result.exit_code == 0
-    assert captured["null_model_file"] == null_model
+    assert captured["run_dir"] == tmp_path / "run"
+
+
+def test_run_group_removed():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["run", "--help"])
+    assert result.exit_code != 0
+
+
+def test_profile_utility_commands_exist_under_utilities():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["utilities", "--help"])
+    assert result.exit_code == 0
+    assert "prepare_profiling" in result.output
+    assert "profile-single" in result.output
+
+
+def test_profile_subcommands_removed():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["profile", "batch"])
+    assert result.exit_code != 0
+
+
+def test_gene_tools_commands_exist_under_utilities():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["utilities", "--help"])
+    assert result.exit_code == 0
+    assert "gene-range-table" in result.output
+    assert "gene-loc-table" in result.output
+
+
+def test_gene_tools_group_removed():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["gene_tools", "--help"])
+    assert result.exit_code != 0
 
 
 def test_generate_stb(tmp_path):

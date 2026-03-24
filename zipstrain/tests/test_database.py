@@ -142,7 +142,8 @@ def comps_lf_1_2(profile_1,profile_2)->pl.LazyFrame:
         mpile_contig_1=profile_1,
         mpile_contig_2=profile_2,
         min_cov=2 ,
-        min_gene_compare_len=10
+        min_gene_compare_len=10,
+        calculate="all",
     )
     comp_1_2=comp_1_2.with_columns(pl.lit("profile_1").alias("sample_1"), pl.lit("profile_2").alias("sample_2")).fill_null(0)
     return comp_1_2
@@ -153,7 +154,8 @@ def comps_lf_31_32(profile_1,profile_2,profile_3)->pl.LazyFrame:
         mpile_contig_1=profile_1,
         mpile_contig_2=profile_3,
         min_cov=2 ,
-        min_gene_compare_len=10
+        min_gene_compare_len=10,
+        calculate="all",
     )
     comp_1_3=comp_1_3.with_columns(pl.lit("profile_1").alias("sample_1"), pl.lit("profile_3").alias("sample_2")).fill_null(0)
     
@@ -161,7 +163,8 @@ def comps_lf_31_32(profile_1,profile_2,profile_3)->pl.LazyFrame:
         mpile_contig_1=profile_2,
         mpile_contig_2=profile_3,
         min_cov=2 ,
-        min_gene_compare_len=10
+        min_gene_compare_len=10,
+        calculate="all",
     )
     comp_2_3=comp_2_3.with_columns(pl.lit("profile_2").alias("sample_1"), pl.lit("profile_3").alias("sample_2")).fill_null(0)
     
@@ -173,7 +176,8 @@ def comps_lf_4_5(profile_4_random,profile_5_random)->pl.LazyFrame:
         mpile_contig_1=profile_4_random,
         mpile_contig_2=profile_5_random,
         min_cov=5 ,
-        min_gene_compare_len=50
+        min_gene_compare_len=50,
+        calculate="all",
     )
     comp_4_5=comp_4_5.with_columns(pl.lit("profile_4").alias("sample_1"), pl.lit("profile_5").alias("sample_2")).fill_null(0)
     return comp_4_5

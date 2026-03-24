@@ -27,9 +27,13 @@ def test_from_sra_to_profile_process_emits_gene_stats():
     assert 'path "${sra_id}_gene_stats.parquet", emit: gene_stats' in output_section
 
 
-def test_compare_genome_process_supports_calculate_and_ani_method():
+def test_nextflow_calls_utilities_single_compare_commands():
     text = NEXTFLOW_FILE.read_text()
-    assert 'params.compare_genome_calculate="all"' in text
-    assert 'params.compare_ani_method="popani"' in text
-    assert "--ani-method ${params.compare_ani_method}" in text
-    assert "--calculate ${params.compare_genome_calculate}" in text
+    assert "zipstrain utilities single_compare_genome" in text
+    assert "zipstrain utilities single_compare_gene" in text
+
+
+def test_nextflow_calls_updated_profile_commands():
+    text = NEXTFLOW_FILE.read_text()
+    assert "zipstrain utilities prepare_profiling" in text
+    assert "zipstrain utilities profile-single" in text

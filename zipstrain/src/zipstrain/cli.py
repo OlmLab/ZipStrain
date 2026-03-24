@@ -598,6 +598,11 @@ def get_gene_loc_table(gene_file, scaffold_list, output_file):
 
 
 
+@cli.group()
+def compare():
+    """The commands in this group are related to comparing profiled samples."""
+    pass
+
 @utilities.command("single_compare_genome")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
 @click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
@@ -607,7 +612,7 @@ def get_gene_loc_table(gene_file, scaffold_list, output_file):
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--calculate', type=click.Choice(["all", "ani"]), default="all", show_default=True, help="Genome metrics to compute.")
+@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
@@ -629,6 +634,8 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
     mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
+    calculations = cp.parse_genome_calculations(calculate)
+    output_cols = cp.genome_metric_output_columns(calculations)
 
     mpile_1_for_compare = mpileup_contig_1
     mpile_2_for_compare = mpileup_contig_2
@@ -654,7 +661,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome,
             ani_method=ani_method,
-            calculate=calculate,
+            calculate=calculations,
             memory_limit=duckdb_memory_limit,
             temp_directory=duckdb_temp_directory,
             threads=duckdb_threads,
@@ -674,21 +681,11 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         duckdb_threads=duckdb_threads,
         engine="polars",
         stb_file=stb_file,
+        calculate=calculations,
     ).with_columns(
         sample_1=pl.lit(mpile_contig_1_name),
         sample_2=pl.lit(mpile_contig_2_name),
-    )
-    selected_cols = ["genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
-    if calculate == "all":
-        selected_cols.extend(
-            [
-                "max_consecutive_length",
-                "shared_genes_count",
-                "identical_gene_count",
-                "perc_id_genes",
-            ]
-        )
-    comp = comp.select(*selected_cols, "sample_1", "sample_2")
+    ).select(output_cols + ["sample_1", "sample_2"])
     comp.sink_parquet(output_file, compression='zstd')
 
 @utilities.command("single_compare_gene")
@@ -786,7 +783,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     )
     gene_comp.sink_parquet(output_file, compression='zstd')
 
-@utilities.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
+@utilities.command("prepare_profiling", help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
 @click.option('--gene-fasta', '-g', required=True, help="Path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
@@ -923,7 +920,7 @@ def profile(input_table, stb_file, null_model, gene_range_table, bed_file, genom
     )
 
 
-@cli.command("compare_genome")
+@compare.command("genomes")
 @click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
@@ -935,9 +932,10 @@ def profile(input_table, stb_file, null_model, gene_range_table, bed_file, genom
 @click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method passed to genome compare tasks.")
 @click.option("--calculate", type=click.Choice(["all", "ani"]), default="all", show_default=True, help="Genome metrics to compute for each pair.")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
+@click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, calculate, engine, duckdb_memory_limit, duckdb_threads):
+def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, engine, calculate, duckdb_memory_limit, duckdb_threads):
     """
     Run genome comparisons in batches using the specified execution mode and container engine.
 
@@ -955,6 +953,7 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
     run_dir=pathlib.Path(run_dir)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
+    cp.parse_genome_calculations(calculate)
     slurm_conf=None
     if execution_mode == "slurm":
         if slurm_config is None:
@@ -979,6 +978,7 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
         ani_method=ani_method,
         calculate=calculate,
         compare_engine=engine,
+        calculate=calculate,
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_threads=duckdb_threads,
         tasks_per_batch=task_per_batch,
@@ -987,7 +987,7 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
 
 
 
-@utilities.command("build-comp-database")
+@compare.command("build-comp-database")
 @click.option("--profile-db-dir", "-p", required=True, help="Directory containing profile either in parquet format.")
 @click.option("--config-file", "-c", required=True, help="Path to the  genome comparsion database config file in json format.")
 @click.option("--output-dir", "-o", required=True, help="Directory to genome comparison database object.")
@@ -1015,7 +1015,7 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
     obj.dump_obj(pathlib.Path(output_dir))
 
 
-@cli.command("compare_gene")
+@compare.command("genes")
 @click.option("--gene-comparison-object", "-g", required=True, help="Path to the gene comparison object in json format.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
