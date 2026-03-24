@@ -887,7 +887,6 @@ class LocalBatch(Batch):
                 raise RuntimeError(f"Batch {self.id} hit the following error at runtime:\n{error}")
             
             if self._proc.returncode == 0 and self.outputs_ready():
-                self.cleanup()
                 await self._set_status(Status.SUCCESS.value, "batch outputs validated", persist_status=Status.DONE.value)
             
             else:
@@ -999,8 +998,7 @@ class SlurmBatch(Batch):
                 await self._set_status(Status.FAILED.value, "failed to submit slurm job")
             
             if self._status == Status.SUCCESS.value and self.outputs_ready():
-                self.cleanup()
-                await self._set_status(Status.SUCCESS.value, "batch outputs validated")
+                await self._set_status(Status.SUCCESS.value, "batch outputs validated", persist_status=Status.DONE.value)
             else:
                 await self._set_status(Status.FAILED.value, "missing expected outputs")
             
@@ -1210,6 +1208,11 @@ class Runner(ABC):
 
                 if batch in self._active_batches:
                     self._active_batches.remove(batch)
+                if batch.status == Status.SUCCESS.value and not batch._cleaned_up:
+                    try:
+                        batch.cleanup()
+                    except Exception as e:
+                        await batch._append_batch_log("CLEANUP_ERROR", str(e))
 
         # Rich progress objects
         
@@ -1707,19 +1710,25 @@ class PrepareCompareGenomeRunOutputs(Task):
 class FastCompareLocalBatch(LocalBatch):
     """A LocalBatch that runs FastCompareTask tasks locally."""
     def cleanup(self) -> None:
+        if self._cleaned_up:
+            return
         tasks_to_remove = [task for task in self.tasks if isinstance(task, FastCompareTask)]
         for task in tasks_to_remove:
             self.tasks.remove(task)
-            shutil.rmtree(task.task_dir)
+            if task.task_dir.exists():
+                shutil.rmtree(task.task_dir)
         self._cleaned_up = True
 
 class FastCompareSlurmBatch(SlurmBatch):
     """A SlurmBatch that runs FastCompareTask tasks on a Slurm cluster. Maybe removed in future"""
     def cleanup(self) -> None:
+        if self._cleaned_up:
+            return
         tasks_to_remove = [task for task in self.tasks if isinstance(task, FastCompareTask)]
         for task in tasks_to_remove:
             self.tasks.remove(task)
-            shutil.rmtree(task.task_dir)
+            if task.task_dir.exists():
+                shutil.rmtree(task.task_dir)
         
         self._cleaned_up = True
 
@@ -2116,21 +2125,26 @@ class PrepareGeneCompareRunOutputs(Task):
 class FastGeneCompareLocalBatch(LocalBatch):
     """A LocalBatch that runs FastGeneCompareTask tasks locally."""
     def cleanup(self) -> None:
+        if self._cleaned_up:
+            return
         tasks_to_remove = [task for task in self.tasks if isinstance(task, FastGeneCompareTask)]
         for task in tasks_to_remove:
-            task._status=Status.SUCCESS
             self.tasks.remove(task)
-            shutil.rmtree(task.task_dir)
+            if task.task_dir.exists():
+                shutil.rmtree(task.task_dir)
         self._cleaned_up = True
         
 
 class FastGeneCompareSlurmBatch(SlurmBatch):
     """A SlurmBatch that runs FastGeneCompareTask tasks on a Slurm cluster."""
     def cleanup(self) -> None:
+        if self._cleaned_up:
+            return
         tasks_to_remove = [task for task in self.tasks if isinstance(task, FastGeneCompareTask)]
         for task in tasks_to_remove:
             self.tasks.remove(task)
-            shutil.rmtree(task.task_dir)
+            if task.task_dir.exists():
+                shutil.rmtree(task.task_dir)
         self._cleaned_up = True
 
 class PrepareGeneCompareRunOutputsLocalBatch(LocalBatch):
