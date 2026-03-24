@@ -22,38 +22,6 @@ zipstrain test
 
 Detailed setup: [docs/installation.md](docs/installation.md)
 
-## ZipStrain-Light (new)
-
-`zipstrain-light` is a separate CLI that keeps the existing `zipstrain` behavior unchanged.
-
-- Profile output is engine-specific:
-  - `--engine duckdb`: profile directory contains one `profile.duckdb`
-  - `--engine polars`: profile directory contains `coverage.parquet` and `snp.parquet`
-- Compare uses shared covered positions plus SNP-disjoint positions to compute the same genome-level outputs as regular ZipStrain (`popani` mode).
-
-Example:
-
-```bash
-zipstrain-light profile \
-  --profile-parquet sample_profile.parquet \
-  --reference-fasta reference_genomes.fna \
-  --engine duckdb \
-  --min-cov 5 \
-  --output-dir sampleA.light_profile
-
-zipstrain-light compare \
-  --profile-1 sampleA.light_profile \
-  --profile-2 sampleB.light_profile \
-  --stb-file reference_genomes.stb \
-  --output-file sampleA_sampleB_comparison.parquet
-```
-
-`zipstrain-light compare` supports `--engine duckdb|polars` (default `duckdb`).
-It requires `--stb-file` (zipstrain-compatible compare behavior).
-It also supports modular metric selection via `--calculate` (default `all`; examples: `ani`, `ani+ibs`, `all`).
-
-If `zipstrain-light` is not found after updating source code, reinstall package entry points (for example `pip install -e .` in the `zipstrain/` project directory).
-
 `zipstrain utilities profile-single` now separates chunking from concurrency:
 - `--num-chunks` controls how many BED chunks are created (default `24`)
 - `--max-concurrency` controls how many chunks run at once (default `4`)
