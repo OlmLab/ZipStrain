@@ -10,6 +10,7 @@ from typing import Generator
 from zipstrain import utils
 import asyncio
 import os
+import duckdb
 
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
@@ -111,13 +112,114 @@ def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->
         right_on="start",
         by_left="chrom",
         by_right="scaffold",
-        strategy="backward").with_columns(
+        strategy="backward",
+        check_sortedness=False,
+    ).with_columns(
             pl.when(pl.col("pos") <= pl.col("end"))
             .then(pl.col("gene"))
             .otherwise(pl.lit("NA"))
             .alias("gene")
         )
     return annotated_mpileup
+
+
+def _duckdb_quote_sql_string(value: str) -> str:
+    """Quote a string literal for embedding in DuckDB SQL."""
+    return value.replace("'", "''")
+
+
+def _annotate_mpileup_chunk_with_duckdb(
+    adjusted_mpileup_parquet: pathlib.Path,
+    output_parquet: pathlib.Path,
+    scaffold_to_genome: pl.LazyFrame,
+    gene_range: pl.LazyFrame,
+) -> None:
+    """Annotate one adjusted mpileup chunk with genome+gene in DuckDB."""
+    conn = duckdb.connect()
+    try:
+        conn.register(
+            "stb_src",
+            scaffold_to_genome.select(["scaffold", "genome"]).collect().to_arrow(),
+        )
+        conn.register(
+            "gene_src",
+            gene_range.select(["gene", "scaffold", "start", "end"]).collect().to_arrow(),
+        )
+        in_sql = _duckdb_quote_sql_string(str(adjusted_mpileup_parquet))
+        out_sql = _duckdb_quote_sql_string(str(output_parquet))
+        conn.execute(
+            f"""
+            COPY (
+              WITH mpileup AS (
+                SELECT
+                  CAST(chrom AS VARCHAR) AS chrom,
+                  CAST(pos AS INTEGER) AS pos,
+                  CAST(A AS INTEGER) AS A,
+                  CAST(C AS INTEGER) AS C,
+                  CAST(G AS INTEGER) AS G,
+                  CAST(T AS INTEGER) AS T
+                FROM read_parquet('{in_sql}')
+              ),
+              stb AS (
+                SELECT
+                  CAST(scaffold AS VARCHAR) AS scaffold,
+                  CAST(genome AS VARCHAR) AS genome
+                FROM stb_src
+              ),
+              gene_range AS (
+                SELECT
+                  CAST(gene AS VARCHAR) AS gene,
+                  CAST(scaffold AS VARCHAR) AS scaffold,
+                  CAST(start AS INTEGER) AS start,
+                  CAST("end" AS INTEGER) AS "end"
+                FROM gene_src
+                ORDER BY scaffold, start
+              ),
+              mp_with_genome AS (
+                SELECT
+                  mp.chrom,
+                  COALESCE(stb.genome, 'NA') AS genome,
+                  mp.pos,
+                  mp.A,
+                  mp.C,
+                  mp.G,
+                  mp.T
+                FROM mpileup AS mp
+                LEFT JOIN stb ON mp.chrom = stb.scaffold
+              ),
+              annotated AS (
+                SELECT
+                  mg.chrom,
+                  mg.genome,
+                  CASE
+                    WHEN mg.pos <= gr."end" THEN gr.gene
+                    ELSE 'NA'
+                  END AS gene,
+                  mg.pos,
+                  mg.A,
+                  mg.C,
+                  mg.G,
+                  mg.T
+                FROM mp_with_genome AS mg
+                ASOF LEFT JOIN gene_range AS gr
+                  ON mg.chrom = gr.scaffold
+                 AND mg.pos >= gr.start
+              )
+              SELECT
+                chrom,
+                genome,
+                gene,
+                pos,
+                A,
+                C,
+                G,
+                T
+              FROM annotated
+            ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """
+        )
+    finally:
+        conn.close()
 
 
 def get_strain_hetrogeneity(profile:pl.LazyFrame,
@@ -189,36 +291,27 @@ async def _profile_chunk_task(
                 mpile_frame=mpileup,
                 null_model=null_model
             )
-            mpileup=add_genome_info_to_mpileup(
-                mpileup_df=mpileup,
-                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold","genome"])
+            mpileup = add_genome_info_to_mpileup(
+                mpileup_df=mpileup.select(["chrom", "pos", "A", "C", "G", "T"]),
+                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold", "genome"]),
             )
-            mpileup_with_gene=add_gene_info_to_mpileup(
+            mpileup = add_gene_info_to_mpileup(
                 mpileup_df=mpileup,
                 gene_range=pl.scan_csv(
                     gene_range_table,
                     has_header=False,
                     separator="\t",
                 ).rename({
-                    "column_1":"gene",
-                    "column_2":"scaffold",
-                    "column_3":"start",
-                    "column_4":"end",
-                }).filter(pl.col("scaffold").is_in(scaffolds))
-            ).drop(["start","end"]).select([
-                "chrom",
-                "genome",
-                "gene",
-                "pos",
-                "A",
-                "C",
-                "G",
-                "T",
-            ])
-            mpileup_with_gene.sink_parquet(
-                output_dir/f"{bam_file.stem}_{chunk_id}.parquet",
-                compression='zstd',
-                engine='streaming'
+                    "column_1": "gene",
+                    "column_2": "scaffold",
+                    "column_3": "start",
+                    "column_4": "end",
+                }).filter(pl.col("scaffold").is_in(scaffolds)),
+            )
+            mpileup.select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]).sink_parquet(
+                output_dir / f"{bam_file.stem}_{chunk_id}.parquet",
+                compression="zstd",
+                engine="streaming",
             )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(
@@ -231,6 +324,29 @@ async def _profile_chunk_task(
     if proc.returncode != 0:
         raise Exception(f"Command failed with error: {stderr.decode().strip()}")
 
+async def _run_profile_chunk_with_semaphore(
+    semaphore: asyncio.Semaphore,
+    *,
+    bed_file: pathlib.Path,
+    bam_file: pathlib.Path,
+    gene_range_table: pathlib.Path,
+    stb: pl.LazyFrame,
+    null_model: pl.LazyFrame,
+    output_dir: pathlib.Path,
+    chunk_id: int,
+) -> None:
+    """Bound chunk-level profiling concurrency."""
+    async with semaphore:
+        await _profile_chunk_task(
+            bed_file=bed_file,
+            bam_file=bam_file,
+            gene_range_table=gene_range_table,
+            stb=stb,
+            null_model=null_model,
+            output_dir=output_dir,
+            chunk_id=chunk_id,
+        )
+
 async def profile_bam_in_chunks(
     bed_file:str,
     bam_file:str,
@@ -238,7 +354,8 @@ async def profile_bam_in_chunks(
     stb:pl.LazyFrame,
     null_model:pl.LazyFrame,
     output_dir:str,
-    num_workers:int=4,
+    num_chunks:int=24,
+    max_concurrency:int=4,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -250,7 +367,8 @@ async def profile_bam_in_chunks(
     stb (pl.LazyFrame): The scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
-    num_workers (int): Number of concurrent workers to use.
+    num_chunks (int): Number of BED chunks to create.
+    max_concurrency (int): Maximum number of chunks to process concurrently.
     """
     
     output_dir=pathlib.Path(output_dir)
@@ -271,14 +389,16 @@ async def profile_bam_in_chunks(
         "column_3": "start",
         "column_4": "end",
     })
-    bed_chunks=utils.split_lf_to_chunks(bed_lf,num_workers)
+    bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
     for chunk_id, bed_file in enumerate(bed_chunks):
         bed_file.sink_csv(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
         bed_chunk_files.append(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed")
     tasks = []
+    semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
     for chunk_id, bed_chunk_file in enumerate(bed_chunk_files):
-        tasks.append(_profile_chunk_task(
+        tasks.append(_run_profile_chunk_with_semaphore(
+            semaphore,
             bed_file=bed_chunk_file,
             bam_file=bam_file,
             gene_range_table=gene_range_table,
@@ -302,13 +422,6 @@ async def profile_bam_in_chunks(
             read_loc_pfs.append(pl.scan_parquet(read_loc_pf).lazy())
     if mpile_container:
         mpileup_df = pl.concat(mpile_container)
-        mpileup_df=mpileup_df.sort(["genome", "chrom", "pos"],descending=[False, False, False])
-        with pl.StringCache():
-            mpileup_df = mpileup_df.with_columns([
-                pl.col("chrom").cast(pl.Categorical),
-                pl.col("genome").cast(pl.Categorical),
-                pl.col("gene").cast(pl.Categorical),
-            ])
         mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
         utils.get_gene_stats(
             profile=mpileup_df,
@@ -346,7 +459,8 @@ def profile_bam(
     stb:pl.LazyFrame,
     null_model:pl.LazyFrame,
     output_dir:str,
-    num_workers:int=4,
+    num_chunks:int=24,
+    max_concurrency:int=4,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -358,7 +472,8 @@ def profile_bam(
     stb (pl.LazyFrame): Scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
-    num_workers (int): Number of concurrent workers to use.
+    num_chunks (int): Number of BED chunks to create.
+    max_concurrency (int): Maximum number of chunks to process concurrently.
     """
     asyncio.run(profile_bam_in_chunks(
         bed_file=bed_file,
@@ -367,5 +482,6 @@ def profile_bam(
         stb=stb,
         null_model=null_model,
         output_dir=output_dir,
-        num_workers=num_workers,
+        num_chunks=num_chunks,
+        max_concurrency=max_concurrency,
     ))

@@ -69,6 +69,13 @@ def stb()->pl.LazyFrame:
         "genome":["genome1","genome1","genome2"],
     }).lazy()
 
+def test_cli_top_level_layout():
+    commands = set(cli.cli.commands)
+    assert {"compare_gene", "compare_genome", "profile", "test", "utilities"} <= commands
+    assert "run" not in commands
+    assert "compare" not in commands
+    assert "gene_tools" not in commands
+
 def test_cli_profile_compare(profile_1:pl.LazyFrame,
                              profile_2:pl.LazyFrame,
                              profile_3:pl.LazyFrame,
@@ -251,6 +258,10 @@ def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
             str(comp_obj),
             "--run-dir",
             str(tmp_path / "run"),
+            "--ani-method",
+            "conani",
+            "--calculate",
+            "ani",
             "--engine",
             "duckdb",
             "--duckdb-threads",

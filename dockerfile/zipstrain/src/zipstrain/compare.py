@@ -262,6 +262,71 @@ def _duckdb_build_query_with_ctes(ctes: list[str], final_select: str) -> str:
     return "WITH\n" + ",\n".join(ctes) + "\n" + final_select
 
 
+def _finalize_genome_compare_output(genome_comp: pl.LazyFrame, calculate: GenomeCalculate) -> pl.LazyFrame:
+    if calculate == "ani":
+        return genome_comp.with_columns(
+            pl.col("total_positions").fill_null(0).cast(pl.Int64),
+            pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
+            pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
+        ).select(
+            "genome",
+            "total_positions",
+            "share_allele_pos",
+            "genome_pop_ani",
+        )
+
+    return genome_comp.with_columns(
+        pl.col("total_positions").fill_null(0).cast(pl.Int64),
+        pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
+        pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
+        pl.col("max_consecutive_length").fill_null(0).cast(pl.Int64),
+        pl.col("shared_genes_count").fill_null(0).cast(pl.Int64),
+        pl.col("identical_gene_count").fill_null(0).cast(pl.Int64),
+        pl.col("perc_id_genes").fill_null(0.0).cast(pl.Float64),
+    ).select(
+        "genome",
+        "total_positions",
+        "share_allele_pos",
+        "genome_pop_ani",
+        "max_consecutive_length",
+        "shared_genes_count",
+        "identical_gene_count",
+        "perc_id_genes",
+    )
+
+
+def _join_all_requested_genomes(
+    genome_comp: pl.LazyFrame,
+    stb_file: Optional[Union[str, Path]],
+    genome_scope: str,
+) -> pl.LazyFrame:
+    if stb_file is None:
+        return genome_comp
+
+    genomes_utf8 = (
+        pl.scan_csv(stb_file, separator="\t", has_header=False)
+        .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
+        .unique()
+    )
+    genome_dtype = genome_comp.collect_schema().get("genome")
+    if genome_dtype == pl.Categorical:
+        categories = sorted(
+            set(
+                genomes_utf8.select("genome")
+                .collect(engine="streaming")["genome"]
+                .to_list()
+            )
+        )
+        enum_dtype = pl.Enum(categories)
+        genomes = genomes_utf8.with_columns(pl.col("genome").cast(enum_dtype))
+        genome_comp = genome_comp.with_columns(pl.col("genome").cast(enum_dtype))
+    else:
+        genomes = genomes_utf8.with_columns(pl.col("genome").cast(genome_dtype))
+    if genome_scope != "all":
+        genomes = genomes.filter(pl.col("genome") == genome_scope)
+    return genomes.join(genome_comp, on="genome", how="left")
+
+
 def _duckdb_genomes_scope_cte(stb_sql: str, genome_scope_sql: str) -> str:
     return f"""
 genomes AS (
@@ -721,6 +786,7 @@ def duckdb_compare_genomes_to_parquet(
     """
     con = duckdb.connect()
     try:
+        calculate = _normalize_genome_calculate(calculate)
         _duckdb_configure_connection(
             con,
             memory_limit=memory_limit,
@@ -1007,6 +1073,7 @@ def compare_genomes_polars(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     ani_method: str = "popani",
+    calculate: GenomeCalculate = "all",
     stb_file: Optional[Union[str, Path]] = None,
     calculate: Optional[Union[str, Iterable[str]]] = None,
 ) -> pl.LazyFrame:
@@ -1040,24 +1107,6 @@ def compare_genomes_polars(
             .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
             .unique()
         )
-        genome_dtype = genome_comp.collect_schema().get("genome")
-        if genome_dtype == pl.Categorical:
-            # Use a fixed category domain to safely align categorical join keys.
-            categories = sorted(
-                set(
-                    genomes_utf8.select("genome")
-                    .collect(engine="streaming")["genome"]
-                    .to_list()
-                )
-            )
-            enum_dtype = pl.Enum(categories)
-            genomes = genomes_utf8.with_columns(pl.col("genome").cast(enum_dtype))
-            genome_comp = genome_comp.with_columns(pl.col("genome").cast(enum_dtype))
-        else:
-            genomes = genomes_utf8.with_columns(pl.col("genome").cast(genome_dtype))
-        if genome_scope != "all":
-            genomes = genomes.filter(pl.col("genome") == genome_scope)
-        genome_comp = genomes.join(genome_comp, on="genome", how="left")
 
     casts: list[pl.Expr] = []
     if "ani" in calculations:
@@ -1123,11 +1172,13 @@ def _compare_genomes_mixed(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     ani_method: str = "popani",
+    calculate: GenomeCalculate = "all",
     duckdb_memory_limit: Optional[str] = None,
     duckdb_temp_directory: Optional[Union[str, Path]] = None,
     duckdb_threads: Optional[int] = None,
 ) -> pl.LazyFrame:
     """DuckDB shared-loci + Polars gene aggregation path."""
+    calculate = _normalize_genome_calculate(calculate)
     lf, genome_comp = duckdb_filter_join_with_genome_stats(
         mpile1=mpile_contig_1,
         mpile2=mpile_contig_2,
@@ -1138,8 +1189,10 @@ def _compare_genomes_mixed(
         temp_directory=duckdb_temp_directory,
         threads=duckdb_threads,
     )
+    if calculate == "ani":
+        return _finalize_genome_compare_output(genome_comp, calculate)
     gene = get_gene_ani(lf, min_gene_compare_len)
-    return genome_comp.join(gene, on="genome", how="left")
+    return _finalize_genome_compare_output(genome_comp.join(gene, on="genome", how="left"), calculate)
 
 
 def _compare_genes_mixed(
@@ -1187,6 +1240,7 @@ def compare_genomes(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     ani_method: str = "popani",
+    calculate: GenomeCalculate = "all",
     duckdb_memory_limit: Optional[str] = None,
     duckdb_temp_directory: Optional[Union[str, Path]] = None,
     duckdb_threads: Optional[int] = None,
@@ -1204,6 +1258,7 @@ def compare_genomes(
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
             ani_method=ani_method,
+            calculate=calculate,
             stb_file=stb_file,
             calculate=calculations,
         )

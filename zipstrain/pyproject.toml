@@ -1,6 +1,6 @@
 [project]
 name = "zipstrain"
-version = "0.6.0"
+version = "0.7.3"
 description = ""
 authors = [
     {name = "ParsaGhadermazi",email = "54489047+ParsaGhadermazi@users.noreply.github.com"}
@@ -34,3 +34,4 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 zipstrain = "zipstrain.cli:cli"
+zipstrain-light = "zipstrain.light_cli:cli"

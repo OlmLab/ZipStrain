@@ -1,6 +1,11 @@
 from zipstrain import profile
+from zipstrain import cli as cli_module
+from zipstrain import light
 import polars as pl
 import pytest
+from click.testing import CliRunner
+from pathlib import Path
+import re
 
 
 a_chr1=     [ 1, 0, 1, 0, 0, 0, 4, 4, 2, 1]
@@ -88,3 +93,268 @@ def test_get_strain_hetrogeneity(profile_1, stb, min_cov, freq_threshold):
                                                            max(list(zip(*genome2_freq))[pos])/sum(list(zip(*genome2_freq))[pos]) < freq_threshold) / \
                                                         sum(1 for pos in range(len(genome2_freq[0])) 
                                                         if sum(list(zip(*genome2_freq))[pos]) >= min_cov)
+
+
+def test_duckdb_chunk_annotation_matches_polars(tmp_path: Path):
+    adjusted = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr1", "chr2", "chr2"],
+            "pos": [1, 2, 5, 2, 4],
+            "A": [10, 0, 1, 0, 2],
+            "C": [0, 8, 0, 0, 0],
+            "G": [0, 0, 0, 9, 0],
+            "T": [0, 0, 0, 0, 1],
+        }
+    )
+    adjusted_pf = tmp_path / "adj.parquet"
+    out_pf = tmp_path / "ann.parquet"
+    adjusted.write_parquet(adjusted_pf)
+
+    stb_lf = pl.DataFrame(
+        {
+            "scaffold": ["chr1", "chr2"],
+            "genome": ["genome1", "genome2"],
+        }
+    ).lazy()
+    gene_lf = pl.DataFrame(
+        {
+            "gene": ["geneA", "geneB"],
+            "scaffold": ["chr1", "chr2"],
+            "start": [1, 2],
+            "end": [3, 2],
+        }
+    ).lazy()
+
+    profile._annotate_mpileup_chunk_with_duckdb(
+        adjusted_mpileup_parquet=adjusted_pf,
+        output_parquet=out_pf,
+        scaffold_to_genome=stb_lf,
+        gene_range=gene_lf,
+    )
+
+    got = pl.read_parquet(out_pf).sort(["genome", "chrom", "pos"])
+    expected = (
+        profile.add_gene_info_to_mpileup(
+            mpileup_df=profile.add_genome_info_to_mpileup(
+                mpileup_df=pl.scan_parquet(adjusted_pf),
+                scaffold_to_genome=stb_lf,
+            ),
+            gene_range=gene_lf,
+        )
+        .drop(["start", "end"])
+        .select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"])
+        .collect()
+        .sort(["genome", "chrom", "pos"])
+    )
+    assert got.to_dicts() == expected.to_dicts()
+
+
+def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, pl.LazyFrame]:
+    bam_file = tmp_path / "sample.bam"
+    bam_file.write_text("")
+    bed_file = tmp_path / "genomes.bed"
+    bed_file.write_text("chr1\t0\t3\nchr2\t0\t3\n")
+    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table.write_text("geneA\tchr1\t1\t3\ngeneB\tchr2\t1\t3\n")
+    stb_file = tmp_path / "stb.tsv"
+    stb_file.write_text("chr1\tgenome1\nchr2\tgenome2\n")
+    null_model_file = tmp_path / "null_model.parquet"
+    pl.DataFrame(
+        {
+            "cov": [0, 1, 5, 6, 7, 8, 9, 10],
+            "max_error_count": [0, 0, 0, 0, 0, 0, 0, 0],
+        }
+    ).write_parquet(null_model_file)
+    stb_lf = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("genome"),
+    )
+    return bam_file, bed_file, gene_range_table, stb_file, null_model_file, stb_lf
+
+
+def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    def _read_scaffolds_from_bed(bed_path: Path) -> list[str]:
+        return [line.strip().split("\t")[0] for line in bed_path.read_text().splitlines() if line.strip()]
+
+    def _fake_mpileup_rows(scaffold: str) -> list[dict]:
+        if scaffold == "chr1":
+            return [
+                {"chrom": "chr1", "pos": 1, "A": 10, "C": 0, "G": 0, "T": 0},
+                {"chrom": "chr1", "pos": 2, "A": 0, "C": 6, "G": 0, "T": 0},
+                {"chrom": "chr1", "pos": 3, "A": 0, "C": 0, "G": 8, "T": 0},
+            ]
+        if scaffold == "chr2":
+            return [
+                {"chrom": "chr2", "pos": 1, "A": 0, "C": 0, "G": 0, "T": 7},
+                {"chrom": "chr2", "pos": 2, "A": 5, "C": 0, "G": 0, "T": 0},
+                {"chrom": "chr2", "pos": 3, "A": 0, "C": 9, "G": 0, "T": 0},
+            ]
+        raise AssertionError(f"Unexpected scaffold in fake mpileup data: {scaffold}")
+
+    def _fake_read_loc_rows(scaffold: str) -> list[dict]:
+        return [
+            {"chrom": scaffold, "pos": 1},
+            {"chrom": scaffold, "pos": 2},
+            {"chrom": scaffold, "pos": 3},
+        ]
+
+    async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None):
+        out_match = re.search(r"--output-file\s+([^\s]+)", command)
+        assert out_match is not None, command
+        output_file = Path(cwd) / out_match.group(1)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if "process_mpileup" in command:
+            bed_match = re.search(r"-l\s+([^\s]+)", command)
+            assert bed_match is not None, command
+            scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
+            rows = []
+            for scaffold in scaffolds:
+                rows.extend(_fake_mpileup_rows(scaffold))
+            pl.DataFrame(rows).write_parquet(output_file)
+        elif "process-read-locs" in command:
+            bed_match = re.search(r"-L\s+([^\s]+)", command)
+            assert bed_match is not None, command
+            scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
+            rows = []
+            for scaffold in scaffolds:
+                rows.extend(_fake_read_loc_rows(scaffold))
+            pl.DataFrame(rows).write_parquet(output_file)
+        else:
+            raise AssertionError(f"Unexpected command in fake subprocess: {command}")
+        return _FakeProc()
+
+    monkeypatch.setattr(profile.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
+
+
+def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _install_fake_profile_subprocess(monkeypatch)
+    bam_file, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
+    profile.profile_bam(
+        bed_file=str(bed_file),
+        bam_file=str(bam_file),
+        gene_range_table=str(gene_range_table),
+        stb=stb_lf,
+        null_model=pl.scan_parquet(null_model_file),
+        output_dir=str(tmp_path),
+        num_chunks=2,
+        max_concurrency=2,
+    )
+
+    profile_file = tmp_path / "sample_profile.parquet"
+    gene_stats_file = tmp_path / "sample_gene_stats.parquet"
+    genome_stats_file = tmp_path / "sample_genome_stats.parquet"
+    assert profile_file.exists()
+    assert gene_stats_file.exists()
+    assert genome_stats_file.exists()
+    assert not (tmp_path / "tmp").exists()
+
+    prof = pl.read_parquet(profile_file)
+    assert prof.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]
+    assert prof.height == 6
+    assert prof.schema["chrom"] == pl.Utf8
+    assert prof.schema["genome"] == pl.Utf8
+    assert prof.schema["gene"] == pl.Utf8
+
+    gene_stats = pl.read_parquet(gene_stats_file)
+    g1 = gene_stats.filter((pl.col("genome") == "genome1") & (pl.col("gene") == "geneA")).to_dicts()[0]
+    g2 = gene_stats.filter((pl.col("genome") == "genome2") & (pl.col("gene") == "geneB")).to_dicts()[0]
+    assert g1["length"] == 3
+    assert g1["breadth"] == pytest.approx(1.0)
+    assert g1["coverage"] == pytest.approx(8.0)
+    assert g2["length"] == 3
+    assert g2["breadth"] == pytest.approx(1.0)
+    assert g2["coverage"] == pytest.approx(7.0)
+
+    genome_stats = pl.read_parquet(genome_stats_file)
+    assert set(genome_stats["genome"].to_list()) == {"genome1", "genome2"}
+    by_genome = genome_stats.rows_by_key("genome", unique=True, named=True)
+    assert by_genome["genome1"]["coverage"] == pytest.approx(8.0)
+    assert by_genome["genome2"]["coverage"] == pytest.approx(7.0)
+    assert by_genome["genome1"]["breadth"] == pytest.approx(1.0)
+    assert by_genome["genome2"]["breadth"] == pytest.approx(1.0)
+
+
+def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _install_fake_profile_subprocess(monkeypatch)
+    bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
+    out_dir = tmp_path / "cli_out"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "profile",
+            "profile-single",
+            "--bed-file",
+            str(bed_file),
+            "--bam-file",
+            str(bam_file),
+            "--stb-file",
+            str(stb_file),
+            "--null-model",
+            str(null_model_file),
+            "--gene-range-table",
+            str(gene_range_table),
+            "--num-chunks",
+            "2",
+            "--max-concurrency",
+            "2",
+            "--output-dir",
+            str(out_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (out_dir / "sample_profile.parquet").exists()
+    assert (out_dir / "sample_gene_stats.parquet").exists()
+    assert (out_dir / "sample_genome_stats.parquet").exists()
+
+
+def test_light_profile_from_bam_uses_profile_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _install_fake_profile_subprocess(monkeypatch)
+    bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
+    reference_fasta = tmp_path / "ref.fasta"
+    reference_fasta.write_text(">chr1\nAAA\n>chr2\nAAA\n")
+
+    duckdb_dir = tmp_path / "light_duckdb"
+    duckdb_summary = light.build_light_profile_bundle_from_bam(
+        bam_file=bam_file,
+        bed_file=bed_file,
+        gene_range_table=gene_range_table,
+        stb_file=stb_file,
+        null_model=null_model_file,
+        reference_fasta=reference_fasta,
+        output_dir=duckdb_dir,
+        profile_engine="duckdb",
+        min_cov=5,
+        num_chunks=2,
+        max_concurrency=2,
+    )
+    assert duckdb_summary.coverage_rows == 5
+    assert duckdb_summary.snp_rows == 4
+    assert (duckdb_dir / "profile.duckdb").exists()
+
+    polars_dir = tmp_path / "light_polars"
+    polars_summary = light.build_light_profile_bundle_from_bam(
+        bam_file=bam_file,
+        bed_file=bed_file,
+        gene_range_table=gene_range_table,
+        stb_file=stb_file,
+        null_model=null_model_file,
+        reference_fasta=reference_fasta,
+        output_dir=polars_dir,
+        profile_engine="polars",
+        min_cov=5,
+        num_chunks=2,
+        max_concurrency=2,
+    )
+    assert polars_summary.coverage_rows == 5
+    assert polars_summary.snp_rows == 4
+    assert (polars_dir / "coverage.parquet").exists()
+    assert (polars_dir / "snp.parquet").exists()

@@ -538,11 +538,6 @@ def process_read_locs(output_file):
     """
     ut.process_read_location(output_file=pathlib.Path(output_file))
 
-@cli.group()
-def gene_tools():
-    """Holds anything related to gene analysis."""
-    pass
-
 @utilities.command("generate_stb")
 @click.option('--genomes-dir-file', '-g', required=True, help="Path to the genomes directory file. A text file with each line containing a genome fasta file path.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output scaffold-to-genome mapping file.")
@@ -569,7 +564,7 @@ def generate_stb(genomes_dir_file, output_file, extension):
     
 
 
-@gene_tools.command("gene-range-table")
+@utilities.command("gene-range-table")
 @click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
 @click.option('--output-file', '-o', required=True, help="location to save output tsv file")
 def get_gene_range_table(gene_file, output_file):
@@ -584,7 +579,7 @@ def get_gene_range_table(gene_file, output_file):
     gene_locs.sink_csv(pathlib.Path(output_file), separator="\t", include_header=False)
 
 
-@gene_tools.command("gene-loc-table")
+@utilities.command("gene-loc-table")
 @click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
 @click.option('--scaffold-list', '-s', required=True, help="location of scaffold list. A text file with each line containing a scaffold name.")
 @click.option('--output-file', '-o', required=True, help="location to save output parquet file")
@@ -680,6 +675,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         min_gene_compare_len=min_gene_compare_len,
         genome_scope=genome,
         ani_method=ani_method,
+        calculate=calculate,
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_temp_directory=duckdb_temp_directory,
         duckdb_threads=duckdb_threads,
@@ -787,13 +783,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     )
     gene_comp.sink_parquet(output_file, compression='zstd')
 
-@cli.group()
-def profile():
-    """The commands in this group are related to profiling bam files."""
-    pass
-
-
-@profile.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
+@utilities.command("prepare_profiling",help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
 @click.option('--gene-fasta', '-g', required=True, help="Path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
@@ -819,15 +809,16 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
     genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
 
 
-@profile.command("profile-single")
+@utilities.command("profile-single")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file describing regions to be profiled.")
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model', '-m', required=True, help="Path to the null model file. If not provided, the null model will be generated from the data.") 
+@click.option('--null-model', '-m', required=True, help="Path to the null model parquet file.") 
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
-@click.option('--num-workers', '-n', default=1, help="Number of workers to use for profiling.")
+@click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
+@click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, num_workers, output_dir):
+def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, num_chunks, max_concurrency, output_dir):
     """
     Profile a single BAM file using the provided BED file and gene range table.
     
@@ -846,12 +837,14 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, n
         stb=stb,
         null_model=null_model,
         output_dir=output_dir,
-        num_workers=num_workers,
+        num_chunks=num_chunks,
+        max_concurrency=max_concurrency,
     )
 
 @profile.command("batch")
 @click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--null-model', '-u', required=True, help="Path to the null model parquet file.")
 @click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table file.")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file for profiling regions.")
 @click.option('--genome-length-file', '-l', required=True, help="Path to the genome length file.")
@@ -870,6 +863,7 @@ def profile_batch(input_table, stb_file, gene_range_table, bed_file, genome_leng
     Args:
     input_table (str): Path to the input table in TSV format containing sample names and BAM file paths.
     stb_file (str): Path to the scaffold-to-genome mapping file.
+    null_model (str): Path to the null model parquet file.
     gene_range_table (str): Path to the gene range table file.
     bed_file (str): Path to the BED file for profiling regions.
     genome_length_file (str): Path to the genome length file.
@@ -913,6 +907,7 @@ def profile_batch(input_table, stb_file, gene_range_table, bed_file, genome_leng
         container_engine=container_engine_obj,
         bams_lf=bams_lf,
         stb_file=pathlib.Path(stb_file),
+        null_model_file=pathlib.Path(null_model),
         gene_range_table=pathlib.Path(gene_range_table),
         bed_file=pathlib.Path(bed_file),
         genome_length_file=pathlib.Path(genome_length_file),
@@ -934,6 +929,8 @@ def profile_batch(input_table, stb_file, gene_range_table, bed_file, genome_leng
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
+@click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method passed to genome compare tasks.")
+@click.option("--calculate", type=click.Choice(["all", "ani"]), default="all", show_default=True, help="Genome metrics to compute for each pair.")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
 @click.option("--calculate", default="ani", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
@@ -978,6 +975,8 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
         max_concurrent_batches=max_concurrent_batches,
         execution_mode=execution_mode,
         slurm_config=slurm_conf,
+        ani_method=ani_method,
+        calculate=calculate,
         compare_engine=engine,
         calculate=calculate,
         duckdb_memory_limit=duckdb_memory_limit,

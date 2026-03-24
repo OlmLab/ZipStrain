@@ -143,6 +143,8 @@ Finally, you can run the comparison using the generated configuration file and t
 zipstrain compare genomes \
 --genome-comparison-object <path/to/comparison/config.json> \
 --run-dir <path/to/save/comparison/outputs> \
+--calculate ani \
+--ani-method popani \
 --engine duckdb \
 --calculate ani+ibs+identical_genes \
 --max-concurrent-batches 1 \

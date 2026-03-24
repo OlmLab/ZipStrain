@@ -275,6 +275,8 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
     bam.write_text("dummy")
     stb_file = tmp_path / "stb.tsv"
     stb_file.write_text("chr1\tgenome1\n")
+    null_model_file = tmp_path / "null_model.parquet"
+    null_model_file.write_text("dummy")
     bed_file = tmp_path / "genomes.bed"
     bed_file.write_text("chr1\t0\t10\n")
     gene_range_file = tmp_path / "gene_ranges.tsv"
@@ -288,6 +290,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
         yield_size=1,
         container_engine=task_manager.LocalEngine(""),
         stb_file=str(stb_file),
+        null_model_file=str(null_model_file),
         profile_bed_file=str(bed_file),
         gene_range_file=str(gene_range_file),
         genome_length_file=str(genome_length_file),
@@ -310,6 +313,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
 
 def test_profile_bam_task_template_moves_gene_stats():
     cmd = task_manager.ProfileBamTask.TEMPLATE_CMD
+    assert "--null-model null_model.parquet" in cmd
     assert "mv input_gene_stats.parquet <sample-name>_gene_stats.parquet" in cmd
 
 
@@ -356,6 +360,8 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
     assert len(tasks) == 2
     assert tasks[0].inputs["mpile_1_file"].get_value() == str(profile_1.absolute())
     assert tasks[0].inputs["mpile_2_file"].get_value() == str(profile_2.absolute())
+    assert tasks[0].inputs["ani-method-arg"].get_value() == "--ani-method popani"
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == ""
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == ""
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine polars"
@@ -393,6 +399,8 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
         yield_size=1,
         container_engine=task_manager.LocalEngine(""),
         comp_config=config,
+        ani_method="conani",
+        calculate="ani",
         duckdb_memory_limit="2GB",
         duckdb_threads=6,
         compare_engine="duckdb",
@@ -406,10 +414,43 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
 
     tasks = asyncio.run(_collect())
     assert len(tasks) == 1
+    assert tasks[0].inputs["ani-method-arg"].get_value() == "--ani-method conani"
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani"
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == "--duckdb-memory-limit 2GB"
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == "--duckdb-threads 6"
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine duckdb"
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
+
+
+def test_fast_compare_batch_cleanup_is_idempotent(tmp_path):
+    profile_1 = tmp_path / "sample_1.parquet"
+    profile_2 = tmp_path / "sample_2.parquet"
+    stb_file = tmp_path / "stb.tsv"
+    for path in (profile_1, profile_2, stb_file):
+        path.write_text("dummy")
+
+    task = task_manager.FastCompareTask(
+        id="cmp",
+        inputs={
+            "mpile_1_file": task_manager.FileInput(profile_1),
+            "mpile_2_file": task_manager.FileInput(profile_2),
+            "stb_file": task_manager.FileInput(stb_file),
+            "min_cov": task_manager.IntInput(5),
+            "min-gene-compare-len": task_manager.IntInput(100),
+            "ani-method-arg": task_manager.StringInput("--ani-method popani"),
+            "calculate-arg": task_manager.StringInput("--calculate ani"),
+            "duckdb-memory-limit-arg": task_manager.StringInput(""),
+            "duckdb-threads-arg": task_manager.StringInput(""),
+            "compare-engine-arg": task_manager.StringInput("--engine polars"),
+            "genome-name": task_manager.StringInput("all"),
+        },
+        expected_outputs={"output-file": task_manager.FileOutput("out.parquet")},
+        engine=task_manager.LocalEngine(""),
+    )
+    batch = task_manager.FastCompareLocalBatch(tasks=[task], id="batch_0", run_dir=tmp_path, expected_outputs=[])
+    batch.cleanup()
+    batch.cleanup()
+    assert batch._cleaned_up is True
 
 
 def test_gene_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):

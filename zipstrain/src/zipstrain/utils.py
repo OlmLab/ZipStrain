@@ -4,6 +4,7 @@ zipstrain.utils
 This module provides utility functions for profiling and compare operations.
 """
 import pathlib
+from tempfile import TemporaryDirectory
 import polars as pl
 import sys
 import re
@@ -13,6 +14,7 @@ from collections import Counter
 from functools import reduce
 from scipy.stats import poisson
 import subprocess
+import duckdb
 
 
 class CallPresence:
@@ -453,7 +455,7 @@ def get_genome_breadth_matrix(
     """
     profile = profile.filter((pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")) >= min_cov)
     profile=profile.group_by("chrom").agg(
-        breadth=pl.count()
+        breadth=pl.len()
     ).select(
         pl.col("chrom").alias("scaffold"),
         pl.col("breadth")
@@ -516,15 +518,31 @@ def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
     Returns:
     list[pl.LazyFrame]: A list of smaller LazyFrames.
     """
-    total_rows = lf.select(pl.count()).collect().item()
-    chunk_size = total_rows // num_chunks
+    total_rows = lf.select(pl.len()).collect().item()
+    if total_rows == 0:
+        return []
+    num_chunks = max(1, min(int(num_chunks), total_rows))
+    chunk_size = (total_rows + num_chunks - 1) // num_chunks
     chunks = []
     for i in range(num_chunks):
         start = i * chunk_size
-        end = (i + 1) * chunk_size if i < num_chunks - 1 else total_rows
+        end = min((i + 1) * chunk_size, total_rows)
+        if start >= total_rows:
+            break
         chunk = lf.slice(start, end - start)
         chunks.append(chunk)
     return chunks
+
+
+def _duckdb_quote_sql_string(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _duckdb_connect_with_temp_dir(temp_dir: str) -> duckdb.DuckDBPyConnection:
+    conn = duckdb.connect()
+    conn.execute(f"SET temp_directory = '{_duckdb_quote_sql_string(temp_dir)}'")
+    conn.execute("SET preserve_insertion_order = false")
+    return conn
 
 
 def get_genome_gaps(
@@ -532,59 +550,91 @@ def get_genome_gaps(
     stb: pl.LazyFrame,
     genome_length: pl.LazyFrame,
                     )-> pl.LazyFrame:
-    ## adding mincovbreadth
-    read_loc_table=read_loc_table.sort(["scaffold",'loc'])
-    read_loc_table=read_loc_table.with_columns(
-        (pl.col("loc") - pl.col("loc").shift(1).over("scaffold")).alias("gap_length")
-    ).join(
-        stb,
-        on="scaffold",
-        how="left"
-    )
-    delta=read_loc_table.group_by("genome").agg(
-        rn=pl.len(),
-        gap_mean=pl.col("gap_length").mean(),
-        gap_std=pl.col("gap_length").std()
-        ).join(
-        genome_length,
-        on="genome",
-        how="left"
-    ).with_columns(
-        delta=(pl.col("genome_length")/pl.col("rn")).round().alias("delta")).select(
-        pl.col("genome"),
-        pl.col("delta"),
-        pl.col("rn"),
-        pl.col("gap_mean"),
-        pl.col("gap_std")
-        )
-    read_loc_table=read_loc_table.join(
-        delta,
-        on="genome",
-        how="left"
-    )
-    read_loc_table=read_loc_table.filter(
-        pl.col("gap_length") > pl.col("delta")
-    ).group_by(["genome","gap_length"]).agg(
-        pd=(pl.len()/(pl.col("rn").first()-1)),
-        delta=pl.col("delta").first(),
-        rn=pl.col("rn").first(),
-        gap_mean=pl.col("gap_mean").first(),
-        gap_std=pl.col("gap_std").first()
-    ).with_columns(
-        pd= pl.col("pd") * (pl.col("gap_length")-pl.col("delta"))
-    ).group_by("genome").agg(
-        fug=(pl.col("delta").first()-pl.col("pd").sum())/pl.col("delta").first(),
-        rn=pl.col("rn").first(),
-        gap_mean=pl.col("gap_mean").first(),
-        gap_std=pl.col("gap_std").first()
-    )
-    return read_loc_table.select(
-        pl.col("genome"),
-        pl.col("fug"),
-        pl.col("rn"),
-        pl.col("gap_mean"),
-        pl.col("gap_std")
-    )
+    # The read-location table can be much larger than the profile itself. Stream it to a
+    # temporary parquet and let DuckDB handle the global sort/window with disk spill.
+    with TemporaryDirectory(prefix="zipstrain_genome_gaps_") as tmp_dir:
+        read_loc_path = pathlib.Path(tmp_dir) / "read_locs.parquet"
+        read_loc_table.sink_parquet(read_loc_path, compression="zstd", engine="streaming")
+
+        conn = _duckdb_connect_with_temp_dir(tmp_dir)
+        try:
+            conn.register(
+                "stb_src",
+                stb.select("scaffold", "genome").collect().to_arrow(),
+            )
+            conn.register(
+                "genome_length_src",
+                genome_length.select("genome", "genome_length").collect().to_arrow(),
+            )
+            read_loc_sql = _duckdb_quote_sql_string(str(read_loc_path))
+            table = conn.execute(
+                f"""
+                WITH read_loc AS (
+                  SELECT
+                    CAST(scaffold AS VARCHAR) AS scaffold,
+                    CAST(loc AS BIGINT) AS loc
+                  FROM read_parquet('{read_loc_sql}')
+                ),
+                stb AS (
+                  SELECT
+                    CAST(scaffold AS VARCHAR) AS scaffold,
+                    CAST(genome AS VARCHAR) AS genome
+                  FROM stb_src
+                ),
+                genome_length AS (
+                  SELECT
+                    CAST(genome AS VARCHAR) AS genome,
+                    CAST(genome_length AS DOUBLE) AS genome_length
+                  FROM genome_length_src
+                ),
+                mapped AS (
+                  SELECT
+                    rl.scaffold,
+                    rl.loc,
+                    rl.loc - LAG(rl.loc) OVER (PARTITION BY rl.scaffold ORDER BY rl.loc) AS gap_length,
+                    stb.genome
+                  FROM read_loc rl
+                  LEFT JOIN stb ON rl.scaffold = stb.scaffold
+                ),
+                delta AS (
+                  SELECT
+                    m.genome,
+                    COUNT(*)::BIGINT AS rn,
+                    AVG(m.gap_length)::DOUBLE AS gap_mean,
+                    STDDEV_SAMP(m.gap_length)::DOUBLE AS gap_std,
+                    ROUND(gl.genome_length / COUNT(*))::DOUBLE AS delta
+                  FROM mapped m
+                  LEFT JOIN genome_length gl ON m.genome = gl.genome
+                  GROUP BY m.genome, gl.genome_length
+                ),
+                gap_excess AS (
+                  SELECT
+                    m.genome,
+                    m.gap_length,
+                    d.delta,
+                    d.rn,
+                    d.gap_mean,
+                    d.gap_std,
+                    (COUNT(*)::DOUBLE / NULLIF(d.rn - 1, 0)) * (m.gap_length - d.delta) AS pd
+                  FROM mapped m
+                  INNER JOIN delta d ON m.genome = d.genome
+                  WHERE m.gap_length > d.delta
+                  GROUP BY m.genome, m.gap_length, d.delta, d.rn, d.gap_mean, d.gap_std
+                )
+                SELECT
+                  CAST(genome AS VARCHAR) AS genome,
+                  (MIN(delta) - SUM(pd)) / MIN(delta) AS fug,
+                  MIN(rn)::BIGINT AS rn,
+                  MIN(gap_mean)::DOUBLE AS gap_mean,
+                  MIN(gap_std)::DOUBLE AS gap_std
+                FROM gap_excess
+                GROUP BY genome
+                """
+            ).fetch_arrow_table()
+        finally:
+            conn.close()
+
+    return pl.from_arrow(table).lazy()
 
 def get_genome_stats(
     profile:pl.LazyFrame,
@@ -596,54 +646,92 @@ def get_genome_stats(
     hetro_min_cov: int = 5
     
 )->pl.LazyFrame:
+    genome_lengths = extract_genome_length(stb, bed)
+    genome_gap_stats = get_genome_gaps(read_loc_table, stb, genome_lengths)
+    with TemporaryDirectory(prefix="zipstrain_genome_stats_") as tmp_dir:
+        profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
+        profile.select(
+            pl.col("genome").cast(pl.Utf8).alias("genome"),
+            pl.col("A"),
+            pl.col("C"),
+            pl.col("G"),
+            pl.col("T"),
+        ).sink_parquet(profile_path, compression="zstd", engine="streaming")
 
-    genome_lengths=extract_genome_length(stb, bed)
-    genome_gap_stats= get_genome_gaps(read_loc_table, stb, genome_lengths)
-    profile=profile.select(
-        pl.col("chrom"),
-        pl.col("genome"),
-        (pl.col("A")+pl.col("C")+pl.col("G")+pl.col("T")).alias("coverage"),
-        pl.max_horizontal(["A","C","G","T"]).alias("max_base_count")
-    )
-    profile=profile.group_by("genome").agg(
-        pl.len().alias("total_covered_sites"),
-        pl.col("coverage").sum().alias("coverage"),
-        pl.col("coverage").filter(pl.col("coverage") >= comp_min_cov_breadth).count().alias(f"{comp_min_cov_breadth}x_cov_sites"),
-        ((((pl.col("max_base_count")/pl.col("coverage"))<=hetro_min_freq) & (pl.col("coverage") > hetro_min_cov)).sum()/ ((pl.col("coverage") > hetro_min_cov).sum())).alias("heterogeneity")
-        ).with_columns(
-            pl.col("genome").cast(pl.String)
-            ).join(
-        genome_lengths,
-        on="genome",
-        how="left"
-    ).join(
-        genome_gap_stats,
-        on="genome",
-        how="left"
-    ).with_columns(
-        coverage=(pl.col("coverage")/pl.col("genome_length")),
-        breadth=(pl.col("total_covered_sites")/pl.col("genome_length")),
-    ).with_columns(
-        ber=pl.col("breadth")/(1-(-0.883*pl.col("coverage")).exp()),
-        fug=pl.col("fug"),
-        rn=pl.col("rn").fill_null(0)
-    )
+        conn = _duckdb_connect_with_temp_dir(tmp_dir)
+        try:
+            conn.register(
+                "genome_length_src",
+                genome_lengths.select("genome", "genome_length").collect().to_arrow(),
+            )
+            conn.register(
+                "genome_gap_src",
+                genome_gap_stats.select("genome", "fug", "rn", "gap_mean", "gap_std").collect().to_arrow(),
+            )
+            profile_sql = _duckdb_quote_sql_string(str(profile_path))
+            table = conn.execute(
+                f"""
+                WITH profile_rows AS (
+                  SELECT
+                    CAST(genome AS VARCHAR) AS genome,
+                    CAST(A AS DOUBLE) AS A,
+                    CAST(C AS DOUBLE) AS C,
+                    CAST(G AS DOUBLE) AS G,
+                    CAST(T AS DOUBLE) AS T,
+                    CAST(A AS DOUBLE) + CAST(C AS DOUBLE) + CAST(G AS DOUBLE) + CAST(T AS DOUBLE) AS coverage,
+                    GREATEST(
+                      CAST(A AS DOUBLE),
+                      CAST(C AS DOUBLE),
+                      CAST(G AS DOUBLE),
+                      CAST(T AS DOUBLE)
+                    ) AS max_base_count
+                  FROM read_parquet('{profile_sql}')
+                ),
+                profile_stats AS (
+                  SELECT
+                    genome,
+                    COUNT(*)::BIGINT AS total_covered_sites,
+                    SUM(coverage)::DOUBLE AS covered_bases,
+                    SUM(CASE WHEN coverage >= {int(comp_min_cov_breadth)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites,
+                    SUM(
+                      CASE
+                        WHEN coverage > {int(hetro_min_cov)}
+                         AND (max_base_count / NULLIF(coverage, 0)) <= {float(hetro_min_freq)}
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::DOUBLE
+                    / NULLIF(
+                        SUM(CASE WHEN coverage > {int(hetro_min_cov)} THEN 1 ELSE 0 END),
+                        0
+                      ) AS heterogeneity
+                  FROM profile_rows
+                  GROUP BY genome
+                )
+                SELECT
+                  CAST(p.genome AS VARCHAR) AS genome,
+                  p.covered_bases / gl.genome_length AS coverage,
+                  p.total_covered_sites::DOUBLE / gl.genome_length AS breadth,
+                  CAST(gl.genome_length AS BIGINT) AS genome_length,
+                  CAST(gg.gap_mean AS DOUBLE) AS gap_mean,
+                  CAST(gg.gap_std AS DOUBLE) AS gap_std,
+                  CAST(p.cov_sites AS BIGINT) AS "{int(comp_min_cov_breadth)}x_cov_sites",
+                  CAST(p.heterogeneity AS DOUBLE) AS heterogeneity,
+                  (p.total_covered_sites::DOUBLE / gl.genome_length)
+                    / (1 - EXP(-0.883 * (p.covered_bases / gl.genome_length))) AS ber,
+                  CAST(gg.fug AS DOUBLE) AS fug,
+                  COALESCE(CAST(gg.rn AS BIGINT), 0) AS reads_mapped
+                FROM profile_stats AS p
+                LEFT JOIN genome_length_src AS gl
+                  ON p.genome = CAST(gl.genome AS VARCHAR)
+                LEFT JOIN genome_gap_src AS gg
+                  ON p.genome = CAST(gg.genome AS VARCHAR)
+                """
+            ).fetch_arrow_table()
+        finally:
+            conn.close()
 
-    return profile.select(
-        pl.col("genome"),
-        pl.col("coverage"),
-        pl.col("breadth"),
-        pl.col("genome_length"),
-        pl.col("gap_mean"),
-        pl.col("gap_std"),
-        pl.col(f"{comp_min_cov_breadth}x_cov_sites"),
-        pl.col("heterogeneity"),
-        pl.col("ber"),
-        pl.col("fug"),
-        pl.col("rn").alias("reads_mapped")
-    ).with_columns(
-        pl.col("genome").cast(pl.Categorical)
-    )
+    return pl.from_arrow(table).lazy()
 
 
 def get_gene_stats(
@@ -651,61 +739,80 @@ def get_gene_stats(
     gene_bed: pl.LazyFrame,
     stb: pl.LazyFrame,
 )->pl.LazyFrame:
-    gene_lengths = (
-        gene_bed
-        .select("gene", "scaffold", "start", "end")
-        .with_columns(
-            pl.col("start").cast(pl.Int64),
-            pl.col("end").cast(pl.Int64),
-            pl.when(pl.col("end") >= pl.col("start"))
-            .then(pl.col("end") - pl.col("start") + 1)
-            .otherwise(pl.lit(0))
-            .alias("length"),
-        )
-        .join(
-            stb.select("scaffold", "genome"),
-            on="scaffold",
-            how="left",
-        )
-        .select("genome", "gene", "length")
-        .unique(subset=["genome", "gene"], keep="first")
-    )
+    with TemporaryDirectory(prefix="zipstrain_gene_stats_") as tmp_dir:
+        profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
+        profile.select(
+            pl.col("genome").cast(pl.Utf8).alias("genome"),
+            pl.col("gene").cast(pl.Utf8).alias("gene"),
+            pl.col("A"),
+            pl.col("C"),
+            pl.col("G"),
+            pl.col("T"),
+        ).sink_parquet(profile_path, compression="zstd", engine="streaming")
 
-    covered_stats = (
-        profile
-        .filter(pl.col("gene").is_not_null() & (pl.col("gene") != "NA"))
-        .select(
-            pl.col("genome"),
-            pl.col("gene"),
-            (pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")).alias("site_coverage"),
-        )
-        .group_by(["genome", "gene"])
-        .agg(
-            pl.len().alias("total_covered_sites"),
-            pl.col("site_coverage").sum().alias("covered_bases"),
-        )
-    )
+        conn = _duckdb_connect_with_temp_dir(tmp_dir)
+        try:
+            conn.register(
+                "gene_bed_src",
+                gene_bed.select("gene", "scaffold", "start", "end").collect().to_arrow(),
+            )
+            conn.register(
+                "stb_src",
+                stb.select("scaffold", "genome").collect().to_arrow(),
+            )
+            profile_sql = _duckdb_quote_sql_string(str(profile_path))
+            table = conn.execute(
+                f"""
+                WITH gene_lengths AS (
+                  SELECT DISTINCT
+                    CAST(s.genome AS VARCHAR) AS genome,
+                    CAST(g.gene AS VARCHAR) AS gene,
+                    CASE
+                      WHEN CAST(g."end" AS BIGINT) >= CAST(g.start AS BIGINT)
+                      THEN CAST(g."end" AS BIGINT) - CAST(g.start AS BIGINT) + 1
+                      ELSE 0
+                    END AS length
+                  FROM gene_bed_src AS g
+                  LEFT JOIN stb_src AS s
+                    ON CAST(g.scaffold AS VARCHAR) = CAST(s.scaffold AS VARCHAR)
+                ),
+                covered_stats AS (
+                  SELECT
+                    CAST(genome AS VARCHAR) AS genome,
+                    CAST(gene AS VARCHAR) AS gene,
+                    COUNT(*)::BIGINT AS total_covered_sites,
+                    SUM(
+                      CAST(A AS DOUBLE) +
+                      CAST(C AS DOUBLE) +
+                      CAST(G AS DOUBLE) +
+                      CAST(T AS DOUBLE)
+                    )::DOUBLE AS covered_bases
+                  FROM read_parquet('{profile_sql}')
+                  WHERE gene IS NOT NULL
+                    AND CAST(gene AS VARCHAR) <> 'NA'
+                  GROUP BY 1, 2
+                )
+                SELECT
+                  CAST(gl.genome AS VARCHAR) AS genome,
+                  CAST(gl.gene AS VARCHAR) AS gene,
+                  CAST(gl.length AS BIGINT) AS length,
+                  CASE
+                    WHEN gl.length > 0
+                    THEN COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length
+                    ELSE 0.0
+                  END AS breadth,
+                  CASE
+                    WHEN gl.length > 0
+                    THEN COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length
+                    ELSE 0.0
+                  END AS coverage
+                FROM gene_lengths AS gl
+                LEFT JOIN covered_stats AS cs
+                  ON gl.genome = cs.genome
+                 AND gl.gene = cs.gene
+                """
+            ).fetch_arrow_table()
+        finally:
+            conn.close()
 
-    return (
-        gene_lengths
-        .join(covered_stats, on=["genome", "gene"], how="left")
-        .with_columns(
-            pl.col("total_covered_sites").fill_null(0),
-            pl.col("covered_bases").fill_null(0),
-        )
-        .with_columns(
-            breadth=(pl.col("total_covered_sites") / pl.col("length").cast(pl.Float64)),
-            coverage=(pl.col("covered_bases") / pl.col("length").cast(pl.Float64)),
-        )
-        .with_columns(
-            pl.col("breadth").fill_null(0.0),
-            pl.col("coverage").fill_null(0.0),
-        )
-        .select(
-            pl.col("genome"),
-            pl.col("gene"),
-            pl.col("length"),
-            pl.col("breadth"),
-            pl.col("coverage"),
-        )
-    )
+    return pl.from_arrow(table).lazy()
