@@ -10,7 +10,6 @@ nav:
   - index.md
   - installation.md
   - Tutorial.md
-  - ZipStrainLight.md
   - GenomeDBFromSylph.md
   - NextflowPipeline.md
   - cli.md

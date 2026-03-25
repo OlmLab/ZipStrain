@@ -37,6 +37,7 @@ Run BAM profiling in batch mode.
 zipstrain profile \
   --input-table samples.csv \
   --stb-file mapping.stb \
+  --null-model null_model.parquet \
   --gene-range-table gene_range_table.tsv \
   --bed-file genomes_bed_file.bed \
   --genome-length-file genome_lengths.parquet \
@@ -47,6 +48,7 @@ Options:
 
 - `-i, --input-table` (required)
 - `-s, --stb-file` (required)
+- `-u, --null-model` (required)
 - `-g, --gene-range-table` (required)
 - `-b, --bed-file` (required)
 - `-l, --genome-length-file` (required)
@@ -89,6 +91,9 @@ zipstrain utilities profile-single \
   --stb-file mapping.stb \
   --null-model null_model.parquet \
   --gene-range-table gene_range_table.tsv \
+  --genome-length-file genome_lengths.parquet \
+  --num-chunks 24 \
+  --max-concurrency 4 \
   --output-dir sample_profile
 ```
 
@@ -99,7 +104,9 @@ Options:
 - `-s, --stb-file` (required)
 - `-m, --null-model` (required)
 - `-g, --gene-range-table` (required)
-- `-n, --num-workers` (default: `1`)
+- `-l, --genome-length-file` (required)
+- `-n, --num-chunks` (default: `24`) — number of BED chunks to create
+- `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
 - `-o, --output-dir` (required)
 
 Outputs include:
@@ -129,6 +136,7 @@ Outputs include:
 zipstrain compare genomes \
   --genome-comparison-object genome_comp.json \
   --run-dir compare_run \
+  --ani-method popani \
   --engine duckdb \
   --calculate all
 ```
@@ -143,8 +151,9 @@ Options:
 - `-s, --slurm-config`
 - `-c, --container-engine` (default: `local`)
 - `-t, --task-per-batch` (default: `10`)
+- `-a, --ani-method` (default: `popani`) — ANI method (`popani`, `conani`, `cosani_<threshold>`)
 - `--engine` (`polars|duckdb`, default: `polars`)
-- `--calculate` (`ani`, `ibs`, `identical_genes`, `all`, default: `all`)
+- `--calculate` (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations like `ani+ibs`, default: `all`)
 - `-d, --duckdb-memory-limit`
 - `--duckdb-threads`
 

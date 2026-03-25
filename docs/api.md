@@ -16,11 +16,6 @@ ZipStrain provides a Python API for programmatic access, enabling integration in
 :::zipstrain.compare
 
 ---------------------
-## Light
-
-:::zipstrain.light
-
----------------------
 ## Utils
 
 :::zipstrain.utils

@@ -1,306 +1,82 @@
 # ZipStrain
 
-ZipStrain is a strain-resolution metagenomics toolkit for:
+**Strain-resolution metagenomics at scale.**
 
-- profiling mapped reads into per-position nucleotide counts
-- comparing profiles at genome and gene levels
-- running large profiling/comparison jobs in local or Slurm batch mode
-- building local reference-genome databases from abundance outputs (currently Sylph)
-
-Official docs: [https://OlmLab.github.io/ZipStrain/](https://OlmLab.github.io/ZipStrain/)
+ZipStrain profiles mapped reads into per-position nucleotide counts and compares profiles at both genome and gene levels — across hundreds of samples, on a laptop or an HPC cluster.
 
 ![ZipStrain Logo](docs/Zipstrain.svg)
 
-ZipStrain is developed by Parsa Ghadermazi and team at the Olm Lab, University of Colorado Boulder.
+## Why ZipStrain?
 
-## Installation
+- **Nucleotide-resolution profiling** — per-position A/C/G/T counts for every genome and gene in your reference database
+- **Flexible comparisons** — popANI, conANI, cosANI, identity-by-state (IBS), and identical-gene metrics, all in one tool
+- **Built for scale** — Polars and DuckDB engines, automatic batching, Slurm support, and resumable runs
+- **Multiple execution modes** — local multi-process, Slurm batch, Docker, or Apptainer
+- **Nextflow integration** — end-to-end pipelines from raw reads (or SRA accessions) to comparisons
+- **Automatic reference building** — build reference databases directly from Sylph abundance tables
+- **Python API** — programmatic access for custom pipelines, downstream analyses, and visualizations
+
+Developed by Parsa Ghadermazi and team at the [Olm Lab](https://www.olmlab.org/), University of Colorado Boulder.
+
+## Quick install
 
 ```bash
 pip install zipstrain
 zipstrain test
 ```
 
-Detailed setup: [docs/installation.md](docs/installation.md)
+> Requires Python 3.12+. Samtools must be installed separately ([htslib.org](http://www.htslib.org/download/)).
+> Also available via Conda (`conda install -c conda-forge -c bioconda zipstrain`) and Docker (`parsaghadermazi/zipstrain`).
 
-`zipstrain utilities profile-single` now separates chunking from concurrency:
-- `--num-chunks` controls how many BED chunks are created (default `24`)
-- `--max-concurrency` controls how many chunks run at once (default `4`)
+## Documentation
 
-## Quick Start (Current CLI)
+Full documentation, tutorials, and API reference:
 
-### 1. Prepare profiling assets
+**[https://OlmLab.github.io/ZipStrain/](https://OlmLab.github.io/ZipStrain/)**
+
+| Page | What you'll find |
+|------|-----------------|
+| [Installation](https://OlmLab.github.io/ZipStrain/installation/) | pip, Conda, Docker, and Apptainer setup |
+| [Tutorial](https://OlmLab.github.io/ZipStrain/Tutorial/) | End-to-end walkthrough from reads to comparisons |
+| [CLI Reference](https://OlmLab.github.io/ZipStrain/cli/) | Every command and option |
+| [Nextflow Pipelines](https://OlmLab.github.io/ZipStrain/NextflowPipeline/) | HPC-ready workflows |
+| [Build Genome DB](https://OlmLab.github.io/ZipStrain/GenomeDBFromSylph/) | Automatic reference building from Sylph |
+| [Python API](https://OlmLab.github.io/ZipStrain/api/) | Programmatic access and downstream analysis |
+
+## Minimal example
 
 ```bash
+# 1. Prepare profiling assets
 zipstrain utilities prepare_profiling \
-  --reference-fasta <reference.fasta> \
-  --gene-fasta <genes.fna> \
-  --stb-file <mapping.stb> \
-  --output-dir <profiling_assets_dir>
-```
+  --reference-fasta reference.fasta \
+  --gene-fasta genes.fna \
+  --stb-file mapping.stb \
+  --output-dir assets/
 
-This creates:
-
-- `genomes_bed_file.bed`
-- `gene_range_table.tsv`
-- `genome_lengths.parquet`
-
-### 2. Profile multiple BAM files
-
-Input CSV:
-
-```csv
-sample_name,bamfile
-sample1,/path/to/sample1.bam
-sample2,/path/to/sample2.bam
-```
-
-Run profiling:
-
-```bash
+# 2. Profile BAM files
 zipstrain profile \
-  --input-table <samples.csv> \
-  --stb-file <mapping.stb> \
-  --null-model <null_model.parquet> \
-  --gene-range-table <profiling_assets_dir/gene_range_table.tsv> \
-  --bed-file <profiling_assets_dir/genomes_bed_file.bed> \
-  --genome-length-file <profiling_assets_dir/genome_lengths.parquet> \
-  --run-dir <profile_run_dir>
-```
+  --input-table samples.csv \
+  --stb-file mapping.stb \
+  --null-model null_model.parquet \
+  --gene-range-table assets/gene_range_table.tsv \
+  --bed-file assets/genomes_bed_file.bed \
+  --genome-length-file assets/genome_lengths.parquet \
+  --run-dir profiles/
 
-Optional execution controls:
-
-- `--execution-mode local|slurm`
-- `--slurm-config <slurm.json>` (required when `--execution-mode slurm`)
-- `--container-engine local|docker|apptainer`
-- `--num-procs`, `--task-per-batch`, `--max-concurrent-batches`, `--poll-interval`
-
-### 3. Build a profile database for comparisons
-
-Input CSV columns (required):
-
-- `profile_name`
-- `profile_location`
-- `reference_db_id`
-- `gene_db_id`
-
-```bash
-zipstrain utilities build-profile-db \
-  --profile-db-csv <profiles.csv> \
-  --output-file <profile_db.parquet>
-```
-
-### 4. Build comparison config objects
-
-`null_model` settings are not required anymore for comparison config objects. Legacy null-model keys in older JSON files are ignored for backward compatibility.
-
-Genome comparison config:
-
-```bash
-zipstrain utilities build-genome-comparison-config \
-  --profile-db <profile_db.parquet> \
-  --gene-db-id <gene_db_id> \
-  --reference-genome-id <reference_id> \
-  --scope all \
-  --min-cov 5 \
-  --min-gene-compare-len 200 \
-  --stb-file-loc <mapping.stb> \
-  --output-file <genome_compare.json>
-```
-
-Gene comparison config:
-
-```bash
-zipstrain utilities build-gene-comparison-config \
-  --profile-db <profile_db.parquet> \
-  --gene-db-id <gene_db_id> \
-  --reference-genome-id <reference_id> \
-  --scope all:all \
-  --min-cov 5 \
-  --min-gene-compare-len 200 \
-  --stb-file-loc <mapping.stb> \
-  --output-file <gene_compare.json>
-```
-
-### 5. Run batch comparisons
-
-Genome comparisons:
-
-```bash
+# 3. Compare genomes
 zipstrain compare genomes \
-  --genome-comparison-object <genome_compare.json> \
-  --run-dir <compare_run_dir> \
-  --calculate ani \
-  --ani-method popani \
-  --engine polars \
-  --calculate ani+ibs+identical_genes \
-  --duckdb-memory-limit 4GB \
-  --duckdb-threads 8
+  --genome-comparison-object genome_compare.json \
+  --run-dir comparisons/ \
+  --calculate all \
+  --engine duckdb
 ```
 
-Gene comparisons:
+## Citation
 
-```bash
-zipstrain compare genes \
-  --gene-comparison-object <gene_compare.json> \
-  --run-dir <gene_compare_run_dir> \
-  --engine duckdb \
-  --ani-method popani \
-  --duckdb-memory-limit 4GB \
-  --duckdb-threads 8
-```
+If you use ZipStrain in your research, please cite:
 
-Notes:
+> *Citation coming soon.*
 
-- `--engine` supports `polars` or `duckdb`.
-- `--calculate` controls genome metrics: `ani`, `ibs`, `identical_genes` (`all` supported). Default is `all`.
-- In scoped comparisons (`--genome` or `--scope` not `all`), the polars path uses DuckDB prefiltering first.
-- `--duckdb-memory-limit` and `--duckdb-threads` are available in both single and batch compare interfaces.
+## License
 
-### 6. Single pair compare (optional)
-
-Genome-level single compare:
-
-```bash
-zipstrain utilities single_compare_genome \
-  --mpileup-contig-1 <sampleA_profile.parquet> \
-  --mpileup-contig-2 <sampleB_profile.parquet> \
-  --stb-file <mapping.stb> \
-  --genome all \
-  --calculate ani+ibs+identical_genes \
-  --engine duckdb \
-  --duckdb-memory-limit 2GB \
-  --duckdb-threads 8 \
-  --duckdb-temp-directory /tmp \
-  --output-file <sampleA_sampleB_comparison.parquet>
-```
-
-Gene-level single compare:
-
-```bash
-zipstrain utilities single_compare_gene \
-  --mpileup-contig-1 <sampleA_profile.parquet> \
-  --mpileup-contig-2 <sampleB_profile.parquet> \
-  --stb-file <mapping.stb> \
-  --scope all:all \
-  --engine polars \
-  --output-file <sampleA_sampleB_gene_comparison.parquet>
-```
-
-## Current Output Files
-
-### Profiling outputs
-
-Each profile task produces:
-
-- `<sample_name>.parquet`
-- `<sample_name>_genome_stats.parquet`
-- `<sample_name>_gene_stats.parquet`
-
-For `zipstrain profile`, these files are written inside task directories under `<run_dir>/batch_*/<sample_name>/`.
-
-`<sample_name>.parquet` columns:
-
-- `chrom`, `genome`, `gene`, `pos`, `A`, `C`, `G`, `T`
-
-Rows are sorted by `genome`, `chrom`, `pos` ascending.
-
-`<sample_name>_genome_stats.parquet` columns:
-
-- `genome`
-- `coverage`
-- `breadth`
-- `genome_length`
-- `gap_mean`
-- `gap_std`
-- `5x_cov_sites`
-- `heterogeneity`
-- `ber`
-- `fug`
-- `reads_mapped`
-
-`<sample_name>_gene_stats.parquet` columns:
-
-- `genome`
-- `gene`
-- `length`
-- `breadth`
-- `coverage`
-
-### Genome comparison outputs
-
-Batch runs write final merged results to:
-
-- `<run_dir>/Outputs/all_comparisons.parquet`
-
-Columns:
-
-- Always: `genome`, `sample_1`, `sample_2`
-- If `ani` requested: `total_positions`, `share_allele_pos`, `genome_pop_ani`
-- If `ibs` requested: `max_consecutive_length`
-- If `identical_genes` requested: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`
-
-### Gene comparison outputs
-
-Batch runs write final merged results to:
-
-- `<run_dir>/Outputs/all_gene_comparisons.parquet`
-
-Columns:
-
-- `genome`
-- `gene`
-- `total_positions`
-- `share_allele_pos`
-- `ani`
-- `sample_1`
-- `sample_2`
-
-## Run Directory Layout (Batch Runners)
-
-Comparison runners create structured run directories. Typical files include:
-
-- `<run_dir>/batch_events.log` (global progress/event log)
-- `<run_dir>/batch_*/batch.log` (per-batch log)
-- `<run_dir>/Outputs/all_comparisons.parquet` or `<run_dir>/Outputs/all_gene_comparisons.parquet`
-
-## Build Reference FASTA/STB from Abundances
-
-```bash
-zipstrain utilities build-genome-db \
-  --tool sylph \
-  --abundance-table <sylph_abundance.csv> \
-  --cache-dir <genome_cache_dir> \
-  --output-dir <reference_output_dir> \
-  --download-retries 3 \
-  --retry-backoff-seconds 1.0 \
-  --download-workers 4
-```
-
-This writes:
-
-- `<reference_output_dir>/reference_genomes.fna`
-- `<reference_output_dir>/reference_genomes.stb`
-- `<reference_output_dir>/genome_db_build_report.txt` (includes failed accession IDs, if any)
-
-The cache directory stores downloaded genomes and reuses existing files across runs.
-Only genomes with non-zero abundance in at least one sample are included.
-For Sylph input, accessions are read from the `Genome_file` column (GTDB path versions supported).
-If `Genome_file` paths are local, they are cached directly before any download fallback.
-
-Detailed walkthrough: [docs/GenomeDBFromSylph.md](docs/GenomeDBFromSylph.md)
-
-## Nextflow
-
-Nextflow workflow documentation:
-
-- [docs/NextflowPipeline.md](docs/NextflowPipeline.md)
-
-Pipeline entrypoint in this repository:
-
-- `zipstrain.nf`
-
-## Additional Documentation
-
-- CLI reference: [docs/cli.md](docs/cli.md)
-- End-to-end tutorial: [docs/Tutorial.md](docs/Tutorial.md)
-- API notes: [docs/api.md](docs/api.md)
+See [LICENSE](LICENSE) for details.

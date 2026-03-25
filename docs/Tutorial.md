@@ -1,6 +1,15 @@
 # Tutorial
 This tutorial will guide you through the basics of using ZipStrain.
 
+!!! warning "Work in progress"
+    The following sections are still being completed:
+
+    - [ ] Download links for example input/output files throughout the tutorial
+    - [ ] Step 6: Comparing profiled samples at the genome level
+    - [ ] Step 7: Comparing profiled samples at the gene level
+    - [ ] Code examples for strain sharing and downstream analyses
+    - [ ] Completing the "Recommended Workflow" section
+
 ## Introduction to ZipStrain
 ZipStrain is a tool for profiling a metagenomics sample against a database of reference genomes and performing comparisons between the profiles as well as downstream analyses. 
 
@@ -35,11 +44,11 @@ following columns:
 
 ```
 
-|chrom|pos|gene|A|C|G|T|
+|chrom|genome|gene|pos|A|C|G|T|
 
 ```
 
-Where `chrom` is the scaffold, `pos` is the position in the reference genome, `gene` is the gene name (if a gene file is provided), and `A`, `C`, `G`, and `T` are the counts of each nucleotide at that position based on the mapped reads.
+Where `chrom` is the scaffold, `genome` is the genome name (derived from the STB file), `gene` is the gene name (if a gene file is provided), `pos` is the position in the reference genome, and `A`, `C`, `G`, and `T` are the counts of each nucleotide at that position based on the mapped reads.
 
 The information will be generated for every position in the reference genomes that has at least one read mapped to it. There are two ways to generate profiles using ZipStrain: 
 
@@ -181,7 +190,7 @@ zipstrain utilities to-complete-table --genome-comparison-object <path/to/compar
 Then you can run the comparison using the following command:
 
 ```
-nextflow run zipstrain.nf --mode fast_compare \
+nextflow run zipstrain.nf --mode compare_genomes \
  --input_table <path/to/output/remaining_pairs.csv> \
  --input_type "pair_table" --gene_file <path/to/gene/fasta/file> \
  --reference_genome <path/to/reference/genome.fasta> \  
@@ -199,7 +208,7 @@ nextflow run zipstrain.nf --mode fast_compare \
 In this case, the nextflow pipeline will run all non-redundant pairwise comparisons between the provided profiles. Here is an example command:
 
 ```bash
-nextflow run zipstrain.nf --mode fast_compare \
+nextflow run zipstrain.nf --mode compare_genomes \
  --input_table <path/to/profiles/csv> \
  --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
  --reference_genome <path/to/reference/genome.fasta> \
@@ -216,7 +225,7 @@ For more information, refer to the [Nextflow Pipeline Documentation](./NextflowP
 
 #### Output files
 
-Regardless of the execution workflow (ZipStrain CLI or Nextflow), comparing profiles yields a single table "merged_comparison.parquet" that contains the comparison results for all compared profile pairs. The table has the following columns:
+Comparing profiles yields a results table containing all compared profile pairs. When using the ZipStrain CLI, the output is at `<run_dir>/Outputs/all_comparisons.parquet`; with Nextflow, it is `merged_comparisons.parquet`. The table has the following columns:
 
 |genome|total_positions|share_allele_pos|genome_pop_ani|max_consecutive_length|shared_genes_count|identical_gene_count|perc_id_genes|sample_1|sample_2|
 |-----|---------------|----------------|--------------|---------------------|------------------|--------------------|-------------|--------|--------|
