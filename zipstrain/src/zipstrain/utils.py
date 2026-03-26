@@ -5,6 +5,7 @@ This module provides utility functions for profiling and compare operations.
 """
 import pathlib
 from tempfile import TemporaryDirectory
+from collections.abc import Callable
 import polars as pl
 import sys
 import re
@@ -15,6 +16,91 @@ from functools import reduce
 from scipy.stats import poisson
 import subprocess
 import duckdb
+
+
+def _merge_parquet_chunk(parquet_files: list[pathlib.Path], output_file: pathlib.Path) -> None:
+    """Merge a bounded list of parquet files into one parquet file."""
+    pl.concat([pl.scan_parquet(path) for path in parquet_files]).sink_parquet(
+        output_file,
+        compression="zstd",
+    )
+
+
+def _iter_parquet_batches(parquet_files: list[pathlib.Path], batch_size: int):
+    """Yield parquet paths in fixed-size batches."""
+    for start in range(0, len(parquet_files), batch_size):
+        yield parquet_files[start:start + batch_size]
+
+
+def merge_parquet_files(
+    input_dir: str | pathlib.Path,
+    output_file: str | pathlib.Path,
+    batch_size: int = -1,
+    progress_callback: Callable[[str], None] | None = None,
+) -> pathlib.Path:
+    """
+    Merge parquet files from a directory into a single parquet file.
+
+    When ``batch_size`` is ``-1`` the merge is performed in a single pass, which
+    preserves the current behavior. For positive ``batch_size`` values, inputs
+    are merged in staged batches to avoid building an excessively large lazy
+    concatenation plan at once.
+    """
+    if batch_size == 0 or batch_size < -1:
+        raise ValueError("batch_size must be -1 or a positive integer")
+
+    input_path = pathlib.Path(input_dir)
+    output_path = pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_resolved = output_path.resolve()
+
+    parquet_files = sorted(
+        path for path in input_path.glob("*.parquet")
+        if path.resolve() != output_resolved
+    )
+    if not parquet_files:
+        raise ValueError(f"No Parquet files found in directory: {input_dir}")
+
+    def emit(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    total_files = len(parquet_files)
+    emit(f"merge_parquet: found {total_files} parquet files")
+
+    if batch_size == -1 or total_files <= batch_size:
+        emit(f"merge_parquet: single-pass merge start ({total_files} files)")
+        _merge_parquet_chunk(parquet_files, output_path)
+        emit(f"merge_parquet: single-pass merge done -> {output_path}")
+        return output_path
+
+    with TemporaryDirectory(prefix="zipstrain_merge_parquet_", dir=output_path.parent) as tmp_dir:
+        tmp_root = pathlib.Path(tmp_dir)
+        batch_outputs: list[pathlib.Path] = []
+        batch_count = (total_files + batch_size - 1) // batch_size
+        processed_files = 0
+
+        for batch_idx, batch_files in enumerate(_iter_parquet_batches(parquet_files, batch_size), start=1):
+            batch_output = tmp_root / f"batch_{batch_idx:05d}.parquet"
+            processed_files += len(batch_files)
+            emit(
+                f"merge_parquet: batch {batch_idx}/{batch_count} start "
+                f"({len(batch_files)} files; processed {processed_files}/{total_files})"
+            )
+            _merge_parquet_chunk(batch_files, batch_output)
+            batch_outputs.append(batch_output)
+            emit(
+                f"merge_parquet: batch {batch_idx}/{batch_count} done "
+                f"-> {batch_output.name}"
+            )
+
+        emit(
+            f"merge_parquet: final merge start "
+            f"({len(batch_outputs)} batch outputs)"
+        )
+        _merge_parquet_chunk(batch_outputs, output_path)
+        emit(f"merge_parquet: final merge done -> {output_path}")
+        return output_path
 
 
 class CallPresence:

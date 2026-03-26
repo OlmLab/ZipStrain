@@ -309,6 +309,21 @@ Important options:
 - `--retry-backoff-seconds` (default: `1.0`)
 - `--download-workers` (default: `4`)
 
+### `zipstrain utilities merge_parquet`
+
+```bash
+zipstrain utilities merge_parquet \
+  --input-dir comps \
+  --output-file merged_comparisons.parquet \
+  --batch-size 5000
+```
+
+Notes:
+
+- `--batch-size -1` keeps the current single-pass merge behavior.
+- Positive `--batch-size` values first merge input files batch-by-batch into a temporary directory, then do one final lazy merge over those batch outputs.
+- Progress is logged as active line-oriented batch updates and flushed immediately, which is easier to follow in cluster logs.
+
 ### Other Utility Commands
 
 Use `--help` on each command for full option details:

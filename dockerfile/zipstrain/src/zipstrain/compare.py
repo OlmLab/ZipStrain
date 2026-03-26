@@ -12,7 +12,7 @@ import duckdb
 
 
 GENOME_COMPARISON_CALCULATIONS = ("ani", "ibs", "identical_genes")
-GENOME_COMPARISON_DEFAULT_CALCULATIONS = ("ani",)
+GENOME_COMPARISON_DEFAULT_CALCULATIONS = GENOME_COMPARISON_CALCULATIONS
 GENOME_COMPARISON_CALCULATION_ALIASES = {
     "ani": "ani",
     "popani": "ani",
@@ -25,11 +25,14 @@ GENOME_COMPARISON_CALCULATION_ALIASES = {
 }
 
 
+GenomeCalculate = Literal["all", "ani"]
+
+
 def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = None) -> tuple[str, ...]:
     """Parse and normalize genome metric selection tokens.
 
     Accepted input formats:
-      - None -> default ("ani",)
+      - None -> default ("ani", "ibs", "identical_genes")
       - "ani+ibs+identical_genes"
       - "all"
       - iterable of token strings
@@ -60,6 +63,14 @@ def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = N
             raise ValueError(f"Unsupported calculation '{token}'. Supported values: {supported}")
         normalized.add(mapped)
     return tuple(metric for metric in GENOME_COMPARISON_CALCULATIONS if metric in normalized)
+
+
+def _normalize_genome_calculate(calculate: Optional[Union[str, Iterable[str]]] = None) -> GenomeCalculate:
+    """Compatibility helper for legacy all-vs-ani code paths."""
+    calculations = parse_genome_calculations(calculate)
+    if calculations == ("ani",):
+        return "ani"
+    return "all"
 
 
 def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
@@ -786,7 +797,6 @@ def duckdb_compare_genomes_to_parquet(
     """
     con = duckdb.connect()
     try:
-        calculate = _normalize_genome_calculate(calculate)
         _duckdb_configure_connection(
             con,
             memory_limit=memory_limit,
@@ -1073,7 +1083,6 @@ def compare_genomes_polars(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     ani_method: str = "popani",
-    calculate: GenomeCalculate = "all",
     stb_file: Optional[Union[str, Path]] = None,
     calculate: Optional[Union[str, Iterable[str]]] = None,
 ) -> pl.LazyFrame:
@@ -1240,7 +1249,6 @@ def compare_genomes(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     ani_method: str = "popani",
-    calculate: GenomeCalculate = "all",
     duckdb_memory_limit: Optional[str] = None,
     duckdb_temp_directory: Optional[Union[str, Path]] = None,
     duckdb_threads: Optional[int] = None,
@@ -1258,7 +1266,6 @@ def compare_genomes(
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
             ani_method=ani_method,
-            calculate=calculate,
             stb_file=stb_file,
             calculate=calculations,
         )

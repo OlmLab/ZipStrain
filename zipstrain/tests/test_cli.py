@@ -571,3 +571,32 @@ def test_cli_build_profile_db_minimal_columns(tmp_path):
 
     built_db = pl.read_parquet(output_db)
     assert set(built_db.columns) == {"profile_name", "profile_location", "reference_db_id", "gene_db_id"}
+
+
+def test_cli_merge_parquet_batched_mode(tmp_path):
+    input_dir = tmp_path / "parts"
+    input_dir.mkdir()
+    for idx in range(5):
+        pl.DataFrame({"part": [idx], "value": [idx + 1]}).write_parquet(input_dir / f"part_{idx:03d}.parquet")
+
+    output_file = tmp_path / "merged.parquet"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "merge_parquet",
+            "--input-dir",
+            str(input_dir),
+            "--output-file",
+            str(output_file),
+            "--batch-size",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert output_file.exists()
+    merged = pl.read_parquet(output_file).sort("part")
+    assert merged.shape == (5, 2)
+    assert "batch 1/3 start" in result.output

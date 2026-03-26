@@ -89,6 +89,61 @@ def genome_length_lf()->pl.LazyFrame:
     }).lazy()
 
 
+def _write_merge_parquet_parts(input_dir, file_count: int = 5) -> pl.DataFrame:
+    input_dir.mkdir(parents=True, exist_ok=True)
+    parts = []
+    for idx in range(file_count):
+        frame = pl.DataFrame(
+            {
+                "part": [idx],
+                "value": [idx * 10],
+            }
+        )
+        frame.write_parquet(input_dir / f"part_{idx:03d}.parquet")
+        parts.append(frame)
+    return pl.concat(parts)
+
+
+def test_merge_parquet_files_single_pass(tmp_path):
+    input_dir = tmp_path / "parts"
+    output_file = tmp_path / "merged.parquet"
+    expected = _write_merge_parquet_parts(input_dir, file_count=4).sort("part")
+    progress_messages = []
+
+    utils.merge_parquet_files(
+        input_dir=input_dir,
+        output_file=output_file,
+        batch_size=-1,
+        progress_callback=progress_messages.append,
+    )
+
+    merged = pl.read_parquet(output_file).sort("part")
+    assert merged.equals(expected)
+    assert any("single-pass merge start" in message for message in progress_messages)
+    assert any("single-pass merge done" in message for message in progress_messages)
+
+
+def test_merge_parquet_files_batched(tmp_path):
+    input_dir = tmp_path / "parts"
+    output_file = tmp_path / "merged.parquet"
+    expected = _write_merge_parquet_parts(input_dir, file_count=5).sort("part")
+    progress_messages = []
+
+    utils.merge_parquet_files(
+        input_dir=input_dir,
+        output_file=output_file,
+        batch_size=2,
+        progress_callback=progress_messages.append,
+    )
+
+    merged = pl.read_parquet(output_file).sort("part")
+    assert merged.equals(expected)
+    assert any("batch 1/3 start" in message for message in progress_messages)
+    assert any("batch 3/3 done" in message for message in progress_messages)
+    assert any("final merge start" in message for message in progress_messages)
+    assert any("final merge done" in message for message in progress_messages)
+
+
 def test_get_genome_stats(stb,bed_table):
     result = utils.extract_genome_length(stb, bed_table).collect().rows_by_key("genome",unique=True,named=True)
     assert result["genome1"]["genome_length"] == 30

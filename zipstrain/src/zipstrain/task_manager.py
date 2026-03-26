@@ -584,7 +584,6 @@ class CompareTaskGenerator(TaskGenerator):
         duckdb_memory_limit: str | None = None,
         duckdb_threads: int | None = None,
         compare_engine: str = "polars",
-        calculate: str = "all",
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
@@ -594,7 +593,6 @@ class CompareTaskGenerator(TaskGenerator):
         self.duckdb_memory_limit = duckdb_memory_limit
         self.duckdb_threads = duckdb_threads
         self.compare_engine = compare_engine
-        self.calculate = calculate
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         if self.compare_engine not in {"polars", "duckdb"}:
@@ -1805,7 +1803,6 @@ def lazy_run_compares(
     duckdb_memory_limit: str | None = None,
     duckdb_threads: int | None = None,
     compare_engine: str = "polars",
-    calculate: str = "all",
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -1832,7 +1829,6 @@ def lazy_run_compares(
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_threads=duckdb_threads,
         compare_engine=compare_engine,
-        calculate=calculate,
     )
     if execution_mode=="local":
         batch_type="local"
