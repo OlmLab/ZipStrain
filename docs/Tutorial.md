@@ -81,11 +81,16 @@ Your output directory should contain the following files:
 -   genome_lengths.parquet
 -   gene_range_table.tsv
 
+You also need to build a null model for sequencing error adjustment:
+
+```bash
+zipstrain utilities build-null-model --bam-file <path/to/any/sample.bam> --output-file <path/to/null_model.parquet>
+```
+
 Now you can profile your bam files:
 
-```
-zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/bed/file> --run-dir <path/to/save/generated/files>
-
+```bash
+zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --null-model <path/to/null_model.parquet> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/genome_lengths.parquet> --run-dir <path/to/save/generated/files>
 ```
 
 
@@ -394,6 +399,7 @@ This will generate the following files in the `preprofiles/` directory:
 | Genome lengths parquet file | [genome_lengths](TOBEIMPLEMENTED)   |
 | Gene range table TSV file   | [gene_range_table](TOBEIMPLEMENTED) |
 | STB file                    | [stb_file](TOBEIMPLEMENTED)         |
+| Null model parquet file     | [null_model](TOBEIMPLEMENTED)       |
 
 |Outputs                          |Link                                 |
 |---------------------------------|-------------------------------------|
@@ -409,10 +415,16 @@ sample1,/path/to/mapping_output/sample1.bam
 sample2,/path/to/mapping_output/sample2.bam
 ```
 
+First, build the null model for sequencing error adjustment (you only need to do this once per reference database, using any one of your BAM files):
+
+```bash
+zipstrain utilities build-null-model --bam-file mapping_output/sample1.bam --output-file null_model.parquet
+```
+
 You can profile the mapped BAM files using ZipStrain with the following command:
 
 ```bash
-zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --null-model null_model.parquet --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
 ```
 
 This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the `profiling_output/` directory.
