@@ -11,7 +11,7 @@ params.bed_max_scaffold_length=500000
 params.compare_duckdb_memory_limit=""
 params.compare_calculate="all"
 params.batch_compare_n_parallel=4
-params.publish_mode="link"
+params.publish_mode="symlink"
 params.compare_genome_scope="all"
 params.compare_gene_scope="all:all"
 params.compare_genome_calculate="all"
@@ -68,7 +68,7 @@ process estimate_abundance_sylph{
     * This process estimates the abundance of bins using Sylph. It takes the reads and prepared database.
     * One task per sample.
     */
-    publishDir "${params.output_dir}/sylph_abundance/", mode: 'copy'
+    publishDir "${params.output_dir}/sylph_abundance/", mode: params.publish_mode
     
     input:
     tuple val(sample_name), path(reads)
@@ -94,7 +94,7 @@ process merge_sylph_abundance_tables {
     /*
     * Merge per-sample Sylph abundance tables into one table.
     */
-    publishDir "${params.output_dir}/sylph_abundance/", mode: 'copy'
+    publishDir "${params.output_dir}/sylph_abundance/", mode: params.publish_mode
     input:
     path abundance_tables
     output:
@@ -109,12 +109,13 @@ process build_db_from_Sylph{
     /*
     * This process builds a Bowtie2 database from the Sylph database. It takes the Sylph database as input and outputs the indexed files.
     */
-    publishDir "${params.output_dir}/db_from_sylph/", mode: 'link'
+    publishDir "${params.output_dir}/db_from_sylph/", mode: params.publish_mode
     containerOptions {
         switch( workflow.containerEngine ) {
             case 'docker':
                 return "--volume ${genome_cache_dir}:${genome_cache_dir}"
             case 'apptainer':
+            case 'singularity':
                 return "--bind ${genome_cache_dir}:${genome_cache_dir}"
             default:
                 return ''
@@ -147,7 +148,7 @@ process get_sequences_from_sra {
     * @param sra_ids: SRA ID to retrieve.
     */
     
-    publishDir "${params.output_dir}/sra_sequences", mode: 'link'
+    publishDir "${params.output_dir}/sra_sequences", mode: params.publish_mode
     
     input:
     val sra_ids
@@ -170,7 +171,7 @@ process index_reference {
     * This process indexes the reference genome using BWA.
     * It takes in the reference genome and outputs the indexed files.
     */
-    publishDir "${params.output_dir}", mode: 'link'
+    publishDir "${params.output_dir}", mode: params.publish_mode
     input:
     path reference_genome
     output:
@@ -188,7 +189,7 @@ process map_reads{
     * This process maps reads to a reference genome using BWA.
     * It takes in the reference genome and reads, and outputs the BAM file.
     */
-    publishDir "${params.output_dir}", mode: 'link'
+    publishDir "${params.output_dir}", mode: params.publish_mode
     input:
     tuple val(sample_name), path(reads)
     path reference_genome
@@ -224,7 +225,7 @@ process map_reads{
 
 process prepare_profile{
 
-    publishDir "${params.output_dir}", mode: 'link'
+    publishDir "${params.output_dir}", mode: params.publish_mode
     input:
     path reference_genome
     path gene_fasta
@@ -250,7 +251,7 @@ process profile_bam {
     * This process generates mpileup files from BAM files.
     * It takes in the BAM file and outputs the mpileup file.
     */
-    publishDir "${params.output_dir}", mode: 'link'
+    publishDir "${params.output_dir}", mode: params.publish_mode
     input:
     val sample_name
     path bamfile
@@ -341,7 +342,7 @@ process get_genome_breadth {
     * This process calculates the genome breadth.
     * It takes in the mpileup files and outputs the genome breadth.
     */
-    publishDir "${params.output_dir}", mode: 'link'
+    publishDir "${params.output_dir}", mode: params.publish_mode
     input:
     path profile
     path stb_file
@@ -361,7 +362,7 @@ process get_genome_breadth {
 
 
 process compare_genome_batched {
-    publishDir "${params.output_dir}/batch_comparisons", mode: 'link'
+    publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
     rm -f ${mpiles.collect{t->t.join(' ')}}
@@ -407,7 +408,7 @@ process compare_genome_batched {
 }
 
 process compare_gene_batched {
-    publishDir "${params.output_dir}/batch_comparisons", mode: 'link'
+    publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
     rm -f ${mpiles.collect{t->t.join(' ')}}
@@ -453,7 +454,7 @@ process merge_comparison_tables {
     * This process merges multiple comparison result files into a single file.
     * It takes in multiple comparison result files and outputs a merged file.
     */
-    publishDir "${params.output_dir}", mode: 'link'
+    publishDir "${params.output_dir}", mode: params.publish_mode
     input:
     path comparison_files
     output:
@@ -468,7 +469,7 @@ process merge_breadth_tables {
     * This process merges multiple genome breadth files into a single file.
     * It takes in multiple genome breadth files and outputs a merged file.
     */
-    publishDir "${params.output_dir}"
+    publishDir "${params.output_dir}", mode: params.publish_mode
     input:
     path breadth_files
     output:
@@ -482,7 +483,7 @@ process merge_breadth_tables {
 }
 
 process build_null_model {
-publishDir "${params.output_dir}", mode: 'link'
+publishDir "${params.output_dir}", mode: params.publish_mode
     /*
     * This process builds a null model for the gene abundance data.
     * It takes in the gene file and scaffold table, and outputs the null model.
@@ -500,7 +501,7 @@ publishDir "${params.output_dir}", mode: 'link'
 }
 
 process fromSRAtoProfile{
-    publishDir "${params.output_dir}/profiles"
+    publishDir "${params.output_dir}/profiles", mode: params.publish_mode
     input:
     val sra_id
     path reference_genome

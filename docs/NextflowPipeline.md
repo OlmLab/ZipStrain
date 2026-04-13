@@ -18,11 +18,12 @@ nextflow run zipstrain.nf \
   --input_table <path/to/input.csv> \
   --output_dir <path/to/output_dir> \
   -c conf.config \
-  -profile <docker|alpine|gutbot|blanca> \
+  -profile <docker|alpine|gutbot|blanca|fiji> \
   -resume
 ```
 
 `conf.config` already defines resources for the current process set and includes example execution profiles.
+The `fiji` profile is configured for Slurm plus Singularity, which is useful on clusters that provide Singularity rather than Apptainer.
 
 ## Key Pipeline Parameters
 

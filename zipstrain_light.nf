@@ -117,6 +117,7 @@ process build_db_from_Sylph{
             case 'docker':
                 return "--volume ${genome_cache_dir}:${genome_cache_dir}"
             case 'apptainer':
+            case 'singularity':
                 return "--bind ${genome_cache_dir}:${genome_cache_dir}"
             default:
                 return ''

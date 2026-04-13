@@ -1,7 +1,9 @@
 from click.testing import CliRunner
 from zipstrain import cli
+from pathlib import Path
 import pytest
 import polars as pl
+import tomllib
 
 a_chr1=[ 1, 0, 1, 0, 0, 0, 4, 4, 2, 1]
 t_chr1=[ 0, 2, 3, 1, 0, 0, 1, 0, 0, 1]
@@ -21,6 +23,12 @@ gene_locs = (["NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA","NA"])+ \
             (["NA","NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA",
               "NA","gene2","gene2","gene2","gene2","gene2","NA","NA","NA","NA",
               "NA","NA","gene3","gene3","gene3","gene3","gene3","NA","NA","NA"])
+
+
+def _project_version() -> str:
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)["project"]["version"]
 
 @pytest.fixture
 def profile_1()->pl.LazyFrame:
@@ -75,6 +83,14 @@ def test_cli_top_level_layout():
     assert "run" not in commands
     assert "compare" not in commands
     assert "gene_tools" not in commands
+
+
+def test_cli_version_flag():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["--version"])
+    assert result.exit_code == 0
+    assert "zipstrain" in result.output.lower()
+    assert _project_version() in result.output
 
 def test_cli_profile_compare(profile_1:pl.LazyFrame,
                              profile_2:pl.LazyFrame,
