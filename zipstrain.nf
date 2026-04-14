@@ -21,6 +21,7 @@ params.bowtie2_non_competitive_mapping=false
 params.sylph_db = null
 params.sylph_db_link="http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb"
 params.genome_db_cache_dir="genome_cache"
+params.compression_level=6
 def tableToDict(file, delimiter = ',') {
     /*
     * This function reads a CSV file and converts it into a dictionary (map) where the keys are the headers
@@ -162,8 +163,9 @@ process get_sequences_from_sra {
     """
     prefetch --max-size 200g ${sra_ids} 
     fasterq-dump --split-files --outdir ${sra_ids} ${sra_ids}
-    gzip ${sra_ids}/${sra_ids}*.fastq
+    pigz -p ${task.cpus} -${params.compression_level} ${sra_ids}/${sra_ids}*.fastq
     rm -rf ${sra_ids}/${sra_ids}.sra
+    rm -f ${sra_ids}/${sra_ids}*.fastq
     """
 }
 process index_reference {
@@ -520,13 +522,12 @@ process fromSRAtoProfile{
     """
     prefetch --max-size 200g ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
-    gzip ${sra_id}/${sra_id}*.fastq
     rm -rf ${sra_id}/${sra_id}.sra
-    num_seq_files=\$(ls ${sra_id}/*.fastq.gz | wc -l)
+    num_seq_files=\$(ls ${sra_id}/*.fastq | wc -l)
     if [ \$num_seq_files -eq 2 ]; then
-    bowtie2 -x ${reference_genome} -1 ${sra_id}/${sra_id}_1.fastq.gz -2 ${sra_id}/${sra_id}_2.fastq.gz --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
+    bowtie2 -x ${reference_genome} -1 ${sra_id}/${sra_id}_1.fastq -2 ${sra_id}/${sra_id}_2.fastq --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
     else
-    bowtie2 -x ${reference_genome} -U ${sra_id}/${sra_id}*.fastq.gz --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
+    bowtie2 -x ${reference_genome} -U ${sra_id}/${sra_id}*.fastq --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
     fi
     zipstrain utilities profile-single \\
                         --bam-file ${sra_id}.bam \\

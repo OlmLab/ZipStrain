@@ -14,3 +14,4 @@ RUN wget --output-document sratoolkit.tar.gz https://ftp-trace.ncbi.nlm.nih.gov/
     rm sratoolkit.tar.gz
 ENV PATH="/sratoolkit.3.2.0-ubuntu64/bin:${PATH}"
 RUN pip install polars[rtcompat]
+RUN conda install -y -c conda-forge pigz
