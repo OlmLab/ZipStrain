@@ -1,82 +1,181 @@
 # ZipStrain
 
-**Strain-resolution metagenomics at scale.**
+<table>
+  <tr>
+    <td>
+      <p><strong>Strain-resolution metagenomics at scale.</strong></p>
+      <p>
+        ZipStrain profiles mapped reads into per-position nucleotide counts and compares
+        metagenomic samples at genome and gene resolution. It is designed for both
+        exploratory local runs and large, resumable HPC workflows.
+      </p>
+      <p>
+        <a href="https://OlmLab.github.io/ZipStrain/"><img src="https://img.shields.io/badge/docs-online-1f6feb" alt="Documentation"></a>
+        <img src="https://img.shields.io/badge/python-3.12%2B-3776ab" alt="Python 3.12+">
+      </p>
+    </td>
+    <td align="center" valign="middle">
+      <img src="docs/Zipstrain.svg" alt="ZipStrain logo" width="220">
+    </td>
+  </tr>
+</table>
 
-ZipStrain profiles mapped reads into per-position nucleotide counts and compares profiles at both genome and gene levels — across hundreds of samples, on a laptop or an HPC cluster.
+Developed by Parsa Ghadermazi and the [Olm Lab](https://www.olmlab.org/), University of Colorado Boulder.
 
-![ZipStrain Logo](docs/Zipstrain.svg)
+## Overview
+  
+<img src="docs/workflow.png" alt="ZipStrain workflow" width="520">
 
-## Why ZipStrain?
+ZipStrain provides a full workflow for strain-level metagenomic analysis:
 
-- **Nucleotide-resolution profiling** — per-position A/C/G/T counts for every genome and gene in your reference database
-- **Flexible comparisons** — popANI, conANI, cosANI, identity-by-state (IBS), and identical-gene metrics, all in one tool
-- **Built for scale** — Polars and DuckDB engines, automatic batching, Slurm support, and resumable runs
-- **Multiple execution modes** — local multi-process, Slurm batch, Docker, or Apptainer
-- **Nextflow integration** — end-to-end pipelines from raw reads (or SRA accessions) to comparisons
-- **Automatic reference building** — build reference databases directly from Sylph abundance tables
-- **Python API** — programmatic access for custom pipelines, downstream analyses, and visualizations
+- Profile BAM files into nucleotide-resolution A/C/G/T count tables
+- Generate companion genome and gene coverage summaries during profiling
+- Compare samples with popANI, conANI, cosANI, IBS, and identical-gene metrics
+- Run pairwise comparisons with Polars or DuckDB engines
+- Scale out with resumable local or Slurm-backed task execution
+- Run end-to-end Nextflow pipelines from local reads or SRA accessions
+- Build reference bundles directly from Sylph abundance tables
+- Use the CLI for production workflows or the Python API for custom analysis
 
-Developed by Parsa Ghadermazi and team at the [Olm Lab](https://www.olmlab.org/), University of Colorado Boulder.
+## Installation
 
-## Quick install
+Install from PyPI:
 
 ```bash
 pip install zipstrain
+zipstrain --version
 zipstrain test
 ```
 
-> Requires Python 3.12+. Samtools must be installed separately ([htslib.org](http://www.htslib.org/download/)).
-> Also available via Conda (`conda install -c conda-forge -c bioconda zipstrain`) and Docker (`parsaghadermazi/zipstrain`).
+ZipStrain requires Python 3.12+.
+If you install with `pip`, install `samtools` separately.
+
+Other supported installation paths:
+
+- Conda: `conda install -c conda-forge -c bioconda -c defaults zipstrain`
+- Docker: `docker run -it parsaghadermazi/zipstrain:amd64 zipstrain test`
+- Apptainer: `apptainer run docker://parsaghadermazi/zipstrain:amd64 zipstrain test`
+
+More details: [Installation Guide](https://OlmLab.github.io/ZipStrain/installation/)
+
+## Command Layout
+
+| Command | Purpose |
+| --- | --- |
+| `zipstrain profile` | Batch-profile multiple BAM files |
+| `zipstrain compare genomes` | Batch genome-level comparisons |
+| `zipstrain compare genes` | Batch gene-level comparisons |
+| `zipstrain utilities ...` | Single-sample tools, preparation helpers, format conversion, and database builders |
+| `zipstrain test` | Validate the local installation |
+
+## Quick Start
+
+### 1. Prepare profiling assets
+
+```bash
+zipstrain utilities prepare_profiling \
+  --reference-fasta reference_genomes.fna \
+  --gene-fasta reference_genomes_gene.fasta \
+  --stb-file reference_genomes.stb \
+  --output-dir profiling_assets
+```
+
+### 2. Build a null model
+
+```bash
+zipstrain utilities build-null-model \
+  --error-rate 0.001 \
+  --max-total-reads 10000 \
+  --p-threshold 0.05 \
+  --output-file null_model.parquet
+```
+
+### 3. Profile BAM files in batch
+
+`samples.csv` must contain `sample_name` and `bamfile` columns.
+
+```bash
+zipstrain profile \
+  --input-table samples.csv \
+  --stb-file reference_genomes.stb \
+  --null-model null_model.parquet \
+  --gene-range-table profiling_assets/gene_range_table.tsv \
+  --bed-file profiling_assets/genomes_bed_file.bed \
+  --genome-length-file profiling_assets/genome_lengths.parquet \
+  --run-dir profile_run
+```
+
+### 4. Run genome comparisons
+
+After preparing a comparison object, launch batched genome comparisons:
+
+```bash
+zipstrain compare genomes \
+  --genome-comparison-object genome_compare.json \
+  --run-dir genome_compare_run \
+  --calculate all
+```
+
+For ANI-only runs:
+
+```bash
+zipstrain compare genomes \
+  --genome-comparison-object genome_compare.json \
+  --run-dir genome_compare_run \
+  --calculate ani
+```
+
+Set `--engine duckdb` to switch the genome-compare backend from the default Polars engine.
+
+Comparison-object creation and single-pair helpers live under `zipstrain utilities`.
+The full command reference is linked below.
+
+## Nextflow Workflows
+
+ZipStrain ships with Nextflow workflows for:
+
+- read mapping
+- BAM profiling
+- SRA-to-profile processing
+- genome comparisons
+- gene comparisons
+
+Example:
+
+```bash
+nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table bams.csv \
+  --reference_genome reference_genomes.fna \
+  --gene_file reference_genomes_gene.fasta \
+  --stb reference_genomes.stb \
+  --output_dir out_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+See: [Nextflow Pipeline Guide](https://OlmLab.github.io/ZipStrain/NextflowPipeline/)
 
 ## Documentation
 
-Full documentation, tutorials, and API reference:
+Full documentation is available at:
 
-**[https://OlmLab.github.io/ZipStrain/](https://OlmLab.github.io/ZipStrain/)**
+**[OlmLab.github.io/ZipStrain](https://OlmLab.github.io/ZipStrain/)**
 
-| Page | What you'll find |
-|------|-----------------|
-| [Installation](https://OlmLab.github.io/ZipStrain/installation/) | pip, Conda, Docker, and Apptainer setup |
-| [Tutorial](https://OlmLab.github.io/ZipStrain/Tutorial/) | End-to-end walkthrough from reads to comparisons |
-| [CLI Reference](https://OlmLab.github.io/ZipStrain/cli/) | Every command and option |
-| [Nextflow Pipelines](https://OlmLab.github.io/ZipStrain/NextflowPipeline/) | HPC-ready workflows |
-| [Build Genome DB](https://OlmLab.github.io/ZipStrain/GenomeDBFromSylph/) | Automatic reference building from Sylph |
-| [Python API](https://OlmLab.github.io/ZipStrain/api/) | Programmatic access and downstream analysis |
-
-## Minimal example
-
-```bash
-# 1. Prepare profiling assets
-zipstrain utilities prepare_profiling \
-  --reference-fasta reference.fasta \
-  --gene-fasta genes.fna \
-  --stb-file mapping.stb \
-  --output-dir assets/
-
-# 2. Profile BAM files
-zipstrain profile \
-  --input-table samples.csv \
-  --stb-file mapping.stb \
-  --null-model null_model.parquet \
-  --gene-range-table assets/gene_range_table.tsv \
-  --bed-file assets/genomes_bed_file.bed \
-  --genome-length-file assets/genome_lengths.parquet \
-  --run-dir profiles/
-
-# 3. Compare genomes
-zipstrain compare genomes \
-  --genome-comparison-object genome_compare.json \
-  --run-dir comparisons/ \
-  --calculate all \
-  --engine duckdb
-```
+| Page | What it covers |
+| --- | --- |
+| [Installation](https://OlmLab.github.io/ZipStrain/installation/) | PyPI, Conda, Docker, and Apptainer setup |
+| [CLI Reference](https://OlmLab.github.io/ZipStrain/cli/) | Commands, options, and workflow layout |
+| [Tutorial](https://OlmLab.github.io/ZipStrain/Tutorial/) | End-to-end usage examples |
+| [Nextflow Pipelines](https://OlmLab.github.io/ZipStrain/NextflowPipeline/) | Cluster-ready workflows |
+| [Build Genome DB](https://OlmLab.github.io/ZipStrain/GenomeDBFromSylph/) | Build reference bundles from Sylph output |
+| [Python API](https://OlmLab.github.io/ZipStrain/api/) | Programmatic usage |
 
 ## Citation
 
-If you use ZipStrain in your research, please cite:
-
-> *Citation coming soon.*
+If you use ZipStrain in your research, please cite the project and check back here for the formal citation entry.
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+ZipStrain is distributed under the terms described in [LICENSE](LICENSE).
