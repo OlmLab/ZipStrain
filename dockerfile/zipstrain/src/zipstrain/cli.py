@@ -85,6 +85,27 @@ def merge_parquet(input_dir, output_file, batch_size):
     )
 
 
+@utilities.command("adjust-sequence-errors")
+@click.option('--profile-parquet', '-p', required=True, help="Input profile parquet file.")
+@click.option('--null-model', '-n', required=True, help="Null model parquet file.")
+@click.option('--output-file', '-o', required=True, help="Path to save the sequence-adjusted profile parquet.")
+def adjust_sequence_errors(profile_parquet, null_model, output_file):
+    """
+    Apply ZipStrain's sequence-error adjustment to an existing profile parquet.
+
+    The output preserves the input column order and drops temporary columns used
+    during the adjustment.
+    """
+    try:
+        pf.adjust_profile_parquet_for_sequence_errors(
+            profile_parquet=pathlib.Path(profile_parquet),
+            null_model_parquet=pathlib.Path(null_model),
+            output_file=pathlib.Path(output_file),
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
 @utilities.command("process_mpileup")
 @click.option('--batch-size', '-s', default=10000, help="Buffer size for processing stdin from samtools.")
 @click.option('--output-file', '-o', required=True, help="Location to save the output Parquet file.")

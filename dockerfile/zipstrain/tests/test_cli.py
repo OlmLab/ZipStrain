@@ -370,6 +370,7 @@ def test_profile_utility_commands_exist_under_utilities():
     assert result.exit_code == 0
     assert "prepare_profiling" in result.output
     assert "profile-single" in result.output
+    assert "adjust-sequence-errors" in result.output
 
 
 def test_profile_subcommands_removed():
@@ -616,3 +617,90 @@ def test_cli_merge_parquet_batched_mode(tmp_path):
     merged = pl.read_parquet(output_file).sort("part")
     assert merged.shape == (5, 2)
     assert "batch 1/3 start" in result.output
+
+
+def test_cli_adjust_sequence_errors(tmp_path):
+    profile_path = tmp_path / "profile.parquet"
+    null_model_path = tmp_path / "null_model.parquet"
+    output_path = tmp_path / "adjusted.parquet"
+
+    pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1"],
+            "genome": ["genome1", "genome1"],
+            "gene": ["gene1", "gene1"],
+            "pos": [1, 2],
+            "A": [3, 2],
+            "C": [1, 0],
+            "G": [0, 0],
+            "T": [0, 1],
+        }
+    ).write_parquet(profile_path)
+    pl.DataFrame(
+        {
+            "cov": [4, 3],
+            "max_error_count": [2, 2],
+        }
+    ).write_parquet(null_model_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "adjust-sequence-errors",
+            "--profile-parquet",
+            str(profile_path),
+            "--null-model",
+            str(null_model_path),
+            "--output-file",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    adjusted = pl.read_parquet(output_path)
+    assert adjusted.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]
+    assert adjusted.select("A", "C", "G", "T").rows() == [(3, 0, 0, 0), (2, 0, 0, 0)]
+
+
+def test_cli_adjust_sequence_errors_rejects_same_input_output(tmp_path):
+    profile_path = tmp_path / "profile.parquet"
+    null_model_path = tmp_path / "null_model.parquet"
+
+    pl.DataFrame(
+        {
+            "chrom": ["chr1"],
+            "genome": ["genome1"],
+            "gene": ["gene1"],
+            "pos": [1],
+            "A": [3],
+            "C": [1],
+            "G": [0],
+            "T": [0],
+        }
+    ).write_parquet(profile_path)
+    pl.DataFrame(
+        {
+            "cov": [4],
+            "max_error_count": [2],
+        }
+    ).write_parquet(null_model_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "adjust-sequence-errors",
+            "--profile-parquet",
+            str(profile_path),
+            "--null-model",
+            str(null_model_path),
+            "--output-file",
+            str(profile_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "must be different paths" in result.output

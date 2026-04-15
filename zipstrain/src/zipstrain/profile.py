@@ -82,6 +82,36 @@ def adjust_for_sequence_errors(mpile_frame:pl.LazyFrame, null_model:pl.LazyFrame
         .alias(base)
         for base in ["A", "T", "C", "G"]
     ]).drop("max_error_count")
+
+
+def adjust_profile_parquet_for_sequence_errors(
+    profile_parquet: pathlib.Path,
+    null_model_parquet: pathlib.Path,
+    output_file: pathlib.Path,
+) -> None:
+    """
+    Apply sequence-error adjustment to an existing profile parquet.
+
+    The output preserves the input column order/schema, except that temporary
+    columns introduced during adjustment are not written.
+    """
+    input_path = pathlib.Path(profile_parquet).expanduser().resolve()
+    output_path = pathlib.Path(output_file).expanduser().resolve()
+    if input_path == output_path:
+        raise ValueError("Input profile parquet and output file must be different paths.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_scan = pl.scan_parquet(input_path)
+    input_columns = profile_scan.collect_schema().names()
+    adjusted = adjust_for_sequence_errors(
+        mpile_frame=profile_scan,
+        null_model=pl.scan_parquet(null_model_parquet),
+    )
+    adjusted.select(input_columns).sink_parquet(
+        output_path,
+        compression="zstd",
+        engine="streaming",
+    )
     
 def build_gene_range_table(fasta_file:pathlib.Path)->pl.DataFrame:
     """
