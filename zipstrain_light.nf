@@ -9,8 +9,6 @@ params.batch_size=10
 params.breadth_min_cov=1
 params.bed_max_scaffold_length=500000
 params.compare_duckdb_memory_limit=""
-params.light_profile_engine="duckdb"
-params.light_compare_engine="duckdb"
 params.light_compare_calculate="all"
 params.light_profile_min_cov=5
 params.reference_genome = null
@@ -263,7 +261,7 @@ process profile_bam {
     path reference_genome
     path null_model
     output:
-    path "${sample_name}.light_profile", emit: profile
+    path "${sample_name}.light_profile.duckdb", emit: profile
     val sample_name, emit: sample_name
     script:
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
@@ -279,10 +277,8 @@ process profile_bam {
 
     zipstrain-light profile \\
                         --profile-parquet ${bamfile.baseName}_profile.parquet \\
-                        --reference-fasta ${reference_genome} \\
-                        --engine ${params.light_profile_engine} \\
                         --min-cov ${params.light_profile_min_cov} \\
-                        --output-dir ${sample_name}.light_profile \\
+                        --output-file ${sample_name}.light_profile.duckdb \\
                         ${add_duckdb_memory_limit}
 
     rm -f ${bamfile.baseName}_profile.parquet
@@ -293,12 +289,12 @@ process profile_bam {
 
 process compare_genome_fast_profiles_single {
     /*
-    * This process compares light-profile directories.
+    * This process compares light-profile DuckDB files.
     */
     input:
-    path profile_dir_1
+    path profile_db_1
     val sample_name_1
-    path profile_dir_2
+    path profile_db_2
     val sample_name_2
     path stb
     val pair_name
@@ -309,13 +305,11 @@ process compare_genome_fast_profiles_single {
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     """
     zipstrain-light compare \
-                        --profile-1 ${profile_dir_1} \
-                        --profile-2 ${profile_dir_2} \
+                        --profile-1 ${profile_db_1} \
+                        --profile-2 ${profile_db_2} \
                         -s ${stb} \
-                        -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         --calculate ${params.light_compare_calculate} \
-                        --engine ${params.light_compare_engine} \
                         ${add_duckdb_memory_limit} \
                         ${add_genome_scope} \
                         --sample-1 ${sample_name_1} \
@@ -399,10 +393,8 @@ process compare_genome_batched {
                         --profile-1 {1} \
                         --profile-2 {3} \
                         -s ${stb} \
-                        -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         --calculate ${params.light_compare_calculate} \
-                        --engine ${params.light_compare_engine} \
                         ${add_duckdb_memory_limit} \
                         --sample-1 {2} \
                         --sample-2 {4} \
@@ -521,7 +513,7 @@ process fromSRAtoProfile{
     path stb_file
     path null_model
     output:
-    path "${sra_id}.light_profile", emit: profiles
+    path "${sra_id}.light_profile.duckdb", emit: profiles
     val sra_id, emit: sample_name
     script:
     def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
@@ -546,10 +538,8 @@ process fromSRAtoProfile{
                         --output-dir .
     zipstrain-light profile \\
                         --profile-parquet ${sra_id}_profile.parquet \\
-                        --reference-fasta ${reference_genome} \\
-                        --engine ${params.light_profile_engine} \\
                         --min-cov ${params.light_profile_min_cov} \\
-                        --output-dir ${sra_id}.light_profile \\
+                        --output-file ${sra_id}.light_profile.duckdb \\
                         ${add_duckdb_memory_limit}
     rm -f ${sra_id}_profile.parquet
     rm -f ${sra_id}_genome_stats.parquet
@@ -679,15 +669,16 @@ workflow
     
     else if (params.mode =='compare_genomes') {
         input_table = tableToDict(file(params.input_table))
-        if (params.input_type=="profile_table" && !input_table.containsKey("profile_dirs")) {
-            error "compare_genomes profile_table input must contain columns: sample_names,profile_dirs"
+        def profile_table_column = input_table.containsKey("profile_dbs") ? "profile_dbs" : (input_table.containsKey("profile_dirs") ? "profile_dirs" : null)
+        if (params.input_type=="profile_table" && profile_table_column == null) {
+            error "compare_genomes profile_table input must contain columns: sample_names,profile_dbs"
         }
         if (params.input_type=="pair_table" && (!input_table.containsKey("profile_location_1") || !input_table.containsKey("profile_location_2"))) {
             error "compare_genomes pair_table input must contain columns: sample_name_1,profile_location_1,sample_name_2,profile_location_2"
         }
         
         if (params.input_type=="profile_table"){
-            mpileup_files_list = input_table['profile_dirs'].collect{t->file(t)}
+            mpileup_files_list = input_table[profile_table_column].collect{t->file(t)}
             sample_names_list = input_table['sample_names']
             profiles=[mpileup_files_list,sample_names_list].transpose()
             def profile_pairs = []

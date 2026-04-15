@@ -319,8 +319,6 @@ def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.Monk
 def test_light_profile_from_bam_uses_profile_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _install_fake_profile_subprocess(monkeypatch)
     bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
-    reference_fasta = tmp_path / "ref.fasta"
-    reference_fasta.write_text(">chr1\nAAA\n>chr2\nAAA\n")
 
     duckdb_dir = tmp_path / "light_duckdb"
     duckdb_summary = light.build_light_profile_bundle_from_bam(
@@ -329,32 +327,14 @@ def test_light_profile_from_bam_uses_profile_pipeline(tmp_path: Path, monkeypatc
         gene_range_table=gene_range_table,
         stb_file=stb_file,
         null_model=null_model_file,
-        reference_fasta=reference_fasta,
         output_dir=duckdb_dir,
-        profile_engine="duckdb",
         min_cov=5,
+        include_gene_stats=True,
+        include_genome_stats=True,
         num_chunks=2,
         max_concurrency=2,
     )
     assert duckdb_summary.coverage_rows == 5
-    assert duckdb_summary.snp_rows == 4
+    assert duckdb_summary.gene_stats_rows > 0
+    assert duckdb_summary.genome_stats_rows > 0
     assert (duckdb_dir / "profile.duckdb").exists()
-
-    polars_dir = tmp_path / "light_polars"
-    polars_summary = light.build_light_profile_bundle_from_bam(
-        bam_file=bam_file,
-        bed_file=bed_file,
-        gene_range_table=gene_range_table,
-        stb_file=stb_file,
-        null_model=null_model_file,
-        reference_fasta=reference_fasta,
-        output_dir=polars_dir,
-        profile_engine="polars",
-        min_cov=5,
-        num_chunks=2,
-        max_concurrency=2,
-    )
-    assert polars_summary.coverage_rows == 5
-    assert polars_summary.snp_rows == 4
-    assert (polars_dir / "coverage.parquet").exists()
-    assert (polars_dir / "snp.parquet").exists()

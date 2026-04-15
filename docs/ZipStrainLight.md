@@ -1,75 +1,100 @@
 # ZipStrain-Light
 
-`zipstrain-light` is a separate command-line interface for a lighter genome-comparison path that uses compact profile artifacts.
-
-It is designed to keep the original `zipstrain` CLI unchanged while adding a new workflow optimized for comparing profiles that share the same backbone reference.
+`zipstrain-light` is a separate command-line interface for a lighter genome-comparison path that leaves regular `zipstrain` unchanged.
 
 ## Design
 
-Each light profile is a directory with one of two formats:
+Each light profile is a single DuckDB file, for example:
 
-- `--engine duckdb`:
-  - `profile.duckdb` with `coverage`, `snp`, `genomes`, `metadata` tables
-- `--engine polars`:
-  - `coverage.parquet`
-  - `snp.parquet`
+- `sample.light_profile.duckdb`
+
+Required table:
+
+- `mpileup`
+  - columns: `chrom`, `pos`, `gene`, `genome`, `bit_representation`
+  - rows: loci that survive the corrected-coverage filter used at profile time
+
+Optional tables:
+
+- `gene_stats`
+- `genome_stats`
+
+`bit_representation` is the allele mask derived from the corrected `A/T/C/G` counts:
+
+- `A = 1`
+- `T = 2`
+- `C = 4`
+- `G = 8`
 
 Comparison logic:
 
-- Shared-position denominator comes from inner-joined `coverage` rows passing `min_cov` in both samples.
-- SNP differences come from the union of `snp` rows at shared covered loci.
-- Final metrics are computed with the same downstream aggregation logic as regular ZipStrain genome comparison.
+- inner join the two `mpileup` tables on shared `genome,chrom,pos`
+- compute allele sharing with a bitwise `AND` on the two masks
+- aggregate the shared loci into ANI / IBS / gene-level metrics
 
-## Commands
+Because the coverage filter is applied during profiling, light compare does not apply a second `min_cov` filter.
 
-## 1) Build Light Profile
+## Build Light Profile
 
 From an existing ZipStrain profile parquet:
 
 ```bash
 zipstrain-light profile \
   --profile-parquet sample_profile.parquet \
-  --reference-fasta reference_genomes.fna \
-  --engine duckdb \
   --min-cov 5 \
-  --output-dir sampleA.light_profile
+  --output-file sample.light_profile.duckdb
 ```
 
-Optional DuckDB runtime controls:
+Directly from a BAM:
 
-- `--duckdb-memory-limit` (example: `2GB`)
+```bash
+zipstrain-light profile \
+  --bam-file sample.bam \
+  --bed-file genomes_bed_file.bed \
+  --stb-file reference_genomes.stb \
+  --null-model null_model.parquet \
+  --gene-range-table gene_range_table.tsv \
+  --min-cov 5 \
+  --output-file sample.light_profile.duckdb
+```
+
+Optional profile flags:
+
+- `--gene-stats/--no-gene-stats`: write `gene_stats` into the DuckDB output file
+- `--genome-stats/--no-genome-stats`: write `genome_stats` into the DuckDB output file
+- `--duckdb-memory-limit`
 - `--duckdb-temp-directory`
 - `--duckdb-threads`
-- `--min-cov` (default `5`): keep only loci with `cov > min_cov` in light profile tables.
+- `--num-chunks`
+- `--max-concurrency`
 
-You can also profile directly from BAM (`--bam-file`) and write light profile artifacts directly into the output directory.
+`gene_stats` and `genome_stats` are enabled by default.
 
-## 2) Compare Two Light Profiles
+## Compare Two Light Profiles
 
 ```bash
 zipstrain-light compare \
-  --profile-1 sampleA.light_profile \
-  --profile-2 sampleB.light_profile \
-  --stb-file reference_genomes.stb \
+  --profile-1 sampleA.light_profile.duckdb \
+  --profile-2 sampleB.light_profile.duckdb \
+  --calculate ani \
   --output-file sampleA_sampleB_comparison.parquet
 ```
 
 Common options:
 
-- `--stb-file` (required; keeps compare behavior aligned with regular ZipStrain)
 - `--genome all|<genome_id>`
-- `--min-cov`
 - `--min-gene-compare-len`
-- `--engine duckdb|polars` (default: `duckdb`)
-- `--calculate ani|ibs|genes|all|<combo>` (default: `all`, for example `ani+ibs`)
+- `--calculate ani|ibs|genes|all|<combo>`
 - `--duckdb-memory-limit`
 - `--duckdb-temp-directory`
 - `--duckdb-threads`
 - `--sample-1`, `--sample-2`
 
+`--stb-file` is still accepted for backward compatibility, but the current light profile schema already stores `genome` in `mpileup`, so light compare does not require it.
+
 ## Output
 
-The compare output parquet always includes `genome` plus selected metric columns:
+The compare output parquet always includes `genome` plus the selected metric columns:
 
 - `genome`
 - `total_positions`
@@ -84,5 +109,5 @@ The compare output parquet always includes `genome` plus selected metric columns
 
 ## Notes
 
-- Current light compare supports `popani`.
-- The regular `zipstrain` command remains unchanged.
+- `zipstrain-light` currently supports `popani`.
+- The regular `zipstrain` command and its profile format are unchanged.
