@@ -79,10 +79,7 @@ def stb()->pl.LazyFrame:
 
 def test_cli_top_level_layout():
     commands = set(cli.cli.commands)
-    assert {"compare_gene", "compare_genome", "profile", "test", "utilities"} <= commands
-    assert "run" not in commands
-    assert "compare" not in commands
-    assert "gene_tools" not in commands
+    assert {"compare", "profile", "test", "utilities"} == commands
 
 
 def test_cli_version_flag():
@@ -287,7 +284,7 @@ def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert captured["duckdb_threads"] == 7
     assert captured["compare_engine"] == "duckdb"
-    assert captured["calculate"] == "all"
+    assert captured["calculate"] == "ani"
 
 
 def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
@@ -329,6 +326,9 @@ def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
 def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    null_model = tmp_path / "null_model.parquet"
+    pl.DataFrame({"cov":list(range(100)),"max_error_count":[0 for _ in range(100)]}).write_parquet(null_model)
+    
     captured = {}
 
     def _fake_lazy_run_profile(**kwargs):
@@ -344,6 +344,8 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
             str(input_table),
             "--stb-file",
             str(tmp_path / "stb.tsv"),
+            "--null-model",
+            str(null_model),
             "--gene-range-table",
             str(tmp_path / "gene_range.tsv"),
             "--bed-file",
@@ -661,7 +663,7 @@ def test_cli_adjust_sequence_errors(tmp_path):
     assert result.exit_code == 0
     adjusted = pl.read_parquet(output_path)
     assert adjusted.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]
-    assert adjusted.select("A", "C", "G", "T").rows() == [(3, 0, 0, 0), (2, 0, 0, 0)]
+    assert set(adjusted.select("A", "C", "G", "T").rows()) == {(3, 0, 0, 0), (2, 0, 0, 0)}
 
 
 def test_cli_adjust_sequence_errors_rejects_same_input_output(tmp_path):

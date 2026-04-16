@@ -290,7 +290,7 @@ def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     result = runner.invoke(
         cli_module.cli,
         [
-            "profile",
+            "utilities",
             "profile-single",
             "--bed-file",
             str(bed_file),

@@ -6,8 +6,7 @@ RUN conda install -y -c bioconda bowtie2
 RUN conda install -y -c bioconda prodigal
 RUN conda install -y -c bioconda sylph
 RUN pip install pyarrow
-ADD zipstrain /zipstrain
-RUN pip install /zipstrain
+RUN pip install zipstrain
 RUN pip install loguru
 RUN wget --output-document sratoolkit.tar.gz https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.2.0/sratoolkit.3.2.0-ubuntu64.tar.gz && \
     tar -xzf sratoolkit.tar.gz && \

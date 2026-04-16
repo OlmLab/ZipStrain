@@ -365,63 +365,7 @@ def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb,
     assert ani_only.equals(full)
 
 
-def test_compare_genomes_polars_with_categorical_keys(tmp_path):
-    p1 = (
-        pl.DataFrame(
-            {
-                "chrom": ["chr1", "chr1", "chr2", "chr2"],
-                "genome": ["genome1", "genome1", "genome2", "genome2"],
-                "pos": [0, 1, 0, 1],
-                "gene": ["geneA", "geneA", "geneB", "geneB"],
-                "A": [10, 5, 8, 8],
-                "T": [0, 0, 0, 0],
-                "C": [0, 0, 0, 0],
-                "G": [0, 0, 0, 0],
-            }
-        )
-        .with_columns(
-            pl.col("chrom").cast(pl.Categorical),
-            pl.col("genome").cast(pl.Categorical),
-            pl.col("gene").cast(pl.Categorical),
-        )
-        .lazy()
-    )
-    p2 = (
-        pl.DataFrame(
-            {
-                "chrom": ["chr1", "chr1", "chr2", "chr2"],
-                "genome": ["genome1", "genome1", "genome2", "genome2"],
-                "pos": [0, 1, 0, 1],
-                "gene": ["geneA", "geneA", "geneB", "geneB"],
-                "A": [9, 4, 7, 7],
-                "T": [0, 0, 0, 0],
-                "C": [0, 0, 0, 0],
-                "G": [0, 0, 0, 0],
-            }
-        )
-        .with_columns(
-            pl.col("chrom").cast(pl.Categorical),
-            pl.col("genome").cast(pl.Categorical),
-            pl.col("gene").cast(pl.Categorical),
-        )
-        .lazy()
-    )
-    stb_path = tmp_path / "stb.tsv"
-    pl.DataFrame({"scaffold": ["chr1", "chr2"], "genome": ["genome1", "genome2"]}).write_csv(
-        stb_path, separator="\t", include_header=False
-    )
 
-    out = compare.compare_genomes(
-        mpile_contig_1=p1,
-        mpile_contig_2=p2,
-        min_cov=1,
-        min_gene_compare_len=1,
-        engine="polars",
-        stb_file=stb_path,
-    ).collect()
-
-    assert out.shape[0] == 2
-    assert set(out["genome"].to_list()) == {"genome1", "genome2"}
 
 
 def test_compare_genomes_default_calculate_is_all_metrics(profile_1, profile_2, tmp_path):

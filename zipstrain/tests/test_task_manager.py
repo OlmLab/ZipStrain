@@ -419,7 +419,7 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == "--duckdb-memory-limit 2GB"
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == "--duckdb-threads 6"
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine duckdb"
-    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani"
 
 
 def test_fast_compare_batch_cleanup_is_idempotent(tmp_path):

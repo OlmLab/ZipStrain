@@ -1116,6 +1116,7 @@ def compare_genomes_polars(
             .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
             .unique()
         )
+        genome_comp = genomes_utf8.join(genome_comp, on="genome", how="left")
 
     casts: list[pl.Expr] = []
     if "ani" in calculations:
