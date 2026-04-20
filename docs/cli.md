@@ -336,6 +336,7 @@ Important options:
 - `-b, --bed-file` optional BED file to define scaffold extents instead of scanning profile min/max positions
 - `--count-dtype` stored matrix dtype (`uint16|uint32`, default: `uint16`)
 - `--memory-limit-gb` max in-memory budget for materializing one sample-scaffold matrix (default: `16.0`)
+- `--commit-batch-gb` approximate amount of matrix data written before committing the DuckDB transaction (default: `10.0`)
 
 Notes:
 

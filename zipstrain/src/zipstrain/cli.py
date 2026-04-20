@@ -325,7 +325,14 @@ def build_profile_db(profile_db_csv, output_file):
     show_default=True,
     help="Maximum memory budget used while building one scaffold matrix.",
 )
-def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb):
+@click.option(
+    '--commit-batch-gb',
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Approximate amount of matrix data to insert before committing the DuckDB transaction.",
+)
+def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb, commit_batch_gb):
     """
     Build an experimental DuckDB database of per-sample, per-scaffold dense matrices.
 
@@ -373,6 +380,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
                 bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
                 count_dtype=count_dtype,
                 memory_limit_gb=memory_limit_gb,
+                commit_batch_gb=commit_batch_gb,
                 progress_callback=_progress_callback,
             )
     else:
@@ -387,6 +395,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
             bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
             count_dtype=count_dtype,
             memory_limit_gb=memory_limit_gb,
+            commit_batch_gb=commit_batch_gb,
             progress_callback=progress_logger,
         )
     click.echo(

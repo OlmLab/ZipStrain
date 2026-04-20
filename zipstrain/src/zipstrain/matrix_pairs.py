@@ -331,6 +331,12 @@ def _memory_limit_bytes(memory_limit_gb: float) -> int:
     return int(memory_limit_gb * (1024 ** 3))
 
 
+def _commit_batch_bytes(commit_batch_gb: float) -> int:
+    if commit_batch_gb <= 0:
+        raise ValueError("commit_batch_gb must be > 0")
+    return int(commit_batch_gb * (1024 ** 3))
+
+
 def _estimate_sample_scaffold_bytes(vector_length: int, dtype_name: str) -> int:
     return vector_length * 4 * np.dtype(COUNT_DTYPES[dtype_name]).itemsize
 
@@ -410,6 +416,7 @@ def build_matrix_db(
     genome: str = "all",
     count_dtype: str = "uint16",
     memory_limit_gb: float = 16.0,
+    commit_batch_gb: float = 10.0,
     bed_file: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
 ) -> MatrixDbSummary:
@@ -426,6 +433,7 @@ def build_matrix_db(
             genome=genome_scope,
         )
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
+    commit_batch_bytes = _commit_batch_bytes(commit_batch_gb)
 
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -449,7 +457,9 @@ def build_matrix_db(
         )
 
     conn = duckdb.connect(str(output_file))
+    build_succeeded = False
     try:
+        conn.execute("SET preserve_insertion_order=false")
         _init_matrix_db_schema(conn)
         conn.execute("BEGIN")
         metadata_rows = [
@@ -480,8 +490,11 @@ def build_matrix_db(
             "INSERT INTO matrix_db_scaffolds VALUES (?, ?, ?, ?, ?, ?, ?)",
             scaffold_rows,
         )
+        conn.execute("COMMIT")
+        conn.execute("BEGIN")
 
         stored_rows = 0
+        batch_bytes = 0
         for sample_idx, profile_path in enumerate(profile_paths):
             sample_name = profile_path.stem
             for spec in scaffolds:
@@ -523,6 +536,7 @@ def build_matrix_db(
                             }
                         )
                     continue
+                matrix_blob = _pack_matrix(matrix)
                 conn.execute(
                     "INSERT INTO matrix_db_sample_scaffold_matrices VALUES (?, ?, ?, ?, ?, ?)",
                     [
@@ -531,9 +545,10 @@ def build_matrix_db(
                         count_dtype,
                         matrix.shape[0],
                         matrix.shape[1],
-                        _pack_matrix(matrix),
+                        matrix_blob,
                     ],
                 )
+                batch_bytes += len(matrix_blob)
                 stored_rows += 1
                 completed_work += 1
                 if progress_callback is not None:
@@ -548,12 +563,22 @@ def build_matrix_db(
                             "stored_rows": stored_rows,
                         }
                     )
+                if batch_bytes >= commit_batch_bytes:
+                    conn.execute("COMMIT")
+                    conn.execute("BEGIN")
+                    batch_bytes = 0
         conn.execute("COMMIT")
+        build_succeeded = True
     except Exception:
-        conn.execute("ROLLBACK")
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
         raise
     finally:
         conn.close()
+        if not build_succeeded and output_file.exists():
+            output_file.unlink(missing_ok=True)
 
     if progress_callback is not None:
         progress_callback(

@@ -154,6 +154,26 @@ def test_build_matrix_db(tmp_path):
     assert unpacked[(2, 1)] == [[0, 4, 0, 0], [0, 0, 0, 0], [0, 0, 0, 5]]
 
 
+def test_build_matrix_db_with_small_commit_batches(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix_small_batches.duckdb"
+    _write_profiles(profile_dir)
+
+    summary = mp.build_matrix_db(
+        profile_dir=profile_dir,
+        output_file=matrix_db,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+        commit_batch_gb=1e-9,
+    )
+
+    assert summary.stored_rows == 6
+    samples, scaffolds, matrices = _load_matrix_db(matrix_db)
+    assert len(samples) == 3
+    assert len(scaffolds) == 2
+    assert len(matrices) == 6
+
+
 def test_build_matrix_db_with_optional_bed_file(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix_bed.duckdb"
@@ -282,6 +302,8 @@ def test_cli_matrix_build_and_compare(tmp_path):
             str(matrix_db),
             "--memory-limit-gb",
             "1",
+            "--commit-batch-gb",
+            "0.01",
         ],
     )
     assert build_result.exit_code == 0
