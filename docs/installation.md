@@ -76,8 +76,13 @@ docker run -it -v /path/to/your/data:/data parsaghadermazi/zipstrain:<version> b
 Optional CUDA image for Linux/NVIDIA hosts:
 
 ```bash
-docker run -it --gpus all parsaghadermazi/zipstrain:<version>-cuda12.4 zipstrain test
+docker run -it --gpus all parsaghadermazi/zipstrain:<version>-cuda11.8 zipstrain test
 ```
+
+Available GPU image tags:
+
+- `:<version>-cuda11.8` for older CUDA 11 era drivers
+- `:<version>-cuda12.4` for newer CUDA 12.4 capable drivers
 
 Notes:
 

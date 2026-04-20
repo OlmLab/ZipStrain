@@ -20,6 +20,8 @@ jobs:
         include:
           - tag_suffix: ""
             torch_index_url: https://download.pytorch.org/whl/cpu
+          - tag_suffix: "-cuda11.8"
+            torch_index_url: https://download.pytorch.org/whl/cu118
           - tag_suffix: "-cuda12.4"
             torch_index_url: https://download.pytorch.org/whl/cu124
 
