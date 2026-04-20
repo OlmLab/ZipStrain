@@ -1387,7 +1387,10 @@ def matrix_surr_torch(
     try:
         import torch
     except ImportError:
-        raise ImportError("PyTorch is required for GPU comparison. Install with: pip install torch")
+        raise ImportError(
+            'PyTorch is required for GPU comparison. Install with: pip install "zipstrain[matrix]". '
+            "For CUDA, install the matching Torch wheel from pytorch.org."
+        )
 
     is_mps = (device.type == "mps")
 

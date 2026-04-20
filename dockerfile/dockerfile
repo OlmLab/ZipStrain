@@ -1,16 +1,28 @@
 FROM continuumio/miniconda3
-RUN conda config --add channels conda-forge
-RUN conda install -y parallel
-RUN conda install -y -c bioconda samtools
-RUN conda install -y -c bioconda bowtie2
-RUN conda install -y -c bioconda prodigal
-RUN conda install -y -c bioconda sylph
-RUN pip install pyarrow
-RUN pip install zipstrain
-RUN pip install loguru
-RUN wget --output-document sratoolkit.tar.gz https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.2.0/sratoolkit.3.2.0-ubuntu64.tar.gz && \
-    tar -xzf sratoolkit.tar.gz && \
-    rm sratoolkit.tar.gz
-ENV PATH="/sratoolkit.3.2.0-ubuntu64/bin:${PATH}"
-RUN pip install polars[rtcompat]
-RUN conda install -y -c conda-forge pigz
+
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG SRA_TOOLKIT_VERSION=3.2.0
+ARG ZIPSTRAIN_PROJECT_DIR=/opt/zipstrain
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /opt
+
+RUN conda config --add channels conda-forge \
+    && conda install -y python=3.12 pip parallel pigz wget \
+    && conda install -y -c bioconda samtools bowtie2 prodigal sylph \
+    && conda clean -afy
+
+COPY zipstrain ${ZIPSTRAIN_PROJECT_DIR}
+
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install "torch>=2.6,<3.0.0" --index-url ${TORCH_INDEX_URL} \
+    && python -m pip install "polars[rtcompat]" \
+    && python -m pip install "${ZIPSTRAIN_PROJECT_DIR}" \
+    && python -m pip install loguru \
+    && wget --output-document sratoolkit.tar.gz "https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/${SRA_TOOLKIT_VERSION}/sratoolkit.${SRA_TOOLKIT_VERSION}-ubuntu64.tar.gz" \
+    && tar -xzf sratoolkit.tar.gz \
+    && rm -f sratoolkit.tar.gz
+
+ENV PATH="/opt/sratoolkit.${SRA_TOOLKIT_VERSION}-ubuntu64/bin:${PATH}"

@@ -53,8 +53,8 @@ If you install with `pip`, install `samtools` separately.
 Other supported installation paths:
 
 - Conda: `conda install -c conda-forge -c bioconda -c defaults zipstrain`
-- Docker: `docker run -it parsaghadermazi/zipstrain zipstrain test`
-- Apptainer: `apptainer run docker://parsaghadermazi/zipstrain zipstrain test`
+- Docker: `docker run -it parsaghadermazi/zipstrain:<version> zipstrain test`
+- Apptainer: `apptainer run docker://parsaghadermazi/zipstrain:<version> zipstrain test`
 
 More details: [Installation Guide](https://OlmLab.github.io/ZipStrain/installation/)
 

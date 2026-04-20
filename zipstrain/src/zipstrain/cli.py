@@ -1172,7 +1172,8 @@ def matrix_compare(matrix_db, stb_file, output_file, min_cov, genome, ani_method
         except ImportError:
             raise click.ClickException(
                 f"--engine {engine} requires PyTorch. Install it with: "
-                "pip install torch  (see https://pytorch.org for platform-specific instructions)"
+                'pip install "zipstrain[matrix]"  '
+                "(for CUDA, replace Torch with the matching wheel from pytorch.org)"
             )
         if engine == "cuda":
             if not torch.cuda.is_available():

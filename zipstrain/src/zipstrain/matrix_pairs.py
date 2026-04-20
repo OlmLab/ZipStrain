@@ -99,7 +99,8 @@ class MatrixPairComputeBackend:
         except ImportError as exc:
             raise TorchBackendMissingError(
                 "Torch backend requested but 'torch' is not installed. "
-                "Install an optional ZipStrain extra such as zipstrain[gpu-cuda] or zipstrain[gpu-mps]."
+                'Install with: pip install "zipstrain[matrix]". '
+                "For CUDA, install the matching Torch wheel from pytorch.org."
             ) from exc
 
     def _torch_mps_available(self) -> bool:

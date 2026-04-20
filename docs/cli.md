@@ -342,6 +342,7 @@ Notes:
 - this is an experimental utility path
 - it does not affect the standard `zipstrain compare` workflow
 - the output database is intended for `zipstrain utilities matrix-compare`
+- install matrix support with `pip install "zipstrain[matrix]"`
 - the CLI shows a progress bar in an interactive terminal
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
 - if `--bed-file` is provided, scaffold spans come from grouped BED intervals rather than inferred profile min/max positions
@@ -391,7 +392,16 @@ Notes:
 
 - this is an experimental utility path
 - it does not affect the standard `zipstrain compare` workflow
-- Torch-based backends require an optional Torch install
+- install Torch support with `pip install "zipstrain[matrix]"`
+- on Apple Silicon, the standard `torch` wheel can use MPS
+- on Linux with NVIDIA GPUs, replace Torch with the CUDA wheel that matches your system, for example:
+
+  ```bash
+  pip install "zipstrain[matrix]"
+  pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu124
+  ```
+
+- MPS requires native macOS; Linux containers cannot expose Apple Metal
 - `torch` auto-selects CUDA, then MPS, then CPU
 - the current implementation is ANI-only
 - the CLI shows a progress bar in an interactive terminal
