@@ -30,6 +30,10 @@ test = [
     "pytest-cov (>=5.0.0,<6.0.0)",
 ]
 
+[project.scripts]
+zipstrain = "zipstrain.cli:cli"
+zipstrain-light = "zipstrain.light_cli:cli"
+
 [tool.poetry]
 packages = [{include = "zipstrain", from = "src"}]
 
@@ -37,7 +41,3 @@ packages = [{include = "zipstrain", from = "src"}]
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.scripts]
-zipstrain = "zipstrain.cli:cli"
-zipstrain-light = "zipstrain.light_cli:cli"
