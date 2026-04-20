@@ -285,6 +285,8 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities collect_breadth_tables` | Merge breadth tables |
 | `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
+| `zipstrain utilities build-matrix-db` | Build experimental per-sample scaffold matrix DuckDB |
+| `zipstrain utilities matrix-compare` | Experimental ANI compare from stored scaffold matrices |
 | `zipstrain utilities build-genome-db` | Build local genome reference bundle from abundance table |
 | `zipstrain utilities presence-profile` | Presence profile from coverage + read locations |
 | `zipstrain utilities process-read-locs` | Process read-location stream |
@@ -308,6 +310,92 @@ Important options:
 - `--download-retries` (default: `3`)
 - `--retry-backoff-seconds` (default: `1.0`)
 - `--download-workers` (default: `4`)
+
+### `zipstrain utilities build-matrix-db`
+
+```bash
+zipstrain utilities build-matrix-db \
+  --profile-dir profiles \
+  --output-file matrix_db.duckdb \
+  --bed-file genomes_bed_file.bed \
+  --memory-limit-gb 16
+```
+
+What it does:
+
+- scans a directory of classic ZipStrain profile parquets
+- builds one DuckDB file with one dense A/T/C/G matrix per sample per scaffold
+- each stored matrix is shaped `positions x 4`
+- intended for many requested comparisons that reuse the same anchor sample
+
+Important options:
+
+- `-p, --profile-dir` (required)
+- `-o, --output-file` (required)
+- `-g, --genome` optional genome scope (default: `all`)
+- `-b, --bed-file` optional BED file to define scaffold extents instead of scanning profile min/max positions
+- `--count-dtype` stored matrix dtype (`uint16|uint32`, default: `uint16`)
+- `--memory-limit-gb` max in-memory budget for materializing one sample-scaffold matrix (default: `16.0`)
+
+Notes:
+
+- this is an experimental utility path
+- it does not affect the standard `zipstrain compare` workflow
+- the output database is intended for `zipstrain utilities matrix-compare`
+- the CLI shows a progress bar in an interactive terminal
+- in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
+- if `--bed-file` is provided, scaffold spans come from grouped BED intervals rather than inferred profile min/max positions
+
+### `zipstrain utilities matrix-compare`
+
+```bash
+zipstrain utilities matrix-compare \
+  --matrix-db-file matrix_db.duckdb \
+  --output-file matrix_compare.parquet \
+  --min-cov 5 \
+  --memory-limit-gb 16 \
+  --backend numpy
+```
+
+What it does:
+
+- reads a per-sample scaffold-matrix DuckDB built by `build-matrix-db`
+- generates all non-redundant, non-self sample pairs from the matrix DB
+- groups those pairs by anchor sample
+- loads one anchor sample plus as many target samples as fit the memory budget
+- computes ANI-only genome output scaffold-by-scaffold
+- writes the standard ANI parquet columns:
+  - `sample_1`
+  - `sample_2`
+  - `genome`
+  - `total_positions`
+  - `share_allele_pos`
+  - `genome_pop_ani`
+
+Important options:
+
+- `-m, --matrix-db-file` (required)
+- `-o, --output-file` (required)
+- `-c, --min-cov` minimum coverage threshold applied during compare
+- `-g, --genome` optional genome scope (default: `all`)
+- `--memory-limit-gb` approximate compare memory budget
+- `--position-tile-size` optional manual override for positions processed per scaffold tile
+- `--backend` compute backend:
+  - `numpy`
+  - `torch`
+  - `torch-cpu`
+  - `torch-cuda`
+  - `torch-mps`
+
+Notes:
+
+- this is an experimental utility path
+- it does not affect the standard `zipstrain compare` workflow
+- Torch-based backends require an optional Torch install
+- `torch` auto-selects CUDA, then MPS, then CPU
+- the current implementation is ANI-only
+- the CLI shows a progress bar in an interactive terminal
+- in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
 
 ### `zipstrain utilities merge_parquet`
 
@@ -338,6 +426,8 @@ zipstrain utilities genome_breadth_matrix --help
 zipstrain utilities collect_breadth_tables --help
 zipstrain utilities strain_heterogeneity --help
 zipstrain utilities build-profile-db --help
+zipstrain utilities build-matrix-db --help
+zipstrain utilities matrix-compare --help
 zipstrain utilities presence-profile --help
 zipstrain utilities process-read-locs --help
 zipstrain utilities generate_stb --help
