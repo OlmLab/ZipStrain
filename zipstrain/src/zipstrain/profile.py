@@ -482,6 +482,102 @@ async def profile_bam_in_chunks(
     
     os.system(f"rm -r {output_dir}/tmp")
 
+def build_profile_matrix_db(
+    profile_dir: pathlib.Path,
+    output_file: pathlib.Path,
+    genome: str = "all",
+) -> None:
+    """Build a DuckDB database of per-scaffold count matrices from profile parquets.
+
+    Scans ``profile_dir`` for *.parquet files (excluding *_genome_stats and
+    *_gene_stats) and loads them all into a single DuckDB table.
+
+    The output DuckDB contains:
+      - table ``counts``: sample_name, chrom, genome, pos, A, C, G, T
+      - table ``samples``: sample_name, source_profile  (lookup table)
+
+    Parameters
+    ----------
+    profile_dir:
+        Directory containing per-sample ZipStrain profile parquet files.
+    output_file:
+        Destination DuckDB file path.
+    genome:
+        If not ``"all"``, only rows whose ``genome`` column matches this value
+        are included.
+    """
+    import duckdb
+
+    profile_dir = pathlib.Path(profile_dir)
+    parquets = sorted([
+        p for p in profile_dir.glob("*.parquet")
+        if not p.stem.endswith("_genome_stats") and not p.stem.endswith("_gene_stats")
+    ])
+    if not parquets:
+        raise ValueError(f"No profile parquet files found in {profile_dir}.")
+
+    output_file = pathlib.Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    if output_file.exists():
+        output_file.unlink()
+
+    genome_filter = ""
+    if genome != "all":
+        safe_genome = genome.replace("'", "''")
+        genome_filter = f" WHERE genome = '{safe_genome}'"
+
+    con = duckdb.connect(str(output_file))
+    try:
+        first = True
+        for pq in parquets:
+            sample_name = pq.stem
+            safe_name = sample_name.replace("'", "''")
+            safe_loc = str(pq).replace("'", "''")
+            if first:
+                con.execute(f"""
+                    CREATE TABLE counts AS
+                    SELECT
+                        '{safe_name}' AS sample_name,
+                        chrom,
+                        genome,
+                        CAST(pos AS INTEGER) AS pos,
+                        CAST(A AS INTEGER) AS A,
+                        CAST(C AS INTEGER) AS C,
+                        CAST(G AS INTEGER) AS G,
+                        CAST(T AS INTEGER) AS T
+                    FROM read_parquet('{safe_loc}')
+                    {genome_filter}
+                """)
+                first = False
+            else:
+                con.execute(f"""
+                    INSERT INTO counts
+                    SELECT
+                        '{safe_name}' AS sample_name,
+                        chrom,
+                        genome,
+                        CAST(pos AS INTEGER) AS pos,
+                        CAST(A AS INTEGER) AS A,
+                        CAST(C AS INTEGER) AS C,
+                        CAST(G AS INTEGER) AS G,
+                        CAST(T AS INTEGER) AS T
+                    FROM read_parquet('{safe_loc}')
+                    {genome_filter}
+                """)
+
+        con.execute("CREATE INDEX idx_counts_chrom ON counts (chrom)")
+        con.execute("""
+            CREATE TABLE samples (
+                sample_name VARCHAR,
+                source_profile VARCHAR
+            )
+        """)
+        for pq in parquets:
+            con.execute("INSERT INTO samples VALUES (?, ?)", [pq.stem, str(pq)])
+    finally:
+        con.close()
+
+
 def profile_bam(
     bed_file:str,
     bam_file:str,

@@ -11,14 +11,16 @@ import zipstrain.profile as pf
 import zipstrain.task_manager as tm
 import zipstrain.database as db
 import zipstrain.build_db as bdb
+import zipstrain.matrix_pairs as mp
 import polars as pl
 import pathlib
 import sys
+import time
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich import box
-from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn, TaskProgressColumn
 
 
 @click.group()
@@ -31,6 +33,60 @@ def cli():
 def utilities():
     """The commands in this group are related to various utility functions that mainly prepare input files for profiling and comparison."""
     pass
+
+
+def _emit_stderr_log(prefix: str, **fields: object) -> None:
+    payload = " ".join(f"{key}={value}" for key, value in fields.items())
+    click.echo(f"{prefix} {payload}".rstrip(), err=True)
+    sys.stderr.flush()
+
+
+class _ThrottledMatrixLogger:
+    def __init__(self, prefix: str, detail_formatter):
+        self.prefix = prefix
+        self.detail_formatter = detail_formatter
+        self.last_percent_bucket = -1
+        self.last_log_time = 0.0
+
+    def __call__(self, event: dict[str, object]) -> None:
+        phase = str(event.get("phase", ""))
+        completed = int(event.get("completed", 0))
+        total = int(event.get("total", 0))
+        now = time.monotonic()
+
+        if phase in {"start", "done"}:
+            self.last_percent_bucket = -1 if total <= 0 else int((completed / max(total, 1)) * 100) // 5
+            self.last_log_time = now
+            _emit_stderr_log(
+                f"{self.prefix} {phase.upper()}",
+                completed=completed,
+                total=total,
+                **self.detail_formatter(event),
+            )
+            return
+
+        if phase != "advance":
+            return
+
+        percent_bucket = int((completed / max(total, 1)) * 100) // 5 if total > 0 else 0
+        should_log = (
+            total <= 20
+            or completed == total
+            or percent_bucket > self.last_percent_bucket
+            or (now - self.last_log_time) >= 20.0
+        )
+        if not should_log:
+            return
+
+        self.last_percent_bucket = percent_bucket
+        self.last_log_time = now
+        _emit_stderr_log(
+            f"{self.prefix} PROGRESS",
+            completed=completed,
+            total=total,
+            percent=f"{(completed / max(total, 1)) * 100:.1f}" if total > 0 else "0.0",
+            **self.detail_formatter(event),
+        )
 
 @utilities.command("build-null-model")
 @click.option('--error-rate', '-e', default=0.001, help="Error rate for the sequencing technology.")
@@ -248,6 +304,189 @@ def build_profile_db(profile_db_csv, output_file):
     """
     profile_db = db.ProfileDatabase.from_csv(pathlib.Path(profile_db_csv))
     profile_db.save_as_new_database(pathlib.Path(output_file))
+
+
+@utilities.command("build-matrix-db")
+@click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
+@click.option('--output-file', '-o', required=True, help="Output DuckDB matrix database.")
+@click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
+@click.option('--bed-file', '-b', default=None, help="Optional BED file to define scaffold extents instead of inferring min/max positions from profiles.")
+@click.option(
+    '--count-dtype',
+    type=click.Choice(sorted(mp.COUNT_DTYPES.keys())),
+    default="uint16",
+    show_default=True,
+    help="Stored count dtype for scaffold matrices.",
+)
+@click.option(
+    '--memory-limit-gb',
+    type=float,
+    default=16.0,
+    show_default=True,
+    help="Maximum memory budget used while building one scaffold matrix.",
+)
+def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb):
+    """
+    Build an experimental DuckDB database of per-sample, per-scaffold dense matrices.
+
+    Each stored matrix is shaped positions x 4 (A/T/C/G) for one sample on one
+    scaffold. This is intended for the experimental matrix compare utilities
+    and does not affect the standard compare workflow.
+    """
+    progress_console = Console(stderr=True)
+    use_progress_bar = sys.stderr.isatty()
+
+    if use_progress_bar:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TextColumn("stored={task.fields[stored_rows]}"),
+            TimeElapsedColumn(),
+            console=progress_console,
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task(
+                "Building matrix DB",
+                total=1,
+                completed=0,
+                stored_rows="0",
+            )
+
+            def _progress_callback(event: dict[str, object]) -> None:
+                total = int(event.get("total", 0)) or 1
+                completed = int(event.get("completed", 0))
+                stored_rows = str(event.get("stored_rows", 0))
+                progress.update(
+                    task_id,
+                    total=total,
+                    completed=completed,
+                    stored_rows=stored_rows,
+                )
+
+            summary = mp.build_matrix_db(
+                profile_dir=pathlib.Path(profile_dir),
+                output_file=pathlib.Path(output_file),
+                genome=genome,
+                bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
+                count_dtype=count_dtype,
+                memory_limit_gb=memory_limit_gb,
+                progress_callback=_progress_callback,
+            )
+    else:
+        progress_logger = _ThrottledMatrixLogger(
+            "MATRIX-BUILD",
+            lambda event: {"stored_rows": event.get("stored_rows", 0)},
+        )
+        summary = mp.build_matrix_db(
+            profile_dir=pathlib.Path(profile_dir),
+            output_file=pathlib.Path(output_file),
+            genome=genome,
+            bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
+            count_dtype=count_dtype,
+            memory_limit_gb=memory_limit_gb,
+            progress_callback=progress_logger,
+        )
+    click.echo(
+        f"wrote={summary.output_file} "
+        f"samples={summary.sample_count} "
+        f"scaffolds={summary.scaffold_count} "
+        f"stored_rows={summary.stored_rows}"
+    )
+
+
+@utilities.command("matrix-compare")
+@click.option('--matrix-db-file', '-m', required=True, help="Input DuckDB matrix database from build-matrix-db.")
+@click.option('--output-file', '-o', required=True, help="Output ANI parquet file.")
+@click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum site coverage required in both samples.")
+@click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
+@click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
+@click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per scaffold tile.")
+@click.option(
+    '--backend',
+    type=click.Choice(mp.MATRIX_PAIR_BACKENDS),
+    default="numpy",
+    show_default=True,
+    help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
+)
+def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb, position_tile_size, backend):
+    """
+    Run experimental ANI-only matrix compare on all non-redundant, non-self sample pairs.
+
+    This command generates all unique sample pairs from the matrix DB, groups
+    them by anchor sample, loads one anchor
+    matrix plus as many target matrices as fit the memory budget, and writes
+    classic ANI output rows:
+      sample_1, sample_2, genome, total_positions, share_allele_pos, genome_pop_ani
+    """
+    progress_console = Console(stderr=True)
+    use_progress_bar = sys.stderr.isatty()
+
+    if use_progress_bar:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TextColumn("chunks={task.fields[target_chunks]}"),
+            TimeElapsedColumn(),
+            console=progress_console,
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task(
+                "Comparing matrix DB",
+                total=1,
+                completed=0,
+                target_chunks="0",
+            )
+
+            def _progress_callback(event: dict[str, object]) -> None:
+                total = int(event.get("total", 0)) or 1
+                completed = int(event.get("completed", 0))
+                target_chunks = str(event.get("target_chunks", 0))
+                progress.update(
+                    task_id,
+                    total=total,
+                    completed=completed,
+                    target_chunks=target_chunks,
+                )
+
+            summary = mp.matrix_compare(
+                matrix_db_file=pathlib.Path(matrix_db_file),
+                output_file=pathlib.Path(output_file),
+                min_cov=min_cov,
+                genome=genome,
+                memory_limit_gb=memory_limit_gb,
+                position_tile_size=position_tile_size,
+                backend=backend,
+                progress_callback=_progress_callback,
+            )
+    else:
+        progress_logger = _ThrottledMatrixLogger(
+            "MATRIX-COMPARE",
+            lambda event: {"target_chunks": event.get("target_chunks", 0)},
+        )
+        summary = mp.matrix_compare(
+            matrix_db_file=pathlib.Path(matrix_db_file),
+            output_file=pathlib.Path(output_file),
+            min_cov=min_cov,
+            genome=genome,
+            memory_limit_gb=memory_limit_gb,
+            position_tile_size=position_tile_size,
+            backend=backend,
+            progress_callback=progress_logger,
+        )
+    click.echo(
+        f"wrote={summary.output_file} "
+        f"requested_pairs={summary.requested_pairs} "
+        f"rows={summary.written_rows} "
+        f"scaffolds={summary.scaffold_count} "
+        f"anchor_groups={summary.anchor_groups} "
+        f"target_chunks={summary.target_chunks}"
+    )
 
 
 @utilities.command("build-genome-db")

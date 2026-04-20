@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+project_dir="${repo_root}/zipstrain"
+
+if [[ ! -d "${project_dir}" ]]; then
+  echo "ZipStrain project directory not found at ${project_dir}" >&2
+  exit 1
+fi
+
+if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+  python_bin="${VIRTUAL_ENV}/bin/python"
+elif [[ -x "${project_dir}/.venv/bin/python" ]]; then
+  python_bin="${project_dir}/.venv/bin/python"
+elif [[ -x "${repo_root}/.venv/bin/python" ]]; then
+  python_bin="${repo_root}/.venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+  python_bin="$(command -v python)"
+elif command -v python3 >/dev/null 2>&1; then
+  python_bin="$(command -v python3)"
+else
+  echo "Could not find python or python3 on PATH; cannot run tests." >&2
+  exit 1
+fi
+
+if ! "${python_bin}" -c "import pytest" >/dev/null 2>&1; then
+  echo "pytest is not installed in the selected Python environment (${python_bin})." >&2
+  echo 'Install test dependencies from the project directory with: pip install -e ".[test]"' >&2
+  exit 1
+fi
+
+echo "Running ZipStrain test suite before commit..."
+
+cd "${project_dir}"
+export PYTHONPATH="${project_dir}/src${PYTHONPATH:+:${PYTHONPATH}}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+
+"${python_bin}" -m pytest tests
