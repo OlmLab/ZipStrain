@@ -1,6 +1,6 @@
 [project]
 name = "zipstrain"
-version = "0.7.7"
+version = "0.8.1"
 description = ""
 authors = [
     {name = "ParsaGhadermazi",email = "54489047+ParsaGhadermazi@users.noreply.github.com"}
@@ -22,6 +22,14 @@ dependencies = [
     "psutil (>=7.1.2,<8.0.0)",
     "click (>=8.3.1,<9.0.0)",
     "duckdb (>=1.1,<2.0.0)",
+]
+
+[project.optional-dependencies]
+matrix = [
+    "torch (>=2.6,<3.0.0)",
+]
+test = [
+    "pytest (>=8.0.0,<9.0.0)",
 ]
 
 [tool.poetry]

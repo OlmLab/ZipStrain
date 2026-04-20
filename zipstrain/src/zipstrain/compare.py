@@ -105,7 +105,10 @@ class PolarsANIExpressions:
     MPILE_2_BASES = ["A_2", "T_2", "C_2", "G_2"]
 
     def popani(self):
-        return pl.col("A")*pl.col("A_2") + pl.col("C")*pl.col("C_2") + pl.col("G")*pl.col("G_2") + pl.col("T")*pl.col("T_2")
+        return (pl.col("A").cast(pl.Int64)*pl.col("A_2").cast(pl.Int64)
+                + pl.col("C").cast(pl.Int64)*pl.col("C_2").cast(pl.Int64)
+                + pl.col("G").cast(pl.Int64)*pl.col("G_2").cast(pl.Int64)
+                + pl.col("T").cast(pl.Int64)*pl.col("T_2").cast(pl.Int64))
     
     def conani(self):
         max_base_1=pl.max_horizontal(*[pl.col(base) for base in self.MPILE_1_BASES])
@@ -116,9 +119,12 @@ class PolarsANIExpressions:
                        (pl.col("G")==max_base_1) & (pl.col("G_2")==max_base_2)).then(1).otherwise(0)
     
     def generalized_cos_ani(self,threshold:float=0.4):
-        dot_product = pl.col("A")*pl.col("A_2") + pl.col("C")*pl.col("C_2") + pl.col("G")*pl.col("G_2") + pl.col("T")*pl.col("T_2")
-        magnitude_1 = (pl.col("A")**2 + pl.col("C")**2 + pl.col("G")**2 + pl.col("T")**2)**0.5
-        magnitude_2 = (pl.col("A_2")**2 + pl.col("C_2")**2 + pl.col("G_2")**2 + pl.col("T_2")**2)**0.5
+        dot_product = (pl.col("A").cast(pl.Int64)*pl.col("A_2").cast(pl.Int64)
+                       + pl.col("C").cast(pl.Int64)*pl.col("C_2").cast(pl.Int64)
+                       + pl.col("G").cast(pl.Int64)*pl.col("G_2").cast(pl.Int64)
+                       + pl.col("T").cast(pl.Int64)*pl.col("T_2").cast(pl.Int64))
+        magnitude_1 = (pl.col("A").cast(pl.Int64)**2 + pl.col("C").cast(pl.Int64)**2 + pl.col("G").cast(pl.Int64)**2 + pl.col("T").cast(pl.Int64)**2)**0.5
+        magnitude_2 = (pl.col("A_2").cast(pl.Int64)**2 + pl.col("C_2").cast(pl.Int64)**2 + pl.col("G_2").cast(pl.Int64)**2 + pl.col("T_2").cast(pl.Int64)**2)**0.5
         cos_sim = dot_product / (magnitude_1 * magnitude_2)
         return pl.when(cos_sim >= threshold).then(1).otherwise(0)
 
@@ -1285,6 +1291,150 @@ def compare_genomes(
             threads=duckdb_threads,
         )
     raise ValueError(f"Unsupported engine: {engine}")
+
+
+def matrix_surr_numpy(
+    counts_np: "np.ndarray",
+    N: int,
+    L: int,
+    min_cov: int,
+    ani_method: str,
+    chunk_size: int,
+) -> "tuple[np.ndarray, np.ndarray]":
+    """CPU all-pairs match/shared counts via numpy, chunked over positions.
+
+    Parameters
+    ----------
+    counts_np:
+        int32 array of shape (N, L, 4) — samples × positions × bases (A,C,G,T).
+    N, L:
+        Number of samples and positions.
+    min_cov:
+        Minimum total coverage to include a position for a sample.
+    ani_method:
+        ``"popani"``, ``"conani"``, or ``"cosani_<threshold>"``.
+    chunk_size:
+        Positions processed per iteration. Peak memory is O(N²×chunk_size).
+
+    Returns
+    -------
+    matches, shared : np.ndarray
+        Both float64 arrays of shape (N, N).
+    """
+    import numpy as np
+
+    cov = counts_np.sum(axis=2)
+    mask = (cov >= min_cov)
+
+    matches = np.zeros((N, N), dtype=np.float64)
+    shared  = np.zeros((N, N), dtype=np.float64)
+
+    for start in range(0, L, chunk_size):
+        c = counts_np[:, start:start + chunk_size, :]
+        m = mask[:, start:start + chunk_size]
+
+        shared += m.astype(np.float64) @ m.astype(np.float64).T
+
+        if ani_method == "conani":
+            argmax_allele = c.argmax(axis=2)
+            H = np.zeros((N, c.shape[1], 4), dtype=np.int8)
+            rows, cols = np.nonzero(m)
+            H[rows, cols, argmax_allele[rows, cols]] = 1
+            H_flat = H.reshape(N, -1).astype(np.int32)
+            matches += (H_flat @ H_flat.T).astype(np.float64)
+        elif ani_method == "popani":
+            c_i64 = c.astype(np.int64)
+            surr = np.einsum('ilk,jlk->ijl', c_i64, c_i64)
+            mask_pair = m[:, np.newaxis, :] & m[np.newaxis, :, :]
+            surr[~mask_pair] = 0
+            matches += (surr > 0).sum(axis=2).astype(np.float64)
+        elif ani_method.startswith("cosani_"):
+            threshold = float(ani_method.split("_", 1)[1])
+            c_f64 = c.astype(np.float64)
+            norms = np.sqrt((c_f64 ** 2).sum(axis=2, keepdims=True))
+            norms = np.where(norms == 0, 1.0, norms)
+            normed = c_f64 / norms
+            cos_sim = np.einsum('ilk,jlk->ijl', normed, normed)
+            mask_pair = m[:, np.newaxis, :] & m[np.newaxis, :, :]
+            cos_sim[~mask_pair] = 0.0
+            matches += (cos_sim >= threshold).sum(axis=2).astype(np.float64)
+        else:
+            raise ValueError(f"Unknown ani_method: {ani_method}")
+
+    return matches, shared
+
+
+def matrix_surr_torch(
+    counts_np: "np.ndarray",
+    N: int,
+    L: int,
+    min_cov: int,
+    ani_method: str,
+    device: "torch.device",
+    chunk_size: int,
+) -> "tuple[np.ndarray, np.ndarray]":
+    """GPU all-pairs match/shared counts via PyTorch, chunked over positions.
+
+    Same semantics as :func:`matrix_surr_numpy` but runs on the given torch
+    device (``"cuda"`` or ``"mps"``).  MPS uses float32 throughout since it
+    does not support float64/int64.
+
+    Returns
+    -------
+    matches, shared : np.ndarray
+        Both float64 arrays of shape (N, N), moved to CPU.
+    """
+    try:
+        import torch
+    except ImportError:
+        raise ImportError(
+            'PyTorch is required for GPU comparison. Install with: pip install "zipstrain[matrix]". '
+            "For CUDA, install the matching Torch wheel from pytorch.org."
+        )
+
+    is_mps = (device.type == "mps")
+
+    matches = torch.zeros((N, N), dtype=torch.float32, device=device)
+    shared  = torch.zeros((N, N), dtype=torch.float32, device=device)
+
+    counts_t = torch.from_numpy(counts_np).to(device)
+    cov = counts_t.sum(dim=2)
+    mask = (cov >= min_cov)
+
+    for start in range(0, L, chunk_size):
+        c = counts_t[:, start:start + chunk_size, :]
+        m = mask[:, start:start + chunk_size]
+        m_f = m.float()
+        shared += m_f @ m_f.T
+
+        if ani_method == "conani":
+            argmax_allele = c.argmax(dim=2)
+            C = c.shape[1]
+            H = torch.zeros(N, C, 4, dtype=torch.float32, device=device)
+            rows, cols = torch.nonzero(m, as_tuple=True)
+            H[rows, cols, argmax_allele[rows, cols]] = 1.0
+            H_flat = H.reshape(N, -1)
+            matches += H_flat @ H_flat.T
+        elif ani_method == "popani":
+            c_f = c.float() if is_mps else c.to(torch.int64)
+            surr = torch.einsum('ilk,jlk->ijl', c_f, c_f)
+            mask_pair = m.unsqueeze(1) & m.unsqueeze(0)
+            surr[~mask_pair] = 0
+            matches += (surr > 0).sum(dim=2).float()
+        elif ani_method.startswith("cosani_"):
+            threshold = float(ani_method.split("_", 1)[1])
+            c_f = c.float()
+            norms = c_f.pow(2).sum(dim=2, keepdim=True).sqrt()
+            norms = torch.where(norms == 0, torch.ones_like(norms), norms)
+            normed = c_f / norms
+            cos_sim = torch.einsum('ilk,jlk->ijl', normed, normed)
+            mask_pair = m.unsqueeze(1) & m.unsqueeze(0)
+            cos_sim[~mask_pair] = 0.0
+            matches += (cos_sim >= threshold).sum(dim=2).float()
+        else:
+            raise ValueError(f"Unknown ani_method: {ani_method}")
+
+    return matches.cpu().to(torch.float64).numpy(), shared.cpu().to(torch.float64).numpy()
 
 
 def compare_genes(

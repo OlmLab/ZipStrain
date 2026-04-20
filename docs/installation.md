@@ -19,7 +19,25 @@ Follow the steps below to set up ZipStrain on your system.
 
     This installs all Python dependencies **except samtools**. Install samtools separately from [htslib.org](http://www.htslib.org/download/) or via your package manager (e.g., `brew install samtools`, `apt install samtools`).
 
-3. Verify the installation:
+3. If you want the experimental matrix utilities with Torch-backed CPU/GPU execution, install the optional extra:
+
+    ```bash
+    pip install "zipstrain[matrix]"
+    ```
+
+    Notes:
+
+    - On Apple Silicon, the standard `torch` wheel can use Metal through the MPS backend.
+    - On Linux with NVIDIA GPUs, install the ZipStrain extra and then replace Torch with the CUDA wheel that matches your system. For example:
+
+      ```bash
+      pip install "zipstrain[matrix]"
+      pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu124
+      ```
+
+    - MPS requires a native macOS Python environment. Docker, Singularity, and Apptainer containers on Linux will not expose Apple Metal.
+
+4. Verify the installation:
 
     ```bash
     zipstrain test
@@ -46,21 +64,32 @@ zipstrain test
 2. Run ZipStrain:
 
     ```bash
-    docker run -it parsaghadermazi/zipstrain:latest zipstrain test
+    docker run -it parsaghadermazi/zipstrain:<version> zipstrain test
     ```
 
 To use ZipStrain interactively or with local data, mount your data directory:
 
 ```bash
-docker run -it -v /path/to/your/data:/data parsaghadermazi/zipstrain:latest bash
+docker run -it -v /path/to/your/data:/data parsaghadermazi/zipstrain:<version> bash
 ```
+
+Optional CUDA image for Linux/NVIDIA hosts:
+
+```bash
+docker run -it --gpus all parsaghadermazi/zipstrain:<version>-cuda12.4 zipstrain test
+```
+
+Notes:
+
+- Docker images are published for `linux/amd64`.
+- The base image includes the CPU implementation of all supported ZipStrain commands.
 
 ## Apptainer (Singularity)
 
 Apptainer can pull directly from the Docker image:
 
 ```bash
-apptainer run docker://parsaghadermazi/zipstrain:latest zipstrain test
+apptainer run docker://parsaghadermazi/zipstrain:<version> zipstrain test
 ```
 
 This is especially useful on HPC clusters where Docker is not available.

@@ -10,12 +10,14 @@ import tomllib
 
 
 def _resolve_version() -> str:
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if pyproject_path.exists():
+        with pyproject_path.open("rb") as handle:
+            return tomllib.load(handle)["project"]["version"]
     try:
         return package_version("zipstrain")
     except PackageNotFoundError:
-        pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        with pyproject_path.open("rb") as handle:
-            return tomllib.load(handle)["project"]["version"]
+        return "unknown"
 
 
 __version__ = _resolve_version()
