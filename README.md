@@ -14,7 +14,7 @@
         <a href="https://github.com/OlmLab/ZipStrain/actions/workflows/pr-tests.yml"><img src="https://github.com/OlmLab/ZipStrain/actions/workflows/pr-tests.yml/badge.svg?branch=main" alt="Tests"></a>
         <a href="https://anaconda.org/bioconda/zipstrain"><img src="https://img.shields.io/conda/vn/bioconda/zipstrain?label=conda&logo=anaconda" alt="Conda"></a>
         <a href="https://hub.docker.com/r/parsaghadermazi/zipstrain"><img src="https://img.shields.io/docker/v/parsaghadermazi/zipstrain?sort=semver&label=docker&logo=docker" alt="Docker"></a>
-        <a href="https://codecov.io/gh/OlmLab/ZipStrain"><img src="https://codecov.io/gh/OlmLab/ZipStrain/graph/badge.svg" alt="Coverage"></a>
+        <a href="https://codecov.io/gh/OlmLab/ZipStrain?branch=main"><img src="https://codecov.io/gh/OlmLab/ZipStrain/graph/badge.svg?branch=main" alt="Coverage"></a>
         <img src="https://img.shields.io/badge/python-3.12%2B-3776ab" alt="Python 3.12+">
       </p>
     </td>

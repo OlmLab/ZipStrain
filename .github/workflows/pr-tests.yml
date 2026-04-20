@@ -21,7 +21,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Check out repository
@@ -56,4 +55,4 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: zipstrain/coverage.xml
-          use_oidc: true
+          token: ${{ secrets.CODECOV_TOKEN }}
