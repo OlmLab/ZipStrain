@@ -682,6 +682,22 @@ def _load_sample_scaffold_matrices(
     return dtype_name, matrices
 
 
+def _load_scaffold_count_dtype(
+    conn: duckdb.DuckDBPyConnection,
+    scaffold_idx: int,
+) -> str:
+    row = conn.execute(
+        """
+        SELECT count_dtype
+        FROM matrix_db_sample_scaffold_matrices
+        WHERE scaffold_idx = ?
+        LIMIT 1
+        """,
+        [scaffold_idx],
+    ).fetchone()
+    return "" if row is None else str(row[0])
+
+
 def _plan_chunk_sizes(
     vector_length: int,
     remaining_targets: int,
@@ -902,12 +918,7 @@ def matrix_compare(
                                 "target_chunks": target_chunks,
                             }
                         )
-                    dtype_name, loaded = _load_sample_scaffold_matrices(
-                        conn,
-                        scaffold_idx=spec.scaffold_idx,
-                        sample_ids=[sample_1_idx, *target_ids_all.tolist()],
-                        vector_length=spec.vector_length,
-                    )
+                    dtype_name = _load_scaffold_count_dtype(conn, spec.scaffold_idx)
                     if not dtype_name:
                         completed_work += len(target_ids_all)
                         if progress_callback is not None:
@@ -926,7 +937,13 @@ def matrix_compare(
                             )
                         continue
                     zero_matrix = np.zeros((spec.vector_length, 4), dtype=COUNT_DTYPES[dtype_name])
-                    anchor_matrix = loaded.get(sample_1_idx, zero_matrix)
+                    _anchor_dtype, anchor_loaded = _load_sample_scaffold_matrices(
+                        conn,
+                        scaffold_idx=spec.scaffold_idx,
+                        sample_ids=[sample_1_idx],
+                        vector_length=spec.vector_length,
+                    )
+                    anchor_matrix = anchor_loaded.get(sample_1_idx, zero_matrix)
 
                     target_offset = 0
                     while target_offset < len(target_ids_all):
@@ -940,8 +957,14 @@ def matrix_compare(
                         )
                         default_tile_size = tile_size
                         chunk_ids = target_ids_all[target_offset: target_offset + max_targets]
+                        _chunk_dtype, loaded_targets = _load_sample_scaffold_matrices(
+                            conn,
+                            scaffold_idx=spec.scaffold_idx,
+                            sample_ids=chunk_ids.tolist(),
+                            vector_length=spec.vector_length,
+                        )
                         target_matrices = np.stack(
-                            [loaded.get(int(sample_idx), zero_matrix) for sample_idx in chunk_ids],
+                            [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in chunk_ids],
                             axis=2,
                         )
                         totals = totals_by_genome[spec.genome][target_offset: target_offset + max_targets]

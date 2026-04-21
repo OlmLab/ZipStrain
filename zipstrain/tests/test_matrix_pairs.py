@@ -284,6 +284,46 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
     assert actual.equals(expected)
 
 
+def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare.parquet"
+    _write_profiles(profile_dir)
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    original_load = mp._load_sample_scaffold_matrices
+    call_sizes: list[int] = []
+
+    def tracking_load(conn, scaffold_idx, sample_ids, vector_length):
+        call_sizes.append(len(sample_ids))
+        return original_load(conn, scaffold_idx, sample_ids, vector_length)
+
+    def two_target_plan(
+        vector_length: int,
+        remaining_targets: int,
+        dtype_name: str,
+        memory_limit_bytes: int,
+        backend_kind: str,
+        position_tile_size=None,
+    ) -> tuple[int, int]:
+        return min(2, remaining_targets), vector_length
+
+    monkeypatch.setattr(mp, "_load_sample_scaffold_matrices", tracking_load)
+    monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
+
+    mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=1,
+        memory_limit_gb=1.0,
+        backend="numpy",
+    )
+
+    assert call_sizes
+    assert 2 in call_sizes
+    assert max(call_sizes) == 2
+
+
 def test_cli_matrix_build_and_compare(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
