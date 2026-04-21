@@ -360,6 +360,81 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["run_dir"] == tmp_path / "run"
 
 
+def test_profile_command_allows_missing_gene_range_table(tmp_path, monkeypatch):
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    null_model = tmp_path / "null_model.parquet"
+    pl.DataFrame({"cov": list(range(10)), "max_error_count": [0 for _ in range(10)]}).write_parquet(null_model)
+
+    captured = {}
+
+    def _fake_lazy_run_profile(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table",
+            str(input_table),
+            "--stb-file",
+            str(tmp_path / "stb.tsv"),
+            "--null-model",
+            str(null_model),
+            "--bed-file",
+            str(tmp_path / "bed.bed"),
+            "--genome-length-file",
+            str(tmp_path / "genome_length.parquet"),
+            "--run-dir",
+            str(tmp_path / "run"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["gene_range_table"] is None
+
+
+def test_merge_stat_tables_command(tmp_path):
+    stat_a = tmp_path / "sample_a_genome_stats.parquet"
+    stat_b = tmp_path / "sample_b_genome_stats.parquet"
+    output_file = tmp_path / "merged_stats.parquet"
+    pl.DataFrame(
+        {
+            "genome": ["g1"],
+            "length": [100],
+            "breadth": [0.5],
+            "coverage": [10.0],
+        }
+    ).write_parquet(stat_a)
+    pl.DataFrame(
+        {
+            "genome": ["g2"],
+            "length": [200],
+            "breadth": [0.7],
+            "coverage": [20.0],
+        }
+    ).write_parquet(stat_b)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "merge-stat-tables",
+            "--stat-table",
+            str(stat_a),
+            "--stat-table",
+            str(stat_b),
+            "--output-file",
+            str(output_file),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    merged = pl.read_parquet(output_file).sort("sample")
+    assert merged["sample"].to_list() == ["sample_a", "sample_b"]
+
+
 def test_run_group_removed():
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["run", "--help"])

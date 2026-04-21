@@ -144,6 +144,76 @@ def test_merge_parquet_files_batched(tmp_path):
     assert any("final merge done" in message for message in progress_messages)
 
 
+def test_merge_stat_tables_adds_sample_column(tmp_path):
+    stat_a = tmp_path / "sample_a_genome_stats.parquet"
+    stat_b = tmp_path / "sample_b_genome_stats.parquet"
+    out = tmp_path / "merged_stats.parquet"
+    progress_messages = []
+
+    pl.DataFrame(
+        {
+            "genome": ["g1", "g2"],
+            "length": [100, 200],
+            "breadth": [0.5, 1.0],
+            "coverage": [10.0, 20.0],
+        }
+    ).write_parquet(stat_a)
+    pl.DataFrame(
+        {
+            "genome": ["g1"],
+            "length": [100],
+            "breadth": [0.75],
+            "coverage": [15.0],
+        }
+    ).write_parquet(stat_b)
+
+    utils.merge_stat_tables(
+        stat_tables=[stat_a, stat_b],
+        output_file=out,
+        progress_callback=progress_messages.append,
+    )
+
+    merged = pl.read_parquet(out).sort(["sample", "genome"])
+    assert merged.columns == ["sample", "genome", "length", "breadth", "coverage"]
+    assert merged["sample"].to_list() == ["sample_a", "sample_a", "sample_b"]
+    assert any("streaming concat start" in message for message in progress_messages)
+    assert any("streaming concat done" in message for message in progress_messages)
+
+
+def test_merge_stat_tables_raises_on_schema_mismatch(tmp_path):
+    stat_a = tmp_path / "sample_a_gene_stats.parquet"
+    stat_b = tmp_path / "sample_b_gene_stats.parquet"
+
+    pl.DataFrame(
+        {
+            "genome": ["g1"],
+            "gene": ["gene1"],
+            "length": [100],
+            "breadth": [0.5],
+            "coverage": [10.0],
+        }
+    ).write_parquet(stat_a)
+    pl.DataFrame(
+        {
+            "genome": ["g1"],
+            "gene": ["gene1"],
+            "length": [100],
+            "breadth": [1],
+            "coverage": [10.0],
+        },
+        schema={
+            "genome": pl.Utf8,
+            "gene": pl.Utf8,
+            "length": pl.Int64,
+            "breadth": pl.Int64,
+            "coverage": pl.Float64,
+        },
+    ).write_parquet(stat_b)
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        utils.merge_stat_tables([stat_a, stat_b], tmp_path / "out.parquet")
+
+
 def test_get_genome_stats(stb,bed_table):
     result = utils.extract_genome_length(stb, bed_table).collect().rows_by_key("genome",unique=True,named=True)
     assert result["genome1"]["genome_length"] == 30

@@ -12,7 +12,6 @@ import re
 import pyarrow as pa
 import pyarrow.parquet as pq
 from collections import Counter
-from functools import reduce
 from scipy.stats import poisson
 import subprocess
 import duckdb
@@ -524,61 +523,70 @@ def make_the_bed(db_fasta_dir: str | pathlib.Path, max_scaffold_length: int = 50
     return pl.DataFrame(records, schema=["scaffold", "start", "end"], orient="row")
 
 
-def get_genome_breadth_matrix(
-                              profile:pl.LazyFrame,
-                              name:str,
-                              genome_length: pl.LazyFrame,
-                              stb: pl.LazyFrame,
-                              min_cov: int = 1)-> pl.LazyFrame:
-    """
-    Get the genome breadth matrix from the provided profiles and scaffold-to-genome mapping.
-    Parameters:
-    profiles (list): List of tuples containing profile names and their corresponding LazyFrames.
-    stb (pl.LazyFrame): Scaffold-to-genome mapping table.
-    min_cov (int): Minimum coverage to consider a position. 
-    Returns:
-    pl.LazyFrame: A LazyFrame containing the genome breadth matrix.
-    """
-    profile = profile.filter((pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")) >= min_cov)
-    profile=profile.group_by("chrom").agg(
-        breadth=pl.len()
-    ).select(
-        pl.col("chrom").alias("scaffold"),
-        pl.col("breadth")
-    ).join(
-        stb,
-        on="scaffold",
-        how="left"
-    )
-    profile=profile.join(genome_length, on="genome", how="left")
-    
-    profile=profile.group_by("genome").agg(
-        genome_length=pl.first("genome_length"),
-        breadth=pl.col("breadth").sum())
-    profile = profile.with_columns(
-        (pl.col("breadth")/ pl.col("genome_length")).alias("breadth")
-    )
-    return profile.select(
-            pl.col("genome"),
-            pl.col("breadth").alias(name)
-        )
-        
-def collect_breadth_tables(
-    breadth_tables: list[pl.LazyFrame],
-) -> pl.LazyFrame:
-    """
-    Collect multiple genome breadth tables into a single LazyFrame.
-    
-    Parameters:
-    breadth_tables (list[pl.LazyFrame]): List of LazyFrames containing genome breadth data.
-    
-    Returns:
-    pl.LazyFrame: A LazyFrame containing the combined genome breadth data.
-    """
-    if not breadth_tables:
-        raise ValueError("No breadth tables provided.")
+def infer_sample_name_from_stat_table(stat_table: str | pathlib.Path) -> str:
+    """Infer sample name from a gene/genome stats parquet file name."""
+    stem = pathlib.Path(stat_table).stem
+    for suffix in ("_gene_stats", "_genome_stats", "_stats"):
+        if stem.endswith(suffix):
+            return stem[:-len(suffix)]
+    return stem
 
-    return reduce(lambda x, y: x.join(y, on="genome", how="outer", coalesce=True), breadth_tables)
+
+def _schema_signature(schema: pl.Schema) -> tuple[tuple[str, pl.DataType], ...]:
+    return tuple((name, schema[name]) for name in schema.names())
+
+
+def merge_stat_tables(
+    stat_tables: list[str | pathlib.Path],
+    output_file: str | pathlib.Path,
+    progress_callback: Callable[[str], None] | None = None,
+) -> pathlib.Path:
+    """Concatenate gene/genome stat parquets and add a sample column from file names."""
+    if not stat_tables:
+        raise ValueError("No stat tables provided.")
+
+    stat_paths = [pathlib.Path(path) for path in stat_tables]
+    output_path = pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    base_schema: pl.Schema | None = None
+    base_signature: tuple[tuple[str, pl.DataType], ...] | None = None
+    for path in stat_paths:
+        schema = pl.scan_parquet(path).collect_schema()
+        signature = _schema_signature(schema)
+        if base_signature is None:
+            base_schema = schema
+            base_signature = signature
+            continue
+        if signature != base_signature:
+            raise ValueError(
+                "Stat table schema mismatch. "
+                f"Expected {list(base_signature)}, found {list(signature)} in {path}."
+            )
+
+    assert base_schema is not None
+    output_columns = ["sample", *base_schema.names()]
+    emit(f"merge_stat_tables: found {len(stat_paths)} stat tables")
+    emit(f"merge_stat_tables: streaming concat start -> {output_path}")
+    pl.concat(
+        [
+            pl.scan_parquet(path)
+            .with_columns(pl.lit(infer_sample_name_from_stat_table(path)).alias("sample"))
+            .select(output_columns)
+            for path in stat_paths
+        ],
+        how="vertical",
+    ).sink_parquet(
+        output_path,
+        compression="zstd",
+        engine="streaming",
+    )
+    emit(f"merge_stat_tables: streaming concat done -> {output_path}")
+    return output_path
 
 def check_samtools():
     try:

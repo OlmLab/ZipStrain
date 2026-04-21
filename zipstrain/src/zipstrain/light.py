@@ -324,7 +324,7 @@ def build_light_profile_bundle_from_parquet(
 def build_light_profile_bundle_from_bam(
     bam_file: Union[str, Path],
     bed_file: Union[str, Path],
-    gene_range_table: Union[str, Path],
+    gene_range_table: Optional[Union[str, Path]],
     stb_file: Union[str, Path],
     null_model: Union[str, Path],
     output_file: Optional[Union[str, Path]] = None,
@@ -349,7 +349,7 @@ def build_light_profile_bundle_from_bam(
         pf.profile_bam(
             bed_file=str(bed_file),
             bam_file=str(bam_file),
-            gene_range_table=str(gene_range_table),
+            gene_range_table=str(gene_range_table) if gene_range_table is not None else None,
             stb=stb,
             null_model=null_model_lf,
             output_dir=str(tmp_path),

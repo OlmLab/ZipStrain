@@ -218,53 +218,22 @@ def get_genome_lengths(stb_file, bed_file, output_file):
     genome_length = ut.extract_genome_length(stb, bed_table)
     genome_length.sink_parquet(output_file, compression='zstd')
 
-@utilities.command("genome_breadth_matrix")
-@click.option('--profile', '-p', type=str, required=True, help="Path to the profile Parquet file.")
-@click.option('--genome-length', '-g', type=str, required=True, help="Path to the genome length Parquet file.")
-@click.option('--stb', '-s', type=str, required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--min-cov', '-c', default=1, help="Minimum coverage to consider a position.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def genome_breadth_matrix(profile, genome_length, stb, min_cov, output_file):
+@utilities.command("merge-stat-tables")
+@click.option('--stat-table', '-s', multiple=True, required=True, help="Stat parquet file to include. Repeat for multiple files.")
+@click.option('--output-file', '-o', required=True, help="Path to save the merged stat table.")
+def merge_stat_tables(stat_table, output_file):
     """
-    Generate a genome breadth matrix from the given profiles and scaffold-to-genome mapping.
+    Concatenate stat tables and add a sample column inferred from each file name.
+    """
+    def _emit_progress(message: str) -> None:
+        click.echo(message, err=True)
+        sys.stderr.flush()
 
-    Args:
-    profiles (list): List of profiles in the format 'name:path_to_profile'.
-    genome_length (str): Path to the genome length Parquet file.
-    stb_file (str): Path to the scaffold-to-genome mapping file.
-    min_cov (int): Minimum coverage to consider a position.
-    output_file (str): Path to save the output Parquet file.
-    """
-    genome_length = pl.scan_parquet(genome_length)
-    stb = pl.scan_csv(stb, separator='\t', has_header=False).select(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
+    ut.merge_stat_tables(
+        stat_tables=list(stat_table),
+        output_file=output_file,
+        progress_callback=_emit_progress,
     )
-    profile_dir= pathlib.Path(profile)
-    profile = pl.scan_parquet(profile)
-    lf=ut.get_genome_breadth_matrix(profile,profile_dir.name, genome_length,stb, min_cov)
-    lf.sink_parquet(output_file, compression='zstd')
-
-@utilities.command("collect_breadth_tables")
-@click.option('--breadth-tables-dir', '-d', required=True, help="Directory containing breadth tables in Parquet format.")
-@click.option('--extension', '-e', default='parquet', help="File extension of the breadth tables.")
-@click.option('--output-file', '-o', required=True, help="Path to save the collected breadth tables.")
-def collect_breadth(breadth_tables_dir, extension, output_file):
-    """
-    Collect multiple genome breadth tables into a single LazyFrame.
-
-    Args:
-    breadth_tables_dir (str): Directory containing breadth tables in Parquet format.
-    extension (str): File extension of the breadth tables.
-    output_file (str): Path to save the collected breadth tables.
-    """
-    breadth_tables = list(pathlib.Path(breadth_tables_dir).glob(f"*.{extension}"))
-    if not breadth_tables:
-        raise ValueError(f"No breadth tables found in directory: {breadth_tables_dir}")
-
-    lazy_frames = [pl.scan_parquet(str(pf)) for pf in breadth_tables]
-    combined_lf = ut.collect_breadth_tables(lazy_frames)
-    combined_lf.sink_parquet(output_file, compression='zstd')
     
 @utilities.command("strain_heterogeneity")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
@@ -1067,7 +1036,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
 
 @utilities.command("prepare_profiling", help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
-@click.option('--gene-fasta', '-g', required=True, help="Path to the gene annotations in FASTA format.")
+@click.option('--gene-fasta', '-g', default=None, help="Optional path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling database.")
 def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
@@ -1078,8 +1047,15 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     bed_df = ut.make_the_bed(reference_fasta)
     bed_df.write_csv(output_dir / "genomes_bed_file.bed", separator='\t', include_header=False)
-    gene_range_table = pf.build_gene_range_table(pathlib.Path(gene_fasta))
-    gene_range_table.write_csv(output_dir / "gene_range_table.tsv", separator='\t', include_header=False)
+    if gene_fasta is None:
+        pl.DataFrame(schema={"gene": pl.Utf8, "scaffold": pl.Utf8, "start": pl.Int64, "end": pl.Int64}).write_csv(
+            output_dir / "gene_range_table.tsv",
+            separator='\t',
+            include_header=False,
+        )
+    else:
+        gene_range_table = pf.build_gene_range_table(pathlib.Path(gene_fasta))
+        gene_range_table.write_csv(output_dir / "gene_range_table.tsv", separator='\t', include_header=False)
     
     stb = pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
         pl.col("column_1").alias("scaffold"),
@@ -1096,13 +1072,13 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, output_dir):
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model', '-m', required=True, help="Path to the null model parquet file.") 
-@click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table.")
+@click.option('--gene-range-table', '-g', default=None, help="Optional path to the gene range table.")
 @click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
 @click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
 def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, num_chunks, max_concurrency, output_dir):
     """
-    Profile a single BAM file using the provided BED file and gene range table.
+    Profile a single BAM file using the provided BED file and optional gene range table.
     
     """
     output_dir=pathlib.Path(output_dir)
@@ -1127,7 +1103,7 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, n
 @click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model', '-u', required=True, help="Path to the null model parquet file.")
-@click.option('--gene-range-table', '-g', required=True, help="Path to the gene range table file.")
+@click.option('--gene-range-table', '-g', default=None, help="Optional path to the gene range table file.")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file for profiling regions.")
 @click.option('--genome-length-file', '-l', required=True, help="Path to the genome length file.")
 @click.option('--run-dir', '-r', required=True, help="Directory to save the run data.")
@@ -1146,7 +1122,7 @@ def profile(input_table, stb_file, null_model, gene_range_table, bed_file, genom
     input_table (str): Path to the input table in TSV format containing sample names and BAM file paths.
     stb_file (str): Path to the scaffold-to-genome mapping file.
     null_model (str): Path to the null model parquet file.
-    gene_range_table (str): Path to the gene range table file.
+    gene_range_table (str | None): Optional path to the gene range table file.
     bed_file (str): Path to the BED file for profiling regions.
     genome_length_file (str): Path to the genome length file.
     run_dir (str): Directory to save the run data.
@@ -1190,7 +1166,7 @@ def profile(input_table, stb_file, null_model, gene_range_table, bed_file, genom
         bams_lf=bams_lf,
         stb_file=pathlib.Path(stb_file),
         null_model_file=pathlib.Path(null_model),
-        gene_range_table=pathlib.Path(gene_range_table),
+        gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
         bed_file=pathlib.Path(bed_file),
         genome_length_file=pathlib.Path(genome_length_file),
         num_procs=num_procs,

@@ -500,19 +500,17 @@ class ProfileTaskGenerator(TaskGenerator):
         stb_file: str,
         null_model_file: str,
         profile_bed_file: str,
-        gene_range_file: str,
+        gene_range_file: str | None,
         genome_length_file: str,
         num_procs: int = 4,
-        breadth_min_cov: int = 1,
     ) -> None:
         super().__init__(data, yield_size)
         self.stb_file = pathlib.Path(stb_file)
         self.null_model_file = pathlib.Path(null_model_file)
         self.profile_bed_file = pathlib.Path(profile_bed_file)
-        self.gene_range_file = pathlib.Path(gene_range_file)
+        self.gene_range_file = pathlib.Path(gene_range_file) if gene_range_file is not None else None
         self.genome_length_file = pathlib.Path(genome_length_file)
         self.num_procs = num_procs
-        self.breadth_min_cov = breadth_min_cov
         self.engine = container_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
@@ -520,11 +518,12 @@ class ProfileTaskGenerator(TaskGenerator):
             self.stb_file,
             self.null_model_file,
             self.profile_bed_file,
-            self.gene_range_file,
             self.genome_length_file,
         ]:
             if not path_attr.exists():
                 raise FileNotFoundError(f"File {path_attr} does not exist.")
+        if self.gene_range_file is not None and not self.gene_range_file.exists():
+            raise FileNotFoundError(f"File {self.gene_range_file} does not exist.")
 
     def get_total_tasks(self) -> int:
         """Returns total number of profiles to be generated."""
@@ -538,17 +537,22 @@ class ProfileTaskGenerator(TaskGenerator):
             batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
             tasks = []
             for row in batch_df.iter_rows(named=True):
+                gene_range_link_cmd = ""
+                gene_range_arg = ""
+                if self.gene_range_file is not None:
+                    gene_range_link_cmd = f"ln -s {self.gene_range_file.absolute()} gene-range-table.bed"
+                    gene_range_arg = "--gene-range-table gene-range-table.bed"
                 inputs = {
                 "bam-file": FileInput(row["bamfile"]),
                 "sample-name": StringInput(row["sample_name"]),
                 "stb-file": FileInput(self.stb_file),
                 "null-model": FileInput(self.null_model_file),
                 "bed-file": FileInput(self.profile_bed_file),
-                "gene-range-table": FileInput(self.gene_range_file),
+                "gene-range-table-link-cmd": StringInput(gene_range_link_cmd),
+                "gene-range-table-arg": StringInput(gene_range_arg),
                 "genome-length-file": FileInput(self.genome_length_file),
                 "num-chunks": IntInput(24),
                 "max-concurrency": IntInput(self.num_procs),
-                "breadth-min-cov": IntInput(self.breadth_min_cov),
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+".parquet" ),
@@ -1628,12 +1632,12 @@ class ProfileBamTask(Task):
     TEMPLATE_CMD="""
     ln -s <bam-file> input.bam
     ln -s <bed-file> bed_file.bed
-    ln -s <gene-range-table> gene-range-table.bed
+    <gene-range-table-link-cmd>
     ln -s <null-model> null_model.parquet
     samtools index <bam-file>
     zipstrain utilities profile-single --bam-file input.bam \
     --bed-file bed_file.bed \
-    --gene-range-table gene-range-table.bed \
+    <gene-range-table-arg> \
     --stb-file <stb-file> \
     --null-model null_model.parquet \
     --num-chunks <num-chunks> \
@@ -1748,7 +1752,7 @@ def lazy_run_profile(
     bams_lf:pl.LazyFrame,
     stb_file:pathlib.Path,
     null_model_file:pathlib.Path,
-    gene_range_table:pathlib.Path,
+    gene_range_table:pathlib.Path | None,
     bed_file:pathlib.Path,
     genome_length_file:pathlib.Path,
     num_procs:int=8,

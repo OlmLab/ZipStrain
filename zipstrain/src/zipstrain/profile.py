@@ -6,7 +6,7 @@ This is a fundamental step for downstream analysis in zipstrain.
 """
 import pathlib
 import polars as pl
-from typing import Generator
+from typing import Generator, Optional
 from zipstrain import utils
 import asyncio
 import os
@@ -126,6 +126,43 @@ def build_gene_range_table(fasta_file:pathlib.Path)->pl.DataFrame:
     for parsed_annot in parse_gene_loc_table(fasta_file):
         out.append(parsed_annot)
     return pl.DataFrame(out, schema=["gene", "scaffold", "start", "end"],orient='row')
+
+
+def empty_gene_range_table() -> pl.LazyFrame:
+    """Return an empty gene-range LazyFrame with the expected schema."""
+    return pl.DataFrame(
+        schema={
+            "gene": pl.Utf8,
+            "scaffold": pl.Utf8,
+            "start": pl.Int64,
+            "end": pl.Int64,
+        }
+    ).lazy()
+
+
+def empty_gene_stats_table() -> pl.LazyFrame:
+    """Return an empty gene-stats LazyFrame with the expected schema."""
+    return pl.DataFrame(
+        schema={
+            "genome": pl.Utf8,
+            "gene": pl.Utf8,
+            "length": pl.Int64,
+            "breadth": pl.Float64,
+            "coverage": pl.Float64,
+        }
+    ).lazy()
+
+
+def normalize_gene_range_table_path(
+    gene_range_table: Optional[str | pathlib.Path],
+) -> Optional[pathlib.Path]:
+    """Treat missing or empty gene-range files as absent annotations."""
+    if gene_range_table in (None, ""):
+        return None
+    path = pathlib.Path(gene_range_table)
+    if path.exists() and path.stat().st_size == 0:
+        return None
+    return path
 
 def add_genome_info_to_mpileup(mpileup_df:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame)->pl.LazyFrame:
     mpileup_df=mpileup_df.join(scaffold_to_genome,
@@ -296,7 +333,7 @@ def get_strain_hetrogeneity(profile:pl.LazyFrame,
 async def _profile_chunk_task(
     bed_file:pathlib.Path,
     bam_file:pathlib.Path,
-    gene_range_table:pathlib.Path,
+    gene_range_table: Optional[pathlib.Path],
     stb:pl.LazyFrame,
     null_model:pl.LazyFrame,
     output_dir:pathlib.Path,
@@ -325,19 +362,22 @@ async def _profile_chunk_task(
                 mpileup_df=mpileup.select(["chrom", "pos", "A", "C", "G", "T"]),
                 scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold", "genome"]),
             )
-            mpileup = add_gene_info_to_mpileup(
-                mpileup_df=mpileup,
-                gene_range=pl.scan_csv(
-                    gene_range_table,
-                    has_header=False,
-                    separator="\t",
-                ).rename({
-                    "column_1": "gene",
-                    "column_2": "scaffold",
-                    "column_3": "start",
-                    "column_4": "end",
-                }).filter(pl.col("scaffold").is_in(scaffolds)),
-            )
+            if gene_range_table is None:
+                mpileup = mpileup.with_columns(pl.lit("NA").alias("gene"))
+            else:
+                mpileup = add_gene_info_to_mpileup(
+                    mpileup_df=mpileup,
+                    gene_range=pl.scan_csv(
+                        gene_range_table,
+                        has_header=False,
+                        separator="\t",
+                    ).rename({
+                        "column_1": "gene",
+                        "column_2": "scaffold",
+                        "column_3": "start",
+                        "column_4": "end",
+                    }).filter(pl.col("scaffold").is_in(scaffolds)),
+                )
             mpileup.select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]).sink_parquet(
                 output_dir / f"{bam_file.stem}_{chunk_id}.parquet",
                 compression="zstd",
@@ -359,7 +399,7 @@ async def _run_profile_chunk_with_semaphore(
     *,
     bed_file: pathlib.Path,
     bam_file: pathlib.Path,
-    gene_range_table: pathlib.Path,
+    gene_range_table: Optional[pathlib.Path],
     stb: pl.LazyFrame,
     null_model: pl.LazyFrame,
     output_dir: pathlib.Path,
@@ -380,7 +420,7 @@ async def _run_profile_chunk_with_semaphore(
 async def profile_bam_in_chunks(
     bed_file:str,
     bam_file:str,
-    gene_range_table:str,
+    gene_range_table: Optional[str],
     stb:pl.LazyFrame,
     null_model:pl.LazyFrame,
     output_dir:str,
@@ -393,7 +433,7 @@ async def profile_bam_in_chunks(
     Parameters:
     bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
     bam_file (pathlib.Path): Path to the BAM file.
-    gene_range_table (pathlib.Path): Path to the gene range table.
+    gene_range_table (pathlib.Path | None): Optional path to the gene range table.
     stb (pl.LazyFrame): The scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
@@ -404,21 +444,24 @@ async def profile_bam_in_chunks(
     output_dir=pathlib.Path(output_dir)
     bam_file=pathlib.Path(bam_file)
     bed_file=pathlib.Path(bed_file)
-    gene_range_table=pathlib.Path(gene_range_table)
+    gene_range_table_path = normalize_gene_range_table_path(gene_range_table)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir/"tmp").mkdir(exist_ok=True)
     bed_lf=pl.scan_csv(bed_file,has_header=False,separator="\t")
-    gene_range_lf = pl.scan_csv(
-        gene_range_table,
-        has_header=False,
-        separator="\t",
-    ).rename({
-        "column_1": "gene",
-        "column_2": "scaffold",
-        "column_3": "start",
-        "column_4": "end",
-    })
+    if gene_range_table_path is None:
+        gene_range_lf = empty_gene_range_table()
+    else:
+        gene_range_lf = pl.scan_csv(
+            gene_range_table_path,
+            has_header=False,
+            separator="\t",
+        ).rename({
+            "column_1": "gene",
+            "column_2": "scaffold",
+            "column_3": "start",
+            "column_4": "end",
+        })
     bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
     for chunk_id, bed_file in enumerate(bed_chunks):
@@ -431,7 +474,7 @@ async def profile_bam_in_chunks(
             semaphore,
             bed_file=bed_chunk_file,
             bam_file=bam_file,
-            gene_range_table=gene_range_table,
+            gene_range_table=gene_range_table_path,
             stb=stb,
             null_model=null_model,
             output_dir=output_dir/"tmp",
@@ -453,15 +496,22 @@ async def profile_bam_in_chunks(
     if mpile_container:
         mpileup_df = pl.concat(mpile_container)
         mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
-        utils.get_gene_stats(
-            profile=mpileup_df,
-            gene_bed=gene_range_lf,
-            stb=stb,
-        ).sink_parquet(
-            output_dir/f"{bam_file.stem}_gene_stats.parquet",
-            compression='zstd',
-            engine='streaming',
-        )
+        if gene_range_table_path is None:
+            empty_gene_stats_table().sink_parquet(
+                output_dir/f"{bam_file.stem}_gene_stats.parquet",
+                compression='zstd',
+                engine='streaming',
+            )
+        else:
+            utils.get_gene_stats(
+                profile=mpileup_df,
+                gene_bed=gene_range_lf,
+                stb=stb,
+            ).sink_parquet(
+                output_dir/f"{bam_file.stem}_gene_stats.parquet",
+                compression='zstd',
+                engine='streaming',
+            )
     
     if read_loc_pfs:
         read_loc_df = pl.concat(read_loc_pfs).rename(
@@ -581,7 +631,7 @@ def build_profile_matrix_db(
 def profile_bam(
     bed_file:str,
     bam_file:str,
-    gene_range_table:str,
+    gene_range_table: Optional[str],
     stb:pl.LazyFrame,
     null_model:pl.LazyFrame,
     output_dir:str,
@@ -594,7 +644,7 @@ def profile_bam(
     Parameters:
     bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
     bam_file (pathlib.Path): Path to the BAM file.
-    gene_range_table (pathlib.Path): Path to the gene range table.
+    gene_range_table (pathlib.Path | None): Optional path to the gene range table.
     stb (pl.LazyFrame): Scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.

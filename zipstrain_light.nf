@@ -6,7 +6,6 @@ params.parallel_mode="batched"
 params.min_cov=5
 params.min_gene_compare_len=200
 params.batch_size=10
-params.breadth_min_cov=1
 params.bed_max_scaffold_length=500000
 params.compare_duckdb_memory_limit=""
 params.light_compare_calculate="all"
@@ -346,30 +345,6 @@ process compare_gene_fast_profiles_single {
 }
 
 
-process get_genome_breadth {
-    /*
-    * This process calculates the genome breadth.
-    * It takes in the mpileup files and outputs the genome breadth.
-    */
-    publishDir "${params.output_dir}", mode: 'link'
-    input:
-    path profile
-    path stb_file
-    path bed_file
-    output:
-    path "${profile.baseName}_breadth.parquet", emit: genome_breadth
-    script:
-    """
-    zipstrain utilities get_genome_lengths --stb-file ${stb_file} --bed-file ${bed_file} --output-file genome_length.parquet 
-    zipstrain utilities genome_breadth_matrix --profile ${profile} \
-                        --genome-length genome_length.parquet \
-                        --stb ${stb_file} \
-                        --min-cov ${params.breadth_min_cov} \
-                        --output-file ${profile.baseName}_breadth.parquet
-    """
-}
-
-
 process compare_genome_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: 'link'
     input:
@@ -465,24 +440,6 @@ process merge_comparison_tables {
     zipstrain utilities merge_parquet --input-dir . --output-file merged_comparisons.parquet
     """
 }
-process merge_breadth_tables {
-    /*
-    * This process merges multiple genome breadth files into a single file.
-    * It takes in multiple genome breadth files and outputs a merged file.
-    */
-    publishDir "${params.output_dir}"
-    input:
-    path breadth_files
-    output:
-    path "merged_breadth.parquet", emit: merged_breadth
-    script:
-    """
-    mkdir -p breadth_tables
-    mv ${breadth_files} breadth_tables/
-    zipstrain utilities collect_breadth_tables --breadth-tables-dir breadth_tables --output-file merged_breadth.parquet
-    """
-}
-
 process build_null_model {
 publishDir "${params.output_dir}", mode: 'link'
     /*

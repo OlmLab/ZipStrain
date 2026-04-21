@@ -22,7 +22,7 @@ def cli() -> None:
 @click.option("--bed-file", default=None, help="BED file for profiling (required with --bam-file).")
 @click.option("--stb-file", default=None, help="STB file for profiling (required with --bam-file).")
 @click.option("--null-model", default=None, help="Null model parquet (required with --bam-file).")
-@click.option("--gene-range-table", default=None, help="Gene range table TSV (required with --bam-file).")
+@click.option("--gene-range-table", default=None, help="Optional gene range table TSV.")
 @click.option("--num-chunks", type=int, default=24, show_default=True, help="Number of BED chunks to create in BAM profiling mode.")
 @click.option("--max-concurrency", type=int, default=4, show_default=True, help="Maximum number of BAM profiling chunks to run concurrently.")
 @click.option("--min-cov", type=int, default=5, show_default=True, help="Retain loci with corrected coverage strictly greater than this value.")
@@ -61,7 +61,6 @@ def profile(
                 ("--bed-file", bed_file),
                 ("--stb-file", stb_file),
                 ("--null-model", null_model),
-                ("--gene-range-table", gene_range_table),
             )
             if value is None
         ]

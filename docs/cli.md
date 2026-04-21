@@ -38,7 +38,6 @@ zipstrain profile \
   --input-table samples.csv \
   --stb-file mapping.stb \
   --null-model null_model.parquet \
-  --gene-range-table gene_range_table.tsv \
   --bed-file genomes_bed_file.bed \
   --genome-length-file genome_lengths.parquet \
   --run-dir profile_run
@@ -49,7 +48,7 @@ Options:
 - `-i, --input-table` (required)
 - `-s, --stb-file` (required)
 - `-u, --null-model` (required)
-- `-g, --gene-range-table` (required)
+- `-g, --gene-range-table` (optional)
 - `-b, --bed-file` (required)
 - `-l, --genome-length-file` (required)
 - `-r, --run-dir` (required)
@@ -68,7 +67,6 @@ Prepare profiling database assets.
 ```bash
 zipstrain utilities prepare_profiling \
   --reference-fasta reference.fasta \
-  --gene-fasta genes.fasta \
   --stb-file mapping.stb \
   --output-dir profiling_assets
 ```
@@ -76,7 +74,7 @@ zipstrain utilities prepare_profiling \
 Options:
 
 - `-r, --reference-fasta` (required)
-- `-g, --gene-fasta` (required)
+- `-g, --gene-fasta` (optional)
 - `-s, --stb-file` (required)
 - `-o, --output-dir` (required)
 
@@ -90,8 +88,6 @@ zipstrain utilities profile-single \
   --bam-file sample.bam \
   --stb-file mapping.stb \
   --null-model null_model.parquet \
-  --gene-range-table gene_range_table.tsv \
-  --genome-length-file genome_lengths.parquet \
   --num-chunks 24 \
   --max-concurrency 4 \
   --output-dir sample_profile
@@ -103,8 +99,7 @@ Options:
 - `-a, --bam-file` (required)
 - `-s, --stb-file` (required)
 - `-m, --null-model` (required)
-- `-g, --gene-range-table` (required)
-- `-l, --genome-length-file` (required)
+- `-g, --gene-range-table` (optional)
 - `-n, --num-chunks` (default: `24`) — number of BED chunks to create
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
 - `-o, --output-dir` (required)
@@ -278,11 +273,10 @@ zipstrain utilities to-complete-table \
 |---|---|
 | `zipstrain utilities build-null-model` | Build sequencing-error null model |
 | `zipstrain utilities merge_parquet` | Merge parquet files |
+| `zipstrain utilities merge-stat-tables` | Merge gene/genome stat parquet files with sample labels |
 | `zipstrain utilities process_mpileup` | Convert mpileup stream to parquet |
 | `zipstrain utilities make_bed` | Build bed chunks from fasta |
 | `zipstrain utilities get_genome_lengths` | Genome lengths from STB + BED |
-| `zipstrain utilities genome_breadth_matrix` | Per-genome breadth output |
-| `zipstrain utilities collect_breadth_tables` | Merge breadth tables |
 | `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
 | `zipstrain utilities build-matrix-db` | Build experimental per-sample scaffold matrix DuckDB |
@@ -433,8 +427,7 @@ zipstrain utilities merge_parquet --help
 zipstrain utilities process_mpileup --help
 zipstrain utilities make_bed --help
 zipstrain utilities get_genome_lengths --help
-zipstrain utilities genome_breadth_matrix --help
-zipstrain utilities collect_breadth_tables --help
+zipstrain utilities merge-stat-tables --help
 zipstrain utilities strain_heterogeneity --help
 zipstrain utilities build-profile-db --help
 zipstrain utilities build-matrix-db --help

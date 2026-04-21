@@ -281,6 +281,38 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert by_genome["genome2"]["breadth"] == pytest.approx(1.0)
 
 
+def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _install_fake_profile_subprocess(monkeypatch)
+    bam_file, bed_file, _, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
+    profile.profile_bam(
+        bed_file=str(bed_file),
+        bam_file=str(bam_file),
+        gene_range_table=None,
+        stb=stb_lf,
+        null_model=pl.scan_parquet(null_model_file),
+        output_dir=str(tmp_path),
+        num_chunks=2,
+        max_concurrency=2,
+    )
+
+    profile_file = tmp_path / "sample_profile.parquet"
+    gene_stats_file = tmp_path / "sample_gene_stats.parquet"
+    genome_stats_file = tmp_path / "sample_genome_stats.parquet"
+    assert profile_file.exists()
+    assert gene_stats_file.exists()
+    assert genome_stats_file.exists()
+
+    prof = pl.read_parquet(profile_file)
+    assert set(prof["gene"].unique().to_list()) == {"NA"}
+
+    gene_stats = pl.read_parquet(gene_stats_file)
+    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage"]
+    assert gene_stats.height == 0
+
+    genome_stats = pl.read_parquet(genome_stats_file)
+    assert set(genome_stats["genome"].to_list()) == {"genome1", "genome2"}
+
+
 def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _install_fake_profile_subprocess(monkeypatch)
     bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
@@ -314,6 +346,38 @@ def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert (out_dir / "sample_profile.parquet").exists()
     assert (out_dir / "sample_gene_stats.parquet").exists()
     assert (out_dir / "sample_genome_stats.parquet").exists()
+
+
+def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _install_fake_profile_subprocess(monkeypatch)
+    bam_file, bed_file, _, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
+    out_dir = tmp_path / "cli_out_no_gene"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "utilities",
+            "profile-single",
+            "--bed-file",
+            str(bed_file),
+            "--bam-file",
+            str(bam_file),
+            "--stb-file",
+            str(stb_file),
+            "--null-model",
+            str(null_model_file),
+            "--num-chunks",
+            "2",
+            "--max-concurrency",
+            "2",
+            "--output-dir",
+            str(out_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    prof = pl.read_parquet(out_dir / "sample_profile.parquet")
+    assert set(prof["gene"].unique().to_list()) == {"NA"}
 
 
 def test_light_profile_from_bam_uses_profile_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
