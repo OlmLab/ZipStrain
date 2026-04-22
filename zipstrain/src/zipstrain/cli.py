@@ -234,6 +234,78 @@ def merge_stat_tables(stat_table, output_file):
         output_file=output_file,
         progress_callback=_emit_progress,
     )
+
+
+@utilities.command("generate-genome-pairs")
+@click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
+@click.option('--output-file', '-o', required=True, help="Output parquet file with all non-redundant profile pairs.")
+@click.option('--write-batch-size', type=int, default=100000, show_default=True, help="How many pairs to buffer before writing a parquet row group.")
+def generate_genome_pairs(profile_dir, output_file, write_batch_size):
+    """Generate a pair table ready for chunk-genome-compare or other compare utilities."""
+    def _emit_progress(message: str) -> None:
+        click.echo(message, err=True)
+        sys.stderr.flush()
+
+    summary = ut.generate_genome_pairs(
+        profile_dir=profile_dir,
+        output_file=output_file,
+        write_batch_size=write_batch_size,
+        progress_callback=_emit_progress,
+    )
+    click.echo(
+        f"wrote={summary['output_file']} "
+        f"profiles={summary['profiles']} "
+        f"pairs={summary['pairs']}"
+    )
+
+
+@utilities.command("chunk-genome-compare")
+@click.option('--pair-table', '-p', required=True, help="Pair table parquet/csv/tsv with profile locations.")
+@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--output-file', '-o', required=True, help="Path to save the merged genome comparison parquet.")
+@click.option('--workers', '-w', type=int, default=None, help="Parallel workers inside this compare chunk. Defaults to CPU count capped by pair count.")
+@click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=100, show_default=True, help="Minimum gene length to consider for comparison.")
+@click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
+@click.option('--ani-method', '-a', default="popani", show_default=True, help="ANI calculation method to use.")
+@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
+@click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (for scoped filtering or duckdb engine).")
+@click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
+@click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
+def chunk_genome_compare(pair_table, stb_file, output_file, workers, min_cov, min_gene_compare_len, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+    """Run classic genome compare over one pair-table chunk using Python-side parallel workers."""
+    def _emit_progress(message: str) -> None:
+        click.echo(message, err=True)
+        sys.stderr.flush()
+
+    summary = ut.chunk_genome_compare(
+        pair_table=pair_table,
+        output_file=output_file,
+        stb_file=stb_file,
+        workers=workers,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        genome_scope=genome,
+        ani_method=ani_method,
+        calculate=calculate,
+        engine=engine,
+        duckdb_memory_limit=duckdb_memory_limit,
+        duckdb_temp_directory=duckdb_temp_directory,
+        duckdb_threads=duckdb_threads,
+        progress_callback=_emit_progress,
+    )
+    click.echo(
+        f"wrote={summary['output_file']} "
+        f"pairs={summary['pairs']} "
+        f"rows={summary['rows']} "
+        f"workers={summary['workers']} "
+        f"elapsed_s={summary['elapsed_seconds']:.2f} "
+        f"avg_wall_s_per_pair={summary['avg_wall_seconds_per_pair']:.4f} "
+        f"avg_compute_s_per_pair={summary['avg_compute_seconds_per_pair']:.4f} "
+        f"avg_s_per_genome_row={summary['avg_seconds_per_genome_row']:.4f} "
+        f"avg_genome_rows_per_pair={summary['avg_genome_rows_per_pair']:.2f}"
+    )
     
 @utilities.command("strain_heterogeneity")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")

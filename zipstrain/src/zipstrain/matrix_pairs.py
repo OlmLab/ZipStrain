@@ -18,6 +18,9 @@ COUNT_DTYPES = {
     "uint16": np.uint16,
     "uint32": np.uint32,
 }
+MATRIX_BUILD_MIN_COV = 5
+LEGACY_MATRIX_VALUE_SEMANTICS = "raw_base_counts"
+FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
@@ -391,6 +394,7 @@ def _load_profile_scaffold_matrix(
     profile_path: Path,
     spec: ScaffoldSpec,
     count_dtype: str,
+    min_cov: int,
 ) -> Optional[np.ndarray]:
     np_dtype = COUNT_DTYPES[count_dtype]
     frame = (
@@ -401,12 +405,22 @@ def _load_profile_scaffold_matrix(
     )
     if frame.height == 0:
         return None
+    coverage = (
+        frame["A"].cast(pl.Int64)
+        + frame["T"].cast(pl.Int64)
+        + frame["C"].cast(pl.Int64)
+        + frame["G"].cast(pl.Int64)
+    )
+    keep_mask = coverage >= min_cov
+    if not keep_mask.any():
+        return None
+    frame = frame.filter(keep_mask)
     matrix = np.zeros((spec.vector_length, 4), dtype=np_dtype)
     pos = frame["pos"].to_numpy().astype(np.int64) - spec.index_base
-    matrix[pos, 0] = frame["A"].to_numpy().astype(np_dtype, copy=False)
-    matrix[pos, 1] = frame["T"].to_numpy().astype(np_dtype, copy=False)
-    matrix[pos, 2] = frame["C"].to_numpy().astype(np_dtype, copy=False)
-    matrix[pos, 3] = frame["G"].to_numpy().astype(np_dtype, copy=False)
+    matrix[pos, 0] = (frame["A"].to_numpy() > 0).astype(np_dtype, copy=False)
+    matrix[pos, 1] = (frame["T"].to_numpy() > 0).astype(np_dtype, copy=False)
+    matrix[pos, 2] = (frame["C"].to_numpy() > 0).astype(np_dtype, copy=False)
+    matrix[pos, 3] = (frame["G"].to_numpy() > 0).astype(np_dtype, copy=False)
     return matrix
 
 
@@ -469,6 +483,8 @@ def build_matrix_db(
             ("genome_scope", genome_scope or "all"),
             ("count_dtype", count_dtype),
             ("layout", "per_sample_per_scaffold_dense_matrix"),
+            ("matrix_value_semantics", FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS),
+            ("coverage_filter_min_cov", str(MATRIX_BUILD_MIN_COV)),
             ("memory_limit_gb", str(memory_limit_gb)),
         ]
         sample_rows = [(idx, path.stem, str(path.resolve())) for idx, path in enumerate(profile_paths)]
@@ -520,6 +536,7 @@ def build_matrix_db(
                     profile_path=profile_path,
                     spec=spec,
                     count_dtype=count_dtype,
+                    min_cov=MATRIX_BUILD_MIN_COV,
                 )
                 if matrix is None:
                     completed_work += 1
@@ -698,6 +715,10 @@ def _load_scaffold_count_dtype(
     return "" if row is None else str(row[0])
 
 
+def _matrix_value_semantics(metadata: dict[str, str]) -> str:
+    return metadata.get("matrix_value_semantics", LEGACY_MATRIX_VALUE_SEMANTICS)
+
+
 def _plan_chunk_sizes(
     vector_length: int,
     remaining_targets: int,
@@ -735,7 +756,7 @@ def _plan_chunk_sizes(
     return 1, min(vector_length, tile_size)
 
 
-def _compare_tile_numpy(
+def _compare_tile_legacy_numpy(
     anchor_matrix: np.ndarray,
     target_matrices: np.ndarray,
     min_cov: int,
@@ -748,7 +769,7 @@ def _compare_tile_numpy(
     return both_cov.sum(axis=0, dtype=np.int64), shared_signal.sum(axis=0, dtype=np.int64)
 
 
-def _compare_tile_torch(
+def _compare_tile_legacy_torch(
     torch_module,
     device: str,
     anchor_matrix: np.ndarray,
@@ -770,6 +791,72 @@ def _compare_tile_torch(
     return totals, shared
 
 
+def _compare_tile_legacy_torch_tensors(
+    torch_module,
+    anchor_t,
+    targets_t,
+    min_cov: int,
+):
+    anchor_i = anchor_t.to(torch_module.int32)
+    targets_i = targets_t.to(torch_module.int32)
+    cov_anchor = anchor_i.sum(dim=1)
+    cov_targets = targets_i.sum(dim=1)
+    both_cov = (cov_anchor.unsqueeze(1) >= min_cov) & (cov_targets >= min_cov)
+    shared_signal = (anchor_t.bool().unsqueeze(2) & targets_t.bool()).any(dim=1)
+    shared_signal &= both_cov
+    totals = both_cov.sum(dim=0, dtype=torch_module.int64)
+    shared = shared_signal.sum(dim=0, dtype=torch_module.int64)
+    return totals, shared
+
+
+def _compare_tile_presence_numpy(
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    anchor_presence = anchor_matrix.astype(np.int8, copy=False)
+    target_presence = target_matrices.astype(np.int8, copy=False)
+
+    anchor_cov = anchor_presence.max(axis=1).astype(np.int32, copy=False)
+    target_cov = target_presence.max(axis=1).astype(np.int32, copy=False)
+    totals = (anchor_cov @ target_cov).astype(np.int64, copy=False)
+
+    shared_signal = np.matmul(anchor_presence[:, np.newaxis, :], target_presence).squeeze(1) > 0
+    shared = shared_signal.sum(axis=0, dtype=np.int64)
+    return totals, shared
+
+
+def _compare_tile_presence_torch(
+    torch_module,
+    device: str,
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    anchor_t = torch_module.from_numpy(np.ascontiguousarray(anchor_matrix)).to(device=device, dtype=torch_module.float32)
+    targets_t = torch_module.from_numpy(np.ascontiguousarray(target_matrices)).to(device=device, dtype=torch_module.float32)
+
+    anchor_cov = anchor_t.amax(dim=1)
+    target_cov = targets_t.amax(dim=1)
+    totals = torch_module.matmul(anchor_cov.unsqueeze(0), target_cov).squeeze(0).to(torch_module.int64).cpu().numpy()
+
+    shared_scores = torch_module.matmul(anchor_t.unsqueeze(1), targets_t).squeeze(1)
+    shared = (shared_scores > 0).sum(dim=0, dtype=torch_module.int64).cpu().numpy()
+    return totals, shared
+
+
+def _compare_tile_presence_torch_tensors(
+    torch_module,
+    anchor_t,
+    targets_t,
+):
+    anchor_cov = anchor_t.amax(dim=1)
+    target_cov = targets_t.amax(dim=1)
+    totals = torch_module.matmul(anchor_cov.unsqueeze(0), target_cov).squeeze(0).to(torch_module.int64)
+
+    shared_scores = torch_module.matmul(anchor_t.unsqueeze(1), targets_t).squeeze(1)
+    shared = (shared_scores > 0).sum(dim=0, dtype=torch_module.int64)
+    return totals, shared
+
+
 def _make_arrow_table(
     sample_1: str,
     sample_2: list[str],
@@ -787,6 +874,357 @@ def _make_arrow_table(
             pa.array((share_allele_pos / total_positions * 100.0).tolist(), type=pa.float64()),
         ],
         schema=PAIR_OUTPUT_SCHEMA,
+    )
+
+
+def _prepare_torch_matrix(
+    compute_backend: MatrixPairComputeBackend,
+    matrix: np.ndarray,
+    matrix_value_semantics: str,
+):
+    tensor = compute_backend.torch.from_numpy(np.ascontiguousarray(matrix))
+    if compute_backend.device == "cuda" and hasattr(tensor, "pin_memory"):
+        tensor = tensor.pin_memory()
+        kwargs: dict[str, object] = {"device": compute_backend.device, "non_blocking": True}
+    else:
+        kwargs = {"device": compute_backend.device}
+    if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+        kwargs["dtype"] = compute_backend.torch.float32
+    return tensor.to(**kwargs)
+
+
+def _compare_anchor_against_target_chunk_torch(
+    compute_backend: MatrixPairComputeBackend,
+    anchor_torch,
+    target_torch,
+    vector_length: int,
+    tile_size: int,
+    matrix_value_semantics: str,
+    min_cov: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    target_count = int(target_torch.shape[2])
+    chunk_totals_torch = compute_backend.torch.zeros(
+        target_count,
+        dtype=compute_backend.torch.int64,
+        device=compute_backend.device,
+    )
+    chunk_shared_torch = compute_backend.torch.zeros(
+        target_count,
+        dtype=compute_backend.torch.int64,
+        device=compute_backend.device,
+    )
+    for tile_start in range(0, vector_length, tile_size):
+        tile_stop = min(vector_length, tile_start + tile_size)
+        if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+            total_inc, shared_inc = _compare_tile_presence_torch_tensors(
+                torch_module=compute_backend.torch,
+                anchor_t=anchor_torch[tile_start:tile_stop, :],
+                targets_t=target_torch[tile_start:tile_stop, :, :],
+            )
+        else:
+            total_inc, shared_inc = _compare_tile_legacy_torch_tensors(
+                torch_module=compute_backend.torch,
+                anchor_t=anchor_torch[tile_start:tile_stop, :],
+                targets_t=target_torch[tile_start:tile_stop, :, :],
+                min_cov=min_cov,
+            )
+        chunk_totals_torch += total_inc
+        chunk_shared_torch += shared_inc
+    return chunk_totals_torch.cpu().numpy(), chunk_shared_torch.cpu().numpy()
+
+
+def _matrix_compare_reuse_target_chunks_torch(
+    conn: duckdb.DuckDBPyConnection,
+    output_file: Path,
+    min_cov: int,
+    genome_scope: Optional[str],
+    metadata: dict[str, str],
+    samples: list[tuple[int, str]],
+    scaffolds: list[ScaffoldSpec],
+    requested_pairs: int,
+    memory_limit_bytes: int,
+    memory_limit_gb: float,
+    position_tile_size: Optional[int],
+    compute_backend: MatrixPairComputeBackend,
+    matrix_value_semantics: str,
+    progress_callback: Optional[CompareProgressCallback] = None,
+) -> MatrixCompareSummary:
+    total_work = requested_pairs * len(scaffolds)
+    completed_work = 0
+    written_rows = 0
+    target_chunks = 0
+    anchor_groups = max(len(samples) - 1, 0)
+    dtype_name = str(metadata.get("count_dtype", "uint16"))
+    default_tile_size = 0
+    max_vector_length = max(spec.vector_length for spec in scaffolds)
+    global_block_size, _ = _plan_chunk_sizes(
+        vector_length=max_vector_length,
+        remaining_targets=len(samples),
+        dtype_name=dtype_name,
+        memory_limit_bytes=memory_limit_bytes,
+        backend_kind=compute_backend.kind,
+        position_tile_size=position_tile_size,
+    )
+    global_block_size = max(1, global_block_size)
+    samples_by_id = {sample_idx: sample_name for sample_idx, sample_name in samples}
+    scaffolds_by_genome: dict[str, list[ScaffoldSpec]] = {}
+    for spec in scaffolds:
+        scaffolds_by_genome.setdefault(spec.genome, []).append(spec)
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "start",
+                "completed": completed_work,
+                "total": total_work,
+                "anchor_name": "",
+                "genome": genome_scope or metadata.get("genome_scope", "all"),
+                "scaffold": "",
+                "targets_completed": 0,
+                "targets_total": 0,
+                "target_chunks": target_chunks,
+            }
+        )
+
+    with pq.ParquetWriter(output_file, PAIR_OUTPUT_SCHEMA, compression="zstd") as writer:
+        for genome_name in sorted(scaffolds_by_genome):
+            genome_scaffolds = scaffolds_by_genome[genome_name]
+            for block_start in range(0, len(samples), global_block_size):
+                block_rows = samples[block_start:block_start + global_block_size]
+                if not block_rows:
+                    continue
+                external_rows = samples[:block_start]
+                pair_count_for_block = len(external_rows) * len(block_rows) + (len(block_rows) * (len(block_rows) - 1)) // 2
+                if pair_count_for_block == 0:
+                    continue
+
+                block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
+                block_names = [sample_name for _sample_idx, sample_name in block_rows]
+                totals_external = np.zeros((len(external_rows), len(block_rows)), dtype=np.int64)
+                shared_external = np.zeros((len(external_rows), len(block_rows)), dtype=np.int64)
+                totals_internal = np.zeros((len(block_rows), len(block_rows)), dtype=np.int64)
+                shared_internal = np.zeros((len(block_rows), len(block_rows)), dtype=np.int64)
+
+                for spec in genome_scaffolds:
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "processing",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "anchor_name": block_names[0],
+                                "genome": spec.genome,
+                                "scaffold": spec.chrom,
+                                "targets_completed": 0,
+                                "targets_total": len(block_ids),
+                                "target_chunks": target_chunks,
+                            }
+                        )
+                    scaffold_dtype = _load_scaffold_count_dtype(conn, spec.scaffold_idx)
+                    if not scaffold_dtype:
+                        completed_work += pair_count_for_block
+                        target_chunks += 1
+                        if progress_callback is not None:
+                            progress_callback(
+                                {
+                                    "phase": "advance",
+                                    "completed": completed_work,
+                                    "total": total_work,
+                                    "anchor_name": block_names[0],
+                                    "genome": spec.genome,
+                                    "scaffold": spec.chrom,
+                                    "targets_completed": len(block_ids),
+                                    "targets_total": len(block_ids),
+                                    "target_chunks": target_chunks,
+                                }
+                            )
+                        continue
+
+                    zero_matrix = np.zeros((spec.vector_length, 4), dtype=COUNT_DTYPES[dtype_name])
+                    tile_targets, tile_size = _plan_chunk_sizes(
+                        vector_length=spec.vector_length,
+                        remaining_targets=len(block_ids),
+                        dtype_name=dtype_name,
+                        memory_limit_bytes=memory_limit_bytes,
+                        backend_kind=compute_backend.kind,
+                        position_tile_size=position_tile_size,
+                    )
+                    default_tile_size = tile_size
+                    if tile_targets < len(block_ids):
+                        raise RuntimeError(
+                            "Internal target block size exceeded the planned torch chunk capacity. "
+                            "This indicates the global block planner is inconsistent."
+                        )
+                    _dtype, loaded_targets = _load_sample_scaffold_matrices(
+                        conn,
+                        scaffold_idx=spec.scaffold_idx,
+                        sample_ids=block_ids.tolist(),
+                        vector_length=spec.vector_length,
+                    )
+                    target_matrices = np.stack(
+                        [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
+                        axis=2,
+                    )
+                    target_torch = _prepare_torch_matrix(
+                        compute_backend=compute_backend,
+                        matrix=target_matrices,
+                        matrix_value_semantics=matrix_value_semantics,
+                    )
+                    processed_pairs_for_block = 0
+
+                    for external_pos, (anchor_idx, _anchor_name) in enumerate(external_rows):
+                        _anchor_dtype, loaded_anchor = _load_sample_scaffold_matrices(
+                            conn,
+                            scaffold_idx=spec.scaffold_idx,
+                            sample_ids=[anchor_idx],
+                            vector_length=spec.vector_length,
+                        )
+                        anchor_matrix = loaded_anchor.get(anchor_idx, zero_matrix)
+                        anchor_torch = _prepare_torch_matrix(
+                            compute_backend=compute_backend,
+                            matrix=anchor_matrix,
+                            matrix_value_semantics=matrix_value_semantics,
+                        )
+                        total_inc, shared_inc = _compare_anchor_against_target_chunk_torch(
+                            compute_backend=compute_backend,
+                            anchor_torch=anchor_torch,
+                            target_torch=target_torch,
+                            vector_length=spec.vector_length,
+                            tile_size=tile_size,
+                            matrix_value_semantics=matrix_value_semantics,
+                            min_cov=min_cov,
+                        )
+                        totals_external[external_pos, :] += total_inc
+                        shared_external[external_pos, :] += shared_inc
+                        processed_pairs_for_block += len(block_ids)
+                        completed_work += len(block_ids)
+                        if progress_callback is not None:
+                            progress_callback(
+                                {
+                                    "phase": "advance",
+                                    "completed": completed_work,
+                                    "total": total_work,
+                                    "anchor_name": samples_by_id[anchor_idx],
+                                    "genome": spec.genome,
+                                    "scaffold": spec.chrom,
+                                    "targets_completed": external_pos + 1,
+                                    "targets_total": len(external_rows) + len(block_ids) - 1,
+                                    "target_chunks": target_chunks,
+                                }
+                            )
+
+                    for local_anchor_pos in range(len(block_ids) - 1):
+                        total_inc, shared_inc = _compare_anchor_against_target_chunk_torch(
+                            compute_backend=compute_backend,
+                            anchor_torch=target_torch[:, :, local_anchor_pos],
+                            target_torch=target_torch[:, :, local_anchor_pos + 1:],
+                            vector_length=spec.vector_length,
+                            tile_size=tile_size,
+                            matrix_value_semantics=matrix_value_semantics,
+                            min_cov=min_cov,
+                        )
+                        totals_internal[local_anchor_pos, local_anchor_pos + 1:] += total_inc
+                        shared_internal[local_anchor_pos, local_anchor_pos + 1:] += shared_inc
+                        remaining_targets = len(block_ids) - local_anchor_pos - 1
+                        processed_pairs_for_block += remaining_targets
+                        completed_work += remaining_targets
+                        if progress_callback is not None:
+                            progress_callback(
+                                {
+                                    "phase": "advance",
+                                    "completed": completed_work,
+                                    "total": total_work,
+                                    "anchor_name": block_names[local_anchor_pos],
+                                    "genome": spec.genome,
+                                    "scaffold": spec.chrom,
+                                    "targets_completed": local_anchor_pos + 1,
+                                    "targets_total": len(block_ids) - 1,
+                                    "target_chunks": target_chunks,
+                                }
+                            )
+
+                    if processed_pairs_for_block != pair_count_for_block:
+                        raise RuntimeError(
+                            "Torch block compare progress accounting drifted from the expected pair count."
+                        )
+                    target_chunks += 1
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "advance",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "anchor_name": block_names[0],
+                                "genome": spec.genome,
+                                "scaffold": spec.chrom,
+                                "targets_completed": len(block_ids),
+                                "targets_total": len(block_ids),
+                                "target_chunks": target_chunks,
+                            }
+                        )
+
+                for external_pos, (anchor_idx, _anchor_name) in enumerate(external_rows):
+                    totals = totals_external[external_pos]
+                    shared = shared_external[external_pos]
+                    mask = totals > 0
+                    if not mask.any():
+                        continue
+                    table = _make_arrow_table(
+                        sample_1=samples_by_id[anchor_idx],
+                        sample_2=[block_names[idx] for idx, keep in enumerate(mask) if keep],
+                        genome=genome_name,
+                        total_positions=totals[mask],
+                        share_allele_pos=shared[mask],
+                    )
+                    writer.write_table(table)
+                    written_rows += table.num_rows
+
+                for local_anchor_pos, anchor_name in enumerate(block_names[:-1]):
+                    totals = totals_internal[local_anchor_pos, local_anchor_pos + 1:]
+                    shared = shared_internal[local_anchor_pos, local_anchor_pos + 1:]
+                    mask = totals > 0
+                    if not mask.any():
+                        continue
+                    later_names = block_names[local_anchor_pos + 1:]
+                    table = _make_arrow_table(
+                        sample_1=anchor_name,
+                        sample_2=[later_names[idx] for idx, keep in enumerate(mask) if keep],
+                        genome=genome_name,
+                        total_positions=totals[mask],
+                        share_allele_pos=shared[mask],
+                    )
+                    writer.write_table(table)
+                    written_rows += table.num_rows
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "done",
+                "completed": completed_work,
+                "total": total_work,
+                "anchor_name": "",
+                "genome": genome_scope or metadata.get("genome_scope", "all"),
+                "scaffold": "",
+                "targets_completed": 0,
+                "targets_total": 0,
+                "target_chunks": target_chunks,
+            }
+        )
+
+    return MatrixCompareSummary(
+        output_file=output_file,
+        requested_pairs=requested_pairs,
+        written_rows=written_rows,
+        scaffold_count=len(scaffolds),
+        genome_count=len(scaffolds_by_genome),
+        anchor_groups=anchor_groups,
+        target_chunks=target_chunks,
+        min_cov=min_cov,
+        genome_scope=genome_scope or metadata.get("genome_scope", "all"),
+        backend=compute_backend.kind,
+        device=compute_backend.device,
+        memory_limit_gb=memory_limit_gb,
+        position_tile_size=position_tile_size or default_tile_size,
     )
 
 
@@ -812,6 +1250,15 @@ def matrix_compare(
     conn = duckdb.connect(str(matrix_db_file), read_only=True)
     try:
         metadata = _load_matrix_db_metadata(conn)
+        matrix_value_semantics = _matrix_value_semantics(metadata)
+        filtered_min_cov = metadata.get("coverage_filter_min_cov")
+        if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+            required_min_cov = int(filtered_min_cov or MATRIX_BUILD_MIN_COV)
+            if min_cov != required_min_cov:
+                raise ValueError(
+                    f"Matrix DB was built with fixed coverage filter min_cov={required_min_cov}. "
+                    f"Requested min_cov={min_cov}. Rebuild the matrix DB or use --min-cov {required_min_cov}."
+                )
         samples = _load_matrix_db_samples(conn)
         requested_pairs = len(samples) * (len(samples) - 1) // 2
         if requested_pairs == 0:
@@ -865,6 +1312,23 @@ def matrix_compare(
         scaffolds = _load_matrix_db_scaffolds(conn, genome=genome_scope)
         if not scaffolds:
             raise ValueError(f"No scaffolds found for genome scope: {genome}")
+        if compute_backend.kind == "torch":
+            return _matrix_compare_reuse_target_chunks_torch(
+                conn=conn,
+                output_file=output_file,
+                min_cov=min_cov,
+                genome_scope=genome_scope,
+                metadata=metadata,
+                samples=samples,
+                scaffolds=scaffolds,
+                requested_pairs=requested_pairs,
+                memory_limit_bytes=memory_limit_bytes,
+                memory_limit_gb=memory_limit_gb,
+                position_tile_size=position_tile_size,
+                compute_backend=compute_backend,
+                matrix_value_semantics=matrix_value_semantics,
+                progress_callback=progress_callback,
+            )
 
         total_work = requested_pairs * len(scaffolds)
         completed_work = 0
@@ -944,6 +1408,16 @@ def matrix_compare(
                         vector_length=spec.vector_length,
                     )
                     anchor_matrix = anchor_loaded.get(sample_1_idx, zero_matrix)
+                    anchor_torch = None
+                    if compute_backend.kind == "torch":
+                        anchor_array = np.ascontiguousarray(anchor_matrix)
+                        if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+                            anchor_torch = compute_backend.torch.from_numpy(anchor_array).to(
+                                device=compute_backend.device,
+                                dtype=compute_backend.torch.float32,
+                            )
+                        else:
+                            anchor_torch = compute_backend.torch.from_numpy(anchor_array).to(compute_backend.device)
 
                     target_offset = 0
                     while target_offset < len(target_ids_all):
@@ -969,15 +1443,67 @@ def matrix_compare(
                         )
                         totals = totals_by_genome[spec.genome][target_offset: target_offset + max_targets]
                         shared = shared_by_genome[spec.genome][target_offset: target_offset + max_targets]
+                        target_torch = None
+                        chunk_totals_torch = None
+                        chunk_shared_torch = None
+                        if compute_backend.kind == "torch":
+                            target_array = np.ascontiguousarray(target_matrices)
+                            if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+                                target_torch = compute_backend.torch.from_numpy(target_array).to(
+                                    device=compute_backend.device,
+                                    dtype=compute_backend.torch.float32,
+                                )
+                            else:
+                                target_torch = compute_backend.torch.from_numpy(target_array).to(compute_backend.device)
+                            chunk_totals_torch = compute_backend.torch.zeros(
+                                len(chunk_ids),
+                                dtype=compute_backend.torch.int64,
+                                device=compute_backend.device,
+                            )
+                            chunk_shared_torch = compute_backend.torch.zeros(
+                                len(chunk_ids),
+                                dtype=compute_backend.torch.int64,
+                                device=compute_backend.device,
+                            )
                         for tile_start in range(0, spec.vector_length, tile_size):
                             tile_stop = min(spec.vector_length, tile_start + tile_size)
-                            total_inc, shared_inc = compute_backend.compare_tile(
-                                anchor_matrix=anchor_matrix[tile_start:tile_stop, :],
-                                target_matrices=target_matrices[tile_start:tile_stop, :, :],
-                                min_cov=min_cov,
-                            )
-                            totals += total_inc
-                            shared += shared_inc
+                            anchor_tile = anchor_matrix[tile_start:tile_stop, :]
+                            target_tile = target_matrices[tile_start:tile_stop, :, :]
+                            if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+                                if compute_backend.kind == "numpy":
+                                    total_inc, shared_inc = _compare_tile_presence_numpy(
+                                        anchor_matrix=anchor_tile,
+                                        target_matrices=target_tile,
+                                    )
+                                else:
+                                    total_inc, shared_inc = _compare_tile_presence_torch_tensors(
+                                        torch_module=compute_backend.torch,
+                                        anchor_t=anchor_torch[tile_start:tile_stop, :],
+                                        targets_t=target_torch[tile_start:tile_stop, :, :],
+                                    )
+                            else:
+                                if compute_backend.kind == "numpy":
+                                    total_inc, shared_inc = _compare_tile_legacy_numpy(
+                                        anchor_matrix=anchor_tile,
+                                        target_matrices=target_tile,
+                                        min_cov=min_cov,
+                                    )
+                                else:
+                                    total_inc, shared_inc = _compare_tile_legacy_torch_tensors(
+                                        torch_module=compute_backend.torch,
+                                        anchor_t=anchor_torch[tile_start:tile_stop, :],
+                                        targets_t=target_torch[tile_start:tile_stop, :, :],
+                                        min_cov=min_cov,
+                                    )
+                            if compute_backend.kind == "torch":
+                                chunk_totals_torch += total_inc
+                                chunk_shared_torch += shared_inc
+                            else:
+                                totals += total_inc
+                                shared += shared_inc
+                        if compute_backend.kind == "torch":
+                            totals += chunk_totals_torch.cpu().numpy()
+                            shared += chunk_shared_torch.cpu().numpy()
                         target_offset += max_targets
                         completed_work += max_targets
                         target_chunks += 1

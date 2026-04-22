@@ -3,9 +3,12 @@ zipstrain.utils
 ========================
 This module provides utility functions for profiling and compare operations.
 """
+import os
 import pathlib
+import time
 from tempfile import TemporaryDirectory
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import polars as pl
 import sys
 import re
@@ -15,6 +18,29 @@ from collections import Counter
 from scipy.stats import poisson
 import subprocess
 import duckdb
+
+CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+GENOME_PAIR_TABLE_SCHEMA = pa.schema(
+    [
+        pa.field("sample_name_1", pa.string()),
+        pa.field("sample_name_2", pa.string()),
+        pa.field("profile_location_1", pa.string()),
+        pa.field("profile_location_2", pa.string()),
+    ]
+)
+
+GENOME_COMPARE_OUTPUT_DTYPES = {
+    "genome": pl.Utf8,
+    "total_positions": pl.Int64,
+    "share_allele_pos": pl.Int64,
+    "genome_pop_ani": pl.Float64,
+    "max_consecutive_length": pl.Int64,
+    "shared_genes_count": pl.Int64,
+    "identical_gene_count": pl.Int64,
+    "perc_id_genes": pl.Float64,
+    "sample_1": pl.Utf8,
+    "sample_2": pl.Utf8,
+}
 
 
 def _merge_parquet_chunk(parquet_files: list[pathlib.Path], output_file: pathlib.Path) -> None:
@@ -532,6 +558,183 @@ def infer_sample_name_from_stat_table(stat_table: str | pathlib.Path) -> str:
     return stem
 
 
+def infer_sample_name_from_profile(profile_path: str | pathlib.Path) -> str:
+    """Infer sample name from a classic profile parquet path."""
+    return pathlib.Path(profile_path).stem
+
+
+def _looks_like_classic_profile_parquet(path: pathlib.Path) -> bool:
+    try:
+        names = set(pq.read_schema(path).names)
+    except Exception:
+        return False
+    return CLASSIC_PROFILE_REQUIRED_COLUMNS.issubset(names)
+
+
+def discover_classic_profile_parquets(profile_dir: str | pathlib.Path) -> list[pathlib.Path]:
+    """Return classic ZipStrain profile parquets from a directory."""
+    input_dir = pathlib.Path(profile_dir)
+    if not input_dir.exists():
+        raise FileNotFoundError(f"Profile directory does not exist: {input_dir}")
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"Profile path is not a directory: {input_dir}")
+    profiles = sorted(
+        path for path in input_dir.glob("*.parquet")
+        if path.is_file() and _looks_like_classic_profile_parquet(path)
+    )
+    sample_names = [path.stem for path in profiles]
+    if len(sample_names) != len(set(sample_names)):
+        raise ValueError("Profile file stems must be unique to derive unique sample names.")
+    return profiles
+
+
+def _scan_pairs_table(table_path: pathlib.Path) -> pl.LazyFrame:
+    suffix = table_path.suffix.lower()
+    if suffix == ".parquet":
+        return pl.scan_parquet(table_path)
+    if suffix == ".csv":
+        return pl.scan_csv(table_path, separator=",", has_header=True)
+    if suffix in {".tsv", ".tab", ".txt"}:
+        return pl.scan_csv(table_path, separator="\t", has_header=True)
+    raise ValueError(f"Unsupported pair table format for {table_path}. Use parquet, csv, or tsv.")
+
+
+def _empty_genome_compare_frame(calculate: str | tuple[str, ...]) -> pl.DataFrame:
+    from zipstrain import compare as cp
+
+    columns = cp.genome_metric_output_columns(calculate) + ["sample_1", "sample_2"]
+    return pl.DataFrame(
+        {
+            column: pl.Series(name=column, values=[], dtype=GENOME_COMPARE_OUTPUT_DTYPES[column])
+            for column in columns
+        }
+    )
+
+
+def _normalize_pair_batch(batch: pl.DataFrame) -> pl.DataFrame:
+    columns = set(batch.columns)
+    if {"sample_name_1", "sample_name_2", "profile_location_1", "profile_location_2"}.issubset(columns):
+        normalized = batch.select(["sample_name_1", "sample_name_2", "profile_location_1", "profile_location_2"])
+    elif {"sample_name_1", "sample_name_2", "profile_1", "profile_2"}.issubset(columns):
+        normalized = (
+            batch.rename({"profile_1": "profile_location_1", "profile_2": "profile_location_2"})
+            .select(["sample_name_1", "sample_name_2", "profile_location_1", "profile_location_2"])
+        )
+    elif {"sample_1", "sample_2", "profile_1", "profile_2"}.issubset(columns):
+        normalized = (
+            batch.rename(
+                {
+                    "sample_1": "sample_name_1",
+                    "sample_2": "sample_name_2",
+                    "profile_1": "profile_location_1",
+                    "profile_2": "profile_location_2",
+                }
+            ).select(["sample_name_1", "sample_name_2", "profile_location_1", "profile_location_2"])
+        )
+    elif {"profile_location_1", "profile_location_2"}.issubset(columns):
+        normalized = batch.with_columns(
+            pl.col("profile_location_1")
+            .map_elements(lambda value: infer_sample_name_from_profile(value), return_dtype=pl.Utf8)
+            .alias("sample_name_1"),
+            pl.col("profile_location_2")
+            .map_elements(lambda value: infer_sample_name_from_profile(value), return_dtype=pl.Utf8)
+            .alias("sample_name_2"),
+        ).select(["sample_name_1", "sample_name_2", "profile_location_1", "profile_location_2"])
+    elif {"profile_1", "profile_2"}.issubset(columns):
+        normalized = (
+            batch.rename({"profile_1": "profile_location_1", "profile_2": "profile_location_2"})
+            .with_columns(
+                pl.col("profile_location_1")
+                .map_elements(lambda value: infer_sample_name_from_profile(value), return_dtype=pl.Utf8)
+                .alias("sample_name_1"),
+                pl.col("profile_location_2")
+                .map_elements(lambda value: infer_sample_name_from_profile(value), return_dtype=pl.Utf8)
+                .alias("sample_name_2"),
+            )
+            .select(["sample_name_1", "sample_name_2", "profile_location_1", "profile_location_2"])
+        )
+    else:
+        raise ValueError(
+            "Pair table must include one of these column sets: "
+            "[sample_name_1, sample_name_2, profile_location_1, profile_location_2], "
+            "[sample_name_1, sample_name_2, profile_1, profile_2], "
+            "[sample_1, sample_2, profile_1, profile_2], "
+            "[profile_location_1, profile_location_2], or [profile_1, profile_2]."
+        )
+
+    normalized = normalized.with_columns(
+        pl.col("sample_name_1").cast(pl.Utf8),
+        pl.col("sample_name_2").cast(pl.Utf8),
+        pl.col("profile_location_1").cast(pl.Utf8),
+        pl.col("profile_location_2").cast(pl.Utf8),
+    )
+    if normalized.height and any(count > 0 for count in normalized.null_count().row(0)):
+        raise ValueError("Pair table contains null values in required columns.")
+    return normalized
+
+
+def generate_genome_pairs(
+    profile_dir: str | pathlib.Path,
+    output_file: str | pathlib.Path,
+    write_batch_size: int = 100_000,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    """Generate all non-redundant classic profile pairs and write them to parquet."""
+    if write_batch_size < 1:
+        raise ValueError("write_batch_size must be >= 1")
+
+    output_path = pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    profiles = discover_classic_profile_parquets(profile_dir)
+    sample_rows = [(path.stem, str(path.resolve())) for path in profiles]
+    total_profiles = len(sample_rows)
+    total_pairs = total_profiles * (total_profiles - 1) // 2
+
+    def emit(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    emit(f"generate_genome_pairs: found {total_profiles} profiles")
+    written_pairs = 0
+    buffer = {
+        "sample_name_1": [],
+        "sample_name_2": [],
+        "profile_location_1": [],
+        "profile_location_2": [],
+    }
+
+    with pq.ParquetWriter(output_path, GENOME_PAIR_TABLE_SCHEMA, compression="zstd") as writer:
+        if total_pairs == 0:
+            writer.write_table(pa.Table.from_arrays([pa.array([], type=field.type) for field in GENOME_PAIR_TABLE_SCHEMA], schema=GENOME_PAIR_TABLE_SCHEMA))
+        else:
+            for left_idx, (sample_1, profile_1) in enumerate(sample_rows[:-1]):
+                for sample_2, profile_2 in sample_rows[left_idx + 1:]:
+                    buffer["sample_name_1"].append(sample_1)
+                    buffer["sample_name_2"].append(sample_2)
+                    buffer["profile_location_1"].append(profile_1)
+                    buffer["profile_location_2"].append(profile_2)
+                    if len(buffer["sample_name_1"]) >= write_batch_size:
+                        writer.write_table(pa.Table.from_pydict(buffer, schema=GENOME_PAIR_TABLE_SCHEMA))
+                        written_pairs += len(buffer["sample_name_1"])
+                        emit(
+                            f"generate_genome_pairs: wrote {written_pairs}/{total_pairs} pairs"
+                        )
+                        for key in buffer:
+                            buffer[key].clear()
+            if buffer["sample_name_1"]:
+                writer.write_table(pa.Table.from_pydict(buffer, schema=GENOME_PAIR_TABLE_SCHEMA))
+                written_pairs += len(buffer["sample_name_1"])
+                emit(f"generate_genome_pairs: wrote {written_pairs}/{total_pairs} pairs")
+
+    emit(f"generate_genome_pairs: done -> {output_path}")
+    return {
+        "output_file": output_path,
+        "profiles": total_profiles,
+        "pairs": total_pairs,
+        "write_batch_size": write_batch_size,
+    }
+
+
 def _schema_signature(schema: pl.Schema) -> tuple[tuple[str, pl.DataType], ...]:
     return tuple((name, schema[name]) for name in schema.names())
 
@@ -587,6 +790,195 @@ def merge_stat_tables(
     )
     emit(f"merge_stat_tables: streaming concat done -> {output_path}")
     return output_path
+
+
+def _run_genome_compare_pair(
+    row: dict[str, str],
+    *,
+    stb_file: str | pathlib.Path,
+    min_cov: int,
+    min_gene_compare_len: int,
+    genome_scope: str,
+    ani_method: str,
+    calculate: str | tuple[str, ...],
+    engine: str,
+    duckdb_memory_limit: str | None,
+    duckdb_temp_directory: str | pathlib.Path | None,
+    duckdb_threads: int | None,
+) -> tuple[pl.DataFrame, float]:
+    from zipstrain import compare as cp
+
+    start = time.perf_counter()
+    profile_1 = row["profile_location_1"]
+    profile_2 = row["profile_location_2"]
+    sample_1 = row["sample_name_1"]
+    sample_2 = row["sample_name_2"]
+    output_columns = cp.genome_metric_output_columns(calculate) + ["sample_1", "sample_2"]
+
+    profile_1_for_compare = profile_1
+    profile_2_for_compare = profile_2
+    if engine == "polars" and genome_scope != "all":
+        profile_1_for_compare, profile_2_for_compare = cp.duckdb_prefilter_by_scope(
+            mpile1=profile_1,
+            mpile2=profile_2,
+            genome_scope=genome_scope,
+            memory_limit=duckdb_memory_limit,
+            temp_directory=duckdb_temp_directory,
+            threads=duckdb_threads,
+        )
+
+    frame = (
+        cp.compare_genomes(
+            mpile_contig_1=profile_1_for_compare,
+            mpile_contig_2=profile_2_for_compare,
+            min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
+            genome_scope=genome_scope,
+            ani_method=ani_method,
+            duckdb_memory_limit=duckdb_memory_limit,
+            duckdb_temp_directory=duckdb_temp_directory,
+            duckdb_threads=duckdb_threads,
+            engine=engine,
+            stb_file=stb_file,
+            calculate=calculate,
+        )
+        .with_columns(
+            sample_1=pl.lit(sample_1),
+            sample_2=pl.lit(sample_2),
+        )
+        .select(output_columns)
+        .collect(engine="streaming")
+    )
+    return frame, time.perf_counter() - start
+
+
+def chunk_genome_compare(
+    pair_table: str | pathlib.Path,
+    output_file: str | pathlib.Path,
+    stb_file: str | pathlib.Path,
+    workers: int | None = None,
+    min_cov: int = 5,
+    min_gene_compare_len: int = 100,
+    genome_scope: str = "all",
+    ani_method: str = "popani",
+    calculate: str | tuple[str, ...] = "all",
+    engine: str = "polars",
+    duckdb_memory_limit: str | None = None,
+    duckdb_temp_directory: str | pathlib.Path | None = None,
+    duckdb_threads: int | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    """Run classic genome compare on one pair table using in-process parallel workers."""
+    from zipstrain import compare as cp
+
+    if workers is not None and workers < 1:
+        raise ValueError("workers must be >= 1")
+    if engine not in {"polars", "duckdb"}:
+        raise ValueError("engine must be one of: polars, duckdb")
+
+    calculations = cp.parse_genome_calculations(calculate)
+    pair_table_path = pathlib.Path(pair_table)
+    output_path = pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    pair_frame = _normalize_pair_batch(_scan_pairs_table(pair_table_path).collect())
+    total_pairs = pair_frame.height
+    resolved_workers = max(1, min(workers or (os.cpu_count() or 1), max(total_pairs, 1)))
+    start_time = time.perf_counter()
+    emit(
+        f"chunk_genome_compare: start pairs={total_pairs} "
+        f"workers={resolved_workers} engine={engine} genome={genome_scope}"
+    )
+
+    if total_pairs == 0:
+        _empty_genome_compare_frame(calculations).write_parquet(output_path, compression="zstd")
+        elapsed = time.perf_counter() - start_time
+        emit(f"chunk_genome_compare: done pairs=0 rows=0 elapsed={elapsed:.2f}s")
+        return {
+            "output_file": output_path,
+            "pairs": 0,
+            "completed_pairs": 0,
+            "rows": 0,
+            "workers": resolved_workers,
+            "elapsed_seconds": elapsed,
+            "avg_wall_seconds_per_pair": 0.0,
+            "avg_compute_seconds_per_pair": 0.0,
+            "avg_seconds_per_genome_row": 0.0,
+            "avg_genome_rows_per_pair": 0.0,
+            "engine": engine,
+            "genome_scope": genome_scope,
+        }
+
+    completed_pairs = 0
+    total_rows = 0
+    cumulative_pair_compute_seconds = 0.0
+    emit("chunk_genome_compare: dispatching pair comparisons")
+    ordered_results: list[tuple[pl.DataFrame, float] | None] = [None] * total_pairs
+    with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+        future_to_index = {
+            executor.submit(
+                _run_genome_compare_pair,
+                row,
+                stb_file=stb_file,
+                min_cov=min_cov,
+                min_gene_compare_len=min_gene_compare_len,
+                genome_scope=genome_scope,
+                ani_method=ani_method,
+                calculate=calculations,
+                engine=engine,
+                duckdb_memory_limit=duckdb_memory_limit,
+                duckdb_temp_directory=duckdb_temp_directory,
+                duckdb_threads=duckdb_threads,
+            ): idx
+            for idx, row in enumerate(pair_frame.iter_rows(named=True))
+        }
+        for future in as_completed(future_to_index):
+            idx = future_to_index[future]
+            frame, pair_elapsed = future.result()
+            ordered_results[idx] = (frame, pair_elapsed)
+            completed_pairs += 1
+            total_rows += frame.height
+            cumulative_pair_compute_seconds += pair_elapsed
+            emit(
+                f"chunk_genome_compare: progress pairs={completed_pairs}/{total_pairs} "
+                f"rows={total_rows} elapsed={time.perf_counter() - start_time:.2f}s"
+            )
+
+    result_frames: list[pl.DataFrame] = []
+    for result in ordered_results:
+        assert result is not None
+        frame, _pair_elapsed = result
+        result_frames.append(frame)
+
+    if result_frames:
+        pl.concat(result_frames, how="vertical_relaxed").write_parquet(output_path, compression="zstd")
+    else:
+        _empty_genome_compare_frame(calculations).write_parquet(output_path, compression="zstd")
+
+    elapsed_seconds = time.perf_counter() - start_time
+    summary = {
+        "output_file": output_path,
+        "pairs": total_pairs,
+        "completed_pairs": completed_pairs,
+        "rows": total_rows,
+        "workers": resolved_workers,
+        "elapsed_seconds": elapsed_seconds,
+        "avg_wall_seconds_per_pair": elapsed_seconds / max(completed_pairs, 1),
+        "avg_compute_seconds_per_pair": cumulative_pair_compute_seconds / max(completed_pairs, 1),
+        "avg_seconds_per_genome_row": elapsed_seconds / max(total_rows, 1),
+        "avg_genome_rows_per_pair": total_rows / max(completed_pairs, 1),
+        "engine": engine,
+        "genome_scope": genome_scope,
+    }
+    emit(
+        f"chunk_genome_compare: done pairs={completed_pairs}/{total_pairs} rows={total_rows} "
+        f"elapsed={elapsed_seconds:.2f}s"
+    )
+    return summary
 
 def check_samtools():
     try:

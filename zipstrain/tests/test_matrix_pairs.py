@@ -1,7 +1,9 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 import duckdb
+import numpy as np
 import polars as pl
 import pytest
 
@@ -86,6 +88,24 @@ def _write_profiles_one_based(profile_dir: Path) -> None:
     sample_b.write_parquet(profile_dir / "sample_b.parquet")
 
 
+def _write_many_profiles_same_genome(profile_dir: Path, sample_count: int = 5) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    for idx in range(sample_count):
+        frame = pl.DataFrame(
+            {
+                "chrom": ["chr1", "chr1", "chr1"],
+                "pos": [0, 1, 2],
+                "gene": ["gene1", "gene1", "gene1"],
+                "genome": ["genome1", "genome1", "genome1"],
+                "A": [6 if idx % 2 == 0 else 0, 0, 6],
+                "T": [0, 6 if idx % 2 else 0, 0],
+                "C": [0, 0, 0],
+                "G": [0, 0, 0],
+            }
+        )
+        frame.write_parquet(profile_dir / f"sample_{idx}.parquet")
+
+
 def _load_matrix_db(matrix_db: Path):
     conn = duckdb.connect(str(matrix_db), read_only=True)
     try:
@@ -137,6 +157,13 @@ def test_build_matrix_db(tmp_path):
         (0, "genome1", "chr1", 3),
         (1, "genome2", "chr2", 3),
     ]
+    conn = duckdb.connect(str(matrix_db), read_only=True)
+    try:
+        metadata = dict(conn.execute("SELECT key, value FROM matrix_db_metadata").fetchall())
+    finally:
+        conn.close()
+    assert metadata["matrix_value_semantics"] == mp.FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS
+    assert metadata["coverage_filter_min_cov"] == str(mp.MATRIX_BUILD_MIN_COV)
 
     unpacked = {}
     for sample_idx, scaffold_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
@@ -146,12 +173,12 @@ def test_build_matrix_db(tmp_path):
             (matrix_rows, matrix_cols),
         ).tolist()
 
-    assert unpacked[(0, 0)] == [[6, 0, 0, 0], [0, 0, 0, 0], [0, 0, 3, 2]]
-    assert unpacked[(1, 0)] == [[0, 0, 0, 0], [0, 9, 0, 0], [0, 0, 0, 0]]
-    assert unpacked[(2, 0)] == [[5, 0, 0, 0], [0, 7, 0, 0], [0, 0, 0, 0]]
-    assert unpacked[(0, 1)] == [[0, 8, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
-    assert unpacked[(1, 1)] == [[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 6]]
-    assert unpacked[(2, 1)] == [[0, 4, 0, 0], [0, 0, 0, 0], [0, 0, 0, 5]]
+    assert unpacked[(0, 0)] == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
+    assert unpacked[(1, 0)] == [[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
+    assert unpacked[(2, 0)] == [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
+    assert unpacked[(0, 1)] == [[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+    assert unpacked[(1, 1)] == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+    assert unpacked[(2, 1)] == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
 
 
 def test_build_matrix_db_with_small_commit_batches(tmp_path):
@@ -207,15 +234,15 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
         ).tolist()
 
     assert unpacked[(0, 0)] == [
-        [6, 0, 0, 0],
+        [1, 0, 0, 0],
         [0, 0, 0, 0],
-        [0, 0, 3, 2],
+        [0, 0, 1, 1],
         [0, 0, 0, 0],
         [0, 0, 0, 0],
     ]
     assert unpacked[(1, 0)] == [
         [0, 0, 0, 0],
-        [0, 9, 0, 0],
+        [0, 1, 0, 0],
         [0, 0, 0, 0],
         [0, 0, 0, 0],
         [0, 0, 0, 0],
@@ -233,7 +260,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
         output_file=output_file,
-        min_cov=1,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
         progress_callback=progress_events.append,
@@ -257,7 +284,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
             cp.compare_genomes(
                 mpile_contig_1=profile_dir / f"{sample_1}.parquet",
                 mpile_contig_2=profile_dir / f"{sample_2}.parquet",
-                min_cov=1,
+                min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
                 engine="polars",
@@ -314,7 +341,7 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
     mp.matrix_compare(
         matrix_db_file=matrix_db,
         output_file=output_file,
-        min_cov=1,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
     )
@@ -359,7 +386,7 @@ def test_cli_matrix_build_and_compare(tmp_path):
             "--output-file",
             str(output_file),
             "--min-cov",
-            "1",
+            str(mp.MATRIX_BUILD_MIN_COV),
             "--memory-limit-gb",
             "1",
         ],
@@ -386,7 +413,91 @@ def test_matrix_compare_torch_backend_requires_torch(tmp_path, monkeypatch):
         mp.matrix_compare(
             matrix_db_file=matrix_db,
             output_file=output_file,
-            min_cov=1,
+            min_cov=mp.MATRIX_BUILD_MIN_COV,
             backend="torch",
             memory_limit_gb=1.0,
         )
+
+
+def test_matrix_compare_requires_matching_min_cov(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare.parquet"
+    _write_profiles(profile_dir)
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    with pytest.raises(ValueError, match="fixed coverage filter min_cov"):
+        mp.matrix_compare(
+            matrix_db_file=matrix_db,
+            output_file=output_file,
+            min_cov=1,
+            memory_limit_gb=1.0,
+            backend="numpy",
+        )
+
+
+def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monkeypatch):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare.parquet"
+    _write_many_profiles_same_genome(profile_dir, sample_count=5)
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    class FakeTorchBackend:
+        def __init__(self, backend: str):
+            self.requested = backend
+            self.kind = "torch"
+            self.device = "cpu"
+            self.torch = SimpleNamespace()
+
+    original_load = mp._load_sample_scaffold_matrices
+    call_sizes: list[int] = []
+
+    def tracking_load(conn, scaffold_idx, sample_ids, vector_length):
+        call_sizes.append(len(sample_ids))
+        return original_load(conn, scaffold_idx, sample_ids, vector_length)
+
+    def two_target_plan(
+        vector_length: int,
+        remaining_targets: int,
+        dtype_name: str,
+        memory_limit_bytes: int,
+        backend_kind: str,
+        position_tile_size=None,
+    ) -> tuple[int, int]:
+        return min(2, remaining_targets), vector_length
+
+    def identity_prepare(compute_backend, matrix, matrix_value_semantics):
+        return matrix
+
+    def zero_compare(
+        compute_backend,
+        anchor_torch,
+        target_torch,
+        vector_length: int,
+        tile_size: int,
+        matrix_value_semantics: str,
+        min_cov: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return (
+            np.zeros(target_torch.shape[2], dtype=np.int64),
+            np.zeros(target_torch.shape[2], dtype=np.int64),
+        )
+
+    monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
+    monkeypatch.setattr(mp, "_load_sample_scaffold_matrices", tracking_load)
+    monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
+    monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
+
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="torch",
+    )
+
+    assert summary.target_chunks == 3
+    assert call_sizes.count(2) == 2
+    assert call_sizes.count(1) == 7

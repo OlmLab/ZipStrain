@@ -120,7 +120,9 @@ Outputs include:
 | `zipstrain compare genes` | Batch gene-level comparisons |
 | `zipstrain compare build-comp-database` | Build comparison DB object from profile DB + config |
 | `zipstrain utilities single_compare_genome` | Compare one pair at genome level |
+| `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
 | `zipstrain utilities single_compare_gene` | Compare one pair at gene level |
+| `zipstrain utilities generate-genome-pairs` | Create all non-redundant classic-profile pairs |
 | `zipstrain utilities build-genome-comparison-config` | Build genome comparison config |
 | `zipstrain utilities build-gene-comparison-config` | Build gene comparison config |
 | `zipstrain utilities to-complete-table` | Emit not-yet-completed pair table |
@@ -217,6 +219,75 @@ Options:
 - `--duckdb-temp-directory`
 - `--duckdb-threads`
 
+### `zipstrain utilities generate-genome-pairs`
+
+```bash
+zipstrain utilities generate-genome-pairs \
+  --profile-dir profiles \
+  --output-file genome_pairs.parquet
+```
+
+This writes a parquet table with:
+
+- `sample_name_1`
+- `sample_name_2`
+- `profile_location_1`
+- `profile_location_2`
+
+Options:
+
+- `-p, --profile-dir` (required)
+- `-o, --output-file` (required)
+- `--write-batch-size` (default: `100000`)
+
+### `zipstrain utilities chunk-genome-compare`
+
+```bash
+zipstrain utilities chunk-genome-compare \
+  --pair-table genome_pairs.parquet \
+  --stb-file mapping.stb \
+  --output-file chunk_compare.parquet \
+  --workers 8 \
+  --engine polars
+```
+
+This command runs classic genome comparisons directly inside Python for one pair-table chunk.
+It is intended as an experimental utility for benchmarking or ad hoc compare runs, and
+does not change the main workflow commands.
+
+Accepted pair-table schemas:
+
+- `sample_name_1`, `sample_name_2`, `profile_location_1`, `profile_location_2`
+- `sample_name_1`, `sample_name_2`, `profile_1`, `profile_2`
+- `sample_1`, `sample_2`, `profile_1`, `profile_2`
+- `profile_location_1`, `profile_location_2`
+- `profile_1`, `profile_2`
+
+Options:
+
+- `-p, --pair-table` (required)
+- `-s, --stb-file` (required)
+- `-o, --output-file` (required)
+- `-w, --workers` (defaults to CPU count capped by pair count)
+- `-c, --min-cov` (default: `5`)
+- `-l, --min-gene-compare-len` (default: `100`)
+- `-g, --genome` (default: `all`)
+- `-a, --ani-method` (default: `popani`)
+- `--calculate` (default: `all`)
+- `--engine` (`polars|duckdb`, default: `polars`)
+- `--duckdb-memory-limit`
+- `--duckdb-temp-directory`
+- `--duckdb-threads`
+
+The final console summary includes:
+
+- total pairs processed
+- total genome-level output rows written
+- total elapsed time
+- average wall time per pair
+- average compute time per pair
+- average time per genome-level output row
+
 ### `zipstrain utilities single_compare_gene`
 
 ```bash
@@ -277,6 +348,8 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities process_mpileup` | Convert mpileup stream to parquet |
 | `zipstrain utilities make_bed` | Build bed chunks from fasta |
 | `zipstrain utilities get_genome_lengths` | Genome lengths from STB + BED |
+| `zipstrain utilities generate-genome-pairs` | Create all non-redundant classic-profile pairs |
+| `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
 | `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
 | `zipstrain utilities build-matrix-db` | Build experimental per-sample scaffold matrix DuckDB |
@@ -318,8 +391,9 @@ zipstrain utilities build-matrix-db \
 What it does:
 
 - scans a directory of classic ZipStrain profile parquets
-- builds one DuckDB file with one dense A/T/C/G matrix per sample per scaffold
+- builds one DuckDB file with one dense A/T/C/G allele-presence matrix per sample per scaffold
 - each stored matrix is shaped `positions x 4`
+- positions with total coverage below `5` are zeroed during matrix build
 - intended for many requested comparisons that reuse the same anchor sample
 
 Important options:
@@ -360,6 +434,8 @@ What it does:
 - groups those pairs by anchor sample
 - loads one anchor sample plus as many target samples as fit the memory budget
 - computes ANI-only genome output scaffold-by-scaffold
+- uses matrix multiplication for `total_positions`
+- uses allele-presence matrix multiplication plus per-position thresholding for `share_allele_pos`
 - writes the standard ANI parquet columns:
   - `sample_1`
   - `sample_2`
@@ -372,7 +448,7 @@ Important options:
 
 - `-m, --matrix-db-file` (required)
 - `-o, --output-file` (required)
-- `-c, --min-cov` minimum coverage threshold applied during compare
+- `-c, --min-cov` must match the fixed build threshold used by `build-matrix-db` (currently `5`)
 - `-g, --genome` optional genome scope (default: `all`)
 - `--memory-limit-gb` approximate compare memory budget
 - `--position-tile-size` optional manual override for positions processed per scaffold tile
@@ -427,6 +503,8 @@ zipstrain utilities merge_parquet --help
 zipstrain utilities process_mpileup --help
 zipstrain utilities make_bed --help
 zipstrain utilities get_genome_lengths --help
+zipstrain utilities generate-genome-pairs --help
+zipstrain utilities chunk-genome-compare --help
 zipstrain utilities merge-stat-tables --help
 zipstrain utilities strain_heterogeneity --help
 zipstrain utilities build-profile-db --help

@@ -1,5 +1,6 @@
 from click.testing import CliRunner
 from zipstrain import cli
+from zipstrain import compare as cp
 from pathlib import Path
 import pytest
 import polars as pl
@@ -244,6 +245,121 @@ def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.L
     assert result.exit_code == 0
     out = pl.read_parquet(out_path)
     assert set(out.columns) == {"genome", "max_consecutive_length", "sample_1", "sample_2"}
+
+
+def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    profile_1.sink_parquet(profile_dir / "profile_1.parquet")
+    profile_2.sink_parquet(profile_dir / "profile_2.parquet")
+    profile_3.sink_parquet(profile_dir / "profile_3.parquet")
+    pl.DataFrame({"cov": [1]}).write_parquet(profile_dir / "ignore_me.parquet")
+
+    runner = CliRunner()
+    output_file = tmp_path / "pairs.parquet"
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "generate-genome-pairs",
+            "--profile-dir",
+            str(profile_dir),
+            "--output-file",
+            str(output_file),
+            "--write-batch-size",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "profiles=3" in result.output
+    assert "pairs=3" in result.output
+    pairs = pl.read_parquet(output_file).sort(["sample_name_1", "sample_name_2"])
+    assert pairs.columns == ["sample_name_1", "sample_name_2", "profile_location_1", "profile_location_2"]
+    assert pairs.height == 3
+    assert set(zip(pairs["sample_name_1"].to_list(), pairs["sample_name_2"].to_list())) == {
+        ("profile_1", "profile_2"),
+        ("profile_1", "profile_3"),
+        ("profile_2", "profile_3"),
+    }
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, engine):
+    profile_1_path = tmp_path / "profile_1.parquet"
+    profile_2_path = tmp_path / "profile_2.parquet"
+    profile_3_path = tmp_path / "profile_3.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    output_file = tmp_path / f"chunk_compare_{engine}.parquet"
+
+    profile_1.sink_parquet(profile_1_path)
+    profile_2.sink_parquet(profile_2_path)
+    profile_3.sink_parquet(profile_3_path)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    pair_table = pl.DataFrame(
+        {
+            "sample_name_1": ["profile_1", "profile_1"],
+            "sample_name_2": ["profile_2", "profile_3"],
+            "profile_location_1": [str(profile_1_path), str(profile_1_path)],
+            "profile_location_2": [str(profile_2_path), str(profile_3_path)],
+        }
+    )
+    pair_table_path = tmp_path / "pairs.parquet"
+    pair_table.write_parquet(pair_table_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "chunk-genome-compare",
+            "--pair-table",
+            str(pair_table_path),
+            "--stb-file",
+            str(stb_path),
+            "--output-file",
+            str(output_file),
+            "--workers",
+            "1",
+            "--calculate",
+            "ani",
+            "--engine",
+            engine,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "pairs=2" in result.output
+    assert "avg_wall_s_per_pair=" in result.output
+
+    actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])
+    expected_frames = []
+    for sample_1, sample_2, left, right in [
+        ("profile_1", "profile_2", profile_1_path, profile_2_path),
+        ("profile_1", "profile_3", profile_1_path, profile_3_path),
+    ]:
+        expected_frames.append(
+            cp.compare_genomes(
+                mpile_contig_1=left,
+                mpile_contig_2=right,
+                min_cov=5,
+                min_gene_compare_len=100,
+                genome_scope="all",
+                ani_method="popani",
+                engine=engine,
+                stb_file=stb_path,
+                calculate="ani",
+            )
+            .with_columns(
+                sample_1=pl.lit(sample_1),
+                sample_2=pl.lit(sample_2),
+            )
+            .select(["genome", "total_positions", "share_allele_pos", "genome_pop_ani", "sample_1", "sample_2"])
+            .collect(engine="streaming")
+        )
+    expected = pl.concat(expected_frames, how="vertical_relaxed").sort(["sample_1", "sample_2", "genome"])
+    assert actual.equals(expected)
 
 
 def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
