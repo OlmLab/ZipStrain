@@ -47,6 +47,7 @@ class _ThrottledMatrixLogger:
         self.detail_formatter = detail_formatter
         self.last_percent_bucket = -1
         self.last_log_time = 0.0
+        self.logged_advance = False
 
     def __call__(self, event: dict[str, object]) -> None:
         phase = str(event.get("phase", ""))
@@ -57,6 +58,8 @@ class _ThrottledMatrixLogger:
         if phase in {"start", "done"}:
             self.last_percent_bucket = -1 if total <= 0 else int((completed / max(total, 1)) * 100) // 5
             self.last_log_time = now
+            if phase == "start":
+                self.logged_advance = False
             _emit_stderr_log(
                 f"{self.prefix} {phase.upper()}",
                 completed=completed,
@@ -70,14 +73,17 @@ class _ThrottledMatrixLogger:
 
         percent_bucket = int((completed / max(total, 1)) * 100) // 5 if total > 0 else 0
         should_log = (
+            (not self.logged_advance)
+            or
             total <= 20
             or completed == total
             or percent_bucket > self.last_percent_bucket
-            or (now - self.last_log_time) >= 20.0
+            or (now - self.last_log_time) >= 5.0
         )
         if not should_log:
             return
 
+        self.logged_advance = True
         self.last_percent_bucket = percent_bucket
         self.last_log_time = now
         _emit_stderr_log(
@@ -454,6 +460,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per scaffold tile.")
+@click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani or ani+ibs. 'all' currently means ani+ibs.")
 @click.option(
     '--backend',
     type=click.Choice(mp.MATRIX_PAIR_BACKENDS),
@@ -461,7 +468,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
     show_default=True,
     help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
 )
-def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb, position_tile_size, backend):
+def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb, position_tile_size, calculate, backend):
     """
     Run experimental ANI-only matrix compare on all non-redundant, non-self sample pairs.
 
@@ -512,6 +519,7 @@ def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb
                 memory_limit_gb=memory_limit_gb,
                 position_tile_size=position_tile_size,
                 backend=backend,
+                calculate=calculate,
                 progress_callback=_progress_callback,
             )
     else:
@@ -527,6 +535,7 @@ def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb
             memory_limit_gb=memory_limit_gb,
             position_tile_size=position_tile_size,
             backend=backend,
+            calculate=calculate,
             progress_callback=progress_logger,
         )
     click.echo(

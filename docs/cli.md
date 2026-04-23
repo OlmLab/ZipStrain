@@ -424,6 +424,7 @@ zipstrain utilities matrix-compare \
   --output-file matrix_compare.parquet \
   --min-cov 5 \
   --memory-limit-gb 16 \
+  --calculate ani+ibs \
   --backend numpy
 ```
 
@@ -436,6 +437,7 @@ What it does:
 - computes ANI-only genome output scaffold-by-scaffold
 - uses matrix multiplication for `total_positions`
 - uses allele-presence matrix multiplication plus per-position thresholding for `share_allele_pos`
+- when `ibs` is requested, scans the shared-allele boolean in position order to compute `max_consecutive_length`
 - writes the standard ANI parquet columns:
   - `sample_1`
   - `sample_2`
@@ -443,6 +445,7 @@ What it does:
   - `total_positions`
   - `share_allele_pos`
   - `genome_pop_ani`
+  - `max_consecutive_length` when `ibs` is requested
 
 Important options:
 
@@ -452,6 +455,10 @@ Important options:
 - `-g, --genome` optional genome scope (default: `all`)
 - `--memory-limit-gb` approximate compare memory budget
 - `--position-tile-size` optional manual override for positions processed per scaffold tile
+- `--calculate` matrix metrics to compute:
+  - `ani`
+  - `ani+ibs`
+  - `all` currently behaves like `ani+ibs`
 - `--backend` compute backend:
   - `numpy`
   - `torch`

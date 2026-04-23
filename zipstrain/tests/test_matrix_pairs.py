@@ -263,6 +263,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
+        calculate="ani",
         progress_callback=progress_events.append,
     )
 
@@ -311,6 +312,59 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
     assert actual.equals(expected)
 
 
+def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare_ibs.parquet"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="numpy",
+        calculate="ani+ibs",
+    )
+
+    assert summary.requested_pairs == 3
+    actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])
+
+    expected_frames = []
+    for sample_1, sample_2 in [("sample_a", "sample_b"), ("sample_a", "sample_c"), ("sample_b", "sample_c")]:
+        pair = (
+            cp.compare_genomes(
+                mpile_contig_1=profile_dir / f"{sample_1}.parquet",
+                mpile_contig_2=profile_dir / f"{sample_2}.parquet",
+                min_cov=mp.MATRIX_BUILD_MIN_COV,
+                genome_scope="all",
+                ani_method="popani",
+                engine="polars",
+                calculate="ani+ibs",
+                stb_file=None,
+            )
+            .collect(engine="streaming")
+            .with_columns(
+                sample_1=pl.lit(sample_1),
+                sample_2=pl.lit(sample_2),
+            )
+            .select([
+                "sample_1",
+                "sample_2",
+                "genome",
+                "total_positions",
+                "share_allele_pos",
+                "genome_pop_ani",
+                "max_consecutive_length",
+            ])
+        )
+        expected_frames.append(pair)
+    expected = pl.concat(expected_frames).sort(["sample_1", "sample_2", "genome"])
+
+    assert actual.equals(expected)
+
+
 def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
@@ -344,6 +398,7 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
+        calculate="ani",
     )
 
     assert call_sizes
@@ -389,12 +444,17 @@ def test_cli_matrix_build_and_compare(tmp_path):
             str(mp.MATRIX_BUILD_MIN_COV),
             "--memory-limit-gb",
             "1",
+            "--calculate",
+            "ani",
         ],
     )
     assert compare_result.exit_code == 0
     assert output_file.exists()
     assert "requested_pairs=3" in compare_result.output
     assert "anchor_groups=2" in compare_result.output
+
+    out = pl.read_parquet(output_file)
+    assert "max_consecutive_length" not in out.columns
 
 
 def test_matrix_compare_torch_backend_requires_torch(tmp_path, monkeypatch):
@@ -416,6 +476,7 @@ def test_matrix_compare_torch_backend_requires_torch(tmp_path, monkeypatch):
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             backend="torch",
             memory_limit_gb=1.0,
+            calculate="ani",
         )
 
 
@@ -433,6 +494,7 @@ def test_matrix_compare_requires_matching_min_cov(tmp_path):
             min_cov=1,
             memory_limit_gb=1.0,
             backend="numpy",
+            calculate="ani",
         )
 
 
@@ -478,10 +540,12 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         tile_size: int,
         matrix_value_semantics: str,
         min_cov: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
+        need_ibs: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, None]:
         return (
             np.zeros(target_torch.shape[2], dtype=np.int64),
             np.zeros(target_torch.shape[2], dtype=np.int64),
+            None,
         )
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
@@ -496,6 +560,7 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch",
+        calculate="ani",
     )
 
     assert summary.target_chunks == 3

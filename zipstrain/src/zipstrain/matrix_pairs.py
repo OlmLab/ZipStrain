@@ -12,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from zipstrain import __version__
+from zipstrain import compare as cp
 
 PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
 COUNT_DTYPES = {
@@ -24,16 +25,45 @@ FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
-PAIR_OUTPUT_SCHEMA = pa.schema(
-    [
+MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs")
+
+
+def parse_matrix_calculations(calculate: Optional[str] = None) -> tuple[str, ...]:
+    calculations = cp.parse_genome_calculations(calculate)
+    supported = tuple(metric for metric in MATRIX_COMPARISON_SUPPORTED_CALCULATIONS if metric in calculations)
+    if supported:
+        return supported
+    raise ValueError("Matrix compare currently supports only ani and ibs calculations.")
+
+
+def matrix_metric_output_columns(calculate: Optional[str] = None) -> list[str]:
+    columns = ["sample_1", "sample_2", "genome"]
+    calculations = parse_matrix_calculations(calculate)
+    if "ani" in calculations:
+        columns.extend(["total_positions", "share_allele_pos", "genome_pop_ani"])
+    if "ibs" in calculations:
+        columns.append("max_consecutive_length")
+    return columns
+
+
+def matrix_pair_output_schema(calculate: Optional[str] = None) -> pa.Schema:
+    fields = [
         pa.field("sample_1", pa.string()),
         pa.field("sample_2", pa.string()),
         pa.field("genome", pa.string()),
-        pa.field("total_positions", pa.int64()),
-        pa.field("share_allele_pos", pa.int64()),
-        pa.field("genome_pop_ani", pa.float64()),
     ]
-)
+    calculations = parse_matrix_calculations(calculate)
+    if "ani" in calculations:
+        fields.extend(
+            [
+                pa.field("total_positions", pa.int64()),
+                pa.field("share_allele_pos", pa.int64()),
+                pa.field("genome_pop_ani", pa.float64()),
+            ]
+        )
+    if "ibs" in calculations:
+        fields.append(pa.field("max_consecutive_length", pa.int64()))
+    return pa.schema(fields)
 
 
 @dataclass(frozen=True)
@@ -857,23 +887,194 @@ def _compare_tile_presence_torch_tensors(
     return totals, shared
 
 
+def _shared_mask_legacy_numpy(
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+    min_cov: int,
+) -> np.ndarray:
+    cov_anchor = anchor_matrix.astype(np.uint32, copy=False).sum(axis=1)
+    cov_targets = target_matrices.astype(np.uint32, copy=False).sum(axis=1)
+    both_cov = (cov_anchor[:, None] >= min_cov) & (cov_targets >= min_cov)
+    shared_signal = ((anchor_matrix[:, :, None] > 0) & (target_matrices > 0)).any(axis=1)
+    shared_signal &= both_cov
+    return shared_signal
+
+
+def _shared_mask_presence_numpy(
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+) -> np.ndarray:
+    anchor_presence = anchor_matrix.astype(np.int8, copy=False)
+    target_presence = target_matrices.astype(np.int8, copy=False)
+    return np.matmul(anchor_presence[:, np.newaxis, :], target_presence).squeeze(1) > 0
+
+
+def _compare_tile_presence_numpy_with_mask(
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    anchor_presence = anchor_matrix.astype(np.int8, copy=False)
+    target_presence = target_matrices.astype(np.int8, copy=False)
+
+    anchor_cov = anchor_presence.max(axis=1).astype(np.int32, copy=False)
+    target_cov = target_presence.max(axis=1).astype(np.int32, copy=False)
+    totals = (anchor_cov @ target_cov).astype(np.int64, copy=False)
+
+    shared_mask = np.matmul(anchor_presence[:, np.newaxis, :], target_presence).squeeze(1) > 0
+    shared = shared_mask.sum(axis=0, dtype=np.int64)
+    return totals, shared, shared_mask
+
+
+def _shared_mask_legacy_torch_tensors(
+    torch_module,
+    anchor_t,
+    targets_t,
+    min_cov: int,
+):
+    anchor_i = anchor_t.to(torch_module.int32)
+    targets_i = targets_t.to(torch_module.int32)
+    cov_anchor = anchor_i.sum(dim=1)
+    cov_targets = targets_i.sum(dim=1)
+    both_cov = (cov_anchor.unsqueeze(1) >= min_cov) & (cov_targets >= min_cov)
+    shared_signal = (anchor_t.bool().unsqueeze(2) & targets_t.bool()).any(dim=1)
+    shared_signal &= both_cov
+    return shared_signal
+
+
+def _compare_tile_legacy_numpy_with_mask(
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+    min_cov: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    shared_mask = _shared_mask_legacy_numpy(
+        anchor_matrix=anchor_matrix,
+        target_matrices=target_matrices,
+        min_cov=min_cov,
+    )
+    cov_anchor = anchor_matrix.astype(np.uint32, copy=False).sum(axis=1)
+    cov_targets = target_matrices.astype(np.uint32, copy=False).sum(axis=1)
+    both_cov = (cov_anchor[:, None] >= min_cov) & (cov_targets >= min_cov)
+    total_inc = both_cov.sum(axis=0, dtype=np.int64)
+    shared_inc = shared_mask.sum(axis=0, dtype=np.int64)
+    return total_inc, shared_inc, shared_mask
+
+
+def _shared_mask_presence_torch_tensors(
+    torch_module,
+    anchor_t,
+    targets_t,
+):
+    shared_scores = torch_module.matmul(anchor_t.unsqueeze(1), targets_t).squeeze(1)
+    return shared_scores > 0
+
+
+def _compare_tile_presence_torch_tensors_with_mask(
+    torch_module,
+    anchor_t,
+    targets_t,
+):
+    anchor_cov = anchor_t.amax(dim=1)
+    target_cov = targets_t.amax(dim=1)
+    totals = torch_module.matmul(anchor_cov.unsqueeze(0), target_cov).squeeze(0).to(torch_module.int64)
+    shared_mask = _shared_mask_presence_torch_tensors(
+        torch_module=torch_module,
+        anchor_t=anchor_t,
+        targets_t=targets_t,
+    )
+    shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
+    return totals, shared, shared_mask
+
+
+def _compare_tile_legacy_torch_tensors_with_mask(
+    torch_module,
+    anchor_t,
+    targets_t,
+    min_cov: int,
+):
+    anchor_i = anchor_t.to(torch_module.int32)
+    targets_i = targets_t.to(torch_module.int32)
+    cov_anchor = anchor_i.sum(dim=1)
+    cov_targets = targets_i.sum(dim=1)
+    both_cov = (cov_anchor.unsqueeze(1) >= min_cov) & (cov_targets >= min_cov)
+    shared_mask = _shared_mask_legacy_torch_tensors(
+        torch_module=torch_module,
+        anchor_t=anchor_t,
+        targets_t=targets_t,
+        min_cov=min_cov,
+    )
+    totals = both_cov.sum(dim=0, dtype=torch_module.int64)
+    shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
+    return totals, shared, shared_mask
+
+
+def _update_ibs_numpy(
+    shared_mask: np.ndarray,
+    current_runs: np.ndarray,
+    max_runs: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if shared_mask.size == 0:
+        return current_runs, max_runs
+    next_runs = np.zeros_like(current_runs)
+    updated_max = max_runs.copy()
+    for col_idx in range(shared_mask.shape[1]):
+        col_mask = shared_mask[:, col_idx]
+        if not bool(col_mask.any()):
+            continue
+        padded = np.concatenate(([False], col_mask.astype(bool, copy=False), [False]))
+        diff = np.diff(padded.astype(np.int8, copy=False))
+        starts = np.flatnonzero(diff == 1)
+        ends = np.flatnonzero(diff == -1)
+        lengths = (ends - starts).astype(np.int64, copy=False)
+        if col_mask[0]:
+            lengths[0] += current_runs[col_idx]
+        if lengths.size:
+            updated_max[col_idx] = max(updated_max[col_idx], int(lengths.max()))
+        if col_mask[-1]:
+            next_runs[col_idx] = lengths[-1]
+    return next_runs, updated_max
+
+
+def _shared_mask_to_numpy(shared_mask) -> np.ndarray:
+    if isinstance(shared_mask, np.ndarray):
+        return shared_mask
+    if hasattr(shared_mask, "detach"):
+        return shared_mask.detach().cpu().numpy()
+    if hasattr(shared_mask, "cpu"):
+        return shared_mask.cpu().numpy()
+    return np.asarray(shared_mask)
+
+
 def _make_arrow_table(
     sample_1: str,
     sample_2: list[str],
     genome: str,
-    total_positions: np.ndarray,
-    share_allele_pos: np.ndarray,
+    calculations: tuple[str, ...],
+    total_positions: Optional[np.ndarray] = None,
+    share_allele_pos: Optional[np.ndarray] = None,
+    max_consecutive_length: Optional[np.ndarray] = None,
 ) -> pa.Table:
+    arrays = [
+        pa.array([sample_1] * len(sample_2), type=pa.string()),
+        pa.array(sample_2, type=pa.string()),
+        pa.array([genome] * len(sample_2), type=pa.string()),
+    ]
+    if "ani" in calculations:
+        if total_positions is None or share_allele_pos is None:
+            raise ValueError("ANI output requested but total_positions/share_allele_pos were not provided.")
+        arrays.extend(
+            [
+                pa.array(total_positions.tolist(), type=pa.int64()),
+                pa.array(share_allele_pos.tolist(), type=pa.int64()),
+                pa.array((share_allele_pos / total_positions * 100.0).tolist(), type=pa.float64()),
+            ]
+        )
+    if "ibs" in calculations:
+        if max_consecutive_length is None:
+            raise ValueError("IBS output requested but max_consecutive_length was not provided.")
+        arrays.append(pa.array(max_consecutive_length.tolist(), type=pa.int64()))
     return pa.Table.from_arrays(
-        [
-            pa.array([sample_1] * len(sample_2), type=pa.string()),
-            pa.array(sample_2, type=pa.string()),
-            pa.array([genome] * len(sample_2), type=pa.string()),
-            pa.array(total_positions.tolist(), type=pa.int64()),
-            pa.array(share_allele_pos.tolist(), type=pa.int64()),
-            pa.array((share_allele_pos / total_positions * 100.0).tolist(), type=pa.float64()),
-        ],
-        schema=PAIR_OUTPUT_SCHEMA,
+        arrays,
+        schema=matrix_pair_output_schema(calculations),
     )
 
 
@@ -901,7 +1102,8 @@ def _compare_anchor_against_target_chunk_torch(
     tile_size: int,
     matrix_value_semantics: str,
     min_cov: int,
-) -> tuple[np.ndarray, np.ndarray]:
+    need_ibs: bool = False,
+) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     target_count = int(target_torch.shape[2])
     chunk_totals_torch = compute_backend.torch.zeros(
         target_count,
@@ -913,24 +1115,50 @@ def _compare_anchor_against_target_chunk_torch(
         dtype=compute_backend.torch.int64,
         device=compute_backend.device,
     )
+    current_runs = None
+    max_runs = None
+    if need_ibs:
+        current_runs = np.zeros(target_count, dtype=np.int64)
+        max_runs = np.zeros(target_count, dtype=np.int64)
     for tile_start in range(0, vector_length, tile_size):
         tile_stop = min(vector_length, tile_start + tile_size)
         if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-            total_inc, shared_inc = _compare_tile_presence_torch_tensors(
-                torch_module=compute_backend.torch,
-                anchor_t=anchor_torch[tile_start:tile_stop, :],
-                targets_t=target_torch[tile_start:tile_stop, :, :],
-            )
+            if need_ibs:
+                total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
+                    torch_module=compute_backend.torch,
+                    anchor_t=anchor_torch[tile_start:tile_stop, :],
+                    targets_t=target_torch[tile_start:tile_stop, :, :],
+                )
+            else:
+                total_inc, shared_inc = _compare_tile_presence_torch_tensors(
+                    torch_module=compute_backend.torch,
+                    anchor_t=anchor_torch[tile_start:tile_stop, :],
+                    targets_t=target_torch[tile_start:tile_stop, :, :],
+                )
         else:
-            total_inc, shared_inc = _compare_tile_legacy_torch_tensors(
-                torch_module=compute_backend.torch,
-                anchor_t=anchor_torch[tile_start:tile_stop, :],
-                targets_t=target_torch[tile_start:tile_stop, :, :],
-                min_cov=min_cov,
-            )
+            if need_ibs:
+                total_inc, shared_inc, shared_mask = _compare_tile_legacy_torch_tensors_with_mask(
+                    torch_module=compute_backend.torch,
+                    anchor_t=anchor_torch[tile_start:tile_stop, :],
+                    targets_t=target_torch[tile_start:tile_stop, :, :],
+                    min_cov=min_cov,
+                )
+            else:
+                total_inc, shared_inc = _compare_tile_legacy_torch_tensors(
+                    torch_module=compute_backend.torch,
+                    anchor_t=anchor_torch[tile_start:tile_stop, :],
+                    targets_t=target_torch[tile_start:tile_stop, :, :],
+                    min_cov=min_cov,
+                )
         chunk_totals_torch += total_inc
         chunk_shared_torch += shared_inc
-    return chunk_totals_torch.cpu().numpy(), chunk_shared_torch.cpu().numpy()
+        if need_ibs:
+            current_runs, max_runs = _update_ibs_numpy(
+                shared_mask=_shared_mask_to_numpy(shared_mask),
+                current_runs=current_runs,
+                max_runs=max_runs,
+            )
+    return chunk_totals_torch.cpu().numpy(), chunk_shared_torch.cpu().numpy(), max_runs
 
 
 def _matrix_compare_reuse_target_chunks_torch(
@@ -947,6 +1175,7 @@ def _matrix_compare_reuse_target_chunks_torch(
     position_tile_size: Optional[int],
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
+    calculations: tuple[str, ...],
     progress_callback: Optional[CompareProgressCallback] = None,
 ) -> MatrixCompareSummary:
     total_work = requested_pairs * len(scaffolds)
@@ -986,7 +1215,8 @@ def _matrix_compare_reuse_target_chunks_torch(
             }
         )
 
-    with pq.ParquetWriter(output_file, PAIR_OUTPUT_SCHEMA, compression="zstd") as writer:
+    output_schema = matrix_pair_output_schema(calculations)
+    with pq.ParquetWriter(output_file, output_schema, compression="zstd") as writer:
         for genome_name in sorted(scaffolds_by_genome):
             genome_scaffolds = scaffolds_by_genome[genome_name]
             for block_start in range(0, len(samples), global_block_size):
@@ -1004,6 +1234,8 @@ def _matrix_compare_reuse_target_chunks_torch(
                 shared_external = np.zeros((len(external_rows), len(block_rows)), dtype=np.int64)
                 totals_internal = np.zeros((len(block_rows), len(block_rows)), dtype=np.int64)
                 shared_internal = np.zeros((len(block_rows), len(block_rows)), dtype=np.int64)
+                ibs_external = np.zeros((len(external_rows), len(block_rows)), dtype=np.int64) if "ibs" in calculations else None
+                ibs_internal = np.zeros((len(block_rows), len(block_rows)), dtype=np.int64) if "ibs" in calculations else None
 
                 for spec in genome_scaffolds:
                     if progress_callback is not None:
@@ -1085,7 +1317,7 @@ def _matrix_compare_reuse_target_chunks_torch(
                             matrix=anchor_matrix,
                             matrix_value_semantics=matrix_value_semantics,
                         )
-                        total_inc, shared_inc = _compare_anchor_against_target_chunk_torch(
+                        total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
                             compute_backend=compute_backend,
                             anchor_torch=anchor_torch,
                             target_torch=target_torch,
@@ -1093,9 +1325,12 @@ def _matrix_compare_reuse_target_chunks_torch(
                             tile_size=tile_size,
                             matrix_value_semantics=matrix_value_semantics,
                             min_cov=min_cov,
+                            need_ibs="ibs" in calculations,
                         )
                         totals_external[external_pos, :] += total_inc
                         shared_external[external_pos, :] += shared_inc
+                        if ibs_external is not None and ibs_inc is not None:
+                            ibs_external[external_pos, :] = np.maximum(ibs_external[external_pos, :], ibs_inc)
                         processed_pairs_for_block += len(block_ids)
                         completed_work += len(block_ids)
                         if progress_callback is not None:
@@ -1114,7 +1349,7 @@ def _matrix_compare_reuse_target_chunks_torch(
                             )
 
                     for local_anchor_pos in range(len(block_ids) - 1):
-                        total_inc, shared_inc = _compare_anchor_against_target_chunk_torch(
+                        total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
                             compute_backend=compute_backend,
                             anchor_torch=target_torch[:, :, local_anchor_pos],
                             target_torch=target_torch[:, :, local_anchor_pos + 1:],
@@ -1122,9 +1357,15 @@ def _matrix_compare_reuse_target_chunks_torch(
                             tile_size=tile_size,
                             matrix_value_semantics=matrix_value_semantics,
                             min_cov=min_cov,
+                            need_ibs="ibs" in calculations,
                         )
                         totals_internal[local_anchor_pos, local_anchor_pos + 1:] += total_inc
                         shared_internal[local_anchor_pos, local_anchor_pos + 1:] += shared_inc
+                        if ibs_internal is not None and ibs_inc is not None:
+                            ibs_internal[local_anchor_pos, local_anchor_pos + 1:] = np.maximum(
+                                ibs_internal[local_anchor_pos, local_anchor_pos + 1:],
+                                ibs_inc,
+                            )
                         remaining_targets = len(block_ids) - local_anchor_pos - 1
                         processed_pairs_for_block += remaining_targets
                         completed_work += remaining_targets
@@ -1173,8 +1414,10 @@ def _matrix_compare_reuse_target_chunks_torch(
                         sample_1=samples_by_id[anchor_idx],
                         sample_2=[block_names[idx] for idx, keep in enumerate(mask) if keep],
                         genome=genome_name,
-                        total_positions=totals[mask],
-                        share_allele_pos=shared[mask],
+                        calculations=calculations,
+                        total_positions=totals[mask] if "ani" in calculations else None,
+                        share_allele_pos=shared[mask] if "ani" in calculations else None,
+                        max_consecutive_length=ibs_external[external_pos, :][mask] if ibs_external is not None else None,
                     )
                     writer.write_table(table)
                     written_rows += table.num_rows
@@ -1190,8 +1433,10 @@ def _matrix_compare_reuse_target_chunks_torch(
                         sample_1=anchor_name,
                         sample_2=[later_names[idx] for idx, keep in enumerate(mask) if keep],
                         genome=genome_name,
-                        total_positions=totals[mask],
-                        share_allele_pos=shared[mask],
+                        calculations=calculations,
+                        total_positions=totals[mask] if "ani" in calculations else None,
+                        share_allele_pos=shared[mask] if "ani" in calculations else None,
+                        max_consecutive_length=ibs_internal[local_anchor_pos, local_anchor_pos + 1:][mask] if ibs_internal is not None else None,
                     )
                     writer.write_table(table)
                     written_rows += table.num_rows
@@ -1236,6 +1481,7 @@ def matrix_compare(
     memory_limit_gb: float = 16.0,
     position_tile_size: Optional[int] = None,
     backend: str = "numpy",
+    calculate: Optional[str] = "all",
     progress_callback: Optional[CompareProgressCallback] = None,
 ) -> MatrixCompareSummary:
     if min_cov < 1:
@@ -1246,6 +1492,7 @@ def matrix_compare(
         raise FileExistsError(f"Output file already exists: {output_file}")
 
     compute_backend = MatrixPairComputeBackend(backend)
+    calculations = parse_matrix_calculations(calculate)
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
     conn = duckdb.connect(str(matrix_db_file), read_only=True)
     try:
@@ -1276,8 +1523,9 @@ def matrix_compare(
                         "target_chunks": 0,
                     }
                 )
-            with pq.ParquetWriter(output_file, PAIR_OUTPUT_SCHEMA, compression="zstd") as writer:
-                writer.write_table(pa.Table.from_arrays([pa.array([], type=f.type) for f in PAIR_OUTPUT_SCHEMA], schema=PAIR_OUTPUT_SCHEMA))
+            output_schema = matrix_pair_output_schema(calculations)
+            with pq.ParquetWriter(output_file, output_schema, compression="zstd") as writer:
+                writer.write_table(pa.Table.from_arrays([pa.array([], type=f.type) for f in output_schema], schema=output_schema))
             if progress_callback is not None:
                 progress_callback(
                     {
@@ -1327,6 +1575,7 @@ def matrix_compare(
                 position_tile_size=position_tile_size,
                 compute_backend=compute_backend,
                 matrix_value_semantics=matrix_value_semantics,
+                calculations=calculations,
                 progress_callback=progress_callback,
             )
 
@@ -1352,7 +1601,8 @@ def matrix_compare(
                 }
             )
 
-        with pq.ParquetWriter(output_file, PAIR_OUTPUT_SCHEMA, compression="zstd") as writer:
+        output_schema = matrix_pair_output_schema(calculations)
+        with pq.ParquetWriter(output_file, output_schema, compression="zstd") as writer:
             for anchor_offset, (sample_1_idx, sample_1_name) in enumerate(samples[:-1]):
                 target_sample_rows = samples[anchor_offset + 1 :]
                 if not target_sample_rows:
@@ -1366,6 +1616,11 @@ def matrix_compare(
                 shared_by_genome: dict[str, np.ndarray] = {
                     spec.genome: np.zeros(len(target_ids_all), dtype=np.int64) for spec in scaffolds
                 }
+                ibs_by_genome: dict[str, np.ndarray] = (
+                    {spec.genome: np.zeros(len(target_ids_all), dtype=np.int64) for spec in scaffolds}
+                    if "ibs" in calculations
+                    else {}
+                )
 
                 for spec in scaffolds:
                     if progress_callback is not None:
@@ -1443,67 +1698,45 @@ def matrix_compare(
                         )
                         totals = totals_by_genome[spec.genome][target_offset: target_offset + max_targets]
                         shared = shared_by_genome[spec.genome][target_offset: target_offset + max_targets]
-                        target_torch = None
-                        chunk_totals_torch = None
-                        chunk_shared_torch = None
-                        if compute_backend.kind == "torch":
-                            target_array = np.ascontiguousarray(target_matrices)
-                            if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-                                target_torch = compute_backend.torch.from_numpy(target_array).to(
-                                    device=compute_backend.device,
-                                    dtype=compute_backend.torch.float32,
-                                )
-                            else:
-                                target_torch = compute_backend.torch.from_numpy(target_array).to(compute_backend.device)
-                            chunk_totals_torch = compute_backend.torch.zeros(
-                                len(chunk_ids),
-                                dtype=compute_backend.torch.int64,
-                                device=compute_backend.device,
-                            )
-                            chunk_shared_torch = compute_backend.torch.zeros(
-                                len(chunk_ids),
-                                dtype=compute_backend.torch.int64,
-                                device=compute_backend.device,
-                            )
+                        ibs_max = ibs_by_genome[spec.genome][target_offset: target_offset + max_targets] if "ibs" in calculations else None
+                        current_runs = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
                         for tile_start in range(0, spec.vector_length, tile_size):
                             tile_stop = min(spec.vector_length, tile_start + tile_size)
                             anchor_tile = anchor_matrix[tile_start:tile_stop, :]
                             target_tile = target_matrices[tile_start:tile_stop, :, :]
                             if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-                                if compute_backend.kind == "numpy":
-                                    total_inc, shared_inc = _compare_tile_presence_numpy(
+                                if "ibs" in calculations:
+                                    total_inc, shared_inc, shared_mask = _compare_tile_presence_numpy_with_mask(
                                         anchor_matrix=anchor_tile,
                                         target_matrices=target_tile,
                                     )
                                 else:
-                                    total_inc, shared_inc = _compare_tile_presence_torch_tensors(
-                                        torch_module=compute_backend.torch,
-                                        anchor_t=anchor_torch[tile_start:tile_stop, :],
-                                        targets_t=target_torch[tile_start:tile_stop, :, :],
+                                    total_inc, shared_inc = _compare_tile_presence_numpy(
+                                        anchor_matrix=anchor_tile,
+                                        target_matrices=target_tile,
                                     )
                             else:
-                                if compute_backend.kind == "numpy":
+                                if "ibs" in calculations:
+                                    total_inc, shared_inc, shared_mask = _compare_tile_legacy_numpy_with_mask(
+                                        anchor_matrix=anchor_tile,
+                                        target_matrices=target_tile,
+                                        min_cov=min_cov,
+                                    )
+                                else:
                                     total_inc, shared_inc = _compare_tile_legacy_numpy(
                                         anchor_matrix=anchor_tile,
                                         target_matrices=target_tile,
                                         min_cov=min_cov,
                                     )
-                                else:
-                                    total_inc, shared_inc = _compare_tile_legacy_torch_tensors(
-                                        torch_module=compute_backend.torch,
-                                        anchor_t=anchor_torch[tile_start:tile_stop, :],
-                                        targets_t=target_torch[tile_start:tile_stop, :, :],
-                                        min_cov=min_cov,
-                                    )
-                            if compute_backend.kind == "torch":
-                                chunk_totals_torch += total_inc
-                                chunk_shared_torch += shared_inc
-                            else:
-                                totals += total_inc
-                                shared += shared_inc
-                        if compute_backend.kind == "torch":
-                            totals += chunk_totals_torch.cpu().numpy()
-                            shared += chunk_shared_torch.cpu().numpy()
+                            totals += total_inc
+                            shared += shared_inc
+                            if "ibs" in calculations and current_runs is not None and ibs_max is not None:
+                                current_runs, updated_max = _update_ibs_numpy(
+                                    shared_mask=shared_mask,
+                                    current_runs=current_runs,
+                                    max_runs=ibs_max,
+                                )
+                                ibs_max[:] = updated_max
                         target_offset += max_targets
                         completed_work += max_targets
                         target_chunks += 1
@@ -1532,8 +1765,10 @@ def matrix_compare(
                         sample_1=sample_1_name,
                         sample_2=[name for idx, name in enumerate(target_names_all) if mask[idx]],
                         genome=genome_name,
-                        total_positions=totals[mask],
-                        share_allele_pos=shared[mask],
+                        calculations=calculations,
+                        total_positions=totals[mask] if "ani" in calculations else None,
+                        share_allele_pos=shared[mask] if "ani" in calculations else None,
+                        max_consecutive_length=ibs_by_genome[genome_name][mask] if "ibs" in calculations else None,
                     )
                     writer.write_table(table)
                     written_rows += table.num_rows
