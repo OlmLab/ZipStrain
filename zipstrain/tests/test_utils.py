@@ -254,6 +254,80 @@ def test_get_gene_stats_handles_categorical_join_keys(profile_1, gene_bed, stb):
     assert "genome" in result.columns
     assert "gene" in result.columns
 
+
+def test_get_coverage_stats_from_profile(profile_1, gene_bed, bed_table, tmp_path):
+    profile_path = tmp_path / "profile.parquet"
+    gene_bed_path = tmp_path / "genes.tsv"
+    genome_bed_path = tmp_path / "genomes.bed"
+
+    profile_1.sink_parquet(profile_path)
+    gene_bed.collect().select(["gene", "scaffold", "start", "end"]).write_csv(
+        gene_bed_path,
+        separator="\t",
+        include_header=False,
+    )
+    bed_table.collect().select(["scaffold", "start", "end"]).write_csv(
+        genome_bed_path,
+        separator="\t",
+        include_header=False,
+    )
+
+    summary = utils.get_coverage_stats(
+        profile_parquet=profile_path,
+        gene_bed_file=gene_bed_path,
+        genome_bed_file=genome_bed_path,
+        output_dir=tmp_path,
+        prefix="sample1",
+    )
+
+    assert summary["cov_sites_column"] == "5x_cov_sites"
+    gene_stats = pl.read_parquet(summary["gene_stats_file"]).sort(["genome", "gene"])
+    genome_stats = pl.read_parquet(summary["genome_stats_file"]).sort("genome")
+
+    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage", "5x_cov_sites", "ber"]
+    assert genome_stats.columns == ["genome", "length", "breadth", "coverage", "5x_cov_sites", "ber"]
+    assert gene_stats.height == 6
+    assert genome_stats.height == 2
+
+    g1 = gene_stats.filter((pl.col("genome") == "genome1") & (pl.col("gene") == "gene1")).to_dicts()[0]
+    assert g1["length"] == 4
+    assert g1["breadth"] == pytest.approx(1.0)
+    assert g1["coverage"] == pytest.approx(13 / 4)
+    assert g1["5x_cov_sites"] == 1
+    assert g1["ber"] == pytest.approx(1.0 / (1 - np.exp(-0.883 * (13 / 4))))
+
+    genome1 = genome_stats.filter(pl.col("genome") == "genome1").to_dicts()[0]
+    assert genome1["length"] == 30
+    assert genome1["breadth"] == pytest.approx(1.0)
+    assert genome1["coverage"] == pytest.approx((sum(a_chr1) + sum(t_chr1) + sum(c_chr1) + sum(g_chr1) + sum(a_chr2) + sum(t_chr2) + sum(c_chr2) + sum(g_chr2)) / 30)
+
+
+def test_get_coverage_stats_requires_gene_and_genome_columns(profile_1, gene_bed, bed_table, tmp_path):
+    profile_path = tmp_path / "profile_missing_gene.parquet"
+    gene_bed_path = tmp_path / "genes.tsv"
+    genome_bed_path = tmp_path / "genomes.bed"
+
+    profile_1.select(["chrom", "pos", "A", "T", "C", "G"]).sink_parquet(profile_path)
+    gene_bed.collect().select(["gene", "scaffold", "start", "end"]).write_csv(
+        gene_bed_path,
+        separator="\t",
+        include_header=False,
+    )
+    bed_table.collect().select(["scaffold", "start", "end"]).write_csv(
+        genome_bed_path,
+        separator="\t",
+        include_header=False,
+    )
+
+    with pytest.raises(ValueError, match="missing required columns"):
+        utils.get_coverage_stats(
+            profile_parquet=profile_path,
+            gene_bed_file=gene_bed_path,
+            genome_bed_file=genome_bed_path,
+            output_dir=tmp_path,
+            prefix="sample1",
+        )
+
 def test_estimate_genome_presence_interface(profile_1,
                                   bed_table,
                                   stb,):

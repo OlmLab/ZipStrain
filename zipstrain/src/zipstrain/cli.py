@@ -242,6 +242,32 @@ def merge_stat_tables(stat_table, output_file):
     )
 
 
+@utilities.command("get-coverage-stats")
+@click.option('--profile-parquet', '-p', required=True, help="Classic profile parquet file.")
+@click.option('--gene-bed', '-g', required=True, help="Gene BED/range file. Supports 4 columns (gene, scaffold, start, end) or 5 columns (+ genome).")
+@click.option('--genome-bed', '-b', required=True, help="Genome BED file. Supports 3 columns (scaffold, start, end) or 4 columns (+ genome).")
+@click.option('--output-dir', '-o', required=True, help="Directory to write the gene/genome stats parquet files.")
+@click.option('--prefix', required=True, help="Prefix for the output files.")
+def get_coverage_stats(profile_parquet, gene_bed, genome_bed, output_dir, prefix):
+    """
+    Build coverage-only gene and genome stats from an existing profile parquet.
+    """
+    summary = ut.get_coverage_stats(
+        profile_parquet=profile_parquet,
+        gene_bed_file=gene_bed,
+        genome_bed_file=genome_bed,
+        output_dir=output_dir,
+        prefix=prefix,
+    )
+    click.echo(
+        f"gene_stats={summary['gene_stats_file']} "
+        f"genome_stats={summary['genome_stats_file']} "
+        f"gene_rows={summary['gene_rows']} "
+        f"genome_rows={summary['genome_rows']} "
+        f"cov_sites_column={summary['cov_sites_column']}"
+    )
+
+
 @utilities.command("generate-genome-pairs")
 @click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
 @click.option('--output-file', '-o', required=True, help="Output parquet file with all non-redundant profile pairs.")

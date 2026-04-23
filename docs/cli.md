@@ -345,6 +345,7 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities build-null-model` | Build sequencing-error null model |
 | `zipstrain utilities merge_parquet` | Merge parquet files |
 | `zipstrain utilities merge-stat-tables` | Merge gene/genome stat parquet files with sample labels |
+| `zipstrain utilities get-coverage-stats` | Rebuild coverage-only gene/genome stats from a profile parquet |
 | `zipstrain utilities process_mpileup` | Convert mpileup stream to parquet |
 | `zipstrain utilities make_bed` | Build bed chunks from fasta |
 | `zipstrain utilities get_genome_lengths` | Genome lengths from STB + BED |
@@ -500,6 +501,53 @@ Notes:
 - Positive `--batch-size` values first merge input files batch-by-batch into a temporary directory, then do one final lazy merge over those batch outputs.
 - Progress is logged as active line-oriented batch updates and flushed immediately, which is easier to follow in cluster logs.
 
+### `zipstrain utilities get-coverage-stats`
+
+```bash
+zipstrain utilities get-coverage-stats \
+  --profile-parquet sample_profile.parquet \
+  --gene-bed reference_genomes_gene_ranges.tsv \
+  --genome-bed genomes_bed_file.bed \
+  --output-dir stats \
+  --prefix sample1
+```
+
+What it does:
+
+- rebuilds coverage-only genome and gene stats from an existing profile parquet
+- writes:
+  - `<output-dir>/<prefix>_gene_stats.parquet`
+  - `<output-dir>/<prefix>_genome_stats.parquet`
+- does not require read-location files
+- uses the profile’s existing `gene` and `genome` columns for counts
+- uses the supplied gene/genome BED files only to calculate lengths
+
+Output columns:
+
+- gene stats:
+  - `genome`
+  - `gene`
+  - `length`
+  - `breadth`
+  - `coverage`
+  - `5x_cov_sites`
+  - `ber`
+- genome stats:
+  - `genome`
+  - `length`
+  - `breadth`
+  - `coverage`
+  - `5x_cov_sites`
+  - `ber`
+
+Important options:
+
+- `-p, --profile-parquet` (required)
+- `-g, --gene-bed` (required) — supports 4 columns `gene, scaffold, start, end` or 5 columns with genome appended
+- `-b, --genome-bed` (required) — supports 3 columns `scaffold, start, end` or 4 columns with genome appended
+- `-o, --output-dir` (required)
+- `--prefix` (required)
+
 ### Other Utility Commands
 
 Use `--help` on each command for full option details:
@@ -507,6 +555,7 @@ Use `--help` on each command for full option details:
 ```bash
 zipstrain utilities build-null-model --help
 zipstrain utilities merge_parquet --help
+zipstrain utilities get-coverage-stats --help
 zipstrain utilities process_mpileup --help
 zipstrain utilities make_bed --help
 zipstrain utilities get_genome_lengths --help

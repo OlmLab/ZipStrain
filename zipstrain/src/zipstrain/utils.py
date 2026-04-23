@@ -20,6 +20,8 @@ import subprocess
 import duckdb
 
 CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+PROFILE_COVERAGE_STATS_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+DEFAULT_COVERAGE_STATS_SITE_THRESHOLD = 5
 GENOME_PAIR_TABLE_SCHEMA = pa.schema(
     [
         pa.field("sample_name_1", pa.string()),
@@ -126,6 +128,291 @@ def merge_parquet_files(
         _merge_parquet_chunk(batch_outputs, output_path)
         emit(f"merge_parquet: final merge done -> {output_path}")
         return output_path
+
+
+def _read_gene_coverage_bed(gene_bed_file: str | pathlib.Path) -> pl.DataFrame:
+    gene_bed = pl.read_csv(
+        gene_bed_file,
+        separator="\t",
+        has_header=False,
+        infer_schema_length=10000,
+    )
+    if gene_bed.width == 4:
+        gene_bed = gene_bed.rename(
+            {
+                "column_1": "gene",
+                "column_2": "scaffold",
+                "column_3": "start",
+                "column_4": "end",
+            }
+        ).with_columns(pl.lit(None, dtype=pl.Utf8).alias("genome"))
+    elif gene_bed.width == 5:
+        gene_bed = gene_bed.rename(
+            {
+                "column_1": "gene",
+                "column_2": "scaffold",
+                "column_3": "start",
+                "column_4": "end",
+                "column_5": "genome",
+            }
+        )
+    else:
+        raise ValueError("Gene BED must have 4 columns (gene, scaffold, start, end) or 5 columns (+ genome).")
+    return gene_bed.select(
+        pl.col("gene").cast(pl.Utf8),
+        pl.col("scaffold").cast(pl.Utf8),
+        pl.col("start").cast(pl.Int64),
+        pl.col("end").cast(pl.Int64),
+        pl.col("genome").cast(pl.Utf8),
+    )
+
+
+def _read_genome_coverage_bed(genome_bed_file: str | pathlib.Path) -> pl.DataFrame:
+    genome_bed = pl.read_csv(
+        genome_bed_file,
+        separator="\t",
+        has_header=False,
+        infer_schema_length=10000,
+    )
+    if genome_bed.width == 3:
+        genome_bed = genome_bed.rename(
+            {
+                "column_1": "scaffold",
+                "column_2": "start",
+                "column_3": "end",
+            }
+        ).with_columns(pl.lit(None, dtype=pl.Utf8).alias("genome"))
+    elif genome_bed.width == 4:
+        genome_bed = genome_bed.rename(
+            {
+                "column_1": "scaffold",
+                "column_2": "start",
+                "column_3": "end",
+                "column_4": "genome",
+            }
+        )
+    else:
+        raise ValueError("Genome BED must have 3 columns (scaffold, start, end) or 4 columns (+ genome).")
+    return genome_bed.select(
+        pl.col("scaffold").cast(pl.Utf8),
+        pl.col("start").cast(pl.Int64),
+        pl.col("end").cast(pl.Int64),
+        pl.col("genome").cast(pl.Utf8),
+    )
+
+
+def _validate_unique_scaffold_genome_mapping(scaffold_to_genome: pl.DataFrame) -> pl.DataFrame:
+    conflicts = (
+        scaffold_to_genome.drop_nulls(["scaffold", "genome"])
+        .group_by("scaffold")
+        .agg(pl.col("genome").n_unique().alias("genome_count"))
+        .filter(pl.col("genome_count") > 1)
+    )
+    if conflicts.height > 0:
+        raise ValueError("Scaffold-to-genome mapping must be unique per scaffold.")
+    return scaffold_to_genome.drop_nulls(["scaffold", "genome"]).unique(["scaffold", "genome"])
+
+
+def _resolve_scaffold_to_genome_mapping(
+    profile_parquet: str | pathlib.Path,
+) -> pl.DataFrame:
+    mapping = pl.scan_parquet(profile_parquet).select(
+        pl.col("chrom").cast(pl.Utf8).alias("scaffold"),
+        pl.col("genome").cast(pl.Utf8).alias("genome"),
+    ).unique().collect()
+    return _validate_unique_scaffold_genome_mapping(mapping)
+
+
+def _profile_rows_cte_sql(profile_sql: str) -> str:
+    return f"""
+        profile_rows AS (
+          SELECT
+            CAST(p.chrom AS VARCHAR) AS chrom,
+            CAST(p.pos AS BIGINT) AS pos,
+            CAST(p.genome AS VARCHAR) AS genome,
+            CAST(p.gene AS VARCHAR) AS gene,
+            CAST(p.A AS DOUBLE) AS A,
+            CAST(p.C AS DOUBLE) AS C,
+            CAST(p.G AS DOUBLE) AS G,
+            CAST(p.T AS DOUBLE) AS T,
+            CAST(p.A AS DOUBLE) + CAST(p.C AS DOUBLE) + CAST(p.G AS DOUBLE) + CAST(p.T AS DOUBLE) AS site_coverage
+          FROM read_parquet('{profile_sql}') AS p
+        )
+    """
+
+
+def get_coverage_stats(
+    profile_parquet: str | pathlib.Path,
+    gene_bed_file: str | pathlib.Path,
+    genome_bed_file: str | pathlib.Path,
+    output_dir: str | pathlib.Path,
+    prefix: str,
+    cov_site_threshold: int = DEFAULT_COVERAGE_STATS_SITE_THRESHOLD,
+) -> dict[str, object]:
+    profile_path = pathlib.Path(profile_parquet).expanduser().resolve()
+    output_path = pathlib.Path(output_dir).expanduser().resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
+    gene_output = output_path / f"{prefix}_gene_stats.parquet"
+    genome_output = output_path / f"{prefix}_genome_stats.parquet"
+    if gene_output.exists():
+        raise FileExistsError(f"Output file already exists: {gene_output}")
+    if genome_output.exists():
+        raise FileExistsError(f"Output file already exists: {genome_output}")
+    if cov_site_threshold < 1:
+        raise ValueError("cov_site_threshold must be >= 1")
+
+    profile_schema = set(pq.read_schema(profile_path).names)
+    missing_columns = PROFILE_COVERAGE_STATS_REQUIRED_COLUMNS - profile_schema
+    if missing_columns:
+        raise ValueError(f"Profile parquet is missing required columns: {sorted(missing_columns)}")
+
+    gene_bed = _read_gene_coverage_bed(gene_bed_file)
+    genome_bed = _read_genome_coverage_bed(genome_bed_file)
+    scaffold_to_genome = _resolve_scaffold_to_genome_mapping(
+        profile_parquet=profile_path,
+    )
+    profile_sql = _duckdb_quote_sql_string(str(profile_path))
+    cov_sites_column = f"{int(cov_site_threshold)}x_cov_sites"
+    profile_rows_cte = _profile_rows_cte_sql(profile_sql=profile_sql)
+
+    with TemporaryDirectory(prefix="zipstrain_coverage_stats_") as tmp_dir:
+        conn = _duckdb_connect_with_temp_dir(tmp_dir)
+        try:
+            conn.register("gene_bed_src", gene_bed.to_arrow())
+            conn.register("genome_bed_src", genome_bed.to_arrow())
+            conn.register("scaffold_map_src", scaffold_to_genome.to_arrow())
+
+            gene_table = conn.execute(
+                f"""
+                WITH
+                {profile_rows_cte},
+                gene_lengths AS (
+                  SELECT
+                    sm.genome AS genome,
+                    CAST(g.gene AS VARCHAR) AS gene,
+                    SUM(
+                      CASE
+                        WHEN CAST(g."end" AS BIGINT) >= CAST(g.start AS BIGINT)
+                        THEN CAST(g."end" AS BIGINT) - CAST(g.start AS BIGINT) + 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS length
+                  FROM gene_bed_src AS g
+                  INNER JOIN scaffold_map_src AS sm
+                    ON CAST(g.scaffold AS VARCHAR) = CAST(sm.scaffold AS VARCHAR)
+                  GROUP BY 1, 2
+                ),
+                covered_stats AS (
+                  SELECT
+                    CAST(genome AS VARCHAR) AS genome,
+                    CAST(gene AS VARCHAR) AS gene,
+                    COUNT(*)::BIGINT AS total_covered_sites,
+                    SUM(site_coverage)::DOUBLE AS covered_bases,
+                    SUM(CASE WHEN site_coverage >= {int(cov_site_threshold)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites
+                  FROM profile_rows
+                  WHERE gene IS NOT NULL
+                    AND CAST(gene AS VARCHAR) <> 'NA'
+                    AND genome IS NOT NULL
+                  GROUP BY 1, 2
+                )
+                SELECT
+                  CAST(gl.genome AS VARCHAR) AS genome,
+                  CAST(gl.gene AS VARCHAR) AS gene,
+                  CAST(gl.length AS BIGINT) AS length,
+                  CASE
+                    WHEN gl.length > 0
+                    THEN COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length
+                    ELSE 0.0
+                  END AS breadth,
+                  CASE
+                    WHEN gl.length > 0
+                    THEN COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length
+                    ELSE 0.0
+                  END AS coverage,
+                  COALESCE(CAST(cs.cov_sites AS BIGINT), 0) AS "{cov_sites_column}",
+                  CASE
+                    WHEN gl.length > 0 AND COALESCE(cs.covered_bases, 0) > 0
+                    THEN
+                      (COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length) /
+                      (1 - EXP(-0.883 * (COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length)))
+                    ELSE 0.0
+                  END AS ber
+                FROM gene_lengths AS gl
+                LEFT JOIN covered_stats AS cs
+                  ON gl.genome = cs.genome
+                 AND gl.gene = cs.gene
+                ORDER BY genome, gene
+                """
+            ).fetch_arrow_table()
+
+            genome_table = conn.execute(
+                f"""
+                WITH
+                {profile_rows_cte},
+                genome_lengths AS (
+                  SELECT
+                    sm.genome AS genome,
+                    SUM(
+                      CASE
+                        WHEN CAST(gb."end" AS BIGINT) >= CAST(gb.start AS BIGINT)
+                        THEN CAST(gb."end" AS BIGINT) - CAST(gb.start AS BIGINT)
+                        ELSE 0
+                      END
+                    )::BIGINT AS length
+                  FROM genome_bed_src AS gb
+                  INNER JOIN scaffold_map_src AS sm
+                    ON CAST(gb.scaffold AS VARCHAR) = CAST(sm.scaffold AS VARCHAR)
+                  GROUP BY 1
+                ),
+                covered_stats AS (
+                  SELECT
+                    CAST(genome AS VARCHAR) AS genome,
+                    COUNT(*)::BIGINT AS total_covered_sites,
+                    SUM(site_coverage)::DOUBLE AS covered_bases,
+                    SUM(CASE WHEN site_coverage >= {int(cov_site_threshold)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites
+                  FROM profile_rows
+                  WHERE genome IS NOT NULL
+                  GROUP BY 1
+                )
+                SELECT
+                  CAST(gl.genome AS VARCHAR) AS genome,
+                  CAST(gl.length AS BIGINT) AS length,
+                  CASE
+                    WHEN gl.length > 0
+                    THEN COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length
+                    ELSE 0.0
+                  END AS breadth,
+                  CASE
+                    WHEN gl.length > 0
+                    THEN COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length
+                    ELSE 0.0
+                  END AS coverage,
+                  COALESCE(CAST(cs.cov_sites AS BIGINT), 0) AS "{cov_sites_column}",
+                  CASE
+                    WHEN gl.length > 0 AND COALESCE(cs.covered_bases, 0) > 0
+                    THEN
+                      (COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length) /
+                      (1 - EXP(-0.883 * (COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length)))
+                    ELSE 0.0
+                  END AS ber
+                FROM genome_lengths AS gl
+                LEFT JOIN covered_stats AS cs
+                  ON gl.genome = cs.genome
+                ORDER BY genome
+                """
+            ).fetch_arrow_table()
+        finally:
+            conn.close()
+
+    pq.write_table(gene_table, gene_output, compression="zstd")
+    pq.write_table(genome_table, genome_output, compression="zstd")
+    return {
+        "gene_stats_file": gene_output,
+        "genome_stats_file": genome_output,
+        "gene_rows": gene_table.num_rows,
+        "genome_rows": genome_table.num_rows,
+        "cov_sites_column": cov_sites_column,
+    }
 
 
 class CallPresence:
