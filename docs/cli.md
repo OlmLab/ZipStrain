@@ -360,7 +360,6 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities process-read-locs` | Process read-location stream |
 | `zipstrain utilities generate_stb` | Create scaffold-to-genome map from genome files |
 | `zipstrain utilities gene-range-table` | Create gene range table |
-| `zipstrain utilities gene-loc-table` | Create gene-location table for scaffold list |
 | `zipstrain test` | Validate local installation/dependencies |
 
 ### `zipstrain utilities build-genome-db`
@@ -404,14 +403,15 @@ Important options:
 - `-g, --genome` optional genome scope (default: `all`)
 - `-b, --bed-file` optional BED file to define scaffold extents instead of scanning profile min/max positions
 - `--count-dtype` stored matrix dtype (`uint16|uint32`, default: `uint16`)
-- `--memory-limit-gb` max in-memory budget for materializing one sample-scaffold matrix (default: `16.0`)
-- `--commit-batch-gb` approximate amount of matrix data written before committing the DuckDB transaction (default: `10.0`)
+- `--memory-limit-gb` approximate maximum memory budget for the entire build process (default: `16.0`)
 
 Notes:
 
 - this is an experimental utility path
 - it does not affect the standard `zipstrain compare` workflow
 - the output database is intended for `zipstrain utilities matrix-compare`
+- the builder derives a conservative DuckDB memory limit and commit cadence from `--memory-limit-gb`
+- matrix writes are committed and the DuckDB connection is restarted periodically to avoid long-run memory accumulation
 - install matrix support with `pip install "zipstrain[matrix]"`
 - the CLI shows a progress bar in an interactive terminal
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
@@ -570,6 +570,5 @@ zipstrain utilities presence-profile --help
 zipstrain utilities process-read-locs --help
 zipstrain utilities generate_stb --help
 zipstrain utilities gene-range-table --help
-zipstrain utilities gene-loc-table --help
 zipstrain test --help
 ```

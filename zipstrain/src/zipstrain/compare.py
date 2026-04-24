@@ -24,10 +24,6 @@ GENOME_COMPARISON_CALCULATION_ALIASES = {
     "id_genes": "identical_genes",
 }
 
-
-GenomeCalculate = Literal["all", "ani"]
-
-
 def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = None) -> tuple[str, ...]:
     """Parse and normalize genome metric selection tokens.
 
@@ -63,15 +59,6 @@ def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = N
             raise ValueError(f"Unsupported calculation '{token}'. Supported values: {supported}")
         normalized.add(mapped)
     return tuple(metric for metric in GENOME_COMPARISON_CALCULATIONS if metric in normalized)
-
-
-def _normalize_genome_calculate(calculate: Optional[Union[str, Iterable[str]]] = None) -> GenomeCalculate:
-    """Compatibility helper for legacy all-vs-ani code paths."""
-    calculations = parse_genome_calculations(calculate)
-    if calculations == ("ani",):
-        return "ani"
-    return "all"
-
 
 def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
     """Return ordered output columns for selected genome-level calculations."""
@@ -279,39 +266,6 @@ def _duckdb_build_query_with_ctes(ctes: list[str], final_select: str) -> str:
     return "WITH\n" + ",\n".join(ctes) + "\n" + final_select
 
 
-def _finalize_genome_compare_output(genome_comp: pl.LazyFrame, calculate: GenomeCalculate) -> pl.LazyFrame:
-    if calculate == "ani":
-        return genome_comp.with_columns(
-            pl.col("total_positions").fill_null(0).cast(pl.Int64),
-            pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
-            pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
-        ).select(
-            "genome",
-            "total_positions",
-            "share_allele_pos",
-            "genome_pop_ani",
-        )
-
-    return genome_comp.with_columns(
-        pl.col("total_positions").fill_null(0).cast(pl.Int64),
-        pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
-        pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
-        pl.col("max_consecutive_length").fill_null(0).cast(pl.Int64),
-        pl.col("shared_genes_count").fill_null(0).cast(pl.Int64),
-        pl.col("identical_gene_count").fill_null(0).cast(pl.Int64),
-        pl.col("perc_id_genes").fill_null(0.0).cast(pl.Float64),
-    ).select(
-        "genome",
-        "total_positions",
-        "share_allele_pos",
-        "genome_pop_ani",
-        "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
-    )
-
-
 def _join_all_requested_genomes(
     genome_comp: pl.LazyFrame,
     stb_file: Optional[Union[str, Path]],
@@ -440,57 +394,6 @@ gene_stats AS (
   GROUP BY genome
 )""".strip(),
     ]
-
-
-def _duckdb_merged_genome_stats_cte() -> str:
-    return """
-merged AS (
-  SELECT
-    g.genome,
-    COALESCE(p.total_positions, 0)::BIGINT AS total_positions,
-    COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos,
-    COALESCE(p.genome_pop_ani, 0.0)::DOUBLE AS genome_pop_ani,
-    COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length,
-    COALESCE(gs.shared_genes_count, 0)::BIGINT AS shared_genes_count,
-    COALESCE(gs.identical_gene_count, 0)::BIGINT AS identical_gene_count,
-    COALESCE(gs.perc_id_genes, 0.0)::DOUBLE AS perc_id_genes
-  FROM genomes g
-  LEFT JOIN pop p ON g.genome = p.genome
-  LEFT JOIN max_blocks m ON g.genome = m.genome
-  LEFT JOIN gene_stats gs ON g.genome = gs.genome
-)""".strip()
-
-
-def _duckdb_genome_stats_select() -> str:
-    return """
-SELECT
-  p.genome,
-  p.total_positions,
-  p.share_allele_pos,
-  p.genome_pop_ani,
-  COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length
-FROM pop p
-LEFT JOIN max_blocks m ON p.genome = m.genome
-ORDER BY p.genome
-""".strip()
-
-
-def _duckdb_genome_output_select(sample_1_sql: str, sample_2_sql: str) -> str:
-    return f"""
-SELECT
-  genome,
-  total_positions,
-  share_allele_pos,
-  genome_pop_ani,
-  max_consecutive_length,
-  shared_genes_count,
-  identical_gene_count,
-  perc_id_genes,
-  '{sample_1_sql}' AS sample_1,
-  '{sample_2_sql}' AS sample_2
-FROM merged
-ORDER BY genome
-""".strip()
 
 
 def _duckdb_genomes_from_shared_cte(genome_scope_sql: str) -> str:
@@ -723,60 +626,6 @@ def duckdb_filter_join(
         )
         table = con.execute(query).fetch_arrow_table()
         return pl.from_arrow(table).lazy()
-    finally:
-        con.close()
-
-
-def duckdb_filter_join_with_genome_stats(
-    mpile1: Union[str, Path, pl.LazyFrame],
-    mpile2: Union[str, Path, pl.LazyFrame],
-    min_cov: int,
-    genome_scope: str = "all",
-    ani_method: str = "popani",
-    gene_scope: str = "all",
-    memory_limit: Optional[str] = None,
-    temp_directory: Optional[Union[str, Path]] = None,
-    threads: Optional[int] = None,
-) -> tuple[pl.LazyFrame, pl.LazyFrame]:
-    """Build shared loci and genome-level popANI/contiguity stats in DuckDB.
-
-    Returns:
-        tuple[pl.LazyFrame, pl.LazyFrame]:
-            - shared loci projected for gene aggregation (`surr`, `gene`, `genome`)
-            - genome stats (`genome`, `total_positions`, `share_allele_pos`,
-              `genome_pop_ani`, `max_consecutive_length`)
-    """
-    con = duckdb.connect()
-    try:
-        _duckdb_configure_connection(
-            con,
-            memory_limit=memory_limit,
-            temp_directory=temp_directory,
-            threads=threads,
-        )
-        p1_source = _duckdb_from_source(con, mpile1, "mpile1_source")
-        p2_source = _duckdb_from_source(con, mpile2, "mpile2_source")
-        shared_query = _duckdb_shared_query(
-            p1_source=p1_source,
-            p2_source=p2_source,
-            min_cov=min_cov,
-            genome_scope=genome_scope,
-            ani_method=ani_method,
-            gene_scope=gene_scope,
-        )
-        con.execute(f"CREATE TEMP TABLE shared AS {shared_query}")
-
-        # Only transfer columns needed for downstream Polars gene aggregation.
-        shared_table = con.execute(
-            "SELECT surr, gene, genome FROM shared"
-        ).fetch_arrow_table()
-
-        genome_stats_query = _duckdb_build_query_with_ctes(
-            _duckdb_contig_pop_max_ctes(shared_source="shared"),
-            _duckdb_genome_stats_select(),
-        )
-        genome_stats_table = con.execute(genome_stats_query).fetch_arrow_table()
-        return pl.from_arrow(shared_table).lazy(), pl.from_arrow(genome_stats_table).lazy()
     finally:
         con.close()
 
@@ -1179,36 +1028,6 @@ def compare_genes_polars(
             ani=pl.col("share_allele_pos") / pl.col("total_positions") * 100,
         )
     )
-
-
-def _compare_genomes_mixed(
-    mpile_contig_1: Union[str, Path, pl.LazyFrame],
-    mpile_contig_2: Union[str, Path, pl.LazyFrame],
-    min_cov: int = 5,
-    min_gene_compare_len: int = 100,
-    genome_scope: str = "all",
-    ani_method: str = "popani",
-    calculate: GenomeCalculate = "all",
-    duckdb_memory_limit: Optional[str] = None,
-    duckdb_temp_directory: Optional[Union[str, Path]] = None,
-    duckdb_threads: Optional[int] = None,
-) -> pl.LazyFrame:
-    """DuckDB shared-loci + Polars gene aggregation path."""
-    calculate = _normalize_genome_calculate(calculate)
-    lf, genome_comp = duckdb_filter_join_with_genome_stats(
-        mpile1=mpile_contig_1,
-        mpile2=mpile_contig_2,
-        min_cov=min_cov,
-        ani_method=ani_method,
-        genome_scope=genome_scope,
-        memory_limit=duckdb_memory_limit,
-        temp_directory=duckdb_temp_directory,
-        threads=duckdb_threads,
-    )
-    if calculate == "ani":
-        return _finalize_genome_compare_output(genome_comp, calculate)
-    gene = get_gene_ani(lf, min_gene_compare_len)
-    return _finalize_genome_compare_output(genome_comp.join(gene, on="genome", how="left"), calculate)
 
 
 def _compare_genes_mixed(

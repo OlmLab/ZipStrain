@@ -519,29 +519,6 @@ def test_genome_compare_config_io(tmp_path,simple_genome_compare_config):
     loaded_config = database.GenomeComparisonConfig.from_json(json_path)
     assert loaded_config == simple_genome_compare_config
 
-def test_genome_compare_config_from_json_legacy_null_model_keys(tmp_path):
-    """Legacy config JSON files with null-model keys should still load."""
-    config_path = tmp_path / "legacy_genome_config.json"
-    config_path.write_text(json.dumps({
-        "reference_id": "ref_1",
-        "gene_db_id": "gene_ref_1",
-        "scope": "all",
-        "min_cov": 5,
-        "min_gene_compare_len": 100,
-        "stb_file_loc": "some_stb.tsv",
-        "null_model_p_value": 0.05,
-        "null_model_loc": "null_model.parquet",
-    }))
-    loaded_config = database.GenomeComparisonConfig.from_json(config_path)
-    assert loaded_config.to_dict() == {
-        "reference_id": "ref_1",
-        "gene_db_id": "gene_ref_1",
-        "scope": "all",
-        "min_cov": 5,
-        "min_gene_compare_len": 100,
-        "stb_file_loc": "some_stb.tsv",
-    }
-
 def test_genome_compare_config_get_maximal_scope(simple_genome_compare_config):
     """This test examines the get_maximal_scope method of the GenomeComparisonConfig class"""
     other_config = copy.copy(simple_genome_compare_config)
@@ -825,35 +802,6 @@ def test_genome_comparison_database_load_and_dump(profile_1_2_3_database,comps_l
     db_obj=database.GenomeComparisonDatabase.load_obj(dump_path)
     assert db_obj.comp_db.collect().height == 6
 
-def test_genome_comparison_database_load_obj_legacy_null_model_keys(profile_1_2_database, tmp_path):
-    """Legacy comparison objects with null-model config keys should still load."""
-    profile_db_path = tmp_path / "profile_db.parquet"
-    profile_1_2_database.save_as_new_database(profile_db_path)
-    legacy_obj_path = tmp_path / "legacy_genome_comp_obj.json"
-    legacy_obj_path.write_text(json.dumps({
-        "profile_db_loc": str(profile_db_path),
-        "comp_db_loc": None,
-        "config": {
-            "reference_id": "ref_1",
-            "gene_db_id": "gene_ref_1",
-            "scope": "all",
-            "min_cov": 5,
-            "min_gene_compare_len": 100,
-            "stb_file_loc": "some_stb.tsv",
-            "null_model_p_value": 0.05,
-            "null_model_loc": "null_model.parquet",
-        },
-    }))
-    db_obj = database.GenomeComparisonDatabase.load_obj(legacy_obj_path)
-    assert db_obj.config.to_dict() == {
-        "reference_id": "ref_1",
-        "gene_db_id": "gene_ref_1",
-        "scope": "all",
-        "min_cov": 5,
-        "min_gene_compare_len": 100,
-        "stb_file_loc": "some_stb.tsv",
-    }
-
 def test_genome_comparison_database_to_complete_input_table(profile_1_2_3_database,simple_genome_compare_config):
     db = database.GenomeComparisonDatabase(
         profile_db=profile_1_2_3_database,
@@ -959,29 +907,6 @@ def test_gene_compare_config_io(tmp_path,simple_gene_compare_config):
     # Test from_json (load)
     loaded_config = database.GeneComparisonConfig.from_json(json_path)
     assert loaded_config == simple_gene_compare_config
-
-def test_gene_compare_config_from_json_legacy_null_model_key(tmp_path):
-    """Legacy gene config JSON files with null-model key should still load."""
-    config_path = tmp_path / "legacy_gene_config.json"
-    config_path.write_text(json.dumps({
-        "gene_db_id": "gene_ref_1",
-        "reference_genome_id": "ref_1",
-        "scope": "all:gene1",
-        "min_cov": 5,
-        "min_gene_compare_len": 100,
-        "stb_file_loc": "some_stb.tsv",
-        "null_model_loc": "null_model.parquet",
-    }))
-    loaded_config = database.GeneComparisonConfig.from_json(config_path)
-    assert loaded_config.to_dict() == {
-        "gene_db_id": "gene_ref_1",
-        "reference_genome_id": "ref_1",
-        "scope": "all:gene1",
-        "min_cov": 5,
-        "min_gene_compare_len": 100,
-        "stb_file_loc": "some_stb.tsv",
-    }
-
 
 def test_gene_comparison_database_create_new_empty_database(profile_1_2_database,simple_gene_compare_config):
     """Test creating an empty gene comparison database"""
@@ -1452,31 +1377,3 @@ def test_gene_comparison_database_load_and_dump(profile_1_2_3_database,tmp_path,
     db_12.update_compare_database()
     
     assert db_12.comp_db.collect().height == 2
-
-def test_gene_comparison_database_load_obj_legacy_null_model_key(profile_1_2_database, tmp_path):
-    """Legacy gene comparison objects with null-model config key should still load."""
-    profile_db_path = tmp_path / "profile_db.parquet"
-    profile_1_2_database.save_as_new_database(profile_db_path)
-    legacy_obj_path = tmp_path / "legacy_gene_comp_obj.json"
-    legacy_obj_path.write_text(json.dumps({
-        "profile_db_loc": str(profile_db_path),
-        "comp_db_loc": None,
-        "config": {
-            "gene_db_id": "gene_ref_1",
-            "reference_genome_id": "ref_1",
-            "scope": "all:gene1",
-            "min_cov": 5,
-            "min_gene_compare_len": 100,
-            "stb_file_loc": "some_stb.tsv",
-            "null_model_loc": "null_model.parquet",
-        },
-    }))
-    db_obj = database.GeneComparisonDatabase.load_obj(legacy_obj_path)
-    assert db_obj.config.to_dict() == {
-        "gene_db_id": "gene_ref_1",
-        "reference_genome_id": "ref_1",
-        "scope": "all:gene1",
-        "min_cov": 5,
-        "min_gene_compare_len": 100,
-        "stb_file_loc": "some_stb.tsv",
-    }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,12 +21,16 @@ COUNT_DTYPES = {
     "uint32": np.uint32,
 }
 MATRIX_BUILD_MIN_COV = 5
-LEGACY_MATRIX_VALUE_SEMANTICS = "raw_base_counts"
 FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
 MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs")
+MATRIX_BUILD_FIXED_HEADROOM_BYTES = 128 * 1024 * 1024
+MATRIX_BUILD_TEMP_BYTES_PER_POSITION = 32
+MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES = 256 * 1024 * 1024
+MATRIX_BUILD_MIN_COMMIT_BATCH_BYTES = 64 * 1024 * 1024
+MATRIX_BUILD_DUCKDB_MEMORY_FRACTION = 0.25
 
 
 def parse_matrix_calculations(calculate: Optional[str] = None) -> tuple[str, ...]:
@@ -106,6 +111,14 @@ class MatrixCompareSummary:
     position_tile_size: int
 
 
+@dataclass(frozen=True)
+class MatrixBuildMemoryPlan:
+    duckdb_memory_limit_bytes: int
+    commit_batch_bytes: int
+    estimated_python_peak_bytes: int
+    limiting_scaffold: str
+
+
 class TorchBackendMissingError(ImportError):
     pass
 
@@ -159,27 +172,6 @@ class MatrixPairComputeBackend:
         if self._torch_mps_available():
             return "mps"
         return "cpu"
-
-    def compare_tile(
-        self,
-        anchor_matrix: np.ndarray,
-        target_matrices: np.ndarray,
-        min_cov: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        if self.kind == "numpy":
-            return _compare_tile_numpy(
-                anchor_matrix=anchor_matrix,
-                target_matrices=target_matrices,
-                min_cov=min_cov,
-            )
-        return _compare_tile_torch(
-            torch_module=self.torch,
-            device=self.device,
-            anchor_matrix=anchor_matrix,
-            target_matrices=target_matrices,
-            min_cov=min_cov,
-        )
-
 
 def _looks_like_profile_parquet(path: Path) -> bool:
     try:
@@ -374,6 +366,83 @@ def _estimate_sample_scaffold_bytes(vector_length: int, dtype_name: str) -> int:
     return vector_length * 4 * np.dtype(COUNT_DTYPES[dtype_name]).itemsize
 
 
+def _estimate_builder_python_peak_bytes(vector_length: int, dtype_name: str) -> int:
+    matrix_bytes = _estimate_sample_scaffold_bytes(vector_length, dtype_name)
+    temp_bytes = vector_length * MATRIX_BUILD_TEMP_BYTES_PER_POSITION
+    return matrix_bytes * 2 + temp_bytes + MATRIX_BUILD_FIXED_HEADROOM_BYTES
+
+
+def _format_memory_bytes(num_bytes: int) -> str:
+    return f"{num_bytes / (1024 ** 3):.2f} GB"
+
+
+def _duckdb_memory_limit_setting(memory_limit_bytes: int) -> str:
+    memory_limit_mib = max(1, int(memory_limit_bytes // (1024 ** 2)))
+    return f"{memory_limit_mib}MiB"
+
+
+def _plan_matrix_build_memory(
+    scaffolds: list[ScaffoldSpec],
+    count_dtype: str,
+    memory_limit_bytes: int,
+    commit_batch_gb: Optional[float] = None,
+) -> MatrixBuildMemoryPlan:
+    if not scaffolds:
+        raise ValueError("No scaffolds were provided for matrix DB build.")
+
+    limiting_spec = max(
+        scaffolds,
+        key=lambda spec: _estimate_builder_python_peak_bytes(spec.vector_length, count_dtype),
+    )
+    estimated_python_peak_bytes = _estimate_builder_python_peak_bytes(
+        limiting_spec.vector_length,
+        count_dtype,
+    )
+
+    if estimated_python_peak_bytes + MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES > memory_limit_bytes:
+        raise MemoryError(
+            f"Scaffold {limiting_spec.chrom} is estimated to require about "
+            f"{_format_memory_bytes(estimated_python_peak_bytes)} of Python-side working memory, "
+            f"which leaves less than {_format_memory_bytes(MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES)} "
+            f"for DuckDB under the total limit of {_format_memory_bytes(memory_limit_bytes)}. "
+            "Increase --memory-limit-gb or narrow the genome scope."
+        )
+
+    available_for_duckdb = max(
+        MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES,
+        memory_limit_bytes - estimated_python_peak_bytes,
+    )
+    duckdb_memory_limit_bytes = max(
+        MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES,
+        min(
+            available_for_duckdb,
+            int(memory_limit_bytes * MATRIX_BUILD_DUCKDB_MEMORY_FRACTION),
+        ),
+    )
+
+    if commit_batch_gb is None:
+        commit_batch_bytes = max(
+            MATRIX_BUILD_MIN_COMMIT_BATCH_BYTES,
+            min(
+                duckdb_memory_limit_bytes // 2,
+                available_for_duckdb // 4,
+            ),
+        )
+    else:
+        commit_batch_bytes = _commit_batch_bytes(commit_batch_gb)
+        commit_batch_bytes = min(
+            commit_batch_bytes,
+            max(MATRIX_BUILD_MIN_COMMIT_BATCH_BYTES, duckdb_memory_limit_bytes // 2),
+        )
+
+    return MatrixBuildMemoryPlan(
+        duckdb_memory_limit_bytes=duckdb_memory_limit_bytes,
+        commit_batch_bytes=commit_batch_bytes,
+        estimated_python_peak_bytes=estimated_python_peak_bytes,
+        limiting_scaffold=limiting_spec.chrom,
+    )
+
+
 def _init_matrix_db_schema(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         """
@@ -420,6 +489,29 @@ def _init_matrix_db_schema(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _open_matrix_build_connection(
+    output_file: Path,
+    duckdb_memory_limit_bytes: int,
+) -> duckdb.DuckDBPyConnection:
+    conn = duckdb.connect(str(output_file))
+    conn.execute("SET preserve_insertion_order=false")
+    conn.execute(f"SET memory_limit='{_duckdb_memory_limit_setting(duckdb_memory_limit_bytes)}'")
+    return conn
+
+
+def _restart_matrix_build_transaction(
+    conn: duckdb.DuckDBPyConnection,
+    output_file: Path,
+    duckdb_memory_limit_bytes: int,
+) -> duckdb.DuckDBPyConnection:
+    conn.execute("COMMIT")
+    conn.close()
+    gc.collect()
+    conn = _open_matrix_build_connection(output_file, duckdb_memory_limit_bytes)
+    conn.execute("BEGIN")
+    return conn
+
+
 def _load_profile_scaffold_matrix(
     profile_path: Path,
     spec: ScaffoldSpec,
@@ -460,7 +552,7 @@ def build_matrix_db(
     genome: str = "all",
     count_dtype: str = "uint16",
     memory_limit_gb: float = 16.0,
-    commit_batch_gb: float = 10.0,
+    commit_batch_gb: Optional[float] = None,
     bed_file: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
 ) -> MatrixDbSummary:
@@ -477,7 +569,13 @@ def build_matrix_db(
             genome=genome_scope,
         )
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
-    commit_batch_bytes = _commit_batch_bytes(commit_batch_gb)
+    memory_plan = _plan_matrix_build_memory(
+        scaffolds=scaffolds,
+        count_dtype=count_dtype,
+        memory_limit_bytes=memory_limit_bytes,
+        commit_batch_gb=commit_batch_gb,
+    )
+    commit_batch_bytes = memory_plan.commit_batch_bytes
 
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -500,10 +598,9 @@ def build_matrix_db(
             }
         )
 
-    conn = duckdb.connect(str(output_file))
+    conn = _open_matrix_build_connection(output_file, memory_plan.duckdb_memory_limit_bytes)
     build_succeeded = False
     try:
-        conn.execute("SET preserve_insertion_order=false")
         _init_matrix_db_schema(conn)
         conn.execute("BEGIN")
         metadata_rows = [
@@ -516,6 +613,9 @@ def build_matrix_db(
             ("matrix_value_semantics", FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS),
             ("coverage_filter_min_cov", str(MATRIX_BUILD_MIN_COV)),
             ("memory_limit_gb", str(memory_limit_gb)),
+            ("duckdb_memory_limit_gb", f"{memory_plan.duckdb_memory_limit_bytes / (1024 ** 3):.6f}"),
+            ("effective_commit_batch_gb", f"{commit_batch_bytes / (1024 ** 3):.6f}"),
+            ("estimated_python_peak_gb", f"{memory_plan.estimated_python_peak_bytes / (1024 ** 3):.6f}"),
         ]
         sample_rows = [(idx, path.stem, str(path.resolve())) for idx, path in enumerate(profile_paths)]
         scaffold_rows = [
@@ -536,8 +636,7 @@ def build_matrix_db(
             "INSERT INTO matrix_db_scaffolds VALUES (?, ?, ?, ?, ?, ?, ?)",
             scaffold_rows,
         )
-        conn.execute("COMMIT")
-        conn.execute("BEGIN")
+        conn = _restart_matrix_build_transaction(conn, output_file, memory_plan.duckdb_memory_limit_bytes)
 
         stored_rows = 0
         batch_bytes = 0
@@ -556,11 +655,13 @@ def build_matrix_db(
                             "stored_rows": stored_rows,
                         }
                     )
-                estimated_bytes = _estimate_sample_scaffold_bytes(spec.vector_length, count_dtype)
-                if estimated_bytes > memory_limit_bytes:
+                estimated_python_peak = _estimate_builder_python_peak_bytes(spec.vector_length, count_dtype)
+                if estimated_python_peak + memory_plan.duckdb_memory_limit_bytes > memory_limit_bytes:
                     raise MemoryError(
-                        f"Scaffold {spec.chrom} for sample {profile_path.name} requires about "
-                        f"{estimated_bytes / (1024 ** 3):.2f} GB, above the configured limit of {memory_limit_gb:.2f} GB."
+                        f"Scaffold {spec.chrom} for sample {profile_path.name} is estimated to use about "
+                        f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory plus "
+                        f"{_format_memory_bytes(memory_plan.duckdb_memory_limit_bytes)} for DuckDB, "
+                        f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
                     )
                 matrix = _load_profile_scaffold_matrix(
                     profile_path=profile_path,
@@ -596,6 +697,8 @@ def build_matrix_db(
                     ],
                 )
                 batch_bytes += len(matrix_blob)
+                del matrix_blob
+                del matrix
                 stored_rows += 1
                 completed_work += 1
                 if progress_callback is not None:
@@ -611,9 +714,19 @@ def build_matrix_db(
                         }
                     )
                 if batch_bytes >= commit_batch_bytes:
-                    conn.execute("COMMIT")
-                    conn.execute("BEGIN")
+                    conn = _restart_matrix_build_transaction(
+                        conn,
+                        output_file,
+                        memory_plan.duckdb_memory_limit_bytes,
+                    )
                     batch_bytes = 0
+            if batch_bytes > 0:
+                conn = _restart_matrix_build_transaction(
+                    conn,
+                    output_file,
+                    memory_plan.duckdb_memory_limit_bytes,
+                )
+                batch_bytes = 0
         conn.execute("COMMIT")
         build_succeeded = True
     except Exception:
@@ -745,10 +858,6 @@ def _load_scaffold_count_dtype(
     return "" if row is None else str(row[0])
 
 
-def _matrix_value_semantics(metadata: dict[str, str]) -> str:
-    return metadata.get("matrix_value_semantics", LEGACY_MATRIX_VALUE_SEMANTICS)
-
-
 def _plan_chunk_sizes(
     vector_length: int,
     remaining_targets: int,
@@ -786,59 +895,6 @@ def _plan_chunk_sizes(
     return 1, min(vector_length, tile_size)
 
 
-def _compare_tile_legacy_numpy(
-    anchor_matrix: np.ndarray,
-    target_matrices: np.ndarray,
-    min_cov: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    cov_anchor = anchor_matrix.astype(np.uint32, copy=False).sum(axis=1)
-    cov_targets = target_matrices.astype(np.uint32, copy=False).sum(axis=1)
-    both_cov = (cov_anchor[:, None] >= min_cov) & (cov_targets >= min_cov)
-    shared_signal = ((anchor_matrix[:, :, None] > 0) & (target_matrices > 0)).any(axis=1)
-    shared_signal &= both_cov
-    return both_cov.sum(axis=0, dtype=np.int64), shared_signal.sum(axis=0, dtype=np.int64)
-
-
-def _compare_tile_legacy_torch(
-    torch_module,
-    device: str,
-    anchor_matrix: np.ndarray,
-    target_matrices: np.ndarray,
-    min_cov: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    anchor_t = torch_module.from_numpy(np.ascontiguousarray(anchor_matrix)).to(device)
-    targets_t = torch_module.from_numpy(np.ascontiguousarray(target_matrices)).to(device)
-
-    anchor_i = anchor_t.to(torch_module.int32)
-    targets_i = targets_t.to(torch_module.int32)
-    cov_anchor = anchor_i.sum(dim=1)
-    cov_targets = targets_i.sum(dim=1)
-    both_cov = (cov_anchor.unsqueeze(1) >= min_cov) & (cov_targets >= min_cov)
-    shared_signal = (anchor_t.bool().unsqueeze(2) & targets_t.bool()).any(dim=1)
-    shared_signal &= both_cov
-    totals = both_cov.sum(dim=0, dtype=torch_module.int64).cpu().numpy()
-    shared = shared_signal.sum(dim=0, dtype=torch_module.int64).cpu().numpy()
-    return totals, shared
-
-
-def _compare_tile_legacy_torch_tensors(
-    torch_module,
-    anchor_t,
-    targets_t,
-    min_cov: int,
-):
-    anchor_i = anchor_t.to(torch_module.int32)
-    targets_i = targets_t.to(torch_module.int32)
-    cov_anchor = anchor_i.sum(dim=1)
-    cov_targets = targets_i.sum(dim=1)
-    both_cov = (cov_anchor.unsqueeze(1) >= min_cov) & (cov_targets >= min_cov)
-    shared_signal = (anchor_t.bool().unsqueeze(2) & targets_t.bool()).any(dim=1)
-    shared_signal &= both_cov
-    totals = both_cov.sum(dim=0, dtype=torch_module.int64)
-    shared = shared_signal.sum(dim=0, dtype=torch_module.int64)
-    return totals, shared
-
-
 def _compare_tile_presence_numpy(
     anchor_matrix: np.ndarray,
     target_matrices: np.ndarray,
@@ -852,24 +908,6 @@ def _compare_tile_presence_numpy(
 
     shared_signal = np.matmul(anchor_presence[:, np.newaxis, :], target_presence).squeeze(1) > 0
     shared = shared_signal.sum(axis=0, dtype=np.int64)
-    return totals, shared
-
-
-def _compare_tile_presence_torch(
-    torch_module,
-    device: str,
-    anchor_matrix: np.ndarray,
-    target_matrices: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    anchor_t = torch_module.from_numpy(np.ascontiguousarray(anchor_matrix)).to(device=device, dtype=torch_module.float32)
-    targets_t = torch_module.from_numpy(np.ascontiguousarray(target_matrices)).to(device=device, dtype=torch_module.float32)
-
-    anchor_cov = anchor_t.amax(dim=1)
-    target_cov = targets_t.amax(dim=1)
-    totals = torch_module.matmul(anchor_cov.unsqueeze(0), target_cov).squeeze(0).to(torch_module.int64).cpu().numpy()
-
-    shared_scores = torch_module.matmul(anchor_t.unsqueeze(1), targets_t).squeeze(1)
-    shared = (shared_scores > 0).sum(dim=0, dtype=torch_module.int64).cpu().numpy()
     return totals, shared
 
 
@@ -887,28 +925,6 @@ def _compare_tile_presence_torch_tensors(
     return totals, shared
 
 
-def _shared_mask_legacy_numpy(
-    anchor_matrix: np.ndarray,
-    target_matrices: np.ndarray,
-    min_cov: int,
-) -> np.ndarray:
-    cov_anchor = anchor_matrix.astype(np.uint32, copy=False).sum(axis=1)
-    cov_targets = target_matrices.astype(np.uint32, copy=False).sum(axis=1)
-    both_cov = (cov_anchor[:, None] >= min_cov) & (cov_targets >= min_cov)
-    shared_signal = ((anchor_matrix[:, :, None] > 0) & (target_matrices > 0)).any(axis=1)
-    shared_signal &= both_cov
-    return shared_signal
-
-
-def _shared_mask_presence_numpy(
-    anchor_matrix: np.ndarray,
-    target_matrices: np.ndarray,
-) -> np.ndarray:
-    anchor_presence = anchor_matrix.astype(np.int8, copy=False)
-    target_presence = target_matrices.astype(np.int8, copy=False)
-    return np.matmul(anchor_presence[:, np.newaxis, :], target_presence).squeeze(1) > 0
-
-
 def _compare_tile_presence_numpy_with_mask(
     anchor_matrix: np.ndarray,
     target_matrices: np.ndarray,
@@ -923,40 +939,6 @@ def _compare_tile_presence_numpy_with_mask(
     shared_mask = np.matmul(anchor_presence[:, np.newaxis, :], target_presence).squeeze(1) > 0
     shared = shared_mask.sum(axis=0, dtype=np.int64)
     return totals, shared, shared_mask
-
-
-def _shared_mask_legacy_torch_tensors(
-    torch_module,
-    anchor_t,
-    targets_t,
-    min_cov: int,
-):
-    anchor_i = anchor_t.to(torch_module.int32)
-    targets_i = targets_t.to(torch_module.int32)
-    cov_anchor = anchor_i.sum(dim=1)
-    cov_targets = targets_i.sum(dim=1)
-    both_cov = (cov_anchor.unsqueeze(1) >= min_cov) & (cov_targets >= min_cov)
-    shared_signal = (anchor_t.bool().unsqueeze(2) & targets_t.bool()).any(dim=1)
-    shared_signal &= both_cov
-    return shared_signal
-
-
-def _compare_tile_legacy_numpy_with_mask(
-    anchor_matrix: np.ndarray,
-    target_matrices: np.ndarray,
-    min_cov: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    shared_mask = _shared_mask_legacy_numpy(
-        anchor_matrix=anchor_matrix,
-        target_matrices=target_matrices,
-        min_cov=min_cov,
-    )
-    cov_anchor = anchor_matrix.astype(np.uint32, copy=False).sum(axis=1)
-    cov_targets = target_matrices.astype(np.uint32, copy=False).sum(axis=1)
-    both_cov = (cov_anchor[:, None] >= min_cov) & (cov_targets >= min_cov)
-    total_inc = both_cov.sum(axis=0, dtype=np.int64)
-    shared_inc = shared_mask.sum(axis=0, dtype=np.int64)
-    return total_inc, shared_inc, shared_mask
 
 
 def _shared_mask_presence_torch_tensors(
@@ -981,28 +963,6 @@ def _compare_tile_presence_torch_tensors_with_mask(
         anchor_t=anchor_t,
         targets_t=targets_t,
     )
-    shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
-    return totals, shared, shared_mask
-
-
-def _compare_tile_legacy_torch_tensors_with_mask(
-    torch_module,
-    anchor_t,
-    targets_t,
-    min_cov: int,
-):
-    anchor_i = anchor_t.to(torch_module.int32)
-    targets_i = targets_t.to(torch_module.int32)
-    cov_anchor = anchor_i.sum(dim=1)
-    cov_targets = targets_i.sum(dim=1)
-    both_cov = (cov_anchor.unsqueeze(1) >= min_cov) & (cov_targets >= min_cov)
-    shared_mask = _shared_mask_legacy_torch_tensors(
-        torch_module=torch_module,
-        anchor_t=anchor_t,
-        targets_t=targets_t,
-        min_cov=min_cov,
-    )
-    totals = both_cov.sum(dim=0, dtype=torch_module.int64)
     shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
     return totals, shared, shared_mask
 
@@ -1122,34 +1082,18 @@ def _compare_anchor_against_target_chunk_torch(
         max_runs = np.zeros(target_count, dtype=np.int64)
     for tile_start in range(0, vector_length, tile_size):
         tile_stop = min(vector_length, tile_start + tile_size)
-        if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-            if need_ibs:
-                total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
-                    torch_module=compute_backend.torch,
-                    anchor_t=anchor_torch[tile_start:tile_stop, :],
-                    targets_t=target_torch[tile_start:tile_stop, :, :],
-                )
-            else:
-                total_inc, shared_inc = _compare_tile_presence_torch_tensors(
-                    torch_module=compute_backend.torch,
-                    anchor_t=anchor_torch[tile_start:tile_stop, :],
-                    targets_t=target_torch[tile_start:tile_stop, :, :],
-                )
+        if need_ibs:
+            total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
+                torch_module=compute_backend.torch,
+                anchor_t=anchor_torch[tile_start:tile_stop, :],
+                targets_t=target_torch[tile_start:tile_stop, :, :],
+            )
         else:
-            if need_ibs:
-                total_inc, shared_inc, shared_mask = _compare_tile_legacy_torch_tensors_with_mask(
-                    torch_module=compute_backend.torch,
-                    anchor_t=anchor_torch[tile_start:tile_stop, :],
-                    targets_t=target_torch[tile_start:tile_stop, :, :],
-                    min_cov=min_cov,
-                )
-            else:
-                total_inc, shared_inc = _compare_tile_legacy_torch_tensors(
-                    torch_module=compute_backend.torch,
-                    anchor_t=anchor_torch[tile_start:tile_stop, :],
-                    targets_t=target_torch[tile_start:tile_stop, :, :],
-                    min_cov=min_cov,
-                )
+            total_inc, shared_inc = _compare_tile_presence_torch_tensors(
+                torch_module=compute_backend.torch,
+                anchor_t=anchor_torch[tile_start:tile_stop, :],
+                targets_t=target_torch[tile_start:tile_stop, :, :],
+            )
         chunk_totals_torch += total_inc
         chunk_shared_torch += shared_inc
         if need_ibs:
@@ -1497,15 +1441,19 @@ def matrix_compare(
     conn = duckdb.connect(str(matrix_db_file), read_only=True)
     try:
         metadata = _load_matrix_db_metadata(conn)
-        matrix_value_semantics = _matrix_value_semantics(metadata)
+        matrix_value_semantics = metadata.get("matrix_value_semantics")
+        if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+            raise ValueError(
+                "This matrix DB uses an unsupported legacy storage layout. "
+                "Rebuild it with 'zipstrain utilities build-matrix-db'."
+            )
         filtered_min_cov = metadata.get("coverage_filter_min_cov")
-        if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-            required_min_cov = int(filtered_min_cov or MATRIX_BUILD_MIN_COV)
-            if min_cov != required_min_cov:
-                raise ValueError(
-                    f"Matrix DB was built with fixed coverage filter min_cov={required_min_cov}. "
-                    f"Requested min_cov={min_cov}. Rebuild the matrix DB or use --min-cov {required_min_cov}."
-                )
+        required_min_cov = int(filtered_min_cov or MATRIX_BUILD_MIN_COV)
+        if min_cov != required_min_cov:
+            raise ValueError(
+                f"Matrix DB was built with fixed coverage filter min_cov={required_min_cov}. "
+                f"Requested min_cov={min_cov}. Rebuild the matrix DB or use --min-cov {required_min_cov}."
+            )
         samples = _load_matrix_db_samples(conn)
         requested_pairs = len(samples) * (len(samples) - 1) // 2
         if requested_pairs == 0:
@@ -1666,13 +1614,10 @@ def matrix_compare(
                     anchor_torch = None
                     if compute_backend.kind == "torch":
                         anchor_array = np.ascontiguousarray(anchor_matrix)
-                        if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-                            anchor_torch = compute_backend.torch.from_numpy(anchor_array).to(
-                                device=compute_backend.device,
-                                dtype=compute_backend.torch.float32,
-                            )
-                        else:
-                            anchor_torch = compute_backend.torch.from_numpy(anchor_array).to(compute_backend.device)
+                        anchor_torch = compute_backend.torch.from_numpy(anchor_array).to(
+                            device=compute_backend.device,
+                            dtype=compute_backend.torch.float32,
+                        )
 
                     target_offset = 0
                     while target_offset < len(target_ids_all):
@@ -1704,30 +1649,16 @@ def matrix_compare(
                             tile_stop = min(spec.vector_length, tile_start + tile_size)
                             anchor_tile = anchor_matrix[tile_start:tile_stop, :]
                             target_tile = target_matrices[tile_start:tile_stop, :, :]
-                            if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-                                if "ibs" in calculations:
-                                    total_inc, shared_inc, shared_mask = _compare_tile_presence_numpy_with_mask(
-                                        anchor_matrix=anchor_tile,
-                                        target_matrices=target_tile,
-                                    )
-                                else:
-                                    total_inc, shared_inc = _compare_tile_presence_numpy(
-                                        anchor_matrix=anchor_tile,
-                                        target_matrices=target_tile,
-                                    )
+                            if "ibs" in calculations:
+                                total_inc, shared_inc, shared_mask = _compare_tile_presence_numpy_with_mask(
+                                    anchor_matrix=anchor_tile,
+                                    target_matrices=target_tile,
+                                )
                             else:
-                                if "ibs" in calculations:
-                                    total_inc, shared_inc, shared_mask = _compare_tile_legacy_numpy_with_mask(
-                                        anchor_matrix=anchor_tile,
-                                        target_matrices=target_tile,
-                                        min_cov=min_cov,
-                                    )
-                                else:
-                                    total_inc, shared_inc = _compare_tile_legacy_numpy(
-                                        anchor_matrix=anchor_tile,
-                                        target_matrices=target_tile,
-                                        min_cov=min_cov,
-                                    )
+                                total_inc, shared_inc = _compare_tile_presence_numpy(
+                                    anchor_matrix=anchor_tile,
+                                    target_matrices=target_tile,
+                                )
                             totals += total_inc
                             shared += shared_inc
                             if "ibs" in calculations and current_runs is not None and ibs_max is not None:

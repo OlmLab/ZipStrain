@@ -396,16 +396,9 @@ def build_profile_db(profile_db_csv, output_file):
     type=float,
     default=16.0,
     show_default=True,
-    help="Maximum memory budget used while building one scaffold matrix.",
+    help="Approximate maximum memory budget for the entire matrix build process.",
 )
-@click.option(
-    '--commit-batch-gb',
-    type=float,
-    default=10.0,
-    show_default=True,
-    help="Approximate amount of matrix data to insert before committing the DuckDB transaction.",
-)
-def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb, commit_batch_gb):
+def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb):
     """
     Build an experimental DuckDB database of per-sample, per-scaffold dense matrices.
 
@@ -453,7 +446,6 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
                 bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
                 count_dtype=count_dtype,
                 memory_limit_gb=memory_limit_gb,
-                commit_batch_gb=commit_batch_gb,
                 progress_callback=_progress_callback,
             )
     else:
@@ -468,7 +460,6 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
             bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
             count_dtype=count_dtype,
             memory_limit_gb=memory_limit_gb,
-            commit_batch_gb=commit_batch_gb,
             progress_callback=progress_logger,
         )
     click.echo(
@@ -935,26 +926,7 @@ def get_gene_range_table(gene_file, output_file):
     output_file (str): Path to save the output TSV file.
     """
     gene_locs=pf.build_gene_range_table(pathlib.Path(gene_file))
-    gene_locs.sink_csv(pathlib.Path(output_file), separator="\t", include_header=False)
-
-
-@utilities.command("gene-loc-table")
-@click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
-@click.option('--scaffold-list', '-s', required=True, help="location of scaffold list. A text file with each line containing a scaffold name.")
-@click.option('--output-file', '-o', required=True, help="location to save output parquet file")
-def get_gene_loc_table(gene_file, scaffold_list, output_file):
-    """
-    Main function to build and save the gene location table.
-
-    Args:
-    gene_file (str): Path to the gene FASTA file.
-    scaffold_list (str): Path to the scaffold list file.
-    output_file (str): Path to save the output Parquet file.
-    """
-    scaffolds=set(pl.read_csv(pathlib.Path(scaffold_list), has_header=False,separator="\t").select(pl.col("column_1")).to_series().to_list())
-    gene_locs=pf.build_gene_loc_table(pathlib.Path(gene_file), scaffolds)
-    gene_locs.write_parquet(pathlib.Path(output_file))
-
+    gene_locs.write_csv(pathlib.Path(output_file), separator="\t", include_header=False)
 
 
 @cli.group()

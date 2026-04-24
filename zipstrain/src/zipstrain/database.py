@@ -14,17 +14,7 @@ import json
 import copy
 from pydantic import BaseModel, Field, field_validator,ConfigDict
 
-_DEPRECATED_GENOME_COMPARE_CONFIG_FIELDS = {"null_model_p_value", "null_model_loc"}
-_DEPRECATED_GENE_COMPARE_CONFIG_FIELDS = {"null_model_loc"}
 _PROFILE_DB_COLUMNS = ["profile_name", "profile_location", "reference_db_id", "gene_db_id"]
-
-
-def _drop_deprecated_fields(config_dict: dict, deprecated_fields: set[str]) -> dict:
-    """Return config dict without deprecated keys."""
-    cleaned = copy.copy(config_dict)
-    for field in deprecated_fields:
-        cleaned.pop(field, None)
-    return cleaned
 
 
 class ProfileItem(BaseModel):
@@ -259,19 +249,12 @@ class GenomeComparisonConfig(BaseModel):
 
     @classmethod
     def from_dict(cls, config_dict: dict) -> GenomeComparisonConfig:
-        """Create a GenomeComparisonConfig from a dictionary.
-
-        Deprecated fields are ignored for backward compatibility.
-        """
-        cleaned_config = _drop_deprecated_fields(config_dict, _DEPRECATED_GENOME_COMPARE_CONFIG_FIELDS)
-        return cls(**cleaned_config)
+        """Create a GenomeComparisonConfig from a dictionary."""
+        return cls(**config_dict)
 
     @classmethod
     def from_json(cls,json_file_dir:str)->GenomeComparisonConfig:
-        """Create a GenomeComparisonConfig instance from a json file.
-
-        Deprecated fields are ignored for backward compatibility.
-        """
+        """Create a GenomeComparisonConfig instance from a json file."""
         with open(json_file_dir, 'r') as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
@@ -369,19 +352,12 @@ class GeneComparisonConfig(BaseModel):
 
     @classmethod
     def from_dict(cls, config_dict: dict) -> GeneComparisonConfig:
-        """Create a GeneComparisonConfig from a dictionary.
-
-        Deprecated fields are ignored for backward compatibility.
-        """
-        cleaned_config = _drop_deprecated_fields(config_dict, _DEPRECATED_GENE_COMPARE_CONFIG_FIELDS)
-        return cls(**cleaned_config)
+        """Create a GeneComparisonConfig from a dictionary."""
+        return cls(**config_dict)
 
     @classmethod
     def from_json(cls,json_file_dir:str)->GeneComparisonConfig:
-        """Create a GeneComparisonConfig instance from a json file.
-
-        Deprecated fields are ignored for backward compatibility.
-        """
+        """Create a GeneComparisonConfig instance from a json file."""
         with open(json_file_dir, 'r') as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)

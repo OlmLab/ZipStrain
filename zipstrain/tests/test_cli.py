@@ -630,7 +630,6 @@ def test_gene_tools_commands_exist_under_utilities():
     result = runner.invoke(cli.cli, ["utilities", "--help"])
     assert result.exit_code == 0
     assert "gene-range-table" in result.output
-    assert "gene-loc-table" in result.output
 
 
 def test_gene_tools_group_removed():

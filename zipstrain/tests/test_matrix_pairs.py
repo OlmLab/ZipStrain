@@ -424,8 +424,6 @@ def test_cli_matrix_build_and_compare(tmp_path):
             str(matrix_db),
             "--memory-limit-gb",
             "1",
-            "--commit-batch-gb",
-            "0.01",
         ],
     )
     assert build_result.exit_code == 0
