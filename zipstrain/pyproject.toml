@@ -1,6 +1,6 @@
 [project]
 name = "zipstrain"
-version = "0.9.3"
+version = "0.9.4"
 description = ""
 authors = [
     {name = "ParsaGhadermazi",email = "54489047+ParsaGhadermazi@users.noreply.github.com"}
@@ -32,7 +32,6 @@ test = [
 
 [project.scripts]
 zipstrain = "zipstrain.cli:cli"
-zipstrain-light = "zipstrain.light_cli:cli"
 
 [tool.poetry]
 packages = [{include = "zipstrain", from = "src"}]

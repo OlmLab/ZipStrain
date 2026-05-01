@@ -1,6 +1,5 @@
 from zipstrain import profile
 from zipstrain import cli as cli_module
-from zipstrain import light
 import polars as pl
 import pytest
 from click.testing import CliRunner
@@ -379,26 +378,3 @@ def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monk
     prof = pl.read_parquet(out_dir / "sample_profile.parquet")
     assert set(prof["gene"].unique().to_list()) == {"NA"}
 
-
-def test_light_profile_from_bam_uses_profile_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    _install_fake_profile_subprocess(monkeypatch)
-    bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
-
-    duckdb_dir = tmp_path / "light_duckdb"
-    duckdb_summary = light.build_light_profile_bundle_from_bam(
-        bam_file=bam_file,
-        bed_file=bed_file,
-        gene_range_table=gene_range_table,
-        stb_file=stb_file,
-        null_model=null_model_file,
-        output_dir=duckdb_dir,
-        min_cov=5,
-        include_gene_stats=True,
-        include_genome_stats=True,
-        num_chunks=2,
-        max_concurrency=2,
-    )
-    assert duckdb_summary.coverage_rows == 5
-    assert duckdb_summary.gene_stats_rows > 0
-    assert duckdb_summary.genome_stats_rows > 0
-    assert (duckdb_dir / "profile.duckdb").exists()

@@ -83,6 +83,41 @@ class ScaffoldSpec:
 
 
 @dataclass(frozen=True)
+class GenomeSpec:
+    genome_idx: int
+    genome: str
+    matrix_length: int
+    true_length: int
+    scaffold_count: int
+
+
+@dataclass(frozen=True)
+class GenomeScaffoldOffset:
+    genome_idx: int
+    scaffold_ordinal: int
+    genome: str
+    chrom: str
+    axis_start: int
+    axis_end: int
+    index_base: int
+    vector_length: int
+    min_pos: int
+    max_pos: int
+
+
+@dataclass(frozen=True)
+class GeneBoundary:
+    genome_idx: int
+    gene: str
+    genome: str
+    chrom: str
+    axis_start: int
+    axis_end: int
+    start_pos: int
+    end_pos: int
+
+
+@dataclass(frozen=True)
 class MatrixDbSummary:
     output_file: Path
     profile_files: int
@@ -337,6 +372,99 @@ def _collect_scaffold_specs_from_bed(
     return specs
 
 
+def _build_genome_specs(
+    scaffolds: list[ScaffoldSpec],
+) -> tuple[list[GenomeSpec], list[GenomeScaffoldOffset]]:
+    genomes: list[GenomeSpec] = []
+    offsets: list[GenomeScaffoldOffset] = []
+    grouped: dict[str, list[ScaffoldSpec]] = {}
+    for spec in scaffolds:
+        grouped.setdefault(spec.genome, []).append(spec)
+
+    for genome_idx, genome_name in enumerate(sorted(grouped)):
+        genome_scaffolds = sorted(grouped[genome_name], key=lambda spec: (spec.chrom, spec.index_base))
+        axis_cursor = 0
+        true_length = 0
+        for ordinal, spec in enumerate(genome_scaffolds):
+            axis_start = axis_cursor
+            axis_end = axis_start + spec.vector_length - 1
+            offsets.append(
+                GenomeScaffoldOffset(
+                    genome_idx=genome_idx,
+                    scaffold_ordinal=ordinal,
+                    genome=genome_name,
+                    chrom=spec.chrom,
+                    axis_start=axis_start,
+                    axis_end=axis_end,
+                    index_base=spec.index_base,
+                    vector_length=spec.vector_length,
+                    min_pos=spec.min_pos,
+                    max_pos=spec.max_pos,
+                )
+            )
+            axis_cursor = axis_end + 1
+            true_length += spec.vector_length
+            if ordinal < len(genome_scaffolds) - 1:
+                axis_cursor += 1
+        genomes.append(
+            GenomeSpec(
+                genome_idx=genome_idx,
+                genome=genome_name,
+                matrix_length=axis_cursor,
+                true_length=true_length,
+                scaffold_count=len(genome_scaffolds),
+            )
+        )
+    return genomes, offsets
+
+
+def _collect_gene_boundaries(
+    profile_paths: list[Path],
+    scaffold_offsets: list[GenomeScaffoldOffset],
+    genome: Optional[str] = None,
+) -> list[GeneBoundary]:
+    if not scaffold_offsets:
+        return []
+    scope = pl.lit(True)
+    if genome is not None:
+        scope = scope & (pl.col("genome") == genome)
+    scaffold_lookup = {(spec.genome, spec.chrom): spec for spec in scaffold_offsets}
+    frame = (
+        pl.scan_parquet([str(path) for path in profile_paths])
+        .filter(scope & (pl.col("gene") != "NA"))
+        .select("genome", "chrom", "gene", "pos")
+        .group_by(["genome", "chrom", "gene"])
+        .agg(
+            pl.col("pos").min().cast(pl.Int64).alias("start_pos"),
+            pl.col("pos").max().cast(pl.Int64).alias("end_pos"),
+        )
+        .collect(engine="streaming")
+    )
+    if frame.height == 0:
+        return []
+    boundaries: list[GeneBoundary] = []
+    for row in frame.iter_rows(named=True):
+        key = (str(row["genome"]), str(row["chrom"]))
+        spec = scaffold_lookup.get(key)
+        if spec is None:
+            continue
+        start_pos = int(row["start_pos"])
+        end_pos = int(row["end_pos"])
+        boundaries.append(
+            GeneBoundary(
+                genome_idx=spec.genome_idx,
+                gene=str(row["gene"]),
+                genome=str(row["genome"]),
+                chrom=str(row["chrom"]),
+                axis_start=spec.axis_start + (start_pos - spec.index_base),
+                axis_end=spec.axis_start + (end_pos - spec.index_base),
+                start_pos=start_pos,
+                end_pos=end_pos,
+            )
+        )
+    return boundaries
+
+
 def _pack_matrix(matrix: np.ndarray) -> bytes:
     return np.ascontiguousarray(matrix).tobytes()
 
@@ -366,9 +494,9 @@ def _estimate_sample_scaffold_bytes(vector_length: int, dtype_name: str) -> int:
     return vector_length * 4 * np.dtype(COUNT_DTYPES[dtype_name]).itemsize
 
 
-def _estimate_builder_python_peak_bytes(vector_length: int, dtype_name: str) -> int:
-    matrix_bytes = _estimate_sample_scaffold_bytes(vector_length, dtype_name)
-    temp_bytes = vector_length * MATRIX_BUILD_TEMP_BYTES_PER_POSITION
+def _estimate_builder_python_peak_bytes(matrix_length: int, dtype_name: str) -> int:
+    matrix_bytes = _estimate_sample_scaffold_bytes(matrix_length, dtype_name)
+    temp_bytes = matrix_length * MATRIX_BUILD_TEMP_BYTES_PER_POSITION
     return matrix_bytes * 2 + temp_bytes + MATRIX_BUILD_FIXED_HEADROOM_BYTES
 
 
@@ -382,26 +510,26 @@ def _duckdb_memory_limit_setting(memory_limit_bytes: int) -> str:
 
 
 def _plan_matrix_build_memory(
-    scaffolds: list[ScaffoldSpec],
+    genomes: list[GenomeSpec],
     count_dtype: str,
     memory_limit_bytes: int,
     commit_batch_gb: Optional[float] = None,
 ) -> MatrixBuildMemoryPlan:
-    if not scaffolds:
-        raise ValueError("No scaffolds were provided for matrix DB build.")
+    if not genomes:
+        raise ValueError("No genomes were provided for matrix DB build.")
 
     limiting_spec = max(
-        scaffolds,
-        key=lambda spec: _estimate_builder_python_peak_bytes(spec.vector_length, count_dtype),
+        genomes,
+        key=lambda spec: _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype),
     )
     estimated_python_peak_bytes = _estimate_builder_python_peak_bytes(
-        limiting_spec.vector_length,
+        limiting_spec.matrix_length,
         count_dtype,
     )
 
     if estimated_python_peak_bytes + MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES > memory_limit_bytes:
         raise MemoryError(
-            f"Scaffold {limiting_spec.chrom} is estimated to require about "
+            f"Genome {limiting_spec.genome} is estimated to require about "
             f"{_format_memory_bytes(estimated_python_peak_bytes)} of Python-side working memory, "
             f"which leaves less than {_format_memory_bytes(MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES)} "
             f"for DuckDB under the total limit of {_format_memory_bytes(memory_limit_bytes)}. "
@@ -439,7 +567,7 @@ def _plan_matrix_build_memory(
         duckdb_memory_limit_bytes=duckdb_memory_limit_bytes,
         commit_batch_bytes=commit_batch_bytes,
         estimated_python_peak_bytes=estimated_python_peak_bytes,
-        limiting_scaffold=limiting_spec.chrom,
+        limiting_scaffold=limiting_spec.genome,
     )
 
 
@@ -463,27 +591,56 @@ def _init_matrix_db_schema(conn: duckdb.DuckDBPyConnection) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE matrix_db_scaffolds (
-          scaffold_idx INTEGER PRIMARY KEY,
-          genome VARCHAR NOT NULL,
-          chrom VARCHAR NOT NULL,
-          index_base BIGINT NOT NULL,
-          vector_length BIGINT NOT NULL,
-          min_pos BIGINT NOT NULL,
-          max_pos BIGINT NOT NULL
+        CREATE TABLE matrix_db_genomes (
+          genome_idx INTEGER PRIMARY KEY,
+          genome VARCHAR NOT NULL UNIQUE,
+          matrix_length BIGINT NOT NULL,
+          true_length BIGINT NOT NULL,
+          scaffold_count INTEGER NOT NULL
         )
         """
     )
     conn.execute(
         """
-        CREATE TABLE matrix_db_sample_scaffold_matrices (
+        CREATE TABLE matrix_db_genome_scaffolds (
+          genome_idx INTEGER NOT NULL,
+          scaffold_ordinal INTEGER NOT NULL,
+          genome VARCHAR NOT NULL,
+          chrom VARCHAR NOT NULL,
+          axis_start BIGINT NOT NULL,
+          axis_end BIGINT NOT NULL,
+          index_base BIGINT NOT NULL,
+          vector_length BIGINT NOT NULL,
+          min_pos BIGINT NOT NULL,
+          max_pos BIGINT NOT NULL,
+          PRIMARY KEY (genome_idx, scaffold_ordinal)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE matrix_db_genome_genes (
+          genome_idx INTEGER NOT NULL,
+          gene VARCHAR NOT NULL,
+          genome VARCHAR NOT NULL,
+          chrom VARCHAR NOT NULL,
+          axis_start BIGINT NOT NULL,
+          axis_end BIGINT NOT NULL,
+          start_pos BIGINT NOT NULL,
+          end_pos BIGINT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE matrix_db_sample_genome_matrices (
           sample_idx INTEGER NOT NULL,
-          scaffold_idx INTEGER NOT NULL,
+          genome_idx INTEGER NOT NULL,
           count_dtype VARCHAR NOT NULL,
           matrix_rows BIGINT NOT NULL,
           matrix_cols INTEGER NOT NULL,
           matrix_blob BLOB NOT NULL,
-          PRIMARY KEY (sample_idx, scaffold_idx)
+          PRIMARY KEY (sample_idx, genome_idx)
         )
         """
     )
@@ -512,37 +669,45 @@ def _restart_matrix_build_transaction(
     return conn
 
 
-def _load_profile_scaffold_matrix(
+def _load_profile_genome_matrix(
     profile_path: Path,
-    spec: ScaffoldSpec,
+    genome_spec: GenomeSpec,
+    genome_offsets: list[GenomeScaffoldOffset],
     count_dtype: str,
     min_cov: int,
-) -> Optional[np.ndarray]:
+) -> np.ndarray:
     np_dtype = COUNT_DTYPES[count_dtype]
+    matrix = np.zeros((genome_spec.matrix_length, 4), dtype=np_dtype)
     frame = (
         pl.scan_parquet(profile_path)
-        .filter((pl.col("genome") == spec.genome) & (pl.col("chrom") == spec.chrom))
-        .select("pos", "A", "T", "C", "G")
+        .filter(pl.col("genome") == genome_spec.genome)
+        .select("chrom", "pos", "A", "T", "C", "G")
         .collect(engine="streaming")
     )
     if frame.height == 0:
-        return None
+        return matrix
     coverage = (
         frame["A"].cast(pl.Int64)
         + frame["T"].cast(pl.Int64)
         + frame["C"].cast(pl.Int64)
         + frame["G"].cast(pl.Int64)
     )
-    keep_mask = coverage >= min_cov
-    if not keep_mask.any():
-        return None
-    frame = frame.filter(keep_mask)
-    matrix = np.zeros((spec.vector_length, 4), dtype=np_dtype)
-    pos = frame["pos"].to_numpy().astype(np.int64) - spec.index_base
-    matrix[pos, 0] = (frame["A"].to_numpy() > 0).astype(np_dtype, copy=False)
-    matrix[pos, 1] = (frame["T"].to_numpy() > 0).astype(np_dtype, copy=False)
-    matrix[pos, 2] = (frame["C"].to_numpy() > 0).astype(np_dtype, copy=False)
-    matrix[pos, 3] = (frame["G"].to_numpy() > 0).astype(np_dtype, copy=False)
+    frame = frame.filter(coverage >= min_cov)
+    if frame.height == 0:
+        return matrix
+    for offset in genome_offsets:
+        scaffold_frame = frame.filter(pl.col("chrom") == offset.chrom)
+        if scaffold_frame.height == 0:
+            continue
+        axis_pos = (
+            scaffold_frame["pos"].to_numpy().astype(np.int64, copy=False)
+            - offset.index_base
+            + offset.axis_start
+        )
+        matrix[axis_pos, 0] = (scaffold_frame["A"].to_numpy() > 0).astype(np_dtype, copy=False)
+        matrix[axis_pos, 1] = (scaffold_frame["T"].to_numpy() > 0).astype(np_dtype, copy=False)
+        matrix[axis_pos, 2] = (scaffold_frame["C"].to_numpy() > 0).astype(np_dtype, copy=False)
+        matrix[axis_pos, 3] = (scaffold_frame["G"].to_numpy() > 0).astype(np_dtype, copy=False)
     return matrix
 
 
@@ -568,21 +733,26 @@ def build_matrix_db(
             bed_file=Path(bed_file),
             genome=genome_scope,
         )
+    genomes, genome_scaffolds = _build_genome_specs(scaffolds)
+    genome_gene_boundaries = _collect_gene_boundaries(
+        profile_paths=profile_paths,
+        scaffold_offsets=genome_scaffolds,
+        genome=genome_scope,
+    )
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
     memory_plan = _plan_matrix_build_memory(
-        scaffolds=scaffolds,
+        genomes=genomes,
         count_dtype=count_dtype,
         memory_limit_bytes=memory_limit_bytes,
         commit_batch_gb=commit_batch_gb,
     )
-    commit_batch_bytes = memory_plan.commit_batch_bytes
 
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
     if output_file.exists():
         raise FileExistsError(f"Output file already exists: {output_file}")
 
-    total_work = len(profile_paths) * len(scaffolds)
+    total_work = len(profile_paths) * len(genomes)
     completed_work = 0
 
     if progress_callback is not None:
@@ -609,40 +779,79 @@ def build_matrix_db(
             ("profile_format", "classic_zipstrain_profile_parquet"),
             ("genome_scope", genome_scope or "all"),
             ("count_dtype", count_dtype),
-            ("layout", "per_sample_per_scaffold_dense_matrix"),
+            ("layout", "per_sample_per_genome_dense_matrix"),
             ("matrix_value_semantics", FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS),
             ("coverage_filter_min_cov", str(MATRIX_BUILD_MIN_COV)),
             ("memory_limit_gb", str(memory_limit_gb)),
             ("duckdb_memory_limit_gb", f"{memory_plan.duckdb_memory_limit_bytes / (1024 ** 3):.6f}"),
-            ("effective_commit_batch_gb", f"{commit_batch_bytes / (1024 ** 3):.6f}"),
+            ("effective_commit_batch_gb", f"{memory_plan.commit_batch_bytes / (1024 ** 3):.6f}"),
             ("estimated_python_peak_gb", f"{memory_plan.estimated_python_peak_bytes / (1024 ** 3):.6f}"),
+            ("gene_boundary_source", "profile_observed_span"),
+            ("separator_rows_between_scaffolds", "1"),
         ]
         sample_rows = [(idx, path.stem, str(path.resolve())) for idx, path in enumerate(profile_paths)]
+        genome_rows = [
+            (
+                spec.genome_idx,
+                spec.genome,
+                spec.matrix_length,
+                spec.true_length,
+                spec.scaffold_count,
+            )
+            for spec in genomes
+        ]
         scaffold_rows = [
             (
-                spec.scaffold_idx,
+                spec.genome_idx,
+                spec.scaffold_ordinal,
                 spec.genome,
                 spec.chrom,
+                spec.axis_start,
+                spec.axis_end,
                 spec.index_base,
                 spec.vector_length,
                 spec.min_pos,
                 spec.max_pos,
             )
-            for spec in scaffolds
+            for spec in genome_scaffolds
+        ]
+        gene_rows = [
+            (
+                boundary.genome_idx,
+                boundary.gene,
+                boundary.genome,
+                boundary.chrom,
+                boundary.axis_start,
+                boundary.axis_end,
+                boundary.start_pos,
+                boundary.end_pos,
+            )
+            for boundary in genome_gene_boundaries
         ]
         conn.executemany("INSERT INTO matrix_db_metadata VALUES (?, ?)", metadata_rows)
         conn.executemany("INSERT INTO matrix_db_samples VALUES (?, ?, ?)", sample_rows)
         conn.executemany(
-            "INSERT INTO matrix_db_scaffolds VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO matrix_db_genomes VALUES (?, ?, ?, ?, ?)",
+            genome_rows,
+        )
+        conn.executemany(
+            "INSERT INTO matrix_db_genome_scaffolds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             scaffold_rows,
         )
+        if gene_rows:
+            conn.executemany(
+                "INSERT INTO matrix_db_genome_genes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                gene_rows,
+            )
         conn = _restart_matrix_build_transaction(conn, output_file, memory_plan.duckdb_memory_limit_bytes)
 
         stored_rows = 0
-        batch_bytes = 0
+        scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
+        for offset in genome_scaffolds:
+            scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
         for sample_idx, profile_path in enumerate(profile_paths):
             sample_name = profile_path.stem
-            for spec in scaffolds:
+            for genome_spec in genomes:
                 if progress_callback is not None:
                     progress_callback(
                         {
@@ -650,55 +859,40 @@ def build_matrix_db(
                             "completed": completed_work,
                             "total": total_work,
                             "sample_name": sample_name,
-                            "genome": spec.genome,
-                            "scaffold": spec.chrom,
+                            "genome": genome_spec.genome,
+                            "scaffold": "",
                             "stored_rows": stored_rows,
                         }
                     )
-                estimated_python_peak = _estimate_builder_python_peak_bytes(spec.vector_length, count_dtype)
+                estimated_python_peak = _estimate_builder_python_peak_bytes(genome_spec.matrix_length, count_dtype)
                 if estimated_python_peak + memory_plan.duckdb_memory_limit_bytes > memory_limit_bytes:
                     raise MemoryError(
-                        f"Scaffold {spec.chrom} for sample {profile_path.name} is estimated to use about "
+                        f"Genome {genome_spec.genome} for sample {profile_path.name} is estimated to use about "
                         f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory plus "
                         f"{_format_memory_bytes(memory_plan.duckdb_memory_limit_bytes)} for DuckDB, "
                         f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
                     )
-                matrix = _load_profile_scaffold_matrix(
+                matrix = _load_profile_genome_matrix(
                     profile_path=profile_path,
-                    spec=spec,
+                    genome_spec=genome_spec,
+                    genome_offsets=scaffolds_by_genome_idx[genome_spec.genome_idx],
                     count_dtype=count_dtype,
                     min_cov=MATRIX_BUILD_MIN_COV,
                 )
-                if matrix is None:
-                    completed_work += 1
-                    if progress_callback is not None:
-                        progress_callback(
-                            {
-                                "phase": "advance",
-                                "completed": completed_work,
-                                "total": total_work,
-                                "sample_name": sample_name,
-                                "genome": spec.genome,
-                                "scaffold": spec.chrom,
-                                "stored_rows": stored_rows,
-                            }
-                        )
-                    continue
-                matrix_blob = _pack_matrix(matrix)
                 conn.execute(
-                    "INSERT INTO matrix_db_sample_scaffold_matrices VALUES (?, ?, ?, ?, ?, ?)",
+                    """
+                    INSERT INTO matrix_db_sample_genome_matrices
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
                     [
                         sample_idx,
-                        spec.scaffold_idx,
+                        genome_spec.genome_idx,
                         count_dtype,
-                        matrix.shape[0],
-                        matrix.shape[1],
-                        matrix_blob,
+                        int(matrix.shape[0]),
+                        int(matrix.shape[1]),
+                        _pack_matrix(matrix),
                     ],
                 )
-                batch_bytes += len(matrix_blob)
-                del matrix_blob
-                del matrix
                 stored_rows += 1
                 completed_work += 1
                 if progress_callback is not None:
@@ -708,25 +902,16 @@ def build_matrix_db(
                             "completed": completed_work,
                             "total": total_work,
                             "sample_name": sample_name,
-                            "genome": spec.genome,
-                            "scaffold": spec.chrom,
+                            "genome": genome_spec.genome,
+                            "scaffold": "",
                             "stored_rows": stored_rows,
                         }
                     )
-                if batch_bytes >= commit_batch_bytes:
-                    conn = _restart_matrix_build_transaction(
-                        conn,
-                        output_file,
-                        memory_plan.duckdb_memory_limit_bytes,
-                    )
-                    batch_bytes = 0
-            if batch_bytes > 0:
                 conn = _restart_matrix_build_transaction(
                     conn,
                     output_file,
                     memory_plan.duckdb_memory_limit_bytes,
                 )
-                batch_bytes = 0
         conn.execute("COMMIT")
         build_succeeded = True
     except Exception:
@@ -778,84 +963,128 @@ def _load_matrix_db_samples(conn: duckdb.DuckDBPyConnection) -> list[tuple[int, 
     ]
 
 
-def _load_matrix_db_scaffolds(conn: duckdb.DuckDBPyConnection, genome: Optional[str] = None) -> list[ScaffoldSpec]:
+def _load_matrix_db_genomes(conn: duckdb.DuckDBPyConnection, genome: Optional[str] = None) -> list[GenomeSpec]:
     if genome is None:
         rows = conn.execute(
             """
-            SELECT scaffold_idx, genome, chrom, index_base, vector_length, min_pos, max_pos
-            FROM matrix_db_scaffolds
-            ORDER BY scaffold_idx
+            SELECT genome_idx, genome, matrix_length, true_length, scaffold_count
+            FROM matrix_db_genomes
+            ORDER BY genome_idx
             """
         ).fetchall()
     else:
         rows = conn.execute(
             """
-            SELECT scaffold_idx, genome, chrom, index_base, vector_length, min_pos, max_pos
-            FROM matrix_db_scaffolds
+            SELECT genome_idx, genome, matrix_length, true_length, scaffold_count
+            FROM matrix_db_genomes
             WHERE genome = ?
-            ORDER BY scaffold_idx
+            ORDER BY genome_idx
             """,
             [genome],
         ).fetchall()
     return [
-        ScaffoldSpec(
-            scaffold_idx=int(scaffold_idx),
+        GenomeSpec(
+            genome_idx=int(genome_idx),
+            genome=str(genome_name),
+            matrix_length=int(matrix_length),
+            true_length=int(true_length),
+            scaffold_count=int(scaffold_count),
+        )
+        for genome_idx, genome_name, matrix_length, true_length, scaffold_count in rows
+    ]
+
+
+def _load_matrix_db_genome_scaffolds(
+    conn: duckdb.DuckDBPyConnection,
+    genome_idx: Optional[int] = None,
+    genome: Optional[str] = None,
+) -> list[GenomeScaffoldOffset]:
+    if genome_idx is None and genome is None:
+        rows = conn.execute(
+            """
+            SELECT genome_idx, scaffold_ordinal, genome, chrom, axis_start, axis_end, index_base, vector_length, min_pos, max_pos
+            FROM matrix_db_genome_scaffolds
+            ORDER BY genome_idx, scaffold_ordinal
+            """
+        ).fetchall()
+    elif genome_idx is not None:
+        rows = conn.execute(
+            """
+            SELECT genome_idx, scaffold_ordinal, genome, chrom, axis_start, axis_end, index_base, vector_length, min_pos, max_pos
+            FROM matrix_db_genome_scaffolds
+            WHERE genome_idx = ?
+            ORDER BY scaffold_ordinal
+            """,
+            [genome_idx],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT genome_idx, scaffold_ordinal, genome, chrom, axis_start, axis_end, index_base, vector_length, min_pos, max_pos
+            FROM matrix_db_genome_scaffolds
+            WHERE genome = ?
+            ORDER BY scaffold_ordinal
+            """,
+            [genome],
+        ).fetchall()
+    return [
+        GenomeScaffoldOffset(
+            genome_idx=int(genome_idx_val),
+            scaffold_ordinal=int(scaffold_ordinal),
             genome=str(genome_name),
             chrom=str(chrom),
+            axis_start=int(axis_start),
+            axis_end=int(axis_end),
             index_base=int(index_base),
             vector_length=int(vector_length),
             min_pos=int(min_pos),
             max_pos=int(max_pos),
         )
-        for scaffold_idx, genome_name, chrom, index_base, vector_length, min_pos, max_pos in rows
+        for genome_idx_val, scaffold_ordinal, genome_name, chrom, axis_start, axis_end, index_base, vector_length, min_pos, max_pos in rows
     ]
 
 
-def _load_sample_scaffold_matrices(
+def _load_sample_genome_matrices(
     conn: duckdb.DuckDBPyConnection,
-    scaffold_idx: int,
+    genome_idx: int,
     sample_ids: list[int],
-    vector_length: int,
-) -> tuple[str, dict[int, np.ndarray]]:
+    matrix_length: int,
+    dtype_name: str,
+) -> dict[int, np.ndarray]:
     if not sample_ids:
         raise ValueError("sample_ids must not be empty")
+    np_dtype = COUNT_DTYPES[dtype_name]
     rows = conn.execute(
         f"""
         SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
-        FROM matrix_db_sample_scaffold_matrices
-        WHERE scaffold_idx = ? AND sample_idx IN ({','.join(['?'] * len(sample_ids))})
+        FROM matrix_db_sample_genome_matrices
+        WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(sample_ids))})
         ORDER BY sample_idx
         """,
-        [scaffold_idx, *sample_ids],
+        [genome_idx, *sample_ids],
     ).fetchall()
-    dtype_name = ""
+    if not rows:
+        return {}
     matrices: dict[int, np.ndarray] = {}
-    for sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
-        dtype_name = str(count_dtype)
+    for sample_idx, stored_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
+        rows_int = int(matrix_rows)
+        cols_int = int(matrix_cols)
+        if rows_int != matrix_length or cols_int != 4:
+            raise ValueError(
+                f"Stored genome matrix shape mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
+                f"expected ({matrix_length}, 4), found ({rows_int}, {cols_int})"
+            )
+        if str(stored_dtype) != dtype_name:
+            raise ValueError(
+                f"Stored genome matrix dtype mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
+                f"expected {dtype_name}, found {stored_dtype}"
+            )
         matrices[int(sample_idx)] = _unpack_matrix(
             bytes(matrix_blob),
             dtype_name,
-            (int(matrix_rows), int(matrix_cols)),
-        )
-    if dtype_name and any(matrix.shape[0] != vector_length for matrix in matrices.values()):
-        raise ValueError(f"Stored matrix rows do not match scaffold vector length for scaffold_idx={scaffold_idx}")
-    return dtype_name, matrices
-
-
-def _load_scaffold_count_dtype(
-    conn: duckdb.DuckDBPyConnection,
-    scaffold_idx: int,
-) -> str:
-    row = conn.execute(
-        """
-        SELECT count_dtype
-        FROM matrix_db_sample_scaffold_matrices
-        WHERE scaffold_idx = ?
-        LIMIT 1
-        """,
-        [scaffold_idx],
-    ).fetchone()
-    return "" if row is None else str(row[0])
+            (rows_int, cols_int),
+        ).astype(np_dtype, copy=False)
+    return matrices
 
 
 def _plan_chunk_sizes(
@@ -1112,7 +1341,8 @@ def _matrix_compare_reuse_target_chunks_torch(
     genome_scope: Optional[str],
     metadata: dict[str, str],
     samples: list[tuple[int, str]],
-    scaffolds: list[ScaffoldSpec],
+    genomes: list[GenomeSpec],
+    genome_scaffolds: list[GenomeScaffoldOffset],
     requested_pairs: int,
     memory_limit_bytes: int,
     memory_limit_gb: float,
@@ -1122,14 +1352,14 @@ def _matrix_compare_reuse_target_chunks_torch(
     calculations: tuple[str, ...],
     progress_callback: Optional[CompareProgressCallback] = None,
 ) -> MatrixCompareSummary:
-    total_work = requested_pairs * len(scaffolds)
+    total_work = requested_pairs * len(genomes)
     completed_work = 0
     written_rows = 0
     target_chunks = 0
     anchor_groups = max(len(samples) - 1, 0)
     dtype_name = str(metadata.get("count_dtype", "uint16"))
     default_tile_size = 0
-    max_vector_length = max(spec.vector_length for spec in scaffolds)
+    max_vector_length = max(spec.matrix_length for spec in genomes)
     global_block_size, _ = _plan_chunk_sizes(
         vector_length=max_vector_length,
         remaining_targets=len(samples),
@@ -1140,9 +1370,6 @@ def _matrix_compare_reuse_target_chunks_torch(
     )
     global_block_size = max(1, global_block_size)
     samples_by_id = {sample_idx: sample_name for sample_idx, sample_name in samples}
-    scaffolds_by_genome: dict[str, list[ScaffoldSpec]] = {}
-    for spec in scaffolds:
-        scaffolds_by_genome.setdefault(spec.genome, []).append(spec)
 
     if progress_callback is not None:
         progress_callback(
@@ -1161,8 +1388,8 @@ def _matrix_compare_reuse_target_chunks_torch(
 
     output_schema = matrix_pair_output_schema(calculations)
     with pq.ParquetWriter(output_file, output_schema, compression="zstd") as writer:
-        for genome_name in sorted(scaffolds_by_genome):
-            genome_scaffolds = scaffolds_by_genome[genome_name]
+        for spec in sorted(genomes, key=lambda item: item.genome):
+            genome_name = spec.genome
             for block_start in range(0, len(samples), global_block_size):
                 block_rows = samples[block_start:block_start + global_block_size]
                 if not block_rows:
@@ -1181,172 +1408,153 @@ def _matrix_compare_reuse_target_chunks_torch(
                 ibs_external = np.zeros((len(external_rows), len(block_rows)), dtype=np.int64) if "ibs" in calculations else None
                 ibs_internal = np.zeros((len(block_rows), len(block_rows)), dtype=np.int64) if "ibs" in calculations else None
 
-                for spec in genome_scaffolds:
-                    if progress_callback is not None:
-                        progress_callback(
-                            {
-                                "phase": "processing",
-                                "completed": completed_work,
-                                "total": total_work,
-                                "anchor_name": block_names[0],
-                                "genome": spec.genome,
-                                "scaffold": spec.chrom,
-                                "targets_completed": 0,
-                                "targets_total": len(block_ids),
-                                "target_chunks": target_chunks,
-                            }
-                        )
-                    scaffold_dtype = _load_scaffold_count_dtype(conn, spec.scaffold_idx)
-                    if not scaffold_dtype:
-                        completed_work += pair_count_for_block
-                        target_chunks += 1
-                        if progress_callback is not None:
-                            progress_callback(
-                                {
-                                    "phase": "advance",
-                                    "completed": completed_work,
-                                    "total": total_work,
-                                    "anchor_name": block_names[0],
-                                    "genome": spec.genome,
-                                    "scaffold": spec.chrom,
-                                    "targets_completed": len(block_ids),
-                                    "targets_total": len(block_ids),
-                                    "target_chunks": target_chunks,
-                                }
-                            )
-                        continue
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "processing",
+                            "completed": completed_work,
+                            "total": total_work,
+                            "anchor_name": block_names[0],
+                            "genome": spec.genome,
+                            "scaffold": "",
+                            "targets_completed": 0,
+                            "targets_total": len(block_ids),
+                            "target_chunks": target_chunks,
+                        }
+                    )
+                zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
+                tile_targets, tile_size = _plan_chunk_sizes(
+                    vector_length=spec.matrix_length,
+                    remaining_targets=len(block_ids),
+                    dtype_name=dtype_name,
+                    memory_limit_bytes=memory_limit_bytes,
+                    backend_kind=compute_backend.kind,
+                    position_tile_size=position_tile_size,
+                )
+                default_tile_size = tile_size
+                if tile_targets < len(block_ids):
+                    raise RuntimeError(
+                        "Internal target block size exceeded the planned torch chunk capacity. "
+                        "This indicates the global block planner is inconsistent."
+                    )
+                loaded_targets = _load_sample_genome_matrices(
+                    conn,
+                    genome_idx=spec.genome_idx,
+                    sample_ids=block_ids.tolist(),
+                    matrix_length=spec.matrix_length,
+                    dtype_name=dtype_name,
+                )
+                target_matrices = np.stack(
+                    [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
+                    axis=2,
+                )
+                target_torch = _prepare_torch_matrix(
+                    compute_backend=compute_backend,
+                    matrix=target_matrices,
+                    matrix_value_semantics=matrix_value_semantics,
+                )
+                processed_pairs_for_block = 0
 
-                    zero_matrix = np.zeros((spec.vector_length, 4), dtype=COUNT_DTYPES[dtype_name])
-                    tile_targets, tile_size = _plan_chunk_sizes(
-                        vector_length=spec.vector_length,
-                        remaining_targets=len(block_ids),
-                        dtype_name=dtype_name,
-                        memory_limit_bytes=memory_limit_bytes,
-                        backend_kind=compute_backend.kind,
-                        position_tile_size=position_tile_size,
-                    )
-                    default_tile_size = tile_size
-                    if tile_targets < len(block_ids):
-                        raise RuntimeError(
-                            "Internal target block size exceeded the planned torch chunk capacity. "
-                            "This indicates the global block planner is inconsistent."
-                        )
-                    _dtype, loaded_targets = _load_sample_scaffold_matrices(
+                for external_pos, (anchor_idx, _anchor_name) in enumerate(external_rows):
+                    loaded_anchor = _load_sample_genome_matrices(
                         conn,
-                        scaffold_idx=spec.scaffold_idx,
-                        sample_ids=block_ids.tolist(),
-                        vector_length=spec.vector_length,
+                        genome_idx=spec.genome_idx,
+                        sample_ids=[anchor_idx],
+                        matrix_length=spec.matrix_length,
+                        dtype_name=dtype_name,
                     )
-                    target_matrices = np.stack(
-                        [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
-                        axis=2,
-                    )
-                    target_torch = _prepare_torch_matrix(
+                    anchor_matrix = loaded_anchor.get(anchor_idx, zero_matrix)
+                    anchor_torch = _prepare_torch_matrix(
                         compute_backend=compute_backend,
-                        matrix=target_matrices,
+                        matrix=anchor_matrix,
                         matrix_value_semantics=matrix_value_semantics,
                     )
-                    processed_pairs_for_block = 0
-
-                    for external_pos, (anchor_idx, _anchor_name) in enumerate(external_rows):
-                        _anchor_dtype, loaded_anchor = _load_sample_scaffold_matrices(
-                            conn,
-                            scaffold_idx=spec.scaffold_idx,
-                            sample_ids=[anchor_idx],
-                            vector_length=spec.vector_length,
-                        )
-                        anchor_matrix = loaded_anchor.get(anchor_idx, zero_matrix)
-                        anchor_torch = _prepare_torch_matrix(
-                            compute_backend=compute_backend,
-                            matrix=anchor_matrix,
-                            matrix_value_semantics=matrix_value_semantics,
-                        )
-                        total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
-                            compute_backend=compute_backend,
-                            anchor_torch=anchor_torch,
-                            target_torch=target_torch,
-                            vector_length=spec.vector_length,
-                            tile_size=tile_size,
-                            matrix_value_semantics=matrix_value_semantics,
-                            min_cov=min_cov,
-                            need_ibs="ibs" in calculations,
-                        )
-                        totals_external[external_pos, :] += total_inc
-                        shared_external[external_pos, :] += shared_inc
-                        if ibs_external is not None and ibs_inc is not None:
-                            ibs_external[external_pos, :] = np.maximum(ibs_external[external_pos, :], ibs_inc)
-                        processed_pairs_for_block += len(block_ids)
-                        completed_work += len(block_ids)
-                        if progress_callback is not None:
-                            progress_callback(
-                                {
-                                    "phase": "advance",
-                                    "completed": completed_work,
-                                    "total": total_work,
-                                    "anchor_name": samples_by_id[anchor_idx],
-                                    "genome": spec.genome,
-                                    "scaffold": spec.chrom,
-                                    "targets_completed": external_pos + 1,
-                                    "targets_total": len(external_rows) + len(block_ids) - 1,
-                                    "target_chunks": target_chunks,
-                                }
-                            )
-
-                    for local_anchor_pos in range(len(block_ids) - 1):
-                        total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
-                            compute_backend=compute_backend,
-                            anchor_torch=target_torch[:, :, local_anchor_pos],
-                            target_torch=target_torch[:, :, local_anchor_pos + 1:],
-                            vector_length=spec.vector_length,
-                            tile_size=tile_size,
-                            matrix_value_semantics=matrix_value_semantics,
-                            min_cov=min_cov,
-                            need_ibs="ibs" in calculations,
-                        )
-                        totals_internal[local_anchor_pos, local_anchor_pos + 1:] += total_inc
-                        shared_internal[local_anchor_pos, local_anchor_pos + 1:] += shared_inc
-                        if ibs_internal is not None and ibs_inc is not None:
-                            ibs_internal[local_anchor_pos, local_anchor_pos + 1:] = np.maximum(
-                                ibs_internal[local_anchor_pos, local_anchor_pos + 1:],
-                                ibs_inc,
-                            )
-                        remaining_targets = len(block_ids) - local_anchor_pos - 1
-                        processed_pairs_for_block += remaining_targets
-                        completed_work += remaining_targets
-                        if progress_callback is not None:
-                            progress_callback(
-                                {
-                                    "phase": "advance",
-                                    "completed": completed_work,
-                                    "total": total_work,
-                                    "anchor_name": block_names[local_anchor_pos],
-                                    "genome": spec.genome,
-                                    "scaffold": spec.chrom,
-                                    "targets_completed": local_anchor_pos + 1,
-                                    "targets_total": len(block_ids) - 1,
-                                    "target_chunks": target_chunks,
-                                }
-                            )
-
-                    if processed_pairs_for_block != pair_count_for_block:
-                        raise RuntimeError(
-                            "Torch block compare progress accounting drifted from the expected pair count."
-                        )
-                    target_chunks += 1
+                    total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
+                        compute_backend=compute_backend,
+                        anchor_torch=anchor_torch,
+                        target_torch=target_torch,
+                        vector_length=spec.matrix_length,
+                        tile_size=tile_size,
+                        matrix_value_semantics=matrix_value_semantics,
+                        min_cov=min_cov,
+                        need_ibs="ibs" in calculations,
+                    )
+                    totals_external[external_pos, :] += total_inc
+                    shared_external[external_pos, :] += shared_inc
+                    if ibs_external is not None and ibs_inc is not None:
+                        ibs_external[external_pos, :] = np.maximum(ibs_external[external_pos, :], ibs_inc)
+                    processed_pairs_for_block += len(block_ids)
+                    completed_work += len(block_ids)
                     if progress_callback is not None:
                         progress_callback(
                             {
                                 "phase": "advance",
                                 "completed": completed_work,
                                 "total": total_work,
-                                "anchor_name": block_names[0],
+                                "anchor_name": samples_by_id[anchor_idx],
                                 "genome": spec.genome,
-                                "scaffold": spec.chrom,
-                                "targets_completed": len(block_ids),
-                                "targets_total": len(block_ids),
+                                "scaffold": "",
+                                "targets_completed": external_pos + 1,
+                                "targets_total": len(external_rows) + len(block_ids) - 1,
                                 "target_chunks": target_chunks,
                             }
                         )
+
+                for local_anchor_pos in range(len(block_ids) - 1):
+                    total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
+                        compute_backend=compute_backend,
+                        anchor_torch=target_torch[:, :, local_anchor_pos],
+                        target_torch=target_torch[:, :, local_anchor_pos + 1:],
+                        vector_length=spec.matrix_length,
+                        tile_size=tile_size,
+                        matrix_value_semantics=matrix_value_semantics,
+                        min_cov=min_cov,
+                        need_ibs="ibs" in calculations,
+                    )
+                    totals_internal[local_anchor_pos, local_anchor_pos + 1:] += total_inc
+                    shared_internal[local_anchor_pos, local_anchor_pos + 1:] += shared_inc
+                    if ibs_internal is not None and ibs_inc is not None:
+                        ibs_internal[local_anchor_pos, local_anchor_pos + 1:] = np.maximum(
+                            ibs_internal[local_anchor_pos, local_anchor_pos + 1:],
+                            ibs_inc,
+                        )
+                    remaining_targets = len(block_ids) - local_anchor_pos - 1
+                    processed_pairs_for_block += remaining_targets
+                    completed_work += remaining_targets
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "advance",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "anchor_name": block_names[local_anchor_pos],
+                                "genome": spec.genome,
+                                "scaffold": "",
+                                "targets_completed": local_anchor_pos + 1,
+                                "targets_total": len(block_ids) - 1,
+                                "target_chunks": target_chunks,
+                            }
+                        )
+
+                if processed_pairs_for_block != pair_count_for_block:
+                    raise RuntimeError(
+                        "Torch block compare progress accounting drifted from the expected pair count."
+                    )
+                target_chunks += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "advance",
+                            "completed": completed_work,
+                            "total": total_work,
+                            "anchor_name": block_names[0],
+                            "genome": spec.genome,
+                            "scaffold": "",
+                            "targets_completed": len(block_ids),
+                            "targets_total": len(block_ids),
+                            "target_chunks": target_chunks,
+                        }
+                    )
 
                 for external_pos, (anchor_idx, _anchor_name) in enumerate(external_rows):
                     totals = totals_external[external_pos]
@@ -1404,8 +1612,8 @@ def _matrix_compare_reuse_target_chunks_torch(
         output_file=output_file,
         requested_pairs=requested_pairs,
         written_rows=written_rows,
-        scaffold_count=len(scaffolds),
-        genome_count=len(scaffolds_by_genome),
+        scaffold_count=len(genome_scaffolds),
+        genome_count=len(genomes),
         anchor_groups=anchor_groups,
         target_chunks=target_chunks,
         min_cov=min_cov,
@@ -1505,9 +1713,10 @@ def matrix_compare(
             )
 
         genome_scope = None if genome == "all" else genome
-        scaffolds = _load_matrix_db_scaffolds(conn, genome=genome_scope)
-        if not scaffolds:
+        genomes = _load_matrix_db_genomes(conn, genome=genome_scope)
+        if not genomes:
             raise ValueError(f"No scaffolds found for genome scope: {genome}")
+        genome_scaffolds = _load_matrix_db_genome_scaffolds(conn, genome=genome_scope)
         if compute_backend.kind == "torch":
             return _matrix_compare_reuse_target_chunks_torch(
                 conn=conn,
@@ -1516,7 +1725,8 @@ def matrix_compare(
                 genome_scope=genome_scope,
                 metadata=metadata,
                 samples=samples,
-                scaffolds=scaffolds,
+                genomes=genomes,
+                genome_scaffolds=genome_scaffolds,
                 requested_pairs=requested_pairs,
                 memory_limit_bytes=memory_limit_bytes,
                 memory_limit_gb=memory_limit_gb,
@@ -1527,7 +1737,7 @@ def matrix_compare(
                 progress_callback=progress_callback,
             )
 
-        total_work = requested_pairs * len(scaffolds)
+        total_work = requested_pairs * len(genomes)
         completed_work = 0
         written_rows = 0
         target_chunks = 0
@@ -1558,19 +1768,10 @@ def matrix_compare(
                 anchor_groups += 1
                 target_ids_all = np.array([sample_idx for sample_idx, _sample_name in target_sample_rows], dtype=np.int64)
                 target_names_all = [sample_name for _sample_idx, sample_name in target_sample_rows]
-                totals_by_genome: dict[str, np.ndarray] = {
-                    spec.genome: np.zeros(len(target_ids_all), dtype=np.int64) for spec in scaffolds
-                }
-                shared_by_genome: dict[str, np.ndarray] = {
-                    spec.genome: np.zeros(len(target_ids_all), dtype=np.int64) for spec in scaffolds
-                }
-                ibs_by_genome: dict[str, np.ndarray] = (
-                    {spec.genome: np.zeros(len(target_ids_all), dtype=np.int64) for spec in scaffolds}
-                    if "ibs" in calculations
-                    else {}
-                )
-
-                for spec in scaffolds:
+                for spec in genomes:
+                    totals = np.zeros(len(target_ids_all), dtype=np.int64)
+                    shared = np.zeros(len(target_ids_all), dtype=np.int64)
+                    ibs_max_genome = np.zeros(len(target_ids_all), dtype=np.int64) if "ibs" in calculations else None
                     if progress_callback is not None:
                         progress_callback(
                             {
@@ -1579,50 +1780,27 @@ def matrix_compare(
                                 "total": total_work,
                                 "anchor_name": sample_1_name,
                                 "genome": spec.genome,
-                                "scaffold": spec.chrom,
+                                "scaffold": "",
                                 "targets_completed": 0,
                                 "targets_total": len(target_ids_all),
                                 "target_chunks": target_chunks,
                             }
                         )
-                    dtype_name = _load_scaffold_count_dtype(conn, spec.scaffold_idx)
-                    if not dtype_name:
-                        completed_work += len(target_ids_all)
-                        if progress_callback is not None:
-                            progress_callback(
-                                {
-                                    "phase": "advance",
-                                    "completed": completed_work,
-                                    "total": total_work,
-                                    "anchor_name": sample_1_name,
-                                    "genome": spec.genome,
-                                    "scaffold": spec.chrom,
-                                    "targets_completed": len(target_ids_all),
-                                    "targets_total": len(target_ids_all),
-                                    "target_chunks": target_chunks,
-                                }
-                            )
-                        continue
-                    zero_matrix = np.zeros((spec.vector_length, 4), dtype=COUNT_DTYPES[dtype_name])
-                    _anchor_dtype, anchor_loaded = _load_sample_scaffold_matrices(
+                    dtype_name = str(metadata.get("count_dtype", "uint16"))
+                    zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
+                    anchor_loaded = _load_sample_genome_matrices(
                         conn,
-                        scaffold_idx=spec.scaffold_idx,
+                        genome_idx=spec.genome_idx,
                         sample_ids=[sample_1_idx],
-                        vector_length=spec.vector_length,
+                        matrix_length=spec.matrix_length,
+                        dtype_name=dtype_name,
                     )
                     anchor_matrix = anchor_loaded.get(sample_1_idx, zero_matrix)
-                    anchor_torch = None
-                    if compute_backend.kind == "torch":
-                        anchor_array = np.ascontiguousarray(anchor_matrix)
-                        anchor_torch = compute_backend.torch.from_numpy(anchor_array).to(
-                            device=compute_backend.device,
-                            dtype=compute_backend.torch.float32,
-                        )
 
                     target_offset = 0
                     while target_offset < len(target_ids_all):
                         max_targets, tile_size = _plan_chunk_sizes(
-                            vector_length=spec.vector_length,
+                            vector_length=spec.matrix_length,
                             remaining_targets=len(target_ids_all) - target_offset,
                             dtype_name=dtype_name,
                             memory_limit_bytes=memory_limit_bytes,
@@ -1631,22 +1809,23 @@ def matrix_compare(
                         )
                         default_tile_size = tile_size
                         chunk_ids = target_ids_all[target_offset: target_offset + max_targets]
-                        _chunk_dtype, loaded_targets = _load_sample_scaffold_matrices(
+                        loaded_targets = _load_sample_genome_matrices(
                             conn,
-                            scaffold_idx=spec.scaffold_idx,
+                            genome_idx=spec.genome_idx,
                             sample_ids=chunk_ids.tolist(),
-                            vector_length=spec.vector_length,
+                            matrix_length=spec.matrix_length,
+                            dtype_name=dtype_name,
                         )
                         target_matrices = np.stack(
                             [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in chunk_ids],
                             axis=2,
                         )
-                        totals = totals_by_genome[spec.genome][target_offset: target_offset + max_targets]
-                        shared = shared_by_genome[spec.genome][target_offset: target_offset + max_targets]
-                        ibs_max = ibs_by_genome[spec.genome][target_offset: target_offset + max_targets] if "ibs" in calculations else None
+                        totals_chunk = totals[target_offset: target_offset + max_targets]
+                        shared_chunk = shared[target_offset: target_offset + max_targets]
+                        ibs_max = ibs_max_genome[target_offset: target_offset + max_targets] if "ibs" in calculations else None
                         current_runs = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
-                        for tile_start in range(0, spec.vector_length, tile_size):
-                            tile_stop = min(spec.vector_length, tile_start + tile_size)
+                        for tile_start in range(0, spec.matrix_length, tile_size):
+                            tile_stop = min(spec.matrix_length, tile_start + tile_size)
                             anchor_tile = anchor_matrix[tile_start:tile_stop, :]
                             target_tile = target_matrices[tile_start:tile_stop, :, :]
                             if "ibs" in calculations:
@@ -1659,8 +1838,8 @@ def matrix_compare(
                                     anchor_matrix=anchor_tile,
                                     target_matrices=target_tile,
                                 )
-                            totals += total_inc
-                            shared += shared_inc
+                            totals_chunk += total_inc
+                            shared_chunk += shared_inc
                             if "ibs" in calculations and current_runs is not None and ibs_max is not None:
                                 current_runs, updated_max = _update_ibs_numpy(
                                     shared_mask=shared_mask,
@@ -1679,27 +1858,23 @@ def matrix_compare(
                                     "total": total_work,
                                     "anchor_name": sample_1_name,
                                     "genome": spec.genome,
-                                    "scaffold": spec.chrom,
+                                    "scaffold": "",
                                     "targets_completed": target_offset,
                                     "targets_total": len(target_ids_all),
                                     "target_chunks": target_chunks,
                                 }
                             )
-
-                for genome_name in sorted(totals_by_genome):
-                    totals = totals_by_genome[genome_name]
-                    shared = shared_by_genome[genome_name]
                     mask = totals > 0
                     if not mask.any():
                         continue
                     table = _make_arrow_table(
                         sample_1=sample_1_name,
                         sample_2=[name for idx, name in enumerate(target_names_all) if mask[idx]],
-                        genome=genome_name,
+                        genome=spec.genome,
                         calculations=calculations,
                         total_positions=totals[mask] if "ani" in calculations else None,
                         share_allele_pos=shared[mask] if "ani" in calculations else None,
-                        max_consecutive_length=ibs_by_genome[genome_name][mask] if "ibs" in calculations else None,
+                        max_consecutive_length=ibs_max_genome[mask] if "ibs" in calculations else None,
                     )
                     writer.write_table(table)
                     written_rows += table.num_rows
@@ -1723,8 +1898,8 @@ def matrix_compare(
             output_file=output_file,
             requested_pairs=requested_pairs,
             written_rows=written_rows,
-            scaffold_count=len(scaffolds),
-            genome_count=len({spec.genome for spec in scaffolds}),
+            scaffold_count=len(genome_scaffolds),
+            genome_count=len(genomes),
             anchor_groups=anchor_groups,
             target_chunks=target_chunks,
             min_cov=min_cov,

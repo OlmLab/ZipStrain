@@ -23,9 +23,9 @@ zipstrain utilities build-genome-db \
   --abundance-table /path/to/sylph_abundance.csv \
   --cache-dir /path/to/genome_cache \
   --output-dir /path/to/reference_bundle \
-  --download-retries 3 \
-  --retry-backoff-seconds 1.0 \
-  --download-workers 4
+  --download-retries 8 \
+  --retry-backoff-seconds 10.0 \
+  --download-workers 1
 ```
 
 ## Inputs
@@ -70,7 +70,7 @@ Re-running with the same cache directory avoids redownloading genomes that alrea
 
 ## Retry behavior
 
-For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 3 attempts per genome).  
+For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 8 attempts per genome).  
 If a genome still fails after retries, it is skipped, and the reference bundle is built from successfully fetched genomes.
 Parallelism for remote fetch is controlled with `--download-workers`.
 
@@ -78,7 +78,7 @@ If you see repeated `Too Many Requests` errors on large runs:
 
 - lower `--download-workers` (for example `1` or `2`)
 - increase `--download-retries` (for example `8`)
-- increase `--retry-backoff-seconds` (for example `3` to `5`)
+- increase `--retry-backoff-seconds` (for example `10` to `20`)
 
 ## Console summary
 

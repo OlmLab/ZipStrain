@@ -106,22 +106,61 @@ def _write_many_profiles_same_genome(profile_dir: Path, sample_count: int = 5) -
         frame.write_parquet(profile_dir / f"sample_{idx}.parquet")
 
 
+def _write_profiles_multiscaffold_same_genome(profile_dir: Path) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    sample_a = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr2", "chr2"],
+            "pos": [0, 1, 0, 1],
+            "gene": ["gene1", "gene1", "gene2", "gene2"],
+            "genome": ["genome1", "genome1", "genome1", "genome1"],
+            "A": [6, 6, 6, 6],
+            "T": [0, 0, 0, 0],
+            "C": [0, 0, 0, 0],
+            "G": [0, 0, 0, 0],
+        }
+    )
+    sample_b = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr2", "chr2"],
+            "pos": [0, 1, 0, 1],
+            "gene": ["gene1", "gene1", "gene2", "gene2"],
+            "genome": ["genome1", "genome1", "genome1", "genome1"],
+            "A": [7, 7, 7, 7],
+            "T": [0, 0, 0, 0],
+            "C": [0, 0, 0, 0],
+            "G": [0, 0, 0, 0],
+        }
+    )
+    sample_a.write_parquet(profile_dir / "sample_a.parquet")
+    sample_b.write_parquet(profile_dir / "sample_b.parquet")
+
+
 def _load_matrix_db(matrix_db: Path):
     conn = duckdb.connect(str(matrix_db), read_only=True)
     try:
         samples = conn.execute(
             "SELECT sample_idx, sample_name FROM matrix_db_samples ORDER BY sample_idx"
         ).fetchall()
+        genomes = conn.execute(
+            "SELECT genome_idx, genome, matrix_length, true_length, scaffold_count "
+            "FROM matrix_db_genomes ORDER BY genome_idx"
+        ).fetchall()
         scaffolds = conn.execute(
-            "SELECT scaffold_idx, genome, chrom, vector_length FROM matrix_db_scaffolds ORDER BY scaffold_idx"
+            "SELECT genome_idx, scaffold_ordinal, genome, chrom, axis_start, axis_end, vector_length "
+            "FROM matrix_db_genome_scaffolds ORDER BY genome_idx, scaffold_ordinal"
+        ).fetchall()
+        genes = conn.execute(
+            "SELECT genome_idx, gene, genome, chrom, axis_start, axis_end, start_pos, end_pos "
+            "FROM matrix_db_genome_genes ORDER BY genome_idx, chrom, gene"
         ).fetchall()
         matrices = conn.execute(
-            "SELECT sample_idx, scaffold_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob "
-            "FROM matrix_db_sample_scaffold_matrices ORDER BY sample_idx, scaffold_idx"
+            "SELECT sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob "
+            "FROM matrix_db_sample_genome_matrices ORDER BY sample_idx, genome_idx"
         ).fetchall()
     finally:
         conn.close()
-    return samples, scaffolds, matrices
+    return samples, genomes, scaffolds, genes, matrices
 
 
 def test_build_matrix_db(tmp_path):
@@ -149,13 +188,22 @@ def test_build_matrix_db(tmp_path):
     assert progress_events[-1]["total"] == 6
     assert any(event["phase"] == "processing" for event in progress_events)
     assert any(event["sample_name"] == "sample_a" for event in progress_events)
-    assert any(event["scaffold"] == "chr1" for event in progress_events)
+    assert all(event["scaffold"] == "" for event in progress_events if "scaffold" in event)
 
-    samples, scaffolds, matrices = _load_matrix_db(matrix_db)
+    samples, genomes, scaffolds, genes, matrices = _load_matrix_db(matrix_db)
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
+    assert genomes == [
+        (0, "genome1", 3, 3, 1),
+        (1, "genome2", 3, 3, 1),
+    ]
     assert scaffolds == [
-        (0, "genome1", "chr1", 3),
-        (1, "genome2", "chr2", 3),
+        (0, 0, "genome1", "chr1", 0, 2, 3),
+        (1, 0, "genome2", "chr2", 0, 2, 3),
+    ]
+    assert genes == [
+        (0, "gene1", "genome1", "chr1", 0, 2, 0, 2),
+        (1, "gene2", "genome2", "chr2", 0, 0, 5, 5),
+        (1, "gene3", "genome2", "chr2", 2, 2, 7, 7),
     ]
     conn = duckdb.connect(str(matrix_db), read_only=True)
     try:
@@ -164,10 +212,13 @@ def test_build_matrix_db(tmp_path):
         conn.close()
     assert metadata["matrix_value_semantics"] == mp.FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS
     assert metadata["coverage_filter_min_cov"] == str(mp.MATRIX_BUILD_MIN_COV)
+    assert metadata["layout"] == "per_sample_per_genome_dense_matrix"
+    assert metadata["separator_rows_between_scaffolds"] == "1"
+    assert metadata["gene_boundary_source"] == "profile_observed_span"
 
     unpacked = {}
-    for sample_idx, scaffold_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
-        unpacked[(sample_idx, scaffold_idx)] = mp._unpack_matrix(
+    for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
+        unpacked[(sample_idx, genome_idx)] = mp._unpack_matrix(
             bytes(matrix_blob),
             count_dtype,
             (matrix_rows, matrix_cols),
@@ -195,9 +246,11 @@ def test_build_matrix_db_with_small_commit_batches(tmp_path):
     )
 
     assert summary.stored_rows == 6
-    samples, scaffolds, matrices = _load_matrix_db(matrix_db)
+    samples, genomes, scaffolds, genes, matrices = _load_matrix_db(matrix_db)
     assert len(samples) == 3
+    assert len(genomes) == 2
     assert len(scaffolds) == 2
+    assert len(genes) == 3
     assert len(matrices) == 6
 
 
@@ -219,15 +272,18 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
     assert summary.profile_files == 2
     assert summary.scaffold_count == 2
 
-    _samples, scaffolds, matrices = _load_matrix_db(matrix_db)
-    assert scaffolds == [
-        (0, "genome1", "chr1", 5),
-        (1, "genome2", "chr2", 5),
+    _samples, genomes, scaffolds, _genes, matrices = _load_matrix_db(matrix_db)
+    assert genomes == [
+        (0, "genome1", 5, 5, 1),
+        (1, "genome2", 5, 5, 1),
     ]
-
+    assert scaffolds == [
+        (0, 0, "genome1", "chr1", 0, 4, 5),
+        (1, 0, "genome2", "chr2", 0, 4, 5),
+    ]
     unpacked = {}
-    for sample_idx, scaffold_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
-        unpacked[(sample_idx, scaffold_idx)] = mp._unpack_matrix(
+    for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
+        unpacked[(sample_idx, genome_idx)] = mp._unpack_matrix(
             bytes(matrix_blob),
             count_dtype,
             (matrix_rows, matrix_cols),
@@ -276,7 +332,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
     assert progress_events[-1]["total"] == 6
     assert any(event["phase"] == "processing" for event in progress_events)
     assert any(event["anchor_name"] == "sample_a" for event in progress_events)
-    assert any(event["scaffold"] == "chr1" for event in progress_events)
+    assert all(event["scaffold"] == "" for event in progress_events if "scaffold" in event)
     actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])
 
     expected_frames = []
@@ -372,12 +428,12 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
     _write_profiles(profile_dir)
     mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
-    original_load = mp._load_sample_scaffold_matrices
+    original_load = mp._load_sample_genome_matrices
     call_sizes: list[int] = []
 
-    def tracking_load(conn, scaffold_idx, sample_ids, vector_length):
+    def tracking_load(conn, genome_idx, sample_ids, matrix_length, dtype_name):
         call_sizes.append(len(sample_ids))
-        return original_load(conn, scaffold_idx, sample_ids, vector_length)
+        return original_load(conn, genome_idx, sample_ids, matrix_length, dtype_name)
 
     def two_target_plan(
         vector_length: int,
@@ -389,7 +445,7 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
 
-    monkeypatch.setattr(mp, "_load_sample_scaffold_matrices", tracking_load)
+    monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
 
     mp.matrix_compare(
@@ -510,12 +566,12 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
             self.device = "cpu"
             self.torch = SimpleNamespace()
 
-    original_load = mp._load_sample_scaffold_matrices
+    original_load = mp._load_sample_genome_matrices
     call_sizes: list[int] = []
 
-    def tracking_load(conn, scaffold_idx, sample_ids, vector_length):
+    def tracking_load(conn, genome_idx, sample_ids, matrix_length, dtype_name):
         call_sizes.append(len(sample_ids))
-        return original_load(conn, scaffold_idx, sample_ids, vector_length)
+        return original_load(conn, genome_idx, sample_ids, matrix_length, dtype_name)
 
     def two_target_plan(
         vector_length: int,
@@ -547,7 +603,7 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         )
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
-    monkeypatch.setattr(mp, "_load_sample_scaffold_matrices", tracking_load)
+    monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
     monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
@@ -564,3 +620,92 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
     assert summary.target_chunks == 3
     assert call_sizes.count(2) == 2
     assert call_sizes.count(1) == 7
+
+
+def test_build_matrix_db_inserts_separator_rows_for_multiscaffold_genome(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix_multi.duckdb"
+    _write_profiles_multiscaffold_same_genome(profile_dir)
+
+    summary = mp.build_matrix_db(
+        profile_dir=profile_dir,
+        output_file=matrix_db,
+        memory_limit_gb=1.0,
+    )
+
+    assert summary.sample_count == 2
+    samples, genomes, scaffolds, genes, matrices = _load_matrix_db(matrix_db)
+    assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b"]
+    assert genomes == [
+        (0, "genome1", 5, 4, 2),
+    ]
+    assert scaffolds == [
+        (0, 0, "genome1", "chr1", 0, 1, 2),
+        (0, 1, "genome1", "chr2", 3, 4, 2),
+    ]
+    assert genes == [
+        (0, "gene1", "genome1", "chr1", 0, 1, 0, 1),
+        (0, "gene2", "genome1", "chr2", 3, 4, 0, 1),
+    ]
+    unpacked = {}
+    for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
+        unpacked[(sample_idx, genome_idx)] = mp._unpack_matrix(
+            bytes(matrix_blob),
+            count_dtype,
+            (matrix_rows, matrix_cols),
+        ).tolist()
+    # row 2 is the synthetic separator row between the two scaffolds
+    assert unpacked[(0, 0)][2] == [0, 0, 0, 0]
+    assert unpacked[(1, 0)][2] == [0, 0, 0, 0]
+
+
+def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix_multi.duckdb"
+    output_file = tmp_path / "matrix_multi_compare.parquet"
+    _write_profiles_multiscaffold_same_genome(profile_dir)
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="numpy",
+        calculate="ani+ibs",
+    )
+
+    assert summary.requested_pairs == 1
+    actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])
+    expected = (
+        cp.compare_genomes(
+            mpile_contig_1=profile_dir / "sample_a.parquet",
+            mpile_contig_2=profile_dir / "sample_b.parquet",
+            min_cov=mp.MATRIX_BUILD_MIN_COV,
+            genome_scope="all",
+            ani_method="popani",
+            engine="polars",
+            calculate="ani+ibs",
+            stb_file=None,
+        )
+        .collect(engine="streaming")
+        .with_columns(
+            sample_1=pl.lit("sample_a"),
+            sample_2=pl.lit("sample_b"),
+        )
+        .select(
+            [
+                "sample_1",
+                "sample_2",
+                "genome",
+                "total_positions",
+                "share_allele_pos",
+                "genome_pop_ani",
+                "max_consecutive_length",
+            ]
+        )
+        .sort(["sample_1", "sample_2", "genome"])
+    )
+
+    assert actual.equals(expected)
+    assert actual.get_column("max_consecutive_length").to_list() == [2]

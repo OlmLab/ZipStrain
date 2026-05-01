@@ -389,7 +389,7 @@ def build_profile_db(profile_db_csv, output_file):
     type=click.Choice(sorted(mp.COUNT_DTYPES.keys())),
     default="uint16",
     show_default=True,
-    help="Stored count dtype for scaffold matrices.",
+    help="Stored dtype for whole-genome matrix blobs.",
 )
 @click.option(
     '--memory-limit-gb',
@@ -400,11 +400,12 @@ def build_profile_db(profile_db_csv, output_file):
 )
 def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb):
     """
-    Build an experimental DuckDB database of per-sample, per-scaffold dense matrices.
+    Build an experimental DuckDB database of per-sample, per-genome dense matrices.
 
-    Each stored matrix is shaped positions x 4 (A/T/C/G) for one sample on one
-    scaffold. This is intended for the experimental matrix compare utilities
-    and does not affect the standard compare workflow.
+    Each genome is stored on one whole-genome axis inferred from the selected
+    scaffolds, with one synthetic zero separator row inserted between
+    scaffolds of the same genome. Each stored matrix is shaped positions x 4
+    (A/T/C/G) and is intended for the experimental matrix compare utilities.
     """
     progress_console = Console(stderr=True)
     use_progress_bar = sys.stderr.isatty()
@@ -476,7 +477,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
 @click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum site coverage required in both samples.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
-@click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per scaffold tile.")
+@click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per genome tile.")
 @click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani or ani+ibs. 'all' currently means ani+ibs.")
 @click.option(
     '--backend',
@@ -487,13 +488,12 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
 )
 def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb, position_tile_size, calculate, backend):
     """
-    Run experimental ANI-only matrix compare on all non-redundant, non-self sample pairs.
+    Run experimental genome-level matrix compare on all non-redundant, non-self sample pairs.
 
     This command generates all unique sample pairs from the matrix DB, groups
-    them by anchor sample, loads one anchor
-    matrix plus as many target matrices as fit the memory budget, and writes
-    classic ANI output rows:
-      sample_1, sample_2, genome, total_positions, share_allele_pos, genome_pop_ani
+    them by anchor sample, materializes one anchor genome matrix plus as many
+    target genome matrices as fit the memory budget, and writes genome-level
+    ANI or ANI+IBS rows.
     """
     progress_console = Console(stderr=True)
     use_progress_bar = sys.stderr.isatty()
@@ -570,9 +570,9 @@ def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb
 @click.option('--abundance-table', '-a', required=True, help="Path to abundance table (csv/tsv/parquet).")
 @click.option('--cache-dir', '-c', required=True, help="Genome cache directory. Reuses already-downloaded genomes.")
 @click.option('--output-dir', '-o', required=True, help="Directory where concatenated reference FASTA and STB are written.")
-@click.option('--download-retries', type=int, default=3, show_default=True, help="Max download attempts per genome before skipping.")
-@click.option('--retry-backoff-seconds', type=float, default=1.0, show_default=True, help="Base seconds for exponential retry backoff.")
-@click.option('--download-workers', type=int, default=4, show_default=True, help="Parallel genome download workers.")
+@click.option('--download-retries', type=int, default=8, show_default=True, help="Max download attempts per genome before skipping.")
+@click.option('--retry-backoff-seconds', type=float, default=10.0, show_default=True, help="Base seconds for exponential retry backoff.")
+@click.option('--download-workers', type=int, default=1, show_default=True, help="Parallel genome download workers.")
 def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retries, retry_backoff_seconds, download_workers):
     """
     Build a reference bundle from an abundance table.
@@ -702,7 +702,7 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retri
                 "Rate-limit hint:",
                 "- Reduce --download-workers (for example, 1-2)",
                 "- Increase --download-retries (for example, 8)",
-                "- Increase --retry-backoff-seconds (for example, 3-5)",
+                "- Increase --retry-backoff-seconds (for example, 10-20)",
             ]
         )
     report_file.write_text("\n".join(report_lines) + "\n")

@@ -498,6 +498,81 @@ process fromSRAtoProfile{
     rm -f ${sra_id}.bam
     """
 }
+
+process prepare_profile_no_genes{
+
+    publishDir "${params.output_dir}", mode: params.publish_mode
+    input:
+    path reference_genome
+    path stb_file
+    output:
+    path "genomes_bed_file.bed", emit: genome_bed
+    path "gene_range_table.tsv", emit: gene_range_table
+    path "genome_lengths.parquet", emit: genome_lengths
+    script:
+"""
+zipstrain utilities prepare_profiling \\
+        --reference-fasta ${reference_genome} \\
+        --stb-file ${stb_file} \\
+        --output-dir .
+"""
+
+}
+
+process fromSRAtoProfileBuildDb{
+    publishDir "${params.output_dir}/profiles", mode: params.publish_mode
+    input:
+    val sra_id
+    path sylph_db
+    path null_model
+    output:
+    path "${sra_id}_profile.parquet", emit: profiles
+    path "${sra_id}_genome_stats.parquet", emit: genome_stats
+    path "${sra_id}_gene_stats.parquet", emit: gene_stats
+    path "${sra_id}_sylph_abundance.tsv", emit: sylph_abundance
+    val sra_id, emit: sample_name
+    script:
+    """
+    prefetch --max-size 200g ${sra_id}
+    fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
+    rm -rf ${sra_id}/${sra_id}.sra
+
+    num_seq_files=\$(ls ${sra_id}/*.fastq | wc -l)
+    if [ \$num_seq_files -eq 2 ]; then
+        sylph profile ${sylph_db} -1 ${sra_id}/${sra_id}_1.fastq -2 ${sra_id}/${sra_id}_2.fastq -t ${task.cpus} > ${sra_id}_sylph_abundance.tsv
+        bowtie_reads="-1 ${sra_id}/${sra_id}_1.fastq -2 ${sra_id}/${sra_id}_2.fastq"
+    else
+        sylph profile ${sylph_db} -U ${sra_id}/${sra_id}*.fastq -t ${task.cpus} > ${sra_id}_sylph_abundance.tsv
+        bowtie_reads="-U ${sra_id}/${sra_id}*.fastq"
+    fi
+
+    zipstrain utilities build-genome-db \\
+        --tool sylph \\
+        --abundance-table ${sra_id}_sylph_abundance.tsv \\
+        --cache-dir .genome_cache \\
+        --output-dir .
+
+    bowtie2-build --threads ${task.cpus} reference_genomes.fna reference_genomes.fna
+
+    zipstrain utilities prepare_profiling \\
+        --reference-fasta reference_genomes.fna \\
+        --stb-file reference_genomes.stb \\
+        --output-dir .
+
+    bowtie2 -x reference_genomes.fna \$bowtie_reads --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
+
+    zipstrain utilities profile-single \\
+        --bam-file ${sra_id}.bam \\
+        --bed-file genomes_bed_file.bed \\
+        --stb-file reference_genomes.stb \\
+        --null-model ${null_model} \\
+        --max-concurrency ${task.cpus} \\
+        --output-dir .
+
+    rm -rf ${sra_id}
+    rm -f ${sra_id}.bam
+    """
+}
 workflow
 {
 
@@ -563,27 +638,49 @@ workflow
     if (params.mode == "from_sra_to_profile") {
         table=tableToDict(file("${params.input_table}"))
         sra_ids = Channel.fromList(table["Run"])
-        gene_file = file(params.gene_file)
-        reference_genome = file(params.reference_genome)
-        if (params.index_files) {
-            index_files = file(params.index_files)
+        build_null_model()
+        if (!params.reference_genome) {
+            if (params.sylph_db) {
+                sylph_db = file(params.sylph_db)
+            }
+            else {
+                download_sylph_db()
+                download_sylph_db.out.sylph_db.set{ sylph_db }
+            }
+            fromSRAtoProfileBuildDb(sra_ids, sylph_db, build_null_model.out.model)
         }
         else {
-            index_reference(reference_genome)
-            index_files = index_reference.out.index_files
+            reference_genome = file(params.reference_genome)
+            if (params.index_files) {
+                index_files = file(params.index_files)
+            }
+            else {
+                index_reference(reference_genome)
+                index_files = index_reference.out.index_files
+            }
+            if (params.gene_file) {
+                gene_file = file(params.gene_file)
+                prepare_profile(reference_genome, gene_file, file(params.stb))
+                genome_bed = prepare_profile.out.genome_bed
+                gene_range_table = prepare_profile.out.gene_range_table
+                genome_lengths = prepare_profile.out.genome_lengths
+            }
+            else {
+                prepare_profile_no_genes(reference_genome, file(params.stb))
+                genome_bed = prepare_profile_no_genes.out.genome_bed
+                gene_range_table = prepare_profile_no_genes.out.gene_range_table
+                genome_lengths = prepare_profile_no_genes.out.genome_lengths
+            }
+            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, genome_lengths, file(params.stb), build_null_model.out.model)
         }
-        prepare_profile(reference_genome, gene_file, file(params.stb))
-        build_null_model()
-
-        fromSRAtoProfile(sra_ids, reference_genome, index_files, prepare_profile.out.genome_bed, prepare_profile.out.gene_range_table, prepare_profile.out.genome_lengths, file(params.stb), build_null_model.out.model)
     }
     if (params.mode =='profile') {
         input_table = tableToDict(file(params.input_table))
         bamfiles = Channel.fromPath(input_table['bamfile'].collect{t->file(t)})
         sample_names = Channel.fromList(input_table['sample_name'])
-        gene_file = file(params.gene_file)
+        gene_file = params.gene_file ? file(params.gene_file) : null
         reference_genome = file(params.reference_genome)
-        fast_profile(bamfiles, sample_names, gene_file, reference_genome)
+        profile(bamfiles, sample_names, gene_file, reference_genome)
     }
     
     else if (params.mode =="compare_genes")
@@ -655,16 +752,25 @@ workflow profile_contigs
     get_mpileup_contigs(sample_names, contig_tables, bamfiles, file(params.gene_file))
 }
 
-workflow fast_profile{
+workflow profile{
     take:
     bamfiles
     sample_names
     gene_file
     reference_genome
     main:
-    prepare_profile(reference_genome, gene_file, file(params.stb))
+    if (gene_file) {
+        prepare_profile(reference_genome, gene_file, file(params.stb))
+        genome_bed = prepare_profile.out.genome_bed
+        gene_range_table = prepare_profile.out.gene_range_table
+    }
+    else {
+        prepare_profile_no_genes(reference_genome, file(params.stb))
+        genome_bed = prepare_profile_no_genes.out.genome_bed
+        gene_range_table = prepare_profile_no_genes.out.gene_range_table
+    }
     build_null_model()
-    profile_bam(sample_names, bamfiles, prepare_profile.out.genome_bed,file(params.stb), prepare_profile.out.gene_range_table, build_null_model.out.model)
+    profile_bam(sample_names, bamfiles, genome_bed, file(params.stb), gene_range_table, build_null_model.out.model)
 }
 
 

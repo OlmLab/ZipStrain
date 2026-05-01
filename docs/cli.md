@@ -374,9 +374,9 @@ zipstrain utilities build-genome-db \
 
 Important options:
 
-- `--download-retries` (default: `3`)
-- `--retry-backoff-seconds` (default: `1.0`)
-- `--download-workers` (default: `4`)
+- `--download-retries` (default: `8`)
+- `--retry-backoff-seconds` (default: `10.0`)
+- `--download-workers` (default: `1`)
 
 ### `zipstrain utilities build-matrix-db`
 
