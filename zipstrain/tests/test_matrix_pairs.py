@@ -150,17 +150,13 @@ def _load_matrix_db(matrix_db: Path):
             "SELECT genome_idx, scaffold_ordinal, genome, chrom, axis_start, axis_end, vector_length "
             "FROM matrix_db_genome_scaffolds ORDER BY genome_idx, scaffold_ordinal"
         ).fetchall()
-        genes = conn.execute(
-            "SELECT genome_idx, gene, genome, chrom, axis_start, axis_end, start_pos, end_pos "
-            "FROM matrix_db_genome_genes ORDER BY genome_idx, chrom, gene"
-        ).fetchall()
         matrices = conn.execute(
             "SELECT sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob "
             "FROM matrix_db_sample_genome_matrices ORDER BY sample_idx, genome_idx"
         ).fetchall()
     finally:
         conn.close()
-    return samples, genomes, scaffolds, genes, matrices
+    return samples, genomes, scaffolds, matrices
 
 
 def test_build_matrix_db(tmp_path):
@@ -190,7 +186,7 @@ def test_build_matrix_db(tmp_path):
     assert any(event["sample_name"] == "sample_a" for event in progress_events)
     assert all(event["scaffold"] == "" for event in progress_events if "scaffold" in event)
 
-    samples, genomes, scaffolds, genes, matrices = _load_matrix_db(matrix_db)
+    samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
     assert genomes == [
         (0, "genome1", 3, 3, 1),
@@ -199,11 +195,6 @@ def test_build_matrix_db(tmp_path):
     assert scaffolds == [
         (0, 0, "genome1", "chr1", 0, 2, 3),
         (1, 0, "genome2", "chr2", 0, 2, 3),
-    ]
-    assert genes == [
-        (0, "gene1", "genome1", "chr1", 0, 2, 0, 2),
-        (1, "gene2", "genome2", "chr2", 0, 0, 5, 5),
-        (1, "gene3", "genome2", "chr2", 2, 2, 7, 7),
     ]
     conn = duckdb.connect(str(matrix_db), read_only=True)
     try:
@@ -214,7 +205,6 @@ def test_build_matrix_db(tmp_path):
     assert metadata["coverage_filter_min_cov"] == str(mp.MATRIX_BUILD_MIN_COV)
     assert metadata["layout"] == "per_sample_per_genome_dense_matrix"
     assert metadata["separator_rows_between_scaffolds"] == "1"
-    assert metadata["gene_boundary_source"] == "profile_observed_span"
 
     unpacked = {}
     for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
@@ -246,11 +236,10 @@ def test_build_matrix_db_with_small_commit_batches(tmp_path):
     )
 
     assert summary.stored_rows == 6
-    samples, genomes, scaffolds, genes, matrices = _load_matrix_db(matrix_db)
+    samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
     assert len(samples) == 3
     assert len(genomes) == 2
     assert len(scaffolds) == 2
-    assert len(genes) == 3
     assert len(matrices) == 6
 
 
@@ -272,7 +261,7 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
     assert summary.profile_files == 2
     assert summary.scaffold_count == 2
 
-    _samples, genomes, scaffolds, _genes, matrices = _load_matrix_db(matrix_db)
+    _samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
     assert genomes == [
         (0, "genome1", 5, 5, 1),
         (1, "genome2", 5, 5, 1),
@@ -634,7 +623,7 @@ def test_build_matrix_db_inserts_separator_rows_for_multiscaffold_genome(tmp_pat
     )
 
     assert summary.sample_count == 2
-    samples, genomes, scaffolds, genes, matrices = _load_matrix_db(matrix_db)
+    samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b"]
     assert genomes == [
         (0, "genome1", 5, 4, 2),
@@ -642,10 +631,6 @@ def test_build_matrix_db_inserts_separator_rows_for_multiscaffold_genome(tmp_pat
     assert scaffolds == [
         (0, 0, "genome1", "chr1", 0, 1, 2),
         (0, 1, "genome1", "chr2", 3, 4, 2),
-    ]
-    assert genes == [
-        (0, "gene1", "genome1", "chr1", 0, 1, 0, 1),
-        (0, "gene2", "genome1", "chr2", 3, 4, 0, 1),
     ]
     unpacked = {}
     for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:

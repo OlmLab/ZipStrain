@@ -106,18 +106,6 @@ class GenomeScaffoldOffset:
 
 
 @dataclass(frozen=True)
-class GeneBoundary:
-    genome_idx: int
-    gene: str
-    genome: str
-    chrom: str
-    axis_start: int
-    axis_end: int
-    start_pos: int
-    end_pos: int
-
-
-@dataclass(frozen=True)
 class MatrixDbSummary:
     output_file: Path
     profile_files: int
@@ -418,53 +406,6 @@ def _build_genome_specs(
     return genomes, offsets
 
 
-def _collect_gene_boundaries(
-    profile_paths: list[Path],
-    scaffold_offsets: list[GenomeScaffoldOffset],
-    genome: Optional[str] = None,
-) -> list[GeneBoundary]:
-    if not scaffold_offsets:
-        return []
-    scope = pl.lit(True)
-    if genome is not None:
-        scope = scope & (pl.col("genome") == genome)
-    scaffold_lookup = {(spec.genome, spec.chrom): spec for spec in scaffold_offsets}
-    frame = (
-        pl.scan_parquet([str(path) for path in profile_paths])
-        .filter(scope & (pl.col("gene") != "NA"))
-        .select("genome", "chrom", "gene", "pos")
-        .group_by(["genome", "chrom", "gene"])
-        .agg(
-            pl.col("pos").min().cast(pl.Int64).alias("start_pos"),
-            pl.col("pos").max().cast(pl.Int64).alias("end_pos"),
-        )
-        .collect(engine="streaming")
-    )
-    if frame.height == 0:
-        return []
-    boundaries: list[GeneBoundary] = []
-    for row in frame.iter_rows(named=True):
-        key = (str(row["genome"]), str(row["chrom"]))
-        spec = scaffold_lookup.get(key)
-        if spec is None:
-            continue
-        start_pos = int(row["start_pos"])
-        end_pos = int(row["end_pos"])
-        boundaries.append(
-            GeneBoundary(
-                genome_idx=spec.genome_idx,
-                gene=str(row["gene"]),
-                genome=str(row["genome"]),
-                chrom=str(row["chrom"]),
-                axis_start=spec.axis_start + (start_pos - spec.index_base),
-                axis_end=spec.axis_start + (end_pos - spec.index_base),
-                start_pos=start_pos,
-                end_pos=end_pos,
-            )
-        )
-    return boundaries
-
-
 def _pack_matrix(matrix: np.ndarray) -> bytes:
     return np.ascontiguousarray(matrix).tobytes()
 
@@ -619,20 +560,6 @@ def _init_matrix_db_schema(conn: duckdb.DuckDBPyConnection) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE matrix_db_genome_genes (
-          genome_idx INTEGER NOT NULL,
-          gene VARCHAR NOT NULL,
-          genome VARCHAR NOT NULL,
-          chrom VARCHAR NOT NULL,
-          axis_start BIGINT NOT NULL,
-          axis_end BIGINT NOT NULL,
-          start_pos BIGINT NOT NULL,
-          end_pos BIGINT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
         CREATE TABLE matrix_db_sample_genome_matrices (
           sample_idx INTEGER NOT NULL,
           genome_idx INTEGER NOT NULL,
@@ -734,11 +661,6 @@ def build_matrix_db(
             genome=genome_scope,
         )
     genomes, genome_scaffolds = _build_genome_specs(scaffolds)
-    genome_gene_boundaries = _collect_gene_boundaries(
-        profile_paths=profile_paths,
-        scaffold_offsets=genome_scaffolds,
-        genome=genome_scope,
-    )
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
     memory_plan = _plan_matrix_build_memory(
         genomes=genomes,
@@ -786,7 +708,6 @@ def build_matrix_db(
             ("duckdb_memory_limit_gb", f"{memory_plan.duckdb_memory_limit_bytes / (1024 ** 3):.6f}"),
             ("effective_commit_batch_gb", f"{memory_plan.commit_batch_bytes / (1024 ** 3):.6f}"),
             ("estimated_python_peak_gb", f"{memory_plan.estimated_python_peak_bytes / (1024 ** 3):.6f}"),
-            ("gene_boundary_source", "profile_observed_span"),
             ("separator_rows_between_scaffolds", "1"),
         ]
         sample_rows = [(idx, path.stem, str(path.resolve())) for idx, path in enumerate(profile_paths)]
@@ -815,19 +736,6 @@ def build_matrix_db(
             )
             for spec in genome_scaffolds
         ]
-        gene_rows = [
-            (
-                boundary.genome_idx,
-                boundary.gene,
-                boundary.genome,
-                boundary.chrom,
-                boundary.axis_start,
-                boundary.axis_end,
-                boundary.start_pos,
-                boundary.end_pos,
-            )
-            for boundary in genome_gene_boundaries
-        ]
         conn.executemany("INSERT INTO matrix_db_metadata VALUES (?, ?)", metadata_rows)
         conn.executemany("INSERT INTO matrix_db_samples VALUES (?, ?, ?)", sample_rows)
         conn.executemany(
@@ -838,11 +746,6 @@ def build_matrix_db(
             "INSERT INTO matrix_db_genome_scaffolds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             scaffold_rows,
         )
-        if gene_rows:
-            conn.executemany(
-                "INSERT INTO matrix_db_genome_genes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                gene_rows,
-            )
         conn = _restart_matrix_build_transaction(conn, output_file, memory_plan.duckdb_memory_limit_bytes)
 
         stored_rows = 0
