@@ -471,10 +471,86 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
     )
 
 
+@utilities.command("append-matrix-db")
+@click.option('--profile-dir', '-p', required=True, help="Directory containing new classic ZipStrain profile parquets to append.")
+@click.option('--matrix-db-file', '-m', required=True, help="Existing DuckDB matrix database to append to.")
+@click.option(
+    '--memory-limit-gb',
+    type=float,
+    default=16.0,
+    show_default=True,
+    help="Approximate maximum memory budget for the append process.",
+)
+def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
+    """
+    Append new profiles to an existing matrix DB.
+
+    The append uses the existing genome/scaffold layout already stored in the
+    matrix DB as the contract. New profiles must use the same genomes,
+    scaffolds, and coordinate ranges. Sample names must also be new.
+    """
+    progress_console = Console(stderr=True)
+    use_progress_bar = sys.stderr.isatty()
+
+    if use_progress_bar:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TextColumn("stored={task.fields[stored_rows]}"),
+            TimeElapsedColumn(),
+            console=progress_console,
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task(
+                "Appending matrix DB",
+                total=1,
+                completed=0,
+                stored_rows="0",
+            )
+
+            def _progress_callback(event: dict[str, object]) -> None:
+                total = int(event.get("total", 0)) or 1
+                completed = int(event.get("completed", 0))
+                stored_rows = str(event.get("stored_rows", 0))
+                progress.update(
+                    task_id,
+                    total=total,
+                    completed=completed,
+                    stored_rows=stored_rows,
+                )
+
+            summary = mp.append_matrix_db(
+                profile_dir=pathlib.Path(profile_dir),
+                matrix_db_file=pathlib.Path(matrix_db_file),
+                memory_limit_gb=memory_limit_gb,
+                progress_callback=_progress_callback,
+            )
+    else:
+        progress_logger = _ThrottledMatrixLogger(
+            "MATRIX-APPEND",
+            lambda event: {"stored_rows": event.get("stored_rows", 0)},
+        )
+        summary = mp.append_matrix_db(
+            profile_dir=pathlib.Path(profile_dir),
+            matrix_db_file=pathlib.Path(matrix_db_file),
+            memory_limit_gb=memory_limit_gb,
+            progress_callback=progress_logger,
+        )
+    click.echo(
+        f"wrote={summary.output_file} "
+        f"appended_samples={summary.appended_sample_count} "
+        f"total_samples={summary.total_sample_count} "
+        f"scaffolds={summary.scaffold_count} "
+        f"stored_rows={summary.stored_rows}"
+    )
+
+
 @utilities.command("matrix-compare")
 @click.option('--matrix-db-file', '-m', required=True, help="Input DuckDB matrix database from build-matrix-db.")
-@click.option('--output-file', '-o', required=True, help="Output ANI parquet file.")
-@click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum site coverage required in both samples.")
+@click.option('--output-file', '-o', required=True, help="Output DuckDB compare database. If it already exists, only remaining pairs are added.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per genome tile.")
@@ -486,14 +562,13 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
     show_default=True,
     help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
 )
-def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb, position_tile_size, calculate, backend):
+def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, position_tile_size, calculate, backend):
     """
     Run experimental genome-level matrix compare on all non-redundant, non-self sample pairs.
 
-    This command generates all unique sample pairs from the matrix DB, groups
-    them by anchor sample, materializes one anchor genome matrix plus as many
-    target genome matrices as fit the memory budget, and writes genome-level
-    ANI or ANI+IBS rows.
+    This command writes results into a DuckDB compare database. If that compare
+    DB already exists, only pairs that are not yet marked completed are
+    processed and appended.
     """
     progress_console = Console(stderr=True)
     use_progress_bar = sys.stderr.isatty()
@@ -531,7 +606,7 @@ def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb
             summary = mp.matrix_compare(
                 matrix_db_file=pathlib.Path(matrix_db_file),
                 output_file=pathlib.Path(output_file),
-                min_cov=min_cov,
+                min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome=genome,
                 memory_limit_gb=memory_limit_gb,
                 position_tile_size=position_tile_size,
@@ -547,7 +622,7 @@ def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb
         summary = mp.matrix_compare(
             matrix_db_file=pathlib.Path(matrix_db_file),
             output_file=pathlib.Path(output_file),
-            min_cov=min_cov,
+            min_cov=mp.MATRIX_BUILD_MIN_COV,
             genome=genome,
             memory_limit_gb=memory_limit_gb,
             position_tile_size=position_tile_size,
@@ -563,6 +638,20 @@ def matrix_compare(matrix_db_file, output_file, min_cov, genome, memory_limit_gb
         f"anchor_groups={summary.anchor_groups} "
         f"target_chunks={summary.target_chunks}"
     )
+
+
+@utilities.command("matrix-compare-export")
+@click.option('--matrix-compare-db-file', '-m', required=True, help="Input DuckDB matrix compare database from matrix-compare.")
+@click.option('--output-file', '-o', required=True, help="Output parquet file.")
+def matrix_compare_export(matrix_compare_db_file, output_file):
+    """
+    Export a matrix compare DuckDB database to parquet.
+    """
+    exported = mp.export_matrix_compare_parquet(
+        matrix_compare_db_file=pathlib.Path(matrix_compare_db_file),
+        output_file=pathlib.Path(output_file),
+    )
+    click.echo(f"wrote={exported}")
 
 
 @utilities.command("build-genome-db")

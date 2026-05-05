@@ -353,8 +353,10 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
 | `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
-| `zipstrain utilities build-matrix-db` | Build experimental per-sample scaffold matrix DuckDB |
-| `zipstrain utilities matrix-compare` | Experimental ANI compare from stored scaffold matrices |
+| `zipstrain utilities build-matrix-db` | Build experimental per-sample genome matrix DuckDB |
+| `zipstrain utilities append-matrix-db` | Append new profiles into an existing matrix DuckDB |
+| `zipstrain utilities matrix-compare` | Experimental ANI compare into a resumable DuckDB compare DB |
+| `zipstrain utilities matrix-compare-export` | Export a matrix compare DuckDB to parquet |
 | `zipstrain utilities build-genome-db` | Build local genome reference bundle from abundance table |
 | `zipstrain utilities presence-profile` | Presence profile from coverage + read locations |
 | `zipstrain utilities process-read-locs` | Process read-location stream |
@@ -391,7 +393,7 @@ zipstrain utilities build-matrix-db \
 What it does:
 
 - scans a directory of classic ZipStrain profile parquets
-- builds one DuckDB file with one dense A/T/C/G allele-presence matrix per sample per scaffold
+- builds one DuckDB file with one dense A/T/C/G allele-presence matrix per sample per genome
 - each stored matrix is shaped `positions x 4`
 - positions with total coverage below `5` are zeroed during matrix build
 - intended for many requested comparisons that reuse the same anchor sample
@@ -417,13 +419,39 @@ Notes:
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
 - if `--bed-file` is provided, scaffold spans come from grouped BED intervals rather than inferred profile min/max positions
 
+### `zipstrain utilities append-matrix-db`
+
+```bash
+zipstrain utilities append-matrix-db \
+  --profile-dir new_profiles \
+  --matrix-db-file matrix_db.duckdb \
+  --memory-limit-gb 16
+```
+
+What it does:
+
+- scans a directory of new classic ZipStrain profile parquets
+- validates that they match the existing matrix DB contract
+- appends new sample rows and whole-genome matrices into the existing DuckDB file
+
+Important options:
+
+- `-p, --profile-dir` (required)
+- `-m, --matrix-db-file` (required)
+- `--memory-limit-gb` approximate maximum memory budget for the append process (default: `16.0`)
+
+Append requirements:
+
+- sample names must be new
+- genomes and scaffolds must already exist in the matrix DB
+- profile positions must stay within the stored scaffold coordinate ranges
+
 ### `zipstrain utilities matrix-compare`
 
 ```bash
 zipstrain utilities matrix-compare \
   --matrix-db-file matrix_db.duckdb \
-  --output-file matrix_compare.parquet \
-  --min-cov 5 \
+  --output-file matrix_compare.duckdb \
   --memory-limit-gb 16 \
   --calculate ani+ibs \
   --backend numpy
@@ -431,28 +459,21 @@ zipstrain utilities matrix-compare \
 
 What it does:
 
-- reads a per-sample scaffold-matrix DuckDB built by `build-matrix-db`
-- generates all non-redundant, non-self sample pairs from the matrix DB
-- groups those pairs by anchor sample
+- reads a per-sample genome-matrix DuckDB built by `build-matrix-db`
+- writes results into a DuckDB compare database
+- if the compare DB already exists, only pairs not yet marked completed are processed
+- groups remaining pairs by anchor sample or target block depending on backend
 - loads one anchor sample plus as many target samples as fit the memory budget
 - computes ANI-only genome output scaffold-by-scaffold
 - uses matrix multiplication for `total_positions`
 - uses allele-presence matrix multiplication plus per-position thresholding for `share_allele_pos`
 - when `ibs` is requested, scans the shared-allele boolean in position order to compute `max_consecutive_length`
-- writes the standard ANI parquet columns:
-  - `sample_1`
-  - `sample_2`
-  - `genome`
-  - `total_positions`
-  - `share_allele_pos`
-  - `genome_pop_ani`
-  - `max_consecutive_length` when `ibs` is requested
+- stores result rows and completion metadata in the compare DB incrementally
 
 Important options:
 
 - `-m, --matrix-db-file` (required)
 - `-o, --output-file` (required)
-- `-c, --min-cov` must match the fixed build threshold used by `build-matrix-db` (currently `5`)
 - `-g, --genome` optional genome scope (default: `all`)
 - `--memory-limit-gb` approximate compare memory budget
 - `--position-tile-size` optional manual override for positions processed per scaffold tile
@@ -482,9 +503,27 @@ Notes:
 
 - MPS requires native macOS; Linux containers cannot expose Apple Metal
 - `torch` auto-selects CUDA, then MPS, then CPU
-- the current implementation is ANI-only
 - the CLI shows a progress bar in an interactive terminal
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
+
+### `zipstrain utilities matrix-compare-export`
+
+```bash
+zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file matrix_compare.duckdb \
+  --output-file matrix_compare.parquet
+```
+
+What it does:
+
+- reads `matrix_compare_results` from a matrix compare DuckDB
+- exports the standard compare columns to parquet
+- uses the stored compare metadata to choose the correct output columns
+
+Important options:
+
+- `-m, --matrix-compare-db-file` (required)
+- `-o, --output-file` (required)
 
 ### `zipstrain utilities merge_parquet`
 
