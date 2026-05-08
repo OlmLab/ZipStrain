@@ -611,6 +611,8 @@ def test_cli_matrix_build_and_compare(tmp_path):
             str(output_file),
             "--memory-limit-gb",
             "1",
+            "--target-queue-size",
+            "1",
             "--calculate",
             "ani",
         ],
@@ -987,6 +989,145 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
     assert call_sizes.count(1) == 7
 
 
+def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypatch):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare.duckdb"
+    _write_many_profiles_same_genome(profile_dir, sample_count=5)
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    class FakeTorchBackend:
+        def __init__(self, backend: str):
+            self.requested = backend
+            self.kind = "torch"
+            self.device = "cpu"
+            self.torch = SimpleNamespace()
+
+    original_load = mp._load_sample_genome_matrices
+    call_sizes: list[int] = []
+
+    def tracking_load(conn, genome_idx, sample_ids, matrix_length, dtype_name):
+        call_sizes.append(len(sample_ids))
+        return original_load(conn, genome_idx, sample_ids, matrix_length, dtype_name)
+
+    def two_target_plan(
+        vector_length: int,
+        remaining_targets: int,
+        dtype_name: str,
+        memory_limit_bytes: int,
+        backend_kind: str,
+        position_tile_size=None,
+    ) -> tuple[int, int]:
+        return min(2, remaining_targets), vector_length
+
+    def identity_prepare(compute_backend, matrix, matrix_value_semantics):
+        return matrix
+
+    def zero_compare(
+        compute_backend,
+        anchor_torch,
+        target_torch,
+        vector_length: int,
+        tile_size: int,
+        matrix_value_semantics: str,
+        need_ibs: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, None]:
+        return (
+            np.zeros(target_torch.shape[2], dtype=np.int64),
+            np.zeros(target_torch.shape[2], dtype=np.int64),
+            None,
+        )
+
+    monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
+    monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
+    monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
+    monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
+
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        anchor_queue_size=2,
+        backend="torch",
+        calculate="ani",
+    )
+
+    assert summary.target_chunks == 3
+    assert call_sizes.count(2) >= 3
+
+
+def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypatch):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare.duckdb"
+    _write_many_profiles_same_genome(profile_dir, sample_count=5)
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    class FakeTorchBackend:
+        def __init__(self, backend: str):
+            self.requested = backend
+            self.kind = "torch"
+            self.device = "cpu"
+            self.torch = SimpleNamespace()
+
+    original_target_load = mp._load_target_queue_block_for_torch
+    prefetched_block_sizes: list[int] = []
+
+    def tracking_target_load(matrix_db_file, genome_idx, block_rows, matrix_length, dtype_name):
+        prefetched_block_sizes.append(len(block_rows))
+        return original_target_load(matrix_db_file, genome_idx, block_rows, matrix_length, dtype_name)
+
+    def two_target_plan(
+        vector_length: int,
+        remaining_targets: int,
+        dtype_name: str,
+        memory_limit_bytes: int,
+        backend_kind: str,
+        position_tile_size=None,
+    ) -> tuple[int, int]:
+        return min(2, remaining_targets), vector_length
+
+    def identity_prepare(compute_backend, matrix, matrix_value_semantics):
+        return matrix
+
+    def zero_compare(
+        compute_backend,
+        anchor_torch,
+        target_torch,
+        vector_length: int,
+        tile_size: int,
+        matrix_value_semantics: str,
+        need_ibs: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, None]:
+        return (
+            np.zeros(target_torch.shape[2], dtype=np.int64),
+            np.zeros(target_torch.shape[2], dtype=np.int64),
+            None,
+        )
+
+    monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
+    monkeypatch.setattr(mp, "_load_target_queue_block_for_torch", tracking_target_load)
+    monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
+    monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
+
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        target_queue_size=2,
+        backend="torch",
+        calculate="ani",
+    )
+
+    assert summary.target_chunks == 3
+    assert prefetched_block_sizes
+    assert 2 in prefetched_block_sizes
+
+
 def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
@@ -1039,6 +1180,7 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
             raise KeyboardInterrupt("simulated ctrl-c")
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
+    monkeypatch.setattr(mp, "MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS", 1)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
     monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)

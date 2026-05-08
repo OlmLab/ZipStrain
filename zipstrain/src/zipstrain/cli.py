@@ -553,6 +553,8 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
 @click.option('--output-file', '-o', required=True, help="Output DuckDB compare database. If it already exists, only remaining pairs are added.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
+@click.option('--anchor-queue-size', type=int, default=1, show_default=True, help="Host-side torch anchor queue size. Only one anchor is transferred to the GPU at a time.")
+@click.option('--target-queue-size', type=int, default=1, show_default=True, help="Host-side torch target queue size. `1` keeps the current synchronous target-load behavior.")
 @click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per genome tile.")
 @click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani or ani+ibs. 'all' currently means ani+ibs.")
 @click.option(
@@ -562,7 +564,7 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
     show_default=True,
     help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
 )
-def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, position_tile_size, calculate, backend):
+def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, anchor_queue_size, target_queue_size, position_tile_size, calculate, backend):
     """
     Run experimental genome-level matrix compare on all non-redundant, non-self sample pairs.
 
@@ -609,6 +611,8 @@ def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, positio
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome=genome,
                 memory_limit_gb=memory_limit_gb,
+                anchor_queue_size=anchor_queue_size,
+                target_queue_size=target_queue_size,
                 position_tile_size=position_tile_size,
                 backend=backend,
                 calculate=calculate,
@@ -625,6 +629,8 @@ def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, positio
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             genome=genome,
             memory_limit_gb=memory_limit_gb,
+            anchor_queue_size=anchor_queue_size,
+            target_queue_size=target_queue_size,
             position_tile_size=position_tile_size,
             backend=backend,
             calculate=calculate,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 import gc
 import importlib
 from dataclasses import dataclass
@@ -32,6 +34,7 @@ MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES = 256 * 1024 * 1024
 MATRIX_BUILD_MIN_COMMIT_BATCH_BYTES = 64 * 1024 * 1024
 MATRIX_BUILD_DUCKDB_MEMORY_FRACTION = 0.25
 MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS = 4
+MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS = 16
 
 def parse_matrix_calculations(calculate: Optional[str] = None) -> tuple[str, ...]:
     calculations = cp.parse_genome_calculations(calculate)
@@ -1783,6 +1786,66 @@ def _prepare_torch_matrix(
     return tensor.to(**kwargs)
 
 
+def _load_anchor_queue_batch_for_torch(
+    matrix_db_file: Path,
+    genome_idx: int,
+    batch_rows: list[tuple[int, str]],
+    matrix_length: int,
+    dtype_name: str,
+    zero_matrix: np.ndarray,
+) -> list[tuple[int, str, np.ndarray]]:
+    if not batch_rows:
+        return []
+    sample_ids = [sample_idx for sample_idx, _sample_name in batch_rows]
+    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
+    try:
+        loaded_anchors = _load_sample_genome_matrices(
+            read_conn,
+            genome_idx=genome_idx,
+            sample_ids=sample_ids,
+            matrix_length=matrix_length,
+            dtype_name=dtype_name,
+        )
+    finally:
+        read_conn.close()
+    return [
+        (
+            sample_idx,
+            sample_name,
+            loaded_anchors.get(sample_idx, zero_matrix),
+        )
+        for sample_idx, sample_name in batch_rows
+    ]
+
+
+def _load_target_queue_block_for_torch(
+    matrix_db_file: Path,
+    genome_idx: int,
+    block_rows: list[tuple[int, str]],
+    matrix_length: int,
+    dtype_name: str,
+) -> tuple[np.ndarray, list[str], np.ndarray, np.ndarray]:
+    block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
+    block_names = [sample_name for _sample_idx, sample_name in block_rows]
+    zero_matrix = np.zeros((matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
+    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
+    try:
+        loaded_targets = _load_sample_genome_matrices(
+            read_conn,
+            genome_idx=genome_idx,
+            sample_ids=block_ids.tolist(),
+            matrix_length=matrix_length,
+            dtype_name=dtype_name,
+        )
+    finally:
+        read_conn.close()
+    target_matrices = np.stack(
+        [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
+        axis=2,
+    )
+    return block_ids, block_names, zero_matrix, target_matrices
+
+
 def _compare_anchor_against_target_chunk_torch(
     compute_backend: MatrixPairComputeBackend,
     anchor_torch,
@@ -1834,6 +1897,7 @@ def _compare_anchor_against_target_chunk_torch(
 
 
 def _matrix_compare_reuse_target_chunks_torch(
+    matrix_db_file: Path,
     conn: duckdb.DuckDBPyConnection,
     compare_conn: duckdb.DuckDBPyConnection,
     output_file: Path,
@@ -1847,6 +1911,8 @@ def _matrix_compare_reuse_target_chunks_torch(
     remaining_work: int,
     memory_limit_bytes: int,
     memory_limit_gb: float,
+    anchor_queue_size: int,
+    target_queue_size: int,
     position_tile_size: Optional[int],
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
@@ -1887,14 +1953,83 @@ def _matrix_compare_reuse_target_chunks_torch(
             }
         )
 
-    for block_start in range(0, len(samples), global_block_size):
-        block_rows = samples[block_start:block_start + global_block_size]
-        if not block_rows:
-            continue
-        external_rows = []
-        for spec in sorted(genomes, key=lambda item: item.genome):
-            block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
-            block_names = [sample_name for _sample_idx, sample_name in block_rows]
+    def load_target_block_sync(
+        spec: GenomeSpec,
+        block_rows: list[tuple[int, str]],
+    ) -> tuple[np.ndarray, list[str], np.ndarray, np.ndarray]:
+        block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
+        block_names = [sample_name for _sample_idx, sample_name in block_rows]
+        zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
+        loaded_targets = _load_sample_genome_matrices(
+            conn,
+            genome_idx=spec.genome_idx,
+            sample_ids=block_ids.tolist(),
+            matrix_length=spec.matrix_length,
+            dtype_name=dtype_name,
+        )
+        target_matrices = np.stack(
+            [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
+            axis=2,
+        )
+        return block_ids, block_names, zero_matrix, target_matrices
+
+    ordered_genomes = sorted(genomes, key=lambda item: item.genome)
+    work_units = [
+        (block_start, samples[block_start:block_start + global_block_size], spec)
+        for block_start in range(0, len(samples), global_block_size)
+        for spec in ordered_genomes
+        if samples[block_start:block_start + global_block_size]
+    ]
+    target_queue_capacity = max(0, target_queue_size - 1)
+    target_queue: deque[tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]] = deque()
+    next_target_prefetch_idx = 1
+    pending_target_future: Optional[Future[tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]]] = None
+
+    def submit_target_prefetch(prefetch_executor: ThreadPoolExecutor, current_unit_index: int) -> None:
+        nonlocal next_target_prefetch_idx, pending_target_future
+        if target_queue_capacity <= 0 or pending_target_future is not None:
+            return
+        if next_target_prefetch_idx <= current_unit_index:
+            next_target_prefetch_idx = current_unit_index + 1
+        if next_target_prefetch_idx >= len(work_units):
+            return
+        if len(target_queue) >= target_queue_capacity:
+            return
+        unit_index = next_target_prefetch_idx
+        next_target_prefetch_idx += 1
+        _prefetch_block_start, prefetch_block_rows, prefetch_spec = work_units[unit_index]
+
+        def prefetch_target_unit() -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]:
+            return (
+                unit_index,
+                _load_target_queue_block_for_torch(
+                    matrix_db_file=matrix_db_file,
+                    genome_idx=prefetch_spec.genome_idx,
+                    block_rows=prefetch_block_rows,
+                    matrix_length=prefetch_spec.matrix_length,
+                    dtype_name=dtype_name,
+                ),
+            )
+
+        pending_target_future = prefetch_executor.submit(prefetch_target_unit)
+
+    def drain_target_prefetch(force: bool = False) -> None:
+        nonlocal pending_target_future
+        if pending_target_future is None:
+            return
+        if not force and not pending_target_future.done():
+            return
+        target_queue.append(pending_target_future.result())
+        pending_target_future = None
+
+    with ThreadPoolExecutor(max_workers=1) as target_prefetch_executor:
+        for unit_index, (block_start, block_rows, spec) in enumerate(work_units):
+            drain_target_prefetch(force=False)
+            if target_queue and target_queue[0][0] == unit_index:
+                block_ids, block_names, zero_matrix, target_matrices = target_queue.popleft()[1]
+            else:
+                block_ids, block_names, zero_matrix, target_matrices = load_target_block_sync(spec, block_rows)
+            submit_target_prefetch(target_prefetch_executor, unit_index)
             completed_pairs_in_block = _load_completed_pairs_for_block_genome(
                 compare_conn,
                 block_ids.tolist(),
@@ -1947,7 +2082,6 @@ def _matrix_compare_reuse_target_chunks_torch(
                         "target_chunks": target_chunks,
                     }
                 )
-            zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
             tile_targets, tile_size = _plan_chunk_sizes(
                 vector_length=spec.matrix_length,
                 remaining_targets=len(block_ids),
@@ -1962,17 +2096,6 @@ def _matrix_compare_reuse_target_chunks_torch(
                     "Internal target block size exceeded the planned torch chunk capacity. "
                     "This indicates the global block planner is inconsistent."
                 )
-            loaded_targets = _load_sample_genome_matrices(
-                conn,
-                genome_idx=spec.genome_idx,
-                sample_ids=block_ids.tolist(),
-                matrix_length=spec.matrix_length,
-                dtype_name=dtype_name,
-            )
-            target_matrices = np.stack(
-                [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
-                axis=2,
-            )
             target_torch = _prepare_torch_matrix(
                 compute_backend=compute_backend,
                 matrix=target_matrices,
@@ -2021,63 +2144,101 @@ def _matrix_compare_reuse_target_chunks_torch(
                 pending_completed_rows.clear()
                 pending_progress.clear()
 
-            for external_pos, (anchor_idx, _anchor_name) in enumerate(external_rows):
-                missing_positions = external_missing_positions[anchor_idx]
-                loaded_anchor = _load_sample_genome_matrices(
-                    conn,
-                    genome_idx=spec.genome_idx,
-                    sample_ids=[anchor_idx],
-                    matrix_length=spec.matrix_length,
-                    dtype_name=dtype_name,
+            anchor_queue: deque[tuple[int, str, np.ndarray]] = deque()
+            next_anchor_offset = 0
+            pending_anchor_future: Optional[Future[list[tuple[int, str, np.ndarray]]]] = None
+
+            def submit_anchor_prefetch(prefetch_executor: ThreadPoolExecutor) -> None:
+                nonlocal next_anchor_offset, pending_anchor_future
+                if pending_anchor_future is not None:
+                    return
+                if next_anchor_offset >= len(external_rows):
+                    return
+                queue_deficit = anchor_queue_size - len(anchor_queue)
+                if queue_deficit <= 0:
+                    return
+                batch_rows = external_rows[next_anchor_offset:next_anchor_offset + queue_deficit]
+                if not batch_rows:
+                    return
+                next_anchor_offset += len(batch_rows)
+                pending_anchor_future = prefetch_executor.submit(
+                    _load_anchor_queue_batch_for_torch,
+                    matrix_db_file,
+                    spec.genome_idx,
+                    batch_rows,
+                    spec.matrix_length,
+                    dtype_name,
+                    zero_matrix,
                 )
-                anchor_matrix = loaded_anchor.get(anchor_idx, zero_matrix)
-                anchor_torch = _prepare_torch_matrix(
-                    compute_backend=compute_backend,
-                    matrix=anchor_matrix,
-                    matrix_value_semantics=matrix_value_semantics,
-                )
-                total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
-                    compute_backend=compute_backend,
-                    anchor_torch=anchor_torch,
-                    target_torch=target_torch,
-                    vector_length=spec.matrix_length,
-                    tile_size=tile_size,
-                    matrix_value_semantics=matrix_value_semantics,
-                    need_ibs="ibs" in calculations,
-                )
-                candidate_mask = np.zeros(len(block_ids), dtype=bool)
-                candidate_mask[missing_positions] = True
-                mask = (total_inc > 0) & candidate_mask
-                completed_rows_for_anchor = [
-                    (anchor_idx, int(block_ids[pos]), spec.genome_idx) for pos in missing_positions
-                ]
-                if mask.any():
-                    pending_tables.append(
-                        _make_arrow_table(
-                            sample_1_idx=anchor_idx,
-                            sample_1=samples_by_id[anchor_idx],
-                            sample_2_idx=[int(block_ids[idx]) for idx, keep in enumerate(mask) if keep],
-                            sample_2=[block_names[idx] for idx, keep in enumerate(mask) if keep],
-                            genome_idx=spec.genome_idx,
-                            genome=genome_name,
-                            calculations=calculations,
-                            total_positions=total_inc[mask] if "ani" in calculations else None,
-                            share_allele_pos=shared_inc[mask] if "ani" in calculations else None,
-                            max_consecutive_length=ibs_inc[mask] if ibs_inc is not None else None,
-                        )
+
+            def drain_anchor_prefetch(force: bool = False) -> None:
+                nonlocal pending_anchor_future
+                if pending_anchor_future is None:
+                    return
+                if not force and not pending_anchor_future.done():
+                    return
+                anchor_queue.extend(pending_anchor_future.result())
+                pending_anchor_future = None
+
+            with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
+                submit_anchor_prefetch(prefetch_executor)
+                drain_anchor_prefetch(force=True)
+                for external_pos in range(len(external_rows)):
+                    if not anchor_queue:
+                        drain_anchor_prefetch(force=True)
+                    if not anchor_queue:
+                        raise RuntimeError("Anchor queue unexpectedly empty during torch matrix compare.")
+                    anchor_idx, _anchor_name, anchor_matrix = anchor_queue.popleft()
+                    submit_anchor_prefetch(prefetch_executor)
+                    missing_positions = external_missing_positions[anchor_idx]
+                    anchor_torch = _prepare_torch_matrix(
+                        compute_backend=compute_backend,
+                        matrix=anchor_matrix,
+                        matrix_value_semantics=matrix_value_semantics,
                     )
-                pending_completed_rows.extend(completed_rows_for_anchor)
-                processed_pairs_for_block += len(missing_positions)
-                pending_progress.append(
-                    {
-                        "delta": len(missing_positions),
-                        "anchor_name": samples_by_id[anchor_idx],
-                        "targets_completed": external_pos + 1,
-                        "targets_total": len(external_rows) + len(block_ids) - 1,
-                    }
-                )
-                if len(pending_progress) >= MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS:
-                    flush_pending_block_units()
+                    total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
+                        compute_backend=compute_backend,
+                        anchor_torch=anchor_torch,
+                        target_torch=target_torch,
+                        vector_length=spec.matrix_length,
+                        tile_size=tile_size,
+                        matrix_value_semantics=matrix_value_semantics,
+                        need_ibs="ibs" in calculations,
+                    )
+                    drain_anchor_prefetch(force=False)
+                    candidate_mask = np.zeros(len(block_ids), dtype=bool)
+                    candidate_mask[missing_positions] = True
+                    mask = (total_inc > 0) & candidate_mask
+                    completed_rows_for_anchor = [
+                        (anchor_idx, int(block_ids[pos]), spec.genome_idx) for pos in missing_positions
+                    ]
+                    if mask.any():
+                        pending_tables.append(
+                            _make_arrow_table(
+                                sample_1_idx=anchor_idx,
+                                sample_1=samples_by_id[anchor_idx],
+                                sample_2_idx=[int(block_ids[idx]) for idx, keep in enumerate(mask) if keep],
+                                sample_2=[block_names[idx] for idx, keep in enumerate(mask) if keep],
+                                genome_idx=spec.genome_idx,
+                                genome=genome_name,
+                                calculations=calculations,
+                                total_positions=total_inc[mask] if "ani" in calculations else None,
+                                share_allele_pos=shared_inc[mask] if "ani" in calculations else None,
+                                max_consecutive_length=ibs_inc[mask] if ibs_inc is not None else None,
+                            )
+                        )
+                    pending_completed_rows.extend(completed_rows_for_anchor)
+                    processed_pairs_for_block += len(missing_positions)
+                    pending_progress.append(
+                        {
+                            "delta": len(missing_positions),
+                            "anchor_name": samples_by_id[anchor_idx],
+                            "targets_completed": external_pos + 1,
+                            "targets_total": len(external_rows) + len(block_ids) - 1,
+                        }
+                    )
+                    if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
+                        flush_pending_block_units()
 
             for local_anchor_pos in range(len(block_ids) - 1):
                 missing_positions = internal_missing_positions.get(local_anchor_pos, [])
@@ -2126,7 +2287,7 @@ def _matrix_compare_reuse_target_chunks_torch(
                         "targets_total": len(block_ids) - 1,
                     }
                 )
-                if len(pending_progress) >= MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS:
+                if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
                     flush_pending_block_units()
 
             flush_pending_block_units()
@@ -2135,6 +2296,8 @@ def _matrix_compare_reuse_target_chunks_torch(
                 raise RuntimeError(
                     "Torch block compare progress accounting drifted from the expected remaining pair count."
                 )
+            drain_target_prefetch(force=False)
+            submit_target_prefetch(target_prefetch_executor, unit_index)
 
     if progress_callback is not None:
         progress_callback(
@@ -2174,6 +2337,8 @@ def matrix_compare(
     min_cov: int = 5,
     genome: str = "all",
     memory_limit_gb: float = 16.0,
+    anchor_queue_size: int = 1,
+    target_queue_size: int = 1,
     position_tile_size: Optional[int] = None,
     backend: str = "numpy",
     calculate: Optional[str] = "all",
@@ -2181,6 +2346,10 @@ def matrix_compare(
 ) -> MatrixCompareSummary:
     if min_cov < 1:
         raise ValueError("min_cov must be >= 1")
+    if anchor_queue_size < 1:
+        raise ValueError("anchor_queue_size must be >= 1")
+    if target_queue_size < 1:
+        raise ValueError("target_queue_size must be >= 1")
     matrix_db_file = matrix_db_file.resolve()
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2260,6 +2429,7 @@ def matrix_compare(
 
         if compute_backend.kind == "torch":
             return _matrix_compare_reuse_target_chunks_torch(
+                matrix_db_file=matrix_db_file,
                 conn=conn,
                 compare_conn=compare_conn,
                 output_file=output_file,
@@ -2273,6 +2443,8 @@ def matrix_compare(
                 remaining_work=remaining_work,
                 memory_limit_bytes=memory_limit_bytes,
                 memory_limit_gb=memory_limit_gb,
+                anchor_queue_size=anchor_queue_size,
+                target_queue_size=target_queue_size,
                 position_tile_size=position_tile_size,
                 compute_backend=compute_backend,
                 matrix_value_semantics=matrix_value_semantics,

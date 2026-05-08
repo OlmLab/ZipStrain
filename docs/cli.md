@@ -453,6 +453,8 @@ zipstrain utilities matrix-compare \
   --matrix-db-file matrix_db.duckdb \
   --output-file matrix_compare.duckdb \
   --memory-limit-gb 16 \
+  --anchor-queue-size 1 \
+  --target-queue-size 1 \
   --calculate ani+ibs \
   --backend numpy
 ```
@@ -476,6 +478,8 @@ Important options:
 - `-o, --output-file` (required)
 - `-g, --genome` optional genome scope (default: `all`)
 - `--memory-limit-gb` approximate compare memory budget
+- `--anchor-queue-size` number of torch anchor matrices to keep queued in host RAM while still transferring only one anchor at a time to the GPU (default: `1`)
+- `--target-queue-size` number of torch target blocks to keep queued in host RAM; `1` preserves the current synchronous target-load behavior (default: `1`)
 - `--position-tile-size` optional manual override for positions processed per scaffold tile
 - `--calculate` matrix metrics to compute:
   - `ani`
