@@ -455,6 +455,8 @@ zipstrain utilities matrix-compare \
   --memory-limit-gb 16 \
   --anchor-queue-size 1 \
   --target-queue-size 1 \
+  --loader-executor thread \
+  --writer-executor thread \
   --calculate ani+ibs \
   --backend numpy
 ```
@@ -480,6 +482,8 @@ Important options:
 - `--memory-limit-gb` approximate compare memory budget
 - `--anchor-queue-size` number of torch anchor matrices to keep queued in host RAM while still transferring only one anchor at a time to the GPU (default: `1`)
 - `--target-queue-size` number of torch target blocks to keep queued in host RAM; `1` preserves the current synchronous target-load behavior (default: `1`)
+- `--loader-executor` executor kind for torch loader prefetch work (`thread|process`, default: `thread`)
+- `--writer-executor` executor kind for torch result writing/checkpoint work (`thread|process`, default: `thread`)
 - `--position-tile-size` optional manual override for positions processed per scaffold tile
 - `--calculate` matrix metrics to compute:
   - `ani`
@@ -507,6 +511,7 @@ Notes:
 
 - MPS requires native macOS; Linux containers cannot expose Apple Metal
 - `torch` auto-selects CUDA, then MPS, then CPU
+- for torch backends, GPU work stays on the main process while loader and writer stages can run through either thread or process executors
 - the CLI shows a progress bar in an interactive terminal
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
 

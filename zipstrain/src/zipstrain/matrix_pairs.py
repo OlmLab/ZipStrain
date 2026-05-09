@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import gc
 import importlib
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -25,6 +28,7 @@ MATRIX_BUILD_MIN_COV = 5
 FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 CURRENT_MATRIX_DB_LAYOUT = "per_sample_per_genome_dense_matrix"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
+MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
 MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs")
@@ -35,6 +39,38 @@ MATRIX_BUILD_MIN_COMMIT_BATCH_BYTES = 64 * 1024 * 1024
 MATRIX_BUILD_DUCKDB_MEMORY_FRACTION = 0.25
 MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS = 4
 MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS = 16
+
+
+def _emit_matrix_compare_writer_log(
+    *,
+    start_time: float,
+    completed: int,
+    total: int,
+    batch_pairs: int,
+    batch_rows: int,
+    anchor_name: str,
+    genome: str,
+    targets_completed: int,
+    targets_total: int,
+    target_chunks: int,
+) -> None:
+    percent = (completed / max(total, 1)) * 100 if total > 0 else 0.0
+    fields = {
+        "elapsed": f"{max(time.monotonic() - start_time, 0.0):.1f}s",
+        "completed": completed,
+        "total": total,
+        "percent": f"{percent:.1f}",
+        "batch_pairs": batch_pairs,
+        "batch_rows": batch_rows,
+        "anchor_name": anchor_name,
+        "genome": genome,
+        "targets_completed": targets_completed,
+        "targets_total": targets_total,
+        "target_chunks": target_chunks,
+    }
+    payload = " ".join(f"{key}={value}" for key, value in fields.items())
+    sys.stderr.write(f"MATRIX-COMPARE PROGRESS {payload}\n")
+    sys.stderr.flush()
 
 def parse_matrix_calculations(calculate: Optional[str] = None) -> tuple[str, ...]:
     calculations = cp.parse_genome_calculations(calculate)
@@ -700,17 +736,43 @@ def _validate_matrix_compare_db_metadata(
         )
 
 
-def _cleanup_incomplete_matrix_compare_rows(compare_conn: duckdb.DuckDBPyConnection) -> None:
+def _matrix_compare_table_exists(
+    compare_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+) -> bool:
+    return bool(
+        compare_conn.execute(
+            """
+            SELECT count(*)
+            FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = ?
+            """,
+            [table_name],
+        ).fetchone()[0]
+    )
+
+
+def _ensure_matrix_compare_completed_table(
+    compare_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    if _matrix_compare_table_exists(compare_conn, "matrix_compare_completed_pair_genomes"):
+        return
     compare_conn.execute(
         """
-        DELETE FROM matrix_compare_results AS r
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM matrix_compare_completed_pair_genomes AS p
-          WHERE p.sample_idx_1 = r.sample_idx_1
-            AND p.sample_idx_2 = r.sample_idx_2
-            AND p.genome_idx = r.genome_idx
+        CREATE TABLE matrix_compare_completed_pair_genomes (
+          sample_idx_1 INTEGER NOT NULL,
+          sample_idx_2 INTEGER NOT NULL,
+          genome_idx INTEGER NOT NULL,
+          PRIMARY KEY (sample_idx_1, sample_idx_2, genome_idx)
         )
+        """
+    )
+    compare_conn.execute(
+        """
+        INSERT OR IGNORE INTO matrix_compare_completed_pair_genomes
+        SELECT DISTINCT sample_idx_1, sample_idx_2, genome_idx
+        FROM matrix_compare_results
         """
     )
 
@@ -724,10 +786,10 @@ def _prepare_matrix_compare_db(
     genome_scope: Optional[str],
     calculations: tuple[str, ...],
 ) -> duckdb.DuckDBPyConnection:
-    existed_before = output_file.exists()
+    existed_before = output_file.exists() and output_file.stat().st_size > 0
     compare_conn = duckdb.connect(str(output_file))
     compare_conn.execute("SET preserve_insertion_order=false")
-    if not existed_before or output_file.stat().st_size == 0:
+    if not existed_before:
         _init_matrix_compare_db_schema(compare_conn)
         compare_conn.executemany(
             "INSERT INTO matrix_compare_metadata VALUES (?, ?)",
@@ -738,6 +800,11 @@ def _prepare_matrix_compare_db(
             ),
         )
     else:
+        if not _matrix_compare_table_exists(compare_conn, "matrix_compare_metadata"):
+            raise ValueError(
+                "Existing matrix compare DB is missing metadata and cannot be resumed safely. "
+                "Remove it and rerun matrix-compare."
+            )
         compare_metadata = {
             str(k): str(v)
             for k, v in compare_conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
@@ -748,7 +815,7 @@ def _prepare_matrix_compare_db(
             genome_scope=genome_scope,
             calculations=calculations,
         )
-        _cleanup_incomplete_matrix_compare_rows(compare_conn)
+        _ensure_matrix_compare_completed_table(compare_conn)
 
     compare_conn.executemany(
         "INSERT OR REPLACE INTO matrix_compare_samples VALUES (?, ?)",
@@ -762,83 +829,47 @@ def _prepare_matrix_compare_db(
     return compare_conn
 
 
-def _count_remaining_matrix_compare_pairs(
+def _load_matrix_compare_resume_state(
     compare_conn: duckdb.DuckDBPyConnection,
     sample_count: int,
-) -> tuple[int, int]:
+    genome_ids: list[int],
+) -> tuple[dict[int, set[tuple[int, int]]], int, int]:
     total_pairs = sample_count * (sample_count - 1) // 2
-    genome_count = int(
-        compare_conn.execute("SELECT count(*) FROM matrix_compare_genomes").fetchone()[0]
-    )
-    if total_pairs == 0 or genome_count == 0:
-        return 0, 0
+    if total_pairs == 0 or not genome_ids:
+        return {genome_idx: set() for genome_idx in genome_ids}, 0, 0
 
-    completed_pair_genomes = int(
-        compare_conn.execute(
-            """
-            SELECT count(*)
-            FROM matrix_compare_completed_pair_genomes
-            WHERE sample_idx_1 < ? AND sample_idx_2 < ?
-            """,
-            [sample_count, sample_count],
-        ).fetchone()[0]
-    )
-    fully_completed_pairs = int(
-        compare_conn.execute(
-            """
-            SELECT count(*)
-            FROM (
-              SELECT sample_idx_1, sample_idx_2
-              FROM matrix_compare_completed_pair_genomes
-              WHERE sample_idx_1 < ? AND sample_idx_2 < ?
-              GROUP BY sample_idx_1, sample_idx_2
-              HAVING count(*) = ?
-            )
-            """,
-            [sample_count, sample_count, genome_count],
-        ).fetchone()[0]
+    completed_rows = compare_conn.execute(
+        """
+        SELECT sample_idx_1, sample_idx_2, genome_idx
+        FROM matrix_compare_completed_pair_genomes
+        WHERE sample_idx_1 < ? AND sample_idx_2 < ?
+        """,
+        [sample_count, sample_count],
+    ).fetchall()
+    completed_by_genome: dict[int, set[tuple[int, int]]] = {
+        genome_idx: set() for genome_idx in genome_ids
+    }
+    completed_pair_counts: dict[tuple[int, int], int] = {}
+    valid_genome_ids = set(genome_ids)
+    completed_pair_genomes = 0
+    for sample_idx_1, sample_idx_2, genome_idx in completed_rows:
+        genome_idx = int(genome_idx)
+        if genome_idx not in valid_genome_ids:
+            continue
+        pair = (int(sample_idx_1), int(sample_idx_2))
+        genome_pairs = completed_by_genome[genome_idx]
+        if pair in genome_pairs:
+            continue
+        genome_pairs.add(pair)
+        completed_pair_counts[pair] = completed_pair_counts.get(pair, 0) + 1
+        completed_pair_genomes += 1
+
+    fully_completed_pairs = sum(
+        1 for count in completed_pair_counts.values() if count == len(genome_ids)
     )
     remaining_pairs = max(0, total_pairs - fully_completed_pairs)
-    remaining_pair_genomes = max(0, total_pairs * genome_count - completed_pair_genomes)
-    return remaining_pairs, remaining_pair_genomes
-
-
-def _load_completed_targets_for_anchor_genome(
-    compare_conn: duckdb.DuckDBPyConnection,
-    sample_idx_1: int,
-    genome_idx: int,
-) -> set[int]:
-    return {
-        int(row[0])
-        for row in compare_conn.execute(
-            """
-            SELECT sample_idx_2
-            FROM matrix_compare_completed_pair_genomes
-            WHERE sample_idx_1 = ? AND genome_idx = ?
-            """,
-            [sample_idx_1, genome_idx],
-        ).fetchall()
-    }
-
-
-def _load_completed_pairs_for_block_genome(
-    compare_conn: duckdb.DuckDBPyConnection,
-    block_ids: list[int],
-    genome_idx: int,
-) -> set[tuple[int, int]]:
-    if not block_ids:
-        return set()
-    return {
-        (int(sample_idx_1), int(sample_idx_2))
-        for sample_idx_1, sample_idx_2 in compare_conn.execute(
-            f"""
-            SELECT sample_idx_1, sample_idx_2
-            FROM matrix_compare_completed_pair_genomes
-            WHERE genome_idx = ? AND sample_idx_2 IN ({','.join(['?'] * len(block_ids))})
-            """,
-            [genome_idx, *block_ids],
-        ).fetchall()
-    }
+    remaining_pair_genomes = max(0, total_pairs * len(genome_ids) - completed_pair_genomes)
+    return completed_by_genome, remaining_pairs, remaining_pair_genomes
 
 
 def _insert_matrix_compare_result_table(
@@ -880,6 +911,84 @@ def _mark_completed_pair_genomes(
         "INSERT OR REPLACE INTO matrix_compare_completed_pair_genomes VALUES (?, ?, ?)",
         completed_pair_genomes,
     )
+
+
+def _completed_pair_rows_from_payload(
+    payload: dict[str, object],
+) -> list[tuple[int, int, int]]:
+    sample_1_idx = int(payload["sample_1_idx"])
+    genome_idx = int(payload["genome_idx"])
+    sample_2_idx = np.asarray(payload["sample_2_idx"], dtype=np.int64)
+    return [
+        (sample_1_idx, int(sample_2_idx_value), genome_idx)
+        for sample_2_idx_value in sample_2_idx.tolist()
+    ]
+
+
+def _write_matrix_compare_batch(
+    output_file: Path,
+    batch_tables: list[pa.Table],
+    batch_completed_rows: list[tuple[int, int, int]],
+) -> int:
+    batch_rows = 0
+    write_conn = duckdb.connect(str(output_file))
+    write_conn.execute("SET preserve_insertion_order=false")
+    try:
+        write_conn.execute("BEGIN")
+        try:
+            for table in batch_tables:
+                _insert_matrix_compare_result_table(write_conn, table)
+                batch_rows += table.num_rows
+            _mark_completed_pair_genomes(write_conn, batch_completed_rows)
+            write_conn.execute("COMMIT")
+        except Exception:
+            write_conn.execute("ROLLBACK")
+            raise
+    finally:
+        write_conn.close()
+    return batch_rows
+
+
+def _write_matrix_compare_payload_batch(
+    output_file: Path,
+    batch_payloads: list[dict[str, object]],
+    log_context: Optional[dict[str, object]] = None,
+) -> int:
+    batch_rows = 0
+    completed_rows: list[tuple[int, int, int]] = []
+    write_conn = duckdb.connect(str(output_file))
+    write_conn.execute("SET preserve_insertion_order=false")
+    try:
+        write_conn.execute("BEGIN")
+        try:
+            for payload in batch_payloads:
+                completed_rows.extend(_completed_pair_rows_from_payload(payload))
+                table = _make_arrow_table_from_compare_payload(payload)
+                if table is None:
+                    continue
+                _insert_matrix_compare_result_table(write_conn, table)
+                batch_rows += table.num_rows
+            _mark_completed_pair_genomes(write_conn, completed_rows)
+            write_conn.execute("COMMIT")
+        except Exception:
+            write_conn.execute("ROLLBACK")
+            raise
+    finally:
+        write_conn.close()
+    if log_context is not None:
+        _emit_matrix_compare_writer_log(
+            start_time=float(log_context["start_time"]),
+            completed=int(log_context["completed"]),
+            total=int(log_context["total"]),
+            batch_pairs=int(log_context["batch_pairs"]),
+            batch_rows=batch_rows,
+            anchor_name=str(log_context["anchor_name"]),
+            genome=str(log_context["genome"]),
+            targets_completed=int(log_context["targets_completed"]),
+            targets_total=int(log_context["targets_total"]),
+            target_chunks=int(log_context["target_chunks"]),
+        )
+    return batch_rows
 
 
 def _validate_matrix_db_appendable(metadata: dict[str, str]) -> tuple[str, str]:
@@ -1770,6 +1879,36 @@ def _make_arrow_table(
     )
 
 
+def _make_arrow_table_from_compare_payload(
+    payload: dict[str, object],
+) -> Optional[pa.Table]:
+    calculations = tuple(payload["calculations"])
+    total_positions_all = np.asarray(payload["total_positions"], dtype=np.int64)
+    mask = total_positions_all > 0
+    if not bool(mask.any()):
+        return None
+
+    sample_2_idx_all = np.asarray(payload["sample_2_idx"], dtype=np.int64)
+    sample_2_all = list(payload["sample_2"])
+    share_allele_pos_all = np.asarray(payload["share_allele_pos"], dtype=np.int64)
+    max_consecutive_all = payload.get("max_consecutive_length")
+    if max_consecutive_all is not None:
+        max_consecutive_all = np.asarray(max_consecutive_all, dtype=np.int64)
+
+    return _make_arrow_table(
+        sample_1_idx=int(payload["sample_1_idx"]),
+        sample_1=str(payload["sample_1"]),
+        sample_2_idx=sample_2_idx_all[mask].astype(np.int64, copy=False).tolist(),
+        sample_2=[sample_2_all[idx] for idx, keep in enumerate(mask) if keep],
+        genome_idx=int(payload["genome_idx"]),
+        genome=str(payload["genome"]),
+        calculations=calculations,
+        total_positions=total_positions_all[mask] if "ani" in calculations else None,
+        share_allele_pos=share_allele_pos_all[mask] if "ani" in calculations else None,
+        max_consecutive_length=max_consecutive_all[mask] if max_consecutive_all is not None else None,
+    )
+
+
 def _prepare_torch_matrix(
     compute_backend: MatrixPairComputeBackend,
     matrix: np.ndarray,
@@ -1846,6 +1985,34 @@ def _load_target_queue_block_for_torch(
     return block_ids, block_names, zero_matrix, target_matrices
 
 
+def _load_target_prefetch_unit_for_torch(
+    unit_index: int,
+    matrix_db_file: Path,
+    genome_idx: int,
+    block_rows: list[tuple[int, str]],
+    matrix_length: int,
+    dtype_name: str,
+) -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]:
+    return (
+        unit_index,
+        _load_target_queue_block_for_torch(
+            matrix_db_file=matrix_db_file,
+            genome_idx=genome_idx,
+            block_rows=block_rows,
+            matrix_length=matrix_length,
+            dtype_name=dtype_name,
+        ),
+    )
+
+
+def _build_matrix_io_executor(kind: str):
+    if kind == "thread":
+        return ThreadPoolExecutor(max_workers=1)
+    if kind == "process":
+        return ProcessPoolExecutor(max_workers=1)
+    raise ValueError(f"Unsupported matrix I/O executor kind '{kind}'.")
+
+
 def _compare_anchor_against_target_chunk_torch(
     compute_backend: MatrixPairComputeBackend,
     anchor_torch,
@@ -1896,10 +2063,10 @@ def _compare_anchor_against_target_chunk_torch(
     return chunk_totals_torch.cpu().numpy(), chunk_shared_torch.cpu().numpy(), max_runs
 
 
-def _matrix_compare_reuse_target_chunks_torch(
+async def _matrix_compare_reuse_target_chunks_torch_async(
     matrix_db_file: Path,
     conn: duckdb.DuckDBPyConnection,
-    compare_conn: duckdb.DuckDBPyConnection,
+    compare_conn: Optional[duckdb.DuckDBPyConnection],
     output_file: Path,
     min_cov: int,
     genome_scope: Optional[str],
@@ -1907,16 +2074,21 @@ def _matrix_compare_reuse_target_chunks_torch(
     samples: list[tuple[int, str]],
     genomes: list[GenomeSpec],
     genome_scaffolds: list[GenomeScaffoldOffset],
+    completed_pairs_by_genome: dict[int, set[tuple[int, int]]],
     requested_pairs: int,
     remaining_work: int,
     memory_limit_bytes: int,
     memory_limit_gb: float,
     anchor_queue_size: int,
     target_queue_size: int,
+    loader_executor_kind: str,
+    writer_executor_kind: str,
     position_tile_size: Optional[int],
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
     calculations: tuple[str, ...],
+    emit_writer_logs: bool,
+    run_start_time: float,
     progress_callback: Optional[CompareProgressCallback] = None,
 ) -> MatrixCompareSummary:
     total_work = remaining_work
@@ -1937,21 +2109,11 @@ def _matrix_compare_reuse_target_chunks_torch(
     )
     global_block_size = max(1, global_block_size)
     samples_by_id = {sample_idx: sample_name for sample_idx, sample_name in samples}
-
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "phase": "start",
-                "completed": completed_work,
-                "total": total_work,
-                "anchor_name": "",
-                "genome": genome_scope or metadata.get("genome_scope", "all"),
-                "scaffold": "",
-                "targets_completed": 0,
-                "targets_total": 0,
-                "target_chunks": target_chunks,
-            }
-        )
+    loop = asyncio.get_running_loop()
+    target_loader_executor = _build_matrix_io_executor(loader_executor_kind)
+    anchor_loader_executor = _build_matrix_io_executor(loader_executor_kind)
+    writer_executor = _build_matrix_io_executor(writer_executor_kind)
+    pending_write_futures: deque[tuple[asyncio.Future[int], list[dict[str, object]]]] = deque()
 
     def load_target_block_sync(
         spec: GenomeSpec,
@@ -1973,6 +2135,37 @@ def _matrix_compare_reuse_target_chunks_torch(
         )
         return block_ids, block_names, zero_matrix, target_matrices
 
+    async def drain_writer_results(force_one: bool = False, force_all: bool = False) -> None:
+        nonlocal written_rows, completed_work
+        while pending_write_futures:
+            batch_future, batch_progress = pending_write_futures[0]
+            if force_all or force_one:
+                batch_rows = await batch_future
+            elif not batch_future.done():
+                break
+            else:
+                batch_rows = batch_future.result()
+            pending_write_futures.popleft()
+            written_rows += batch_rows
+            for event in batch_progress:
+                completed_work += int(event["delta"])
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "advance",
+                            "completed": completed_work,
+                            "total": total_work,
+                            "anchor_name": str(event["anchor_name"]),
+                            "genome": str(event["genome"]),
+                            "scaffold": "",
+                            "targets_completed": int(event["targets_completed"]),
+                            "targets_total": int(event["targets_total"]),
+                            "target_chunks": int(event["target_chunks"]),
+                        }
+                    )
+            if force_one:
+                force_one = False
+
     ordered_genomes = sorted(genomes, key=lambda item: item.genome)
     work_units = [
         (block_start, samples[block_start:block_start + global_block_size], spec)
@@ -1983,9 +2176,9 @@ def _matrix_compare_reuse_target_chunks_torch(
     target_queue_capacity = max(0, target_queue_size - 1)
     target_queue: deque[tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]] = deque()
     next_target_prefetch_idx = 1
-    pending_target_future: Optional[Future[tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]]] = None
+    pending_target_future: Optional[asyncio.Future[tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]]] = None
 
-    def submit_target_prefetch(prefetch_executor: ThreadPoolExecutor, current_unit_index: int) -> None:
+    def submit_target_prefetch(current_unit_index: int) -> None:
         nonlocal next_target_prefetch_idx, pending_target_future
         if target_queue_capacity <= 0 or pending_target_future is not None:
             return
@@ -1998,55 +2191,50 @@ def _matrix_compare_reuse_target_chunks_torch(
         unit_index = next_target_prefetch_idx
         next_target_prefetch_idx += 1
         _prefetch_block_start, prefetch_block_rows, prefetch_spec = work_units[unit_index]
+        pending_target_future = loop.run_in_executor(
+            target_loader_executor,
+            _load_target_prefetch_unit_for_torch,
+            unit_index,
+            matrix_db_file,
+            prefetch_spec.genome_idx,
+            prefetch_block_rows,
+            prefetch_spec.matrix_length,
+            dtype_name,
+        )
 
-        def prefetch_target_unit() -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]:
-            return (
-                unit_index,
-                _load_target_queue_block_for_torch(
-                    matrix_db_file=matrix_db_file,
-                    genome_idx=prefetch_spec.genome_idx,
-                    block_rows=prefetch_block_rows,
-                    matrix_length=prefetch_spec.matrix_length,
-                    dtype_name=dtype_name,
-                ),
-            )
-
-        pending_target_future = prefetch_executor.submit(prefetch_target_unit)
-
-    def drain_target_prefetch(force: bool = False) -> None:
+    async def drain_target_prefetch(force: bool = False) -> None:
         nonlocal pending_target_future
         if pending_target_future is None:
             return
-        if not force and not pending_target_future.done():
-            return
-        target_queue.append(pending_target_future.result())
+        if force:
+            prefetched = await pending_target_future
+        else:
+            if not pending_target_future.done():
+                return
+            prefetched = pending_target_future.result()
+        target_queue.append(prefetched)
         pending_target_future = None
 
-    with ThreadPoolExecutor(max_workers=1) as target_prefetch_executor:
+    try:
         for unit_index, (block_start, block_rows, spec) in enumerate(work_units):
-            drain_target_prefetch(force=False)
+            await drain_target_prefetch(force=False)
             if target_queue and target_queue[0][0] == unit_index:
                 block_ids, block_names, zero_matrix, target_matrices = target_queue.popleft()[1]
             else:
                 block_ids, block_names, zero_matrix, target_matrices = load_target_block_sync(spec, block_rows)
-            submit_target_prefetch(target_prefetch_executor, unit_index)
-            completed_pairs_in_block = _load_completed_pairs_for_block_genome(
-                compare_conn,
-                block_ids.tolist(),
-                spec.genome_idx,
-            )
-
+            submit_target_prefetch(unit_index)
+            completed_pairs_in_block = completed_pairs_by_genome.get(spec.genome_idx, set())
             external_rows = []
             external_missing_positions: dict[int, list[int]] = {}
-            completed_pair_genome_rows: list[tuple[int, int, int]] = []
             for anchor_idx, anchor_name in samples[:block_start]:
-                missing_positions = [pos for pos, target_idx in enumerate(block_ids.tolist()) if (anchor_idx, int(target_idx)) not in completed_pairs_in_block]
+                missing_positions = [
+                    pos
+                    for pos, target_idx in enumerate(block_ids.tolist())
+                    if (anchor_idx, int(target_idx)) not in completed_pairs_in_block
+                ]
                 if missing_positions:
                     external_rows.append((anchor_idx, anchor_name))
                     external_missing_positions[anchor_idx] = missing_positions
-                    completed_pair_genome_rows.extend(
-                        (anchor_idx, int(block_ids[pos]), spec.genome_idx) for pos in missing_positions
-                    )
 
             internal_missing_positions: dict[int, list[int]] = {}
             for local_anchor_pos in range(len(block_ids) - 1):
@@ -2058,30 +2246,14 @@ def _matrix_compare_reuse_target_chunks_torch(
                 ]
                 if missing_positions:
                     internal_missing_positions[local_anchor_pos] = missing_positions
-                    completed_pair_genome_rows.extend(
-                        (anchor_idx, int(block_ids[local_anchor_pos + 1 + rel_pos]), spec.genome_idx)
-                        for rel_pos in missing_positions
-                    )
 
-            pair_count_for_block = len(completed_pair_genome_rows)
+            pair_count_for_block = sum(len(v) for v in external_missing_positions.values()) + sum(
+                len(v) for v in internal_missing_positions.values()
+            )
             if pair_count_for_block == 0:
                 continue
 
             genome_name = spec.genome
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "phase": "processing",
-                        "completed": completed_work,
-                        "total": total_work,
-                        "anchor_name": block_names[0],
-                        "genome": spec.genome,
-                        "scaffold": "",
-                        "targets_completed": 0,
-                        "targets_total": len(block_ids),
-                        "target_chunks": target_chunks,
-                    }
-                )
             tile_targets, tile_size = _plan_chunk_sizes(
                 vector_length=spec.matrix_length,
                 remaining_targets=len(block_ids),
@@ -2103,52 +2275,83 @@ def _matrix_compare_reuse_target_chunks_torch(
             )
             processed_pairs_for_block = 0
             target_chunks += 1
-            pending_tables: list[pa.Table] = []
-            pending_completed_rows: list[tuple[int, int, int]] = []
+            pending_payloads: list[dict[str, object]] = []
             pending_progress: list[dict[str, object]] = []
 
-            def flush_pending_block_units() -> None:
-                nonlocal written_rows, completed_work
-                if not pending_tables and not pending_completed_rows and not pending_progress:
+            def submit_write_batch(
+                batch_payloads: list[dict[str, object]],
+                batch_progress: list[dict[str, object]],
+            ) -> None:
+                batch_pairs = sum(int(event["delta"]) for event in batch_progress)
+                last_event = batch_progress[-1] if batch_progress else {
+                    "anchor_name": "",
+                    "genome": genome_name,
+                    "targets_completed": 0,
+                    "targets_total": 0,
+                    "target_chunks": target_chunks,
+                }
+                log_context = None
+                if emit_writer_logs and batch_progress:
+                    log_context = {
+                        "start_time": run_start_time,
+                        "completed": completed_work + batch_pairs,
+                        "total": total_work,
+                        "batch_pairs": batch_pairs,
+                        "anchor_name": str(last_event["anchor_name"]),
+                        "genome": str(last_event["genome"]),
+                        "targets_completed": int(last_event["targets_completed"]),
+                        "targets_total": int(last_event["targets_total"]),
+                        "target_chunks": int(last_event["target_chunks"]),
+                    }
+                pending_write_futures.append(
+                    (
+                        loop.run_in_executor(
+                            writer_executor,
+                            _write_matrix_compare_payload_batch,
+                            output_file,
+                            batch_payloads,
+                            log_context,
+                        ),
+                        batch_progress,
+                    )
+                )
+
+            async def flush_pending_block_units() -> None:
+                nonlocal pending_payloads, pending_progress, completed_work
+                if not pending_payloads and not pending_progress:
                     return
-                batch_rows = 0
-                compare_conn.commit()
-                compare_conn.execute("BEGIN")
-                try:
-                    for table in pending_tables:
-                        _insert_matrix_compare_result_table(compare_conn, table)
-                        batch_rows += table.num_rows
-                    _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
-                    compare_conn.execute("COMMIT")
-                except Exception:
-                    compare_conn.execute("ROLLBACK")
-                    raise
-                written_rows += batch_rows
-                for event in pending_progress:
+                batch_payloads = pending_payloads
+                batch_progress = pending_progress
+                pending_payloads = []
+                pending_progress = []
+                if batch_payloads:
+                    if pending_write_futures:
+                        await drain_writer_results(force_one=True)
+                    submit_write_batch(batch_payloads, batch_progress)
+                    return
+                for event in batch_progress:
                     completed_work += int(event["delta"])
-                    if progress_callback is not None:
-                        progress_callback(
-                            {
-                                "phase": "advance",
-                                "completed": completed_work,
-                                "total": total_work,
-                                "anchor_name": str(event["anchor_name"]),
-                                "genome": spec.genome,
-                                "scaffold": "",
-                                "targets_completed": int(event["targets_completed"]),
-                                "targets_total": int(event["targets_total"]),
-                                "target_chunks": target_chunks,
-                            }
-                        )
-                pending_tables.clear()
-                pending_completed_rows.clear()
-                pending_progress.clear()
+                if batch_progress and progress_callback is not None:
+                    last_event = batch_progress[-1]
+                    progress_callback(
+                        {
+                            "phase": "advance",
+                            "completed": completed_work,
+                            "total": total_work,
+                            "anchor_name": str(last_event["anchor_name"]),
+                            "genome": str(last_event["genome"]),
+                            "scaffold": "",
+                            "targets_completed": int(last_event["targets_completed"]),
+                            "targets_total": int(last_event["targets_total"]),
+                            "target_chunks": int(last_event["target_chunks"]),
+                        }
+                    )
 
             anchor_queue: deque[tuple[int, str, np.ndarray]] = deque()
             next_anchor_offset = 0
-            pending_anchor_future: Optional[Future[list[tuple[int, str, np.ndarray]]]] = None
+            pending_anchor_future: Optional[asyncio.Future[list[tuple[int, str, np.ndarray]]]] = None
 
-            def submit_anchor_prefetch(prefetch_executor: ThreadPoolExecutor) -> None:
+            def submit_anchor_prefetch() -> None:
                 nonlocal next_anchor_offset, pending_anchor_future
                 if pending_anchor_future is not None:
                     return
@@ -2161,7 +2364,8 @@ def _matrix_compare_reuse_target_chunks_torch(
                 if not batch_rows:
                     return
                 next_anchor_offset += len(batch_rows)
-                pending_anchor_future = prefetch_executor.submit(
+                pending_anchor_future = loop.run_in_executor(
+                    anchor_loader_executor,
                     _load_anchor_queue_batch_for_torch,
                     matrix_db_file,
                     spec.genome_idx,
@@ -2171,76 +2375,77 @@ def _matrix_compare_reuse_target_chunks_torch(
                     zero_matrix,
                 )
 
-            def drain_anchor_prefetch(force: bool = False) -> None:
+            async def drain_anchor_prefetch(force: bool = False) -> None:
                 nonlocal pending_anchor_future
                 if pending_anchor_future is None:
                     return
-                if not force and not pending_anchor_future.done():
-                    return
-                anchor_queue.extend(pending_anchor_future.result())
+                if force:
+                    prefetched = await pending_anchor_future
+                else:
+                    if not pending_anchor_future.done():
+                        return
+                    prefetched = pending_anchor_future.result()
+                anchor_queue.extend(prefetched)
                 pending_anchor_future = None
 
-            with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
-                submit_anchor_prefetch(prefetch_executor)
-                drain_anchor_prefetch(force=True)
-                for external_pos in range(len(external_rows)):
-                    if not anchor_queue:
-                        drain_anchor_prefetch(force=True)
-                    if not anchor_queue:
-                        raise RuntimeError("Anchor queue unexpectedly empty during torch matrix compare.")
-                    anchor_idx, _anchor_name, anchor_matrix = anchor_queue.popleft()
-                    submit_anchor_prefetch(prefetch_executor)
-                    missing_positions = external_missing_positions[anchor_idx]
-                    anchor_torch = _prepare_torch_matrix(
-                        compute_backend=compute_backend,
-                        matrix=anchor_matrix,
-                        matrix_value_semantics=matrix_value_semantics,
-                    )
-                    total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
-                        compute_backend=compute_backend,
-                        anchor_torch=anchor_torch,
-                        target_torch=target_torch,
-                        vector_length=spec.matrix_length,
-                        tile_size=tile_size,
-                        matrix_value_semantics=matrix_value_semantics,
-                        need_ibs="ibs" in calculations,
-                    )
-                    drain_anchor_prefetch(force=False)
-                    candidate_mask = np.zeros(len(block_ids), dtype=bool)
-                    candidate_mask[missing_positions] = True
-                    mask = (total_inc > 0) & candidate_mask
-                    completed_rows_for_anchor = [
-                        (anchor_idx, int(block_ids[pos]), spec.genome_idx) for pos in missing_positions
-                    ]
-                    if mask.any():
-                        pending_tables.append(
-                            _make_arrow_table(
-                                sample_1_idx=anchor_idx,
-                                sample_1=samples_by_id[anchor_idx],
-                                sample_2_idx=[int(block_ids[idx]) for idx, keep in enumerate(mask) if keep],
-                                sample_2=[block_names[idx] for idx, keep in enumerate(mask) if keep],
-                                genome_idx=spec.genome_idx,
-                                genome=genome_name,
-                                calculations=calculations,
-                                total_positions=total_inc[mask] if "ani" in calculations else None,
-                                share_allele_pos=shared_inc[mask] if "ani" in calculations else None,
-                                max_consecutive_length=ibs_inc[mask] if ibs_inc is not None else None,
-                            )
-                        )
-                    pending_completed_rows.extend(completed_rows_for_anchor)
-                    processed_pairs_for_block += len(missing_positions)
-                    pending_progress.append(
-                        {
-                            "delta": len(missing_positions),
-                            "anchor_name": samples_by_id[anchor_idx],
-                            "targets_completed": external_pos + 1,
-                            "targets_total": len(external_rows) + len(block_ids) - 1,
-                        }
-                    )
-                    if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
-                        flush_pending_block_units()
+            submit_anchor_prefetch()
+            await drain_anchor_prefetch(force=True)
+            for external_pos in range(len(external_rows)):
+                await drain_writer_results()
+                if not anchor_queue:
+                    await drain_anchor_prefetch(force=True)
+                if not anchor_queue:
+                    raise RuntimeError("Anchor queue unexpectedly empty during torch matrix compare.")
+                anchor_idx, _anchor_name, anchor_matrix = anchor_queue.popleft()
+                submit_anchor_prefetch()
+                missing_positions = external_missing_positions[anchor_idx]
+                anchor_torch = _prepare_torch_matrix(
+                    compute_backend=compute_backend,
+                    matrix=anchor_matrix,
+                    matrix_value_semantics=matrix_value_semantics,
+                )
+                total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
+                    compute_backend=compute_backend,
+                    anchor_torch=anchor_torch,
+                    target_torch=target_torch,
+                    vector_length=spec.matrix_length,
+                    tile_size=tile_size,
+                    matrix_value_semantics=matrix_value_semantics,
+                    need_ibs="ibs" in calculations,
+                )
+                await drain_anchor_prefetch(force=False)
+                pending_payloads.append(
+                    {
+                        "sample_1_idx": anchor_idx,
+                        "sample_1": samples_by_id[anchor_idx],
+                        "sample_2_idx": block_ids[missing_positions].astype(np.int64, copy=True),
+                        "sample_2": [block_names[pos] for pos in missing_positions],
+                        "genome_idx": spec.genome_idx,
+                        "genome": genome_name,
+                        "calculations": calculations,
+                        "total_positions": total_inc[missing_positions].astype(np.int64, copy=True),
+                        "share_allele_pos": shared_inc[missing_positions].astype(np.int64, copy=True),
+                        "max_consecutive_length": None
+                        if ibs_inc is None
+                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                    }
+                )
+                processed_pairs_for_block += len(missing_positions)
+                pending_progress.append(
+                    {
+                        "delta": len(missing_positions),
+                        "anchor_name": samples_by_id[anchor_idx],
+                        "genome": spec.genome,
+                        "targets_completed": external_pos + 1,
+                        "targets_total": len(external_rows) + len(block_ids) - 1,
+                        "target_chunks": target_chunks,
+                    }
+                )
+                if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
+                    await flush_pending_block_units()
 
             for local_anchor_pos in range(len(block_ids) - 1):
+                await drain_writer_results()
                 missing_positions = internal_missing_positions.get(local_anchor_pos, [])
                 if not missing_positions:
                     continue
@@ -2253,66 +2458,53 @@ def _matrix_compare_reuse_target_chunks_torch(
                     matrix_value_semantics=matrix_value_semantics,
                     need_ibs="ibs" in calculations,
                 )
-                candidate_mask = np.zeros(len(total_inc), dtype=bool)
-                candidate_mask[missing_positions] = True
-                mask = (total_inc > 0) & candidate_mask
                 later_ids = block_ids[local_anchor_pos + 1:]
                 later_names = block_names[local_anchor_pos + 1:]
-                completed_rows_for_anchor = [
-                    (int(block_ids[local_anchor_pos]), int(block_ids[local_anchor_pos + 1 + rel_pos]), spec.genome_idx)
-                    for rel_pos in missing_positions
-                ]
-                if mask.any():
-                    pending_tables.append(
-                        _make_arrow_table(
-                            sample_1_idx=int(block_ids[local_anchor_pos]),
-                            sample_1=block_names[local_anchor_pos],
-                            sample_2_idx=[int(later_ids[idx]) for idx, keep in enumerate(mask) if keep],
-                            sample_2=[later_names[idx] for idx, keep in enumerate(mask) if keep],
-                            genome_idx=spec.genome_idx,
-                            genome=genome_name,
-                            calculations=calculations,
-                            total_positions=total_inc[mask] if "ani" in calculations else None,
-                            share_allele_pos=shared_inc[mask] if "ani" in calculations else None,
-                            max_consecutive_length=ibs_inc[mask] if ibs_inc is not None else None,
-                        )
-                    )
-                pending_completed_rows.extend(completed_rows_for_anchor)
+                pending_payloads.append(
+                    {
+                        "sample_1_idx": int(block_ids[local_anchor_pos]),
+                        "sample_1": block_names[local_anchor_pos],
+                        "sample_2_idx": later_ids[missing_positions].astype(np.int64, copy=True),
+                        "sample_2": [later_names[pos] for pos in missing_positions],
+                        "genome_idx": spec.genome_idx,
+                        "genome": genome_name,
+                        "calculations": calculations,
+                        "total_positions": total_inc[missing_positions].astype(np.int64, copy=True),
+                        "share_allele_pos": shared_inc[missing_positions].astype(np.int64, copy=True),
+                        "max_consecutive_length": None
+                        if ibs_inc is None
+                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                    }
+                )
                 processed_pairs_for_block += len(missing_positions)
                 pending_progress.append(
                     {
                         "delta": len(missing_positions),
                         "anchor_name": block_names[local_anchor_pos],
+                        "genome": spec.genome,
                         "targets_completed": local_anchor_pos + 1,
                         "targets_total": len(block_ids) - 1,
+                        "target_chunks": target_chunks,
                     }
                 )
                 if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
-                    flush_pending_block_units()
+                    await flush_pending_block_units()
 
-            flush_pending_block_units()
+            await flush_pending_block_units()
+            await drain_writer_results()
 
             if processed_pairs_for_block != pair_count_for_block:
                 raise RuntimeError(
                     "Torch block compare progress accounting drifted from the expected remaining pair count."
                 )
-            drain_target_prefetch(force=False)
-            submit_target_prefetch(target_prefetch_executor, unit_index)
+            await drain_target_prefetch(force=False)
+            submit_target_prefetch(unit_index)
 
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "phase": "done",
-                "completed": completed_work,
-                "total": total_work,
-                "anchor_name": "",
-                "genome": genome_scope or metadata.get("genome_scope", "all"),
-                "scaffold": "",
-                "targets_completed": 0,
-                "targets_total": 0,
-                "target_chunks": target_chunks,
-            }
-        )
+        await drain_writer_results(force_all=True)
+    finally:
+        target_loader_executor.shutdown(wait=True)
+        anchor_loader_executor.shutdown(wait=True)
+        writer_executor.shutdown(wait=True)
 
     return MatrixCompareSummary(
         output_file=output_file,
@@ -2331,6 +2523,66 @@ def _matrix_compare_reuse_target_chunks_torch(
     )
 
 
+def _matrix_compare_reuse_target_chunks_torch(
+    matrix_db_file: Path,
+    conn: duckdb.DuckDBPyConnection,
+    compare_conn: Optional[duckdb.DuckDBPyConnection],
+    output_file: Path,
+    min_cov: int,
+    genome_scope: Optional[str],
+    metadata: dict[str, str],
+    samples: list[tuple[int, str]],
+    genomes: list[GenomeSpec],
+    genome_scaffolds: list[GenomeScaffoldOffset],
+    completed_pairs_by_genome: dict[int, set[tuple[int, int]]],
+    requested_pairs: int,
+    remaining_work: int,
+    memory_limit_bytes: int,
+    memory_limit_gb: float,
+    anchor_queue_size: int,
+    target_queue_size: int,
+    loader_executor_kind: str,
+    writer_executor_kind: str,
+    position_tile_size: Optional[int],
+    compute_backend: MatrixPairComputeBackend,
+    matrix_value_semantics: str,
+    calculations: tuple[str, ...],
+    emit_writer_logs: bool,
+    run_start_time: float,
+    progress_callback: Optional[CompareProgressCallback] = None,
+) -> MatrixCompareSummary:
+    return asyncio.run(
+        _matrix_compare_reuse_target_chunks_torch_async(
+            matrix_db_file=matrix_db_file,
+            conn=conn,
+            compare_conn=compare_conn,
+            output_file=output_file,
+            min_cov=min_cov,
+            genome_scope=genome_scope,
+            metadata=metadata,
+            samples=samples,
+            genomes=genomes,
+            genome_scaffolds=genome_scaffolds,
+            completed_pairs_by_genome=completed_pairs_by_genome,
+            requested_pairs=requested_pairs,
+            remaining_work=remaining_work,
+            memory_limit_bytes=memory_limit_bytes,
+            memory_limit_gb=memory_limit_gb,
+            anchor_queue_size=anchor_queue_size,
+            target_queue_size=target_queue_size,
+            loader_executor_kind=loader_executor_kind,
+            writer_executor_kind=writer_executor_kind,
+            position_tile_size=position_tile_size,
+            compute_backend=compute_backend,
+            matrix_value_semantics=matrix_value_semantics,
+            calculations=calculations,
+            emit_writer_logs=emit_writer_logs,
+            run_start_time=run_start_time,
+            progress_callback=progress_callback,
+        )
+    )
+
+
 def matrix_compare(
     matrix_db_file: Path,
     output_file: Path,
@@ -2339,9 +2591,12 @@ def matrix_compare(
     memory_limit_gb: float = 16.0,
     anchor_queue_size: int = 1,
     target_queue_size: int = 1,
+    loader_executor_kind: str = "thread",
+    writer_executor_kind: str = "thread",
     position_tile_size: Optional[int] = None,
     backend: str = "numpy",
     calculate: Optional[str] = "all",
+    emit_writer_logs: bool = False,
     progress_callback: Optional[CompareProgressCallback] = None,
 ) -> MatrixCompareSummary:
     if min_cov < 1:
@@ -2350,6 +2605,14 @@ def matrix_compare(
         raise ValueError("anchor_queue_size must be >= 1")
     if target_queue_size < 1:
         raise ValueError("target_queue_size must be >= 1")
+    if loader_executor_kind not in MATRIX_IO_EXECUTOR_KINDS:
+        raise ValueError(
+            f"loader_executor_kind must be one of {', '.join(MATRIX_IO_EXECUTOR_KINDS)}"
+        )
+    if writer_executor_kind not in MATRIX_IO_EXECUTOR_KINDS:
+        raise ValueError(
+            f"writer_executor_kind must be one of {', '.join(MATRIX_IO_EXECUTOR_KINDS)}"
+        )
     matrix_db_file = matrix_db_file.resolve()
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2357,6 +2620,7 @@ def matrix_compare(
     compute_backend = MatrixPairComputeBackend(backend)
     calculations = parse_matrix_calculations(calculate)
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
+    run_start_time = time.monotonic()
     conn = duckdb.connect(str(matrix_db_file), read_only=True)
     compare_conn: Optional[duckdb.DuckDBPyConnection] = None
     try:
@@ -2381,36 +2645,12 @@ def matrix_compare(
             genome_scope=genome_scope,
             calculations=calculations,
         )
-        requested_pairs, remaining_work = _count_remaining_matrix_compare_pairs(compare_conn, len(samples))
-        if remaining_work == 0:
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "phase": "start",
-                        "completed": 0,
-                        "total": 0,
-                        "anchor_name": "",
-                        "genome": genome,
-                        "scaffold": "",
-                        "targets_completed": 0,
-                        "targets_total": 0,
-                        "target_chunks": 0,
-                    }
-                )
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "phase": "done",
-                        "completed": 0,
-                        "total": 0,
-                        "anchor_name": "",
-                        "genome": genome,
-                        "scaffold": "",
-                        "targets_completed": 0,
-                        "targets_total": 0,
-                        "target_chunks": 0,
-                    }
-                )
+        completed_pairs_by_genome, requested_pairs, total_work = _load_matrix_compare_resume_state(
+            compare_conn,
+            sample_count=len(samples),
+            genome_ids=[spec.genome_idx for spec in genomes],
+        )
+        if total_work == 0:
             return MatrixCompareSummary(
                 output_file=output_file,
                 requested_pairs=0,
@@ -2428,6 +2668,8 @@ def matrix_compare(
             )
 
         if compute_backend.kind == "torch":
+            compare_conn.close()
+            compare_conn = None
             return _matrix_compare_reuse_target_chunks_torch(
                 matrix_db_file=matrix_db_file,
                 conn=conn,
@@ -2439,40 +2681,29 @@ def matrix_compare(
                 samples=samples,
                 genomes=genomes,
                 genome_scaffolds=genome_scaffolds,
+                completed_pairs_by_genome=completed_pairs_by_genome,
                 requested_pairs=requested_pairs,
-                remaining_work=remaining_work,
+                remaining_work=total_work,
                 memory_limit_bytes=memory_limit_bytes,
                 memory_limit_gb=memory_limit_gb,
                 anchor_queue_size=anchor_queue_size,
                 target_queue_size=target_queue_size,
+                loader_executor_kind=loader_executor_kind,
+                writer_executor_kind=writer_executor_kind,
                 position_tile_size=position_tile_size,
                 compute_backend=compute_backend,
                 matrix_value_semantics=matrix_value_semantics,
                 calculations=calculations,
+                emit_writer_logs=emit_writer_logs,
+                run_start_time=run_start_time,
                 progress_callback=progress_callback,
             )
 
-        total_work = remaining_work
         completed_work = 0
         written_rows = 0
         target_chunks = 0
         default_tile_size = 0
         anchor_groups = 0
-
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "phase": "start",
-                    "completed": completed_work,
-                    "total": total_work,
-                    "anchor_name": "",
-                    "genome": genome_scope or "all",
-                    "scaffold": "",
-                    "targets_completed": 0,
-                    "targets_total": 0,
-                    "target_chunks": target_chunks,
-                }
-            )
 
         dtype_name = str(metadata.get("count_dtype", "uint16"))
         for anchor_offset, (sample_1_idx, sample_1_name) in enumerate(samples[:-1]):
@@ -2481,29 +2712,16 @@ def matrix_compare(
                 continue
             anchor_groups += 1
             for spec in genomes:
-                completed_targets = _load_completed_targets_for_anchor_genome(compare_conn, sample_1_idx, spec.genome_idx)
+                completed_pairs_for_genome = completed_pairs_by_genome.get(spec.genome_idx, set())
                 remaining_target_rows = [
-                    row for row in target_sample_rows
-                    if row[0] not in completed_targets
+                    row
+                    for row in target_sample_rows
+                    if (sample_1_idx, row[0]) not in completed_pairs_for_genome
                 ]
                 if not remaining_target_rows:
                     continue
                 target_ids_all = np.array([sample_idx for sample_idx, _sample_name in remaining_target_rows], dtype=np.int64)
                 target_names_all = [sample_name for _sample_idx, sample_name in remaining_target_rows]
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "phase": "processing",
-                            "completed": completed_work,
-                            "total": total_work,
-                            "anchor_name": sample_1_name,
-                            "genome": spec.genome,
-                            "scaffold": "",
-                            "targets_completed": 0,
-                            "targets_total": len(target_ids_all),
-                            "target_chunks": target_chunks,
-                        }
-                    )
                 zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
                 anchor_loaded = _load_sample_genome_matrices(
                     conn,
@@ -2522,20 +2740,46 @@ def matrix_compare(
                     if not pending_tables and not pending_completed_rows and not pending_progress:
                         return
                     batch_rows = 0
-                    compare_conn.commit()
-                    compare_conn.execute("BEGIN")
-                    try:
-                        for table in pending_tables:
-                            _insert_matrix_compare_result_table(compare_conn, table)
-                            batch_rows += table.num_rows
-                        _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
-                        compare_conn.execute("COMMIT")
-                    except Exception:
-                        compare_conn.execute("ROLLBACK")
-                        raise
-                    written_rows += batch_rows
+                    batch_pairs = sum(progress_info["delta"] for progress_info in pending_progress)
+                    if pending_tables:
+                        compare_conn.commit()
+                        compare_conn.execute("BEGIN")
+                        try:
+                            for table in pending_tables:
+                                _insert_matrix_compare_result_table(compare_conn, table)
+                                batch_rows += table.num_rows
+                            _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
+                            compare_conn.execute("COMMIT")
+                        except Exception:
+                            compare_conn.execute("ROLLBACK")
+                            raise
+                        written_rows += batch_rows
+                    elif pending_completed_rows:
+                        compare_conn.commit()
+                        compare_conn.execute("BEGIN")
+                        try:
+                            _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
+                            compare_conn.execute("COMMIT")
+                        except Exception:
+                            compare_conn.execute("ROLLBACK")
+                            raise
                     for progress_info in pending_progress:
                         completed_work += progress_info["delta"]
+                    if pending_progress:
+                        last_progress = pending_progress[-1]
+                        if emit_writer_logs:
+                            _emit_matrix_compare_writer_log(
+                                start_time=run_start_time,
+                                completed=completed_work,
+                                total=total_work,
+                                batch_pairs=batch_pairs,
+                                batch_rows=batch_rows,
+                                anchor_name=sample_1_name,
+                                genome=spec.genome,
+                                targets_completed=last_progress["targets_completed"],
+                                targets_total=len(target_ids_all),
+                                target_chunks=target_chunks,
+                            )
                         if progress_callback is not None:
                             progress_callback(
                                 {
@@ -2545,7 +2789,7 @@ def matrix_compare(
                                     "anchor_name": sample_1_name,
                                     "genome": spec.genome,
                                     "scaffold": "",
-                                    "targets_completed": progress_info["targets_completed"],
+                                    "targets_completed": last_progress["targets_completed"],
                                     "targets_total": len(target_ids_all),
                                     "target_chunks": target_chunks,
                                 }
@@ -2622,7 +2866,8 @@ def matrix_compare(
                             )
                         )
                     pending_completed_rows.extend(
-                        (sample_1_idx, int(target_idx), spec.genome_idx) for target_idx in chunk_ids.tolist()
+                        (sample_1_idx, int(target_idx), spec.genome_idx)
+                        for target_idx in chunk_ids.tolist()
                     )
                     target_offset += max_targets
                     target_chunks += 1
@@ -2636,21 +2881,6 @@ def matrix_compare(
                         flush_pending_numpy_chunks()
 
                 flush_pending_numpy_chunks()
-
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "phase": "done",
-                    "completed": completed_work,
-                    "total": total_work,
-                    "anchor_name": "",
-                    "genome": genome_scope or metadata.get("genome_scope", "all"),
-                    "scaffold": "",
-                    "targets_completed": 0,
-                    "targets_total": 0,
-                    "target_chunks": target_chunks,
-                }
-            )
 
         return MatrixCompareSummary(
             output_file=output_file,

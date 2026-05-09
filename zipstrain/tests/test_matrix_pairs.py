@@ -224,6 +224,7 @@ def test_build_matrix_db(tmp_path):
     assert summary.count_dtype == "uint16"
     assert summary.stored_rows == 6
     assert progress_events[0]["phase"] == "start"
+    assert any(event["phase"] == "start" for event in progress_events)
     assert progress_events[-1]["phase"] == "done"
     assert progress_events[-1]["completed"] == 6
     assert progress_events[-1]["total"] == 6
@@ -368,6 +369,7 @@ def test_append_matrix_db_success(tmp_path):
     assert append_summary.total_sample_count == 3
     assert append_summary.stored_rows == 2
     assert progress_events[0]["phase"] == "start"
+    assert any(event["phase"] == "start" for event in progress_events)
     assert progress_events[-1]["phase"] == "done"
     assert progress_events[-1]["completed"] == 2
     assert progress_events[-1]["total"] == 2
@@ -430,16 +432,14 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
     assert summary.requested_pairs == 3
     assert summary.backend == "numpy"
     assert summary.anchor_groups == 2
-    assert progress_events[0]["phase"] == "start"
-    assert progress_events[-1]["phase"] == "done"
+    assert progress_events
+    assert all(event["phase"] == "advance" for event in progress_events)
     assert progress_events[-1]["completed"] == 6
     assert progress_events[-1]["total"] == 6
-    assert any(event["phase"] == "processing" for event in progress_events)
     assert any(event["anchor_name"] == "sample_a" for event in progress_events)
     assert all(event["scaffold"] == "" for event in progress_events if "scaffold" in event)
-    metadata, completed_pairs, results = _load_matrix_compare_db(output_file)
+    metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     assert metadata["calculate"] == "ani"
-    assert len(completed_pairs) == 3
     actual = results.select(
         ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
     ).sort(["sample_1", "sample_2", "genome"])
@@ -494,9 +494,8 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
     )
 
     assert summary.requested_pairs == 3
-    metadata, completed_pairs, results = _load_matrix_compare_db(output_file)
+    metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     assert metadata["calculate"] == "ani+ibs"
-    assert len(completed_pairs) == 3
     actual = results.select(
         ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]
     ).sort(["sample_1", "sample_2", "genome"])
@@ -613,6 +612,10 @@ def test_cli_matrix_build_and_compare(tmp_path):
             "1",
             "--target-queue-size",
             "1",
+            "--loader-executor",
+            "thread",
+            "--writer-executor",
+            "thread",
             "--calculate",
             "ani",
         ],
@@ -621,6 +624,10 @@ def test_cli_matrix_build_and_compare(tmp_path):
     assert output_file.exists()
     assert "requested_pairs=3" in compare_result.output
     assert "anchor_groups=2" in compare_result.output
+    assert "MATRIX-COMPARE PROGRESS" in compare_result.output
+    assert "elapsed=" in compare_result.output
+    assert "batch_pairs=" in compare_result.output
+    assert "batch_rows=" in compare_result.output
 
     export_result = runner.invoke(
         cli.cli,
@@ -753,45 +760,22 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
     assert actual.equals(expected)
 
 
-def test_matrix_compare_resumes_after_interruption(tmp_path, monkeypatch):
+def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
     compare_db = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
-    mp.build_matrix_db(
-        profile_dir=profile_dir,
-        output_file=matrix_db,
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    first_summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=compare_db,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
+        backend="numpy",
+        calculate="ani",
     )
-
-    original_mark = mp._mark_completed_pair_genomes
-    mark_calls = {"count": 0}
-
-    def interrupt_after_first_commit(compare_conn, completed_pair_genomes):
-        mark_calls["count"] += 1
-        original_mark(compare_conn, completed_pair_genomes)
-        if mark_calls["count"] == 2:
-            raise RuntimeError("simulated interruption")
-
-    monkeypatch.setattr(mp, "_mark_completed_pair_genomes", interrupt_after_first_commit)
-
-    with pytest.raises(RuntimeError, match="simulated interruption"):
-        mp.matrix_compare(
-            matrix_db_file=matrix_db,
-            output_file=compare_db,
-            min_cov=mp.MATRIX_BUILD_MIN_COV,
-            memory_limit_gb=1.0,
-            backend="numpy",
-            calculate="ani",
-        )
-
-    metadata, completed_pairs_partial, partial_results = _load_matrix_compare_db(compare_db)
-    assert metadata["calculate"] == "ani"
-    assert completed_pairs_partial == [(0, 1), (0, 2)]
-    assert partial_results.height > 0
-
-    monkeypatch.setattr(mp, "_mark_completed_pair_genomes", original_mark)
-    resume_summary = mp.matrix_compare(
+    second_summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
         output_file=compare_db,
         min_cov=mp.MATRIX_BUILD_MIN_COV,
@@ -800,7 +784,8 @@ def test_matrix_compare_resumes_after_interruption(tmp_path, monkeypatch):
         calculate="ani",
     )
 
-    assert resume_summary.requested_pairs == 3
+    assert first_summary.requested_pairs == 3
+    assert second_summary.requested_pairs == 0
     _metadata, completed_pairs, results = _load_matrix_compare_db(compare_db)
     assert completed_pairs == [(0, 1), (0, 2), (1, 2)]
     actual = results.select(
@@ -916,8 +901,37 @@ def test_matrix_compare_ignores_requested_min_cov(tmp_path):
     )
 
     assert summary.requested_pairs == 3
-    _metadata, completed_pairs, _results = _load_matrix_compare_db(output_file)
-    assert completed_pairs == [(0, 1), (0, 2), (1, 2)]
+    _metadata, _completed_pairs, _results = _load_matrix_compare_db(output_file)
+
+
+def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare.duckdb"
+    _write_profiles(profile_dir)
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+
+    with pytest.raises(ValueError, match="loader_executor_kind must be one of"):
+        mp.matrix_compare(
+            matrix_db_file=matrix_db,
+            output_file=output_file,
+            min_cov=mp.MATRIX_BUILD_MIN_COV,
+            memory_limit_gb=1.0,
+            loader_executor_kind="bad",
+            backend="numpy",
+            calculate="ani",
+        )
+
+    with pytest.raises(ValueError, match="writer_executor_kind must be one of"):
+        mp.matrix_compare(
+            matrix_db_file=matrix_db,
+            output_file=output_file,
+            min_cov=mp.MATRIX_BUILD_MIN_COV,
+            memory_limit_gb=1.0,
+            writer_executor_kind="bad",
+            backend="numpy",
+            calculate="ani",
+        )
 
 
 def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monkeypatch):

@@ -48,20 +48,50 @@ class _ThrottledMatrixLogger:
         self.last_percent_bucket = -1
         self.last_log_time = 0.0
         self.logged_advance = False
+        self.start_time = time.monotonic()
+        self.last_processing_detail: str | None = None
+
+    def _elapsed_field(self) -> str:
+        return f"{time.monotonic() - self.start_time:.1f}s"
 
     def __call__(self, event: dict[str, object]) -> None:
         phase = str(event.get("phase", ""))
         completed = int(event.get("completed", 0))
         total = int(event.get("total", 0))
         now = time.monotonic()
+        detail = event.get("detail")
 
         if phase in {"start", "done"}:
             self.last_percent_bucket = -1 if total <= 0 else int((completed / max(total, 1)) * 100) // 5
             self.last_log_time = now
             if phase == "start":
                 self.logged_advance = False
+                self.last_processing_detail = None
             _emit_stderr_log(
                 f"{self.prefix} {phase.upper()}",
+                elapsed=self._elapsed_field(),
+                completed=completed,
+                total=total,
+                **self.detail_formatter(event),
+            )
+            return
+
+        if phase == "processing":
+            if detail is None:
+                return
+            detail_str = str(detail)
+            should_log = (
+                detail_str != self.last_processing_detail
+                or (now - self.last_log_time) >= 5.0
+            )
+            if not should_log:
+                return
+            self.last_processing_detail = detail_str
+            self.last_log_time = now
+            _emit_stderr_log(
+                f"{self.prefix} PROCESSING",
+                elapsed=self._elapsed_field(),
+                detail=detail_str,
                 completed=completed,
                 total=total,
                 **self.detail_formatter(event),
@@ -88,6 +118,7 @@ class _ThrottledMatrixLogger:
         self.last_log_time = now
         _emit_stderr_log(
             f"{self.prefix} PROGRESS",
+            elapsed=self._elapsed_field(),
             completed=completed,
             total=total,
             percent=f"{(completed / max(total, 1)) * 100:.1f}" if total > 0 else "0.0",
@@ -555,6 +586,20 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--anchor-queue-size', type=int, default=1, show_default=True, help="Host-side torch anchor queue size. Only one anchor is transferred to the GPU at a time.")
 @click.option('--target-queue-size', type=int, default=1, show_default=True, help="Host-side torch target queue size. `1` keeps the current synchronous target-load behavior.")
+@click.option(
+    '--loader-executor',
+    type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
+    default="thread",
+    show_default=True,
+    help="Executor used for torch loader prefetch work.",
+)
+@click.option(
+    '--writer-executor',
+    type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
+    default="thread",
+    show_default=True,
+    help="Executor used for torch result writing/checkpoint work.",
+)
 @click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per genome tile.")
 @click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani or ani+ibs. 'all' currently means ani+ibs.")
 @click.option(
@@ -564,7 +609,19 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
     show_default=True,
     help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
 )
-def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, anchor_queue_size, target_queue_size, position_tile_size, calculate, backend):
+def matrix_compare(
+    matrix_db_file,
+    output_file,
+    genome,
+    memory_limit_gb,
+    anchor_queue_size,
+    target_queue_size,
+    loader_executor,
+    writer_executor,
+    position_tile_size,
+    calculate,
+    backend,
+):
     """
     Run experimental genome-level matrix compare on all non-redundant, non-self sample pairs.
 
@@ -598,8 +655,12 @@ def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, anchor_
                 total = int(event.get("total", 0)) or 1
                 completed = int(event.get("completed", 0))
                 target_chunks = str(event.get("target_chunks", 0))
+                description = "Comparing matrix DB"
+                if event.get("phase") == "processing" and event.get("detail"):
+                    description = f"Comparing matrix DB: {event['detail']}"
                 progress.update(
                     task_id,
+                    description=description,
                     total=total,
                     completed=completed,
                     target_chunks=target_chunks,
@@ -613,16 +674,15 @@ def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, anchor_
                 memory_limit_gb=memory_limit_gb,
                 anchor_queue_size=anchor_queue_size,
                 target_queue_size=target_queue_size,
+                loader_executor_kind=loader_executor,
+                writer_executor_kind=writer_executor,
                 position_tile_size=position_tile_size,
                 backend=backend,
                 calculate=calculate,
+                emit_writer_logs=False,
                 progress_callback=_progress_callback,
             )
     else:
-        progress_logger = _ThrottledMatrixLogger(
-            "MATRIX-COMPARE",
-            lambda event: {"target_chunks": event.get("target_chunks", 0)},
-        )
         summary = mp.matrix_compare(
             matrix_db_file=pathlib.Path(matrix_db_file),
             output_file=pathlib.Path(output_file),
@@ -631,10 +691,13 @@ def matrix_compare(matrix_db_file, output_file, genome, memory_limit_gb, anchor_
             memory_limit_gb=memory_limit_gb,
             anchor_queue_size=anchor_queue_size,
             target_queue_size=target_queue_size,
+            loader_executor_kind=loader_executor,
+            writer_executor_kind=writer_executor,
             position_tile_size=position_tile_size,
             backend=backend,
             calculate=calculate,
-            progress_callback=progress_logger,
+            emit_writer_logs=True,
+            progress_callback=None,
         )
     click.echo(
         f"wrote={summary.output_file} "
