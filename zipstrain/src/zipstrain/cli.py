@@ -586,6 +586,7 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--anchor-queue-size', type=int, default=1, show_default=True, help="Host-side torch anchor queue size. Only one anchor is transferred to the GPU at a time.")
 @click.option('--target-queue-size', type=int, default=1, show_default=True, help="Host-side torch target queue size. `1` keeps the current synchronous target-load behavior.")
+@click.option('--result-transfer-batch-size', type=int, default=mp.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT, show_default=True, help="Number of torch compare units to batch before transferring result vectors back to CPU.")
 @click.option(
     '--loader-executor',
     type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
@@ -616,6 +617,7 @@ def matrix_compare(
     memory_limit_gb,
     anchor_queue_size,
     target_queue_size,
+    result_transfer_batch_size,
     loader_executor,
     writer_executor,
     position_tile_size,
@@ -674,6 +676,7 @@ def matrix_compare(
                 memory_limit_gb=memory_limit_gb,
                 anchor_queue_size=anchor_queue_size,
                 target_queue_size=target_queue_size,
+                result_transfer_batch_size=result_transfer_batch_size,
                 loader_executor_kind=loader_executor,
                 writer_executor_kind=writer_executor,
                 position_tile_size=position_tile_size,
@@ -691,6 +694,7 @@ def matrix_compare(
             memory_limit_gb=memory_limit_gb,
             anchor_queue_size=anchor_queue_size,
             target_queue_size=target_queue_size,
+            result_transfer_batch_size=result_transfer_batch_size,
             loader_executor_kind=loader_executor,
             writer_executor_kind=writer_executor,
             position_tile_size=position_tile_size,

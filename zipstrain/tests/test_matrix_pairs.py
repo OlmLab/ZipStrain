@@ -904,6 +904,34 @@ def test_matrix_compare_ignores_requested_min_cov(tmp_path):
     _metadata, _completed_pairs, _results = _load_matrix_compare_db(output_file)
 
 
+def test_effective_torch_tile_size_caps_mps_tiles():
+    class DummyBackend:
+        device = "mps"
+
+    capped = mp._effective_torch_tile_size(
+        compute_backend=DummyBackend(),
+        requested_tile_size=100_000_000,
+        target_count=10,
+    )
+
+    assert capped < 100_000_000
+    assert capped >= 1
+    assert capped <= int(
+        (mp.MPS_MAX_GRAPH_TENSOR_ELEMENTS * mp.MPS_GRAPH_TENSOR_HEADROOM_FRACTION) // 40
+    )
+
+
+def test_effective_torch_tile_size_leaves_non_mps_tiles_unchanged():
+    class DummyBackend:
+        device = "cuda"
+
+    assert mp._effective_torch_tile_size(
+        compute_backend=DummyBackend(),
+        requested_tile_size=100_000_000,
+        target_count=10,
+    ) == 100_000_000
+
+
 def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
@@ -929,6 +957,17 @@ def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             memory_limit_gb=1.0,
             writer_executor_kind="bad",
+            backend="numpy",
+            calculate="ani",
+        )
+
+    with pytest.raises(ValueError, match="result_transfer_batch_size must be >= 1"):
+        mp.matrix_compare(
+            matrix_db_file=matrix_db,
+            output_file=output_file,
+            min_cov=mp.MATRIX_BUILD_MIN_COV,
+            memory_limit_gb=1.0,
+            result_transfer_batch_size=0,
             backend="numpy",
             calculate="ani",
         )
@@ -983,11 +1022,20 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
             None,
         )
 
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
+        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
+        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
+            out[idx, 0, : len(totals_tensor)] = totals_tensor
+            out[idx, 1, : len(shared_tensor)] = shared_tensor
+        return out
+
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
     monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
+    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -1052,11 +1100,20 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
             None,
         )
 
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
+        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
+        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
+            out[idx, 0, : len(totals_tensor)] = totals_tensor
+            out[idx, 1, : len(shared_tensor)] = shared_tensor
+        return out
+
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
     monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
+    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -1121,11 +1178,20 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
             None,
         )
 
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
+        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
+        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
+            out[idx, 0, : len(totals_tensor)] = totals_tensor
+            out[idx, 1, : len(shared_tensor)] = shared_tensor
+        return out
+
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
     monkeypatch.setattr(mp, "_load_target_queue_block_for_torch", tracking_target_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
+    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -1184,6 +1250,14 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
             None,
         )
 
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
+        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
+        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
+            out[idx, 0, : len(totals_tensor)] = totals_tensor
+            out[idx, 1, : len(shared_tensor)] = shared_tensor
+        return out
+
     original_mark = mp._mark_completed_pair_genomes
     mark_calls = {"count": 0}
 
@@ -1197,7 +1271,8 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
     monkeypatch.setattr(mp, "MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS", 1)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch", zero_compare)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
+    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
     monkeypatch.setattr(mp, "_mark_completed_pair_genomes", interrupt_after_first_commit)
 
     with pytest.raises(KeyboardInterrupt, match="simulated ctrl-c"):

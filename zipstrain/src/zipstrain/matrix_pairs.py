@@ -39,6 +39,9 @@ MATRIX_BUILD_MIN_COMMIT_BATCH_BYTES = 64 * 1024 * 1024
 MATRIX_BUILD_DUCKDB_MEMORY_FRACTION = 0.25
 MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS = 4
 MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS = 16
+MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT = 1
+MPS_MAX_GRAPH_TENSOR_ELEMENTS = (2**31) - 1
+MPS_GRAPH_TENSOR_HEADROOM_FRACTION = 0.9
 
 
 def _emit_matrix_compare_writer_log(
@@ -907,10 +910,33 @@ def _mark_completed_pair_genomes(
 ) -> None:
     if not completed_pair_genomes:
         return
-    compare_conn.executemany(
-        "INSERT OR REPLACE INTO matrix_compare_completed_pair_genomes VALUES (?, ?, ?)",
-        completed_pair_genomes,
+    table = pa.table(
+        {
+            "sample_idx_1": pa.array(
+                np.fromiter((row[0] for row in completed_pair_genomes), dtype=np.int64),
+                type=pa.int64(),
+            ),
+            "sample_idx_2": pa.array(
+                np.fromiter((row[1] for row in completed_pair_genomes), dtype=np.int64),
+                type=pa.int64(),
+            ),
+            "genome_idx": pa.array(
+                np.fromiter((row[2] for row in completed_pair_genomes), dtype=np.int64),
+                type=pa.int64(),
+            ),
+        }
     )
+    compare_conn.register("_matrix_compare_completed_pair_genome_batch", table)
+    try:
+        compare_conn.execute(
+            """
+            INSERT OR REPLACE INTO matrix_compare_completed_pair_genomes
+            SELECT DISTINCT sample_idx_1, sample_idx_2, genome_idx
+            FROM _matrix_compare_completed_pair_genome_batch
+            """
+        )
+    finally:
+        compare_conn.unregister("_matrix_compare_completed_pair_genome_batch")
 
 
 def _completed_pair_rows_from_payload(
@@ -1751,6 +1777,24 @@ def _compare_tile_presence_torch_tensors(
     return totals, shared
 
 
+def _effective_torch_tile_size(
+    compute_backend: MatrixPairComputeBackend,
+    requested_tile_size: int,
+    target_count: int,
+) -> int:
+    tile_size = max(1, int(requested_tile_size))
+    if compute_backend.device != "mps":
+        return tile_size
+    max_elements = max(
+        1,
+        int(MPS_MAX_GRAPH_TENSOR_ELEMENTS * MPS_GRAPH_TENSOR_HEADROOM_FRACTION),
+    )
+    per_position_target_elements = 4 * max(int(target_count), 1)
+    max_tile_for_targets = max(1, max_elements // per_position_target_elements)
+    max_tile_for_anchor = max(1, max_elements // 4)
+    return min(tile_size, max_tile_for_targets, max_tile_for_anchor)
+
+
 def _compare_tile_presence_numpy_with_mask(
     anchor_matrix: np.ndarray,
     target_matrices: np.ndarray,
@@ -2023,6 +2067,43 @@ def _compare_anchor_against_target_chunk_torch(
     need_ibs: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     target_count = int(target_torch.shape[2])
+    tile_size = _effective_torch_tile_size(
+        compute_backend=compute_backend,
+        requested_tile_size=tile_size,
+        target_count=target_count,
+    )
+    chunk_totals_torch, chunk_shared_torch, max_runs = _compare_anchor_against_target_chunk_torch_device(
+        compute_backend=compute_backend,
+        anchor_torch=anchor_torch,
+        target_torch=target_torch,
+        vector_length=vector_length,
+        tile_size=tile_size,
+        matrix_value_semantics=matrix_value_semantics,
+        need_ibs=need_ibs,
+    )
+    combined_np = _download_torch_result_tensor_batch(
+        compute_backend=compute_backend,
+        totals_tensors=[chunk_totals_torch],
+        shared_tensors=[chunk_shared_torch],
+    )
+    return combined_np[0, 0, :target_count].copy(), combined_np[0, 1, :target_count].copy(), max_runs
+
+
+def _compare_anchor_against_target_chunk_torch_device(
+    compute_backend: MatrixPairComputeBackend,
+    anchor_torch,
+    target_torch,
+    vector_length: int,
+    tile_size: int,
+    matrix_value_semantics: str,
+    need_ibs: bool = False,
+):
+    target_count = int(target_torch.shape[2])
+    tile_size = _effective_torch_tile_size(
+        compute_backend=compute_backend,
+        requested_tile_size=tile_size,
+        target_count=target_count,
+    )
     chunk_totals_torch = compute_backend.torch.zeros(
         target_count,
         dtype=compute_backend.torch.int64,
@@ -2060,7 +2141,49 @@ def _compare_anchor_against_target_chunk_torch(
                 current_runs=current_runs,
                 max_runs=max_runs,
             )
-    return chunk_totals_torch.cpu().numpy(), chunk_shared_torch.cpu().numpy(), max_runs
+    return chunk_totals_torch, chunk_shared_torch, max_runs
+
+
+def _download_torch_result_tensor_batch(
+    compute_backend: MatrixPairComputeBackend,
+    totals_tensors: list,
+    shared_tensors: list,
+) -> np.ndarray:
+    if not totals_tensors:
+        return np.zeros((0, 2, 0), dtype=np.int64)
+    if len(totals_tensors) != len(shared_tensors):
+        raise ValueError("totals_tensors and shared_tensors must have the same length")
+    torch_module = compute_backend.torch
+    lengths = [int(tensor.shape[0]) for tensor in totals_tensors]
+    max_length = max(lengths)
+    padded_totals = []
+    padded_shared = []
+    for totals_tensor, shared_tensor, length in zip(totals_tensors, shared_tensors, lengths):
+        if int(shared_tensor.shape[0]) != length:
+            raise ValueError("totals and shared tensors must have matching lengths")
+        pad_width = max_length - length
+        if pad_width > 0:
+            padded_totals.append(torch_module.nn.functional.pad(totals_tensor, (0, pad_width)))
+            padded_shared.append(torch_module.nn.functional.pad(shared_tensor, (0, pad_width)))
+        else:
+            padded_totals.append(totals_tensor)
+            padded_shared.append(shared_tensor)
+    stacked_totals = torch_module.stack(padded_totals, dim=0)
+    stacked_shared = torch_module.stack(padded_shared, dim=0)
+    combined = torch_module.stack((stacked_totals, stacked_shared), dim=1)
+    if compute_backend.device == "cuda":
+        combined_cpu = torch_module.empty(
+            combined.shape,
+            dtype=combined.dtype,
+            device="cpu",
+            pin_memory=True,
+        )
+        combined_cpu.copy_(combined, non_blocking=True)
+        torch_module.cuda.current_stream().synchronize()
+        combined_np = combined_cpu.numpy()
+    else:
+        combined_np = combined.cpu().numpy()
+    return combined_np
 
 
 async def _matrix_compare_reuse_target_chunks_torch_async(
@@ -2081,6 +2204,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     memory_limit_gb: float,
     anchor_queue_size: int,
     target_queue_size: int,
+    result_transfer_batch_size: int,
     loader_executor_kind: str,
     writer_executor_kind: str,
     position_tile_size: Optional[int],
@@ -2275,6 +2399,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
             )
             processed_pairs_for_block = 0
             target_chunks += 1
+            pending_device_results: list[dict[str, object]] = []
             pending_payloads: list[dict[str, object]] = []
             pending_progress: list[dict[str, object]] = []
 
@@ -2316,8 +2441,37 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     )
                 )
 
+            async def flush_pending_device_results() -> None:
+                nonlocal pending_device_results, pending_payloads
+                if not pending_device_results:
+                    return
+                batch_device_results = pending_device_results
+                pending_device_results = []
+                combined_np = _download_torch_result_tensor_batch(
+                    compute_backend=compute_backend,
+                    totals_tensors=[item["total_positions"] for item in batch_device_results],
+                    shared_tensors=[item["share_allele_pos"] for item in batch_device_results],
+                )
+                for result_idx, item in enumerate(batch_device_results):
+                    valid_count = int(item["valid_count"])
+                    pending_payloads.append(
+                        {
+                            "sample_1_idx": int(item["sample_1_idx"]),
+                            "sample_1": str(item["sample_1"]),
+                            "sample_2_idx": np.asarray(item["sample_2_idx"], dtype=np.int64),
+                            "sample_2": list(item["sample_2"]),
+                            "genome_idx": int(item["genome_idx"]),
+                            "genome": str(item["genome"]),
+                            "calculations": tuple(item["calculations"]),
+                            "total_positions": combined_np[result_idx, 0, :valid_count].astype(np.int64, copy=True),
+                            "share_allele_pos": combined_np[result_idx, 1, :valid_count].astype(np.int64, copy=True),
+                            "max_consecutive_length": item["max_consecutive_length"],
+                        }
+                    )
+
             async def flush_pending_block_units() -> None:
                 nonlocal pending_payloads, pending_progress, completed_work
+                await flush_pending_device_results()
                 if not pending_payloads and not pending_progress:
                     return
                 batch_payloads = pending_payloads
@@ -2404,7 +2558,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     matrix=anchor_matrix,
                     matrix_value_semantics=matrix_value_semantics,
                 )
-                total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
+                total_inc_torch, shared_inc_torch, ibs_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
                     anchor_torch=anchor_torch,
                     target_torch=target_torch,
@@ -2414,7 +2568,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     need_ibs="ibs" in calculations,
                 )
                 await drain_anchor_prefetch(force=False)
-                pending_payloads.append(
+                pending_device_results.append(
                     {
                         "sample_1_idx": anchor_idx,
                         "sample_1": samples_by_id[anchor_idx],
@@ -2423,11 +2577,12 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "genome_idx": spec.genome_idx,
                         "genome": genome_name,
                         "calculations": calculations,
-                        "total_positions": total_inc[missing_positions].astype(np.int64, copy=True),
-                        "share_allele_pos": shared_inc[missing_positions].astype(np.int64, copy=True),
+                        "total_positions": total_inc_torch[missing_positions],
+                        "share_allele_pos": shared_inc_torch[missing_positions],
                         "max_consecutive_length": None
                         if ibs_inc is None
                         else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        "valid_count": len(missing_positions),
                     }
                 )
                 processed_pairs_for_block += len(missing_positions)
@@ -2441,6 +2596,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "target_chunks": target_chunks,
                     }
                 )
+                if len(pending_device_results) >= result_transfer_batch_size:
+                    await flush_pending_device_results()
                 if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
                     await flush_pending_block_units()
 
@@ -2449,7 +2606,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 missing_positions = internal_missing_positions.get(local_anchor_pos, [])
                 if not missing_positions:
                     continue
-                total_inc, shared_inc, ibs_inc = _compare_anchor_against_target_chunk_torch(
+                total_inc_torch, shared_inc_torch, ibs_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
                     anchor_torch=target_torch[:, :, local_anchor_pos],
                     target_torch=target_torch[:, :, local_anchor_pos + 1:],
@@ -2460,7 +2617,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 )
                 later_ids = block_ids[local_anchor_pos + 1:]
                 later_names = block_names[local_anchor_pos + 1:]
-                pending_payloads.append(
+                pending_device_results.append(
                     {
                         "sample_1_idx": int(block_ids[local_anchor_pos]),
                         "sample_1": block_names[local_anchor_pos],
@@ -2469,11 +2626,12 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "genome_idx": spec.genome_idx,
                         "genome": genome_name,
                         "calculations": calculations,
-                        "total_positions": total_inc[missing_positions].astype(np.int64, copy=True),
-                        "share_allele_pos": shared_inc[missing_positions].astype(np.int64, copy=True),
+                        "total_positions": total_inc_torch[missing_positions],
+                        "share_allele_pos": shared_inc_torch[missing_positions],
                         "max_consecutive_length": None
                         if ibs_inc is None
                         else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        "valid_count": len(missing_positions),
                     }
                 )
                 processed_pairs_for_block += len(missing_positions)
@@ -2487,6 +2645,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "target_chunks": target_chunks,
                     }
                 )
+                if len(pending_device_results) >= result_transfer_batch_size:
+                    await flush_pending_device_results()
                 if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
                     await flush_pending_block_units()
 
@@ -2541,6 +2701,7 @@ def _matrix_compare_reuse_target_chunks_torch(
     memory_limit_gb: float,
     anchor_queue_size: int,
     target_queue_size: int,
+    result_transfer_batch_size: int,
     loader_executor_kind: str,
     writer_executor_kind: str,
     position_tile_size: Optional[int],
@@ -2570,6 +2731,7 @@ def _matrix_compare_reuse_target_chunks_torch(
             memory_limit_gb=memory_limit_gb,
             anchor_queue_size=anchor_queue_size,
             target_queue_size=target_queue_size,
+            result_transfer_batch_size=result_transfer_batch_size,
             loader_executor_kind=loader_executor_kind,
             writer_executor_kind=writer_executor_kind,
             position_tile_size=position_tile_size,
@@ -2591,6 +2753,7 @@ def matrix_compare(
     memory_limit_gb: float = 16.0,
     anchor_queue_size: int = 1,
     target_queue_size: int = 1,
+    result_transfer_batch_size: int = MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT,
     loader_executor_kind: str = "thread",
     writer_executor_kind: str = "thread",
     position_tile_size: Optional[int] = None,
@@ -2605,6 +2768,8 @@ def matrix_compare(
         raise ValueError("anchor_queue_size must be >= 1")
     if target_queue_size < 1:
         raise ValueError("target_queue_size must be >= 1")
+    if result_transfer_batch_size < 1:
+        raise ValueError("result_transfer_batch_size must be >= 1")
     if loader_executor_kind not in MATRIX_IO_EXECUTOR_KINDS:
         raise ValueError(
             f"loader_executor_kind must be one of {', '.join(MATRIX_IO_EXECUTOR_KINDS)}"
@@ -2688,6 +2853,7 @@ def matrix_compare(
                 memory_limit_gb=memory_limit_gb,
                 anchor_queue_size=anchor_queue_size,
                 target_queue_size=target_queue_size,
+                result_transfer_batch_size=result_transfer_batch_size,
                 loader_executor_kind=loader_executor_kind,
                 writer_executor_kind=writer_executor_kind,
                 position_tile_size=position_tile_size,
