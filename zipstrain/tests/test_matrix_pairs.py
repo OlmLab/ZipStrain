@@ -1,4 +1,5 @@
 from pathlib import Path
+from itertools import combinations
 from types import SimpleNamespace
 
 from click.testing import CliRunner
@@ -202,6 +203,305 @@ def _load_matrix_compare_db(compare_db: Path):
     finally:
         conn.close()
     return metadata, completed_pairs, results
+
+
+def _expected_classic_pairwise_results(
+    profile_dir: Path,
+    *,
+    calculate: str,
+    sample_names: tuple[str, ...] = ("sample_a", "sample_b", "sample_c"),
+) -> pl.DataFrame:
+    selected_columns = [
+        "sample_1",
+        "sample_2",
+        "genome",
+        "total_positions",
+        "share_allele_pos",
+        "genome_pop_ani",
+    ]
+    if "ibs" in calculate:
+        selected_columns.append("max_consecutive_length")
+
+    expected_frames = []
+    for sample_1, sample_2 in combinations(sample_names, 2):
+        pair = (
+            cp.compare_genomes(
+                mpile_contig_1=profile_dir / f"{sample_1}.parquet",
+                mpile_contig_2=profile_dir / f"{sample_2}.parquet",
+                min_cov=mp.MATRIX_BUILD_MIN_COV,
+                genome_scope="all",
+                ani_method="popani",
+                engine="polars",
+                calculate=calculate,
+                stb_file=None,
+            )
+            .collect(engine="streaming")
+            .with_columns(
+                sample_1=pl.lit(sample_1),
+                sample_2=pl.lit(sample_2),
+            )
+            .select(selected_columns)
+        )
+        expected_frames.append(pair)
+    return pl.concat(expected_frames).sort(["sample_1", "sample_2", "genome"])
+
+
+def test_resolve_matrix_input_format_auto():
+    assert mp._resolve_matrix_input_format(Path("/tmp/matrix.duckdb")) == "duckdb"
+    assert mp._resolve_matrix_input_format(Path("/tmp/matrix.h5")) == "hdf5"
+    assert mp._resolve_matrix_input_format(Path("/tmp/matrix.hdf5")) == "hdf5"
+
+
+def test_export_matrix_db_hdf5_roundtrip(tmp_path):
+    pytest.importorskip("h5py")
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_hdf5 = tmp_path / "matrix.h5"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_db(
+        profile_dir=profile_dir,
+        output_file=matrix_db,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+    )
+
+    exported = mp.export_matrix_db_hdf5(
+        matrix_db_file=matrix_db,
+        output_file=matrix_hdf5,
+    )
+
+    assert exported == matrix_hdf5
+    metadata = mp._load_matrix_hdf5_metadata(matrix_hdf5)
+    samples = mp._load_matrix_hdf5_samples(matrix_hdf5)
+    genomes = mp._load_matrix_hdf5_genomes(matrix_hdf5)
+    scaffolds = mp._load_matrix_hdf5_genome_scaffolds(matrix_hdf5)
+
+    assert metadata["input_format"] == "hdf5"
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_LAYOUT
+    assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
+    assert [spec.genome for spec in genomes] == ["genome1", "genome2"]
+    assert [spec.chrom for spec in scaffolds] == ["chr1", "chr2"]
+
+
+def test_build_matrix_hdf5(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    profile_dir = tmp_path / "profiles"
+    matrix_hdf5 = tmp_path / "matrix.h5"
+    _write_profiles(profile_dir)
+    progress_events: list[dict[str, object]] = []
+
+    summary = mp.build_matrix_hdf5(
+        profile_dir=profile_dir,
+        output_file=matrix_hdf5,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+        progress_callback=progress_events.append,
+    )
+
+    assert summary.profile_files == 3
+    assert summary.sample_count == 3
+    assert summary.scaffold_count == 2
+    assert summary.count_dtype == "uint16"
+    assert summary.stored_rows == 6
+    assert progress_events[0]["phase"] == "start"
+    assert progress_events[-1]["phase"] == "done"
+    assert progress_events[-1]["completed"] == 6
+    assert progress_events[-1]["total"] == 6
+    assert any(event["phase"] == "processing" for event in progress_events)
+
+    metadata = mp._load_matrix_hdf5_metadata(matrix_hdf5)
+    samples = mp._load_matrix_hdf5_samples(matrix_hdf5)
+    genomes = mp._load_matrix_hdf5_genomes(matrix_hdf5)
+    scaffolds = mp._load_matrix_hdf5_genome_scaffolds(matrix_hdf5)
+
+    assert metadata["input_format"] == "hdf5"
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_LAYOUT
+    assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
+    assert [spec.genome for spec in genomes] == ["genome1", "genome2"]
+    assert [spec.chrom for spec in scaffolds] == ["chr1", "chr2"]
+
+    with h5py.File(str(matrix_hdf5), "r") as h5_file:
+        genome1 = np.asarray(h5_file["matrices"]["0"][...])
+        genome2 = np.asarray(h5_file["matrices"]["1"][...])
+
+    assert genome1[0].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
+    assert genome1[1].tolist() == [[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
+    assert genome1[2].tolist() == [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
+    assert genome2[0].tolist() == [[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+    assert genome2[1].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+    assert genome2[2].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+
+
+def test_export_matrix_db_hdf5_reports_progress(tmp_path):
+    pytest.importorskip("h5py")
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_hdf5 = tmp_path / "matrix.h5"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_db(
+        profile_dir=profile_dir,
+        output_file=matrix_db,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+    )
+
+    events: list[dict[str, object]] = []
+    mp.export_matrix_db_hdf5(
+        matrix_db_file=matrix_db,
+        output_file=matrix_hdf5,
+        progress_callback=events.append,
+    )
+
+    assert events[0]["phase"] == "start"
+    assert events[-1]["phase"] == "done"
+    assert any(event["phase"] == "processing" for event in events)
+    advance_events = [event for event in events if event["phase"] == "advance"]
+    assert advance_events
+    assert advance_events[-1]["stored_rows"] == 6
+
+
+def test_matrix_compare_hdf5_torch_cpu_matches_duckdb(tmp_path):
+    pytest.importorskip("h5py")
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_hdf5 = tmp_path / "matrix.h5"
+    compare_duckdb = tmp_path / "compare_duckdb.duckdb"
+    compare_hdf5 = tmp_path / "compare_hdf5.duckdb"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_db(
+        profile_dir=profile_dir,
+        output_file=matrix_db,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+    )
+    mp.export_matrix_db_hdf5(
+        matrix_db_file=matrix_db,
+        output_file=matrix_hdf5,
+    )
+
+    mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=compare_duckdb,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        backend="torch-cpu",
+        calculate="ani",
+        loader_executor_kind="thread",
+        writer_executor_kind="thread",
+    )
+    mp.matrix_compare(
+        matrix_db_file=matrix_hdf5,
+        output_file=compare_hdf5,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        backend="torch-cpu",
+        calculate="ani",
+        matrix_input_format="hdf5",
+        loader_executor_kind="thread",
+        writer_executor_kind="thread",
+    )
+
+    _duck_meta, duck_pairs, duck_results = _load_matrix_compare_db(compare_duckdb)
+    _hdf_meta, hdf_pairs, hdf_results = _load_matrix_compare_db(compare_hdf5)
+
+    assert duck_pairs == hdf_pairs
+    assert duck_results.equals(hdf_results)
+
+
+def test_matrix_compare_torch_cpu_matches_classic_compare(tmp_path):
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare_torch.duckdb"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="torch-cpu",
+        calculate="ani",
+        loader_executor_kind="thread",
+        writer_executor_kind="thread",
+    )
+
+    assert summary.requested_pairs == 3
+    _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
+    actual = results.select(
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
+    ).sort(["sample_1", "sample_2", "genome"])
+    expected = _expected_classic_pairwise_results(profile_dir, calculate="ani")
+
+    assert actual.equals(expected)
+
+
+def test_matrix_compare_torch_cpu_with_ibs_matches_classic_compare(tmp_path):
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.duckdb"
+    output_file = tmp_path / "matrix_compare_torch_ibs.duckdb"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="torch-cpu",
+        calculate="ani+ibs",
+        loader_executor_kind="thread",
+        writer_executor_kind="thread",
+    )
+
+    assert summary.requested_pairs == 3
+    _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
+    actual = results.select(
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]
+    ).sort(["sample_1", "sample_2", "genome"])
+    expected = _expected_classic_pairwise_results(profile_dir, calculate="ani+ibs")
+
+    assert actual.equals(expected)
+
+
+def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
+    pytest.importorskip("h5py")
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    matrix_hdf5 = tmp_path / "matrix.h5"
+    output_file = tmp_path / "matrix_compare_hdf5_classic.duckdb"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_hdf5(
+        profile_dir=profile_dir,
+        output_file=matrix_hdf5,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+    )
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_hdf5,
+        matrix_input_format="hdf5",
+        output_file=output_file,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="torch-cpu",
+        calculate="ani+ibs",
+        loader_executor_kind="thread",
+        writer_executor_kind="thread",
+    )
+
+    assert summary.requested_pairs == 3
+    _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
+    actual = results.select(
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]
+    ).sort(["sample_1", "sample_2", "genome"])
+    expected = _expected_classic_pairwise_results(profile_dir, calculate="ani+ibs")
+
+    assert actual.equals(expected)
 
 
 def test_build_matrix_db(tmp_path):
@@ -643,6 +943,35 @@ def test_cli_matrix_build_and_compare(tmp_path):
     assert export_result.exit_code == 0
     out = pl.read_parquet(export_file)
     assert "max_consecutive_length" not in out.columns
+
+
+def test_cli_build_matrix_hdf5(tmp_path):
+    pytest.importorskip("h5py")
+    profile_dir = tmp_path / "profiles"
+    matrix_hdf5 = tmp_path / "matrix.h5"
+    _write_profiles(profile_dir)
+
+    runner = CliRunner()
+    build_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-matrix-hdf5",
+            "--profile-dir",
+            str(profile_dir),
+            "--output-file",
+            str(matrix_hdf5),
+            "--memory-limit-gb",
+            "1",
+            "--export-batch-mb",
+            "64",
+        ],
+    )
+    assert build_result.exit_code == 0
+    assert matrix_hdf5.exists()
+    assert "scaffolds=2" in build_result.output
+    metadata = mp._load_matrix_hdf5_metadata(matrix_hdf5)
+    assert metadata["input_format"] == "hdf5"
 
 
 def test_cli_append_matrix_db(tmp_path):

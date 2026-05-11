@@ -354,7 +354,9 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
 | `zipstrain utilities build-matrix-db` | Build experimental per-sample genome matrix DuckDB |
+| `zipstrain utilities build-matrix-hdf5` | Build experimental per-sample genome matrix HDF5 directly from profile parquets |
 | `zipstrain utilities append-matrix-db` | Append new profiles into an existing matrix DuckDB |
+| `zipstrain utilities matrix-db-to-hdf5` | Convert a matrix DuckDB into an HDF5 matrix store |
 | `zipstrain utilities matrix-compare` | Experimental ANI compare into a resumable DuckDB compare DB |
 | `zipstrain utilities matrix-compare-export` | Export a matrix compare DuckDB to parquet |
 | `zipstrain utilities build-genome-db` | Build local genome reference bundle from abundance table |
@@ -446,6 +448,60 @@ Append requirements:
 - genomes and scaffolds must already exist in the matrix DB
 - profile positions must stay within the stored scaffold coordinate ranges
 
+### `zipstrain utilities build-matrix-hdf5`
+
+```bash
+zipstrain utilities build-matrix-hdf5 \
+  --profile-dir profiles \
+  --output-file matrix_db.h5 \
+  --bed-file genomes_bed_file.bed \
+  --memory-limit-gb 16
+```
+
+What it does:
+
+- scans a directory of classic ZipStrain profile parquets
+- builds one HDF5 file directly from those profiles without creating a DuckDB matrix store first
+- stores each genome as one sample-major dense dataset with shape `samples x positions x 4`
+- preserves the same whole-genome axis and separator-row layout as `build-matrix-db`
+- is intended for the experimental torch-backed `matrix-compare` path
+
+Important options:
+
+- `-p, --profile-dir` (required)
+- `-o, --output-file` (required)
+- `-g, --genome` optional genome scope (default: `all`)
+- `-b, --bed-file` optional BED file to define scaffold extents instead of scanning profile min/max positions
+- `--count-dtype` stored matrix dtype (`uint16|uint32`, default: `uint16`)
+- `--memory-limit-gb` approximate maximum memory budget for the entire build process (default: `16.0`)
+- `--export-batch-mb` approximate HDF5 sample-axis chunk target size in MiB (default: `128.0`)
+
+Notes:
+
+- this is the direct parquet-to-HDF5 path
+- install matrix support with `pip install "zipstrain[matrix]"`
+- the CLI shows a progress bar in an interactive terminal
+- in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
+
+### `zipstrain utilities matrix-db-to-hdf5`
+
+```bash
+zipstrain utilities matrix-db-to-hdf5 \
+  --matrix-db-file matrix_db.duckdb \
+  --output-file matrix_db.h5
+```
+
+What it does:
+
+- converts an existing matrix DuckDB built by `build-matrix-db` into the HDF5 layout used by the experimental torch compare path
+- preserves sample, genome, and scaffold metadata
+
+Important options:
+
+- `-m, --matrix-db-file` (required)
+- `-o, --output-file` optional output HDF5 path; defaults to the same basename with `.h5`
+- `--export-batch-mb` approximate HDF5 sample-axis chunk target size in MiB (default: `128.0`)
+
 ### `zipstrain utilities matrix-compare`
 
 ```bash
@@ -464,7 +520,7 @@ zipstrain utilities matrix-compare \
 
 What it does:
 
-- reads a per-sample genome-matrix DuckDB built by `build-matrix-db`
+ - reads a per-sample genome-matrix store from `build-matrix-db`, `build-matrix-hdf5`, or `matrix-db-to-hdf5`
 - writes results into a DuckDB compare database
 - if the compare DB already exists, only pairs not yet marked completed are processed
 - groups remaining pairs by anchor sample or target block depending on backend

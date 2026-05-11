@@ -1,6 +1,6 @@
 [project]
 name = "zipstrain"
-version = "0.9.11"
+version = "0.9.12"
 description = ""
 authors = [
     {name = "ParsaGhadermazi",email = "54489047+ParsaGhadermazi@users.noreply.github.com"}
@@ -25,6 +25,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+matrix = [
+    "torch",
+    "h5py",
+]
 test = [
     "pytest (>=8.0.0,<9.0.0)",
     "pytest-cov (>=5.0.0,<6.0.0)",

@@ -7,6 +7,7 @@ import gc
 import importlib
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -27,8 +28,12 @@ COUNT_DTYPES = {
 MATRIX_BUILD_MIN_COV = 5
 FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 CURRENT_MATRIX_DB_LAYOUT = "per_sample_per_genome_dense_matrix"
+CURRENT_MATRIX_HDF5_LAYOUT = "per_genome_sample_major_dense_matrix_hdf5"
+MATRIX_HDF5_FILE_VERSION = "1"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
+MATRIX_COMPARE_INPUT_FORMATS = ("auto", "duckdb", "hdf5")
+MATRIX_HDF5_SUFFIXES = (".h5", ".hdf5", ".hd5")
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
 MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs")
@@ -40,6 +45,7 @@ MATRIX_BUILD_DUCKDB_MEMORY_FRACTION = 0.25
 MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS = 4
 MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS = 16
 MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT = 1
+MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT = 128.0
 MPS_MAX_GRAPH_TENSOR_ELEMENTS = (2**31) - 1
 MPS_GRAPH_TENSOR_HEADROOM_FRACTION = 0.9
 
@@ -177,6 +183,18 @@ class MatrixDbSummary:
 
 
 @dataclass(frozen=True)
+class MatrixHdf5Summary:
+    output_file: Path
+    profile_files: int
+    sample_count: int
+    scaffold_count: int
+    stored_rows: int
+    count_dtype: str
+    genome_scope: str
+    memory_limit_gb: float
+
+
+@dataclass(frozen=True)
 class MatrixDbAppendSummary:
     output_file: Path
     appended_profile_files: int
@@ -215,6 +233,10 @@ class MatrixBuildMemoryPlan:
 
 
 class TorchBackendMissingError(ImportError):
+    pass
+
+
+class Hdf5BackendMissingError(ImportError):
     pass
 
 
@@ -267,6 +289,84 @@ class MatrixPairComputeBackend:
         if self._torch_mps_available():
             return "mps"
         return "cpu"
+
+
+def _import_h5py():
+    try:
+        return importlib.import_module("h5py")
+    except ImportError as exc:
+        raise Hdf5BackendMissingError(
+            "HDF5 matrix input requested but 'h5py' is not installed. "
+            'Install with: pip install "zipstrain[matrix]".'
+        ) from exc
+
+
+def _resolve_matrix_input_format(
+    matrix_file: Path,
+    requested_format: str = "auto",
+) -> str:
+    if requested_format != "auto":
+        if requested_format not in MATRIX_COMPARE_INPUT_FORMATS:
+            raise ValueError(
+                f"matrix_input_format must be one of {', '.join(MATRIX_COMPARE_INPUT_FORMATS)}"
+            )
+        return requested_format
+    suffix = matrix_file.suffix.lower()
+    if suffix == ".duckdb":
+        return "duckdb"
+    if suffix in MATRIX_HDF5_SUFFIXES:
+        return "hdf5"
+    raise ValueError(
+        f"Could not infer matrix input format from '{matrix_file}'. "
+        "Use --matrix-input-format duckdb or --matrix-input-format hdf5."
+    )
+
+
+def _hdf5_string_dtype(h5py_module):
+    return h5py_module.string_dtype(encoding="utf-8")
+
+
+def _write_hdf5_string_dataset(
+    group,
+    name: str,
+    values: list[str],
+    *,
+    h5py_module,
+) -> None:
+    group.create_dataset(
+        name,
+        data=np.asarray(values, dtype=object),
+        dtype=_hdf5_string_dtype(h5py_module),
+    )
+
+
+def _read_hdf5_string_dataset(dataset) -> list[str]:
+    if hasattr(dataset, "asstr"):
+        return [str(value) for value in dataset.asstr()[...].tolist()]
+    raw = dataset[...]
+    return [
+        value.decode("utf-8") if isinstance(value, (bytes, bytearray, np.bytes_)) else str(value)
+        for value in raw.tolist()
+    ]
+
+
+def _hdf5_matrix_dataset_path(genome_idx: int) -> str:
+    return f"matrices/{int(genome_idx)}"
+
+
+def _matrix_hdf5_chunk_sample_count(
+    *,
+    sample_count: int,
+    matrix_length: int,
+    dtype_name: str,
+    target_batch_mb: float,
+) -> int:
+    if target_batch_mb <= 0:
+        raise ValueError("target_batch_mb must be > 0")
+    dtype = COUNT_DTYPES[dtype_name]
+    per_sample_bytes = max(1, matrix_length * 4 * np.dtype(dtype).itemsize)
+    target_batch_bytes = int(target_batch_mb * (1024 ** 2))
+    return max(1, min(sample_count, int(target_batch_bytes // per_sample_bytes) or 1))
 
 def _looks_like_profile_parquet(path: Path) -> bool:
     try:
@@ -705,6 +805,7 @@ def _compare_db_metadata_rows(
     calculations: tuple[str, ...],
 ) -> list[tuple[str, str]]:
     return [
+        ("matrix_input_format", matrix_metadata.get("input_format", "duckdb")),
         ("matrix_db_layout", matrix_metadata.get("layout", "")),
         ("matrix_value_semantics", matrix_metadata.get("matrix_value_semantics", "")),
         ("matrix_count_dtype", matrix_metadata.get("count_dtype", "")),
@@ -812,6 +913,12 @@ def _prepare_matrix_compare_db(
             str(k): str(v)
             for k, v in compare_conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
         }
+        if "matrix_input_format" not in compare_metadata:
+            compare_conn.execute(
+                "INSERT OR REPLACE INTO matrix_compare_metadata VALUES (?, ?)",
+                ["matrix_input_format", "duckdb"],
+            )
+            compare_metadata["matrix_input_format"] = "duckdb"
         _validate_matrix_compare_db_metadata(
             compare_metadata=compare_metadata,
             matrix_metadata=matrix_metadata,
@@ -1379,6 +1486,241 @@ def build_matrix_db(
     )
 
 
+def build_matrix_hdf5(
+    profile_dir: Path,
+    output_file: Path,
+    genome: str = "all",
+    count_dtype: str = "uint16",
+    memory_limit_gb: float = 16.0,
+    bed_file: Optional[Path] = None,
+    progress_callback: Optional[BuildProgressCallback] = None,
+    export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+) -> MatrixHdf5Summary:
+    if count_dtype not in COUNT_DTYPES:
+        raise ValueError(f"Unsupported count dtype '{count_dtype}'. Choose one of {', '.join(COUNT_DTYPES)}.")
+    if export_batch_mb <= 0:
+        raise ValueError("export_batch_mb must be > 0")
+    profile_paths = discover_profile_parquets(profile_dir)
+    genome_scope = None if genome == "all" else genome
+    if bed_file is None:
+        scaffolds = _collect_scaffold_specs(profile_paths=profile_paths, genome=genome_scope)
+    else:
+        scaffolds = _collect_scaffold_specs_from_bed(
+            profile_paths=profile_paths,
+            bed_file=Path(bed_file),
+            genome=genome_scope,
+        )
+    genomes, genome_scaffolds = _build_genome_specs(scaffolds)
+    memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
+
+    output_file = output_file.resolve()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    if output_file.exists():
+        raise FileExistsError(f"Output file already exists: {output_file}")
+
+    total_work = len(profile_paths) * len(genomes)
+    completed_work = 0
+    stored_rows = 0
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "start",
+                "completed": completed_work,
+                "total": total_work,
+                "sample_name": "",
+                "genome": genome_scope or "all",
+                "scaffold": "",
+                "stored_rows": stored_rows,
+            }
+        )
+
+    h5py_module = _import_h5py()
+    tmp_output = output_file.with_suffix(output_file.suffix + ".tmp")
+    if tmp_output.exists():
+        tmp_output.unlink()
+    build_succeeded = False
+    try:
+        sample_rows = [(idx, path.stem, str(path.resolve()), path) for idx, path in enumerate(profile_paths)]
+        metadata_rows = {
+            "profiles_dir": str(profile_dir.resolve()),
+            "profile_format": "classic_zipstrain_profile_parquet",
+            "genome_scope": genome_scope or "all",
+            "count_dtype": count_dtype,
+            "layout": CURRENT_MATRIX_HDF5_LAYOUT,
+            "matrix_value_semantics": FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS,
+            "coverage_filter_min_cov": str(MATRIX_BUILD_MIN_COV),
+            "memory_limit_gb": str(memory_limit_gb),
+            "export_batch_mb": str(export_batch_mb),
+            "separator_rows_between_scaffolds": "1",
+            "input_format": "hdf5",
+        }
+        scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
+        for offset in genome_scaffolds:
+            scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
+
+        with h5py_module.File(str(tmp_output), "w") as h5_file:
+            h5_file.attrs["zipstrain_hdf5_version"] = MATRIX_HDF5_FILE_VERSION
+            metadata_group = h5_file.create_group("metadata")
+            for key, value in metadata_rows.items():
+                metadata_group.attrs[str(key)] = str(value)
+
+            samples_group = h5_file.create_group("samples")
+            samples_group.create_dataset(
+                "sample_idx",
+                data=np.asarray([sample_idx for sample_idx, _sample_name, _profile_path_str, _profile_path in sample_rows], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                samples_group,
+                "sample_name",
+                [sample_name for _sample_idx, sample_name, _profile_path_str, _profile_path in sample_rows],
+                h5py_module=h5py_module,
+            )
+
+            genomes_group = h5_file.create_group("genomes")
+            genomes_group.create_dataset(
+                "genome_idx",
+                data=np.asarray([spec.genome_idx for spec in genomes], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                genomes_group,
+                "genome",
+                [spec.genome for spec in genomes],
+                h5py_module=h5py_module,
+            )
+            genomes_group.create_dataset(
+                "matrix_length",
+                data=np.asarray([spec.matrix_length for spec in genomes], dtype=np.int64),
+            )
+            genomes_group.create_dataset(
+                "true_length",
+                data=np.asarray([spec.true_length for spec in genomes], dtype=np.int64),
+            )
+            genomes_group.create_dataset(
+                "scaffold_count",
+                data=np.asarray([spec.scaffold_count for spec in genomes], dtype=np.int64),
+            )
+
+            scaffold_group = h5_file.create_group("genome_scaffolds")
+            scaffold_group.create_dataset(
+                "genome_idx",
+                data=np.asarray([spec.genome_idx for spec in genome_scaffolds], dtype=np.int64),
+            )
+            scaffold_group.create_dataset(
+                "scaffold_ordinal",
+                data=np.asarray([spec.scaffold_ordinal for spec in genome_scaffolds], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                scaffold_group,
+                "genome",
+                [spec.genome for spec in genome_scaffolds],
+                h5py_module=h5py_module,
+            )
+            _write_hdf5_string_dataset(
+                scaffold_group,
+                "chrom",
+                [spec.chrom for spec in genome_scaffolds],
+                h5py_module=h5py_module,
+            )
+            for field_name in ("axis_start", "axis_end", "index_base", "vector_length", "min_pos", "max_pos"):
+                scaffold_group.create_dataset(
+                    field_name,
+                    data=np.asarray([getattr(spec, field_name) for spec in genome_scaffolds], dtype=np.int64),
+                )
+
+            matrices_group = h5_file.create_group("matrices")
+            matrix_datasets: dict[int, object] = {}
+            for spec in genomes:
+                estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
+                if estimated_python_peak > memory_limit_bytes:
+                    raise MemoryError(
+                        f"Genome {spec.genome} is estimated to require about "
+                        f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory, "
+                        f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
+                    )
+                chunk_samples = _matrix_hdf5_chunk_sample_count(
+                    sample_count=len(sample_rows),
+                    matrix_length=spec.matrix_length,
+                    dtype_name=count_dtype,
+                    target_batch_mb=export_batch_mb,
+                )
+                matrix_datasets[spec.genome_idx] = matrices_group.create_dataset(
+                    str(spec.genome_idx),
+                    shape=(len(sample_rows), spec.matrix_length, 4),
+                    dtype=COUNT_DTYPES[count_dtype],
+                    chunks=(chunk_samples, spec.matrix_length, 4),
+                    fillvalue=0,
+                )
+
+            for sample_idx, sample_name, _profile_path_str, profile_path in sample_rows:
+                for genome_spec in genomes:
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "processing",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "sample_name": sample_name,
+                                "genome": genome_spec.genome,
+                                "scaffold": "",
+                                "stored_rows": stored_rows,
+                            }
+                        )
+                    matrix = _load_profile_genome_matrix(
+                        profile_path=profile_path,
+                        genome_spec=genome_spec,
+                        genome_offsets=scaffolds_by_genome_idx[genome_spec.genome_idx],
+                        count_dtype=count_dtype,
+                        min_cov=MATRIX_BUILD_MIN_COV,
+                    )
+                    matrix_datasets[genome_spec.genome_idx][sample_idx, :, :] = matrix
+                    stored_rows += 1
+                    completed_work += 1
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "advance",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "sample_name": sample_name,
+                                "genome": genome_spec.genome,
+                                "scaffold": "",
+                                "stored_rows": stored_rows,
+                            }
+                        )
+        tmp_output.replace(output_file)
+        build_succeeded = True
+    finally:
+        if not build_succeeded and tmp_output.exists():
+            tmp_output.unlink(missing_ok=True)
+        if not build_succeeded and output_file.exists():
+            output_file.unlink(missing_ok=True)
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "done",
+                "completed": completed_work,
+                "total": total_work,
+                "sample_name": "",
+                "genome": genome_scope or "all",
+                "scaffold": "",
+                "stored_rows": stored_rows,
+            }
+        )
+
+    return MatrixHdf5Summary(
+        output_file=output_file,
+        profile_files=len(profile_paths),
+        sample_count=len(profile_paths),
+        scaffold_count=len(scaffolds),
+        stored_rows=stored_rows,
+        count_dtype=count_dtype,
+        genome_scope=genome_scope or "all",
+        memory_limit_gb=memory_limit_gb,
+    )
+
+
 def append_matrix_db(
     profile_dir: Path,
     matrix_db_file: Path,
@@ -1667,6 +2009,325 @@ def _load_matrix_db_genome_scaffolds(
     ]
 
 
+def _load_matrix_hdf5_metadata(matrix_hdf5_file: Path) -> dict[str, str]:
+    h5py_module = _import_h5py()
+    with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
+        if "metadata" not in h5_file:
+            raise ValueError(f"HDF5 matrix store is missing /metadata: {matrix_hdf5_file}")
+        return {str(key): str(value) for key, value in h5_file["metadata"].attrs.items()}
+
+
+def _load_matrix_hdf5_samples(matrix_hdf5_file: Path) -> list[tuple[int, str]]:
+    h5py_module = _import_h5py()
+    with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
+        sample_group = h5_file["samples"]
+        sample_ids = np.asarray(sample_group["sample_idx"][...], dtype=np.int64)
+        sample_names = _read_hdf5_string_dataset(sample_group["sample_name"])
+    return [(int(sample_idx), str(sample_name)) for sample_idx, sample_name in zip(sample_ids.tolist(), sample_names)]
+
+
+def _load_matrix_hdf5_genomes(
+    matrix_hdf5_file: Path,
+    genome: Optional[str] = None,
+) -> list[GenomeSpec]:
+    h5py_module = _import_h5py()
+    with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
+        genome_group = h5_file["genomes"]
+        genome_ids = np.asarray(genome_group["genome_idx"][...], dtype=np.int64)
+        genome_names = _read_hdf5_string_dataset(genome_group["genome"])
+        matrix_lengths = np.asarray(genome_group["matrix_length"][...], dtype=np.int64)
+        true_lengths = np.asarray(genome_group["true_length"][...], dtype=np.int64)
+        scaffold_counts = np.asarray(genome_group["scaffold_count"][...], dtype=np.int64)
+    specs = [
+        GenomeSpec(
+            genome_idx=int(genome_idx),
+            genome=str(genome_name),
+            matrix_length=int(matrix_length),
+            true_length=int(true_length),
+            scaffold_count=int(scaffold_count),
+        )
+        for genome_idx, genome_name, matrix_length, true_length, scaffold_count in zip(
+            genome_ids.tolist(),
+            genome_names,
+            matrix_lengths.tolist(),
+            true_lengths.tolist(),
+            scaffold_counts.tolist(),
+        )
+    ]
+    if genome is None:
+        return specs
+    return [spec for spec in specs if spec.genome == genome]
+
+
+def _load_matrix_hdf5_genome_scaffolds(
+    matrix_hdf5_file: Path,
+    genome_idx: Optional[int] = None,
+    genome: Optional[str] = None,
+) -> list[GenomeScaffoldOffset]:
+    h5py_module = _import_h5py()
+    with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
+        scaffold_group = h5_file["genome_scaffolds"]
+        rows = list(
+            zip(
+                np.asarray(scaffold_group["genome_idx"][...], dtype=np.int64).tolist(),
+                np.asarray(scaffold_group["scaffold_ordinal"][...], dtype=np.int64).tolist(),
+                _read_hdf5_string_dataset(scaffold_group["genome"]),
+                _read_hdf5_string_dataset(scaffold_group["chrom"]),
+                np.asarray(scaffold_group["axis_start"][...], dtype=np.int64).tolist(),
+                np.asarray(scaffold_group["axis_end"][...], dtype=np.int64).tolist(),
+                np.asarray(scaffold_group["index_base"][...], dtype=np.int64).tolist(),
+                np.asarray(scaffold_group["vector_length"][...], dtype=np.int64).tolist(),
+                np.asarray(scaffold_group["min_pos"][...], dtype=np.int64).tolist(),
+                np.asarray(scaffold_group["max_pos"][...], dtype=np.int64).tolist(),
+            )
+        )
+    offsets = [
+        GenomeScaffoldOffset(
+            genome_idx=int(genome_idx_val),
+            scaffold_ordinal=int(scaffold_ordinal),
+            genome=str(genome_name),
+            chrom=str(chrom),
+            axis_start=int(axis_start),
+            axis_end=int(axis_end),
+            index_base=int(index_base),
+            vector_length=int(vector_length),
+            min_pos=int(min_pos),
+            max_pos=int(max_pos),
+        )
+        for genome_idx_val, scaffold_ordinal, genome_name, chrom, axis_start, axis_end, index_base, vector_length, min_pos, max_pos in rows
+        if (genome_idx is None or int(genome_idx_val) == int(genome_idx))
+        and (genome is None or str(genome_name) == genome)
+    ]
+    if genome_idx is None and genome is None:
+        return offsets
+    return sorted(offsets, key=lambda item: (item.genome_idx, item.scaffold_ordinal))
+
+
+def export_matrix_db_hdf5(
+    matrix_db_file: Path,
+    output_file: Path,
+    progress_callback: Optional[BuildProgressCallback] = None,
+    export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+) -> Path:
+    matrix_db_file = matrix_db_file.resolve()
+    output_file = output_file.resolve()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    if export_batch_mb <= 0:
+        raise ValueError("export_batch_mb must be > 0")
+
+    h5py_module = _import_h5py()
+    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
+    try:
+        read_conn.execute("SET preserve_insertion_order=false")
+        metadata = _load_matrix_db_metadata(read_conn)
+        samples = _load_matrix_db_samples(read_conn)
+        genomes = _load_matrix_db_genomes(read_conn)
+        genome_scaffolds = _load_matrix_db_genome_scaffolds(read_conn)
+        dtype_name = str(metadata.get("count_dtype", ""))
+        if dtype_name not in COUNT_DTYPES:
+            raise ValueError(
+                f"Matrix DB count dtype '{dtype_name}' is not supported for HDF5 export."
+            )
+        np_dtype = COUNT_DTYPES[dtype_name]
+        row_pos_by_sample_idx = {sample_idx: pos for pos, (sample_idx, _sample_name) in enumerate(samples)}
+        converted_metadata = {str(key): str(value) for key, value in metadata.items()}
+        converted_metadata["source_layout"] = str(metadata.get("layout", ""))
+        converted_metadata["layout"] = CURRENT_MATRIX_HDF5_LAYOUT
+        converted_metadata["input_format"] = "hdf5"
+        tmp_output = output_file.with_suffix(output_file.suffix + ".tmp")
+        if tmp_output.exists():
+            tmp_output.unlink()
+        sample_count = len(samples)
+        total_work = sample_count * len(genomes)
+        completed_work = 0
+        stored_rows = 0
+        genome_scope = metadata.get("genome_scope", "all")
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "phase": "start",
+                    "completed": completed_work,
+                    "total": total_work,
+                    "sample_name": "",
+                    "genome": genome_scope,
+                    "scaffold": "",
+                    "stored_rows": stored_rows,
+                }
+            )
+        with h5py_module.File(str(tmp_output), "w") as h5_file:
+            h5_file.attrs["zipstrain_hdf5_version"] = MATRIX_HDF5_FILE_VERSION
+            metadata_group = h5_file.create_group("metadata")
+            for key, value in converted_metadata.items():
+                metadata_group.attrs[str(key)] = str(value)
+
+            samples_group = h5_file.create_group("samples")
+            samples_group.create_dataset(
+                "sample_idx",
+                data=np.asarray([sample_idx for sample_idx, _sample_name in samples], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                samples_group,
+                "sample_name",
+                [sample_name for _sample_idx, sample_name in samples],
+                h5py_module=h5py_module,
+            )
+
+            genomes_group = h5_file.create_group("genomes")
+            genomes_group.create_dataset(
+                "genome_idx",
+                data=np.asarray([spec.genome_idx for spec in genomes], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                genomes_group,
+                "genome",
+                [spec.genome for spec in genomes],
+                h5py_module=h5py_module,
+            )
+            genomes_group.create_dataset(
+                "matrix_length",
+                data=np.asarray([spec.matrix_length for spec in genomes], dtype=np.int64),
+            )
+            genomes_group.create_dataset(
+                "true_length",
+                data=np.asarray([spec.true_length for spec in genomes], dtype=np.int64),
+            )
+            genomes_group.create_dataset(
+                "scaffold_count",
+                data=np.asarray([spec.scaffold_count for spec in genomes], dtype=np.int64),
+            )
+
+            scaffold_group = h5_file.create_group("genome_scaffolds")
+            scaffold_group.create_dataset(
+                "genome_idx",
+                data=np.asarray([spec.genome_idx for spec in genome_scaffolds], dtype=np.int64),
+            )
+            scaffold_group.create_dataset(
+                "scaffold_ordinal",
+                data=np.asarray([spec.scaffold_ordinal for spec in genome_scaffolds], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                scaffold_group,
+                "genome",
+                [spec.genome for spec in genome_scaffolds],
+                h5py_module=h5py_module,
+            )
+            _write_hdf5_string_dataset(
+                scaffold_group,
+                "chrom",
+                [spec.chrom for spec in genome_scaffolds],
+                h5py_module=h5py_module,
+            )
+            for field_name in ("axis_start", "axis_end", "index_base", "vector_length", "min_pos", "max_pos"):
+                scaffold_group.create_dataset(
+                    field_name,
+                    data=np.asarray([getattr(spec, field_name) for spec in genome_scaffolds], dtype=np.int64),
+                )
+
+            matrices_group = h5_file.create_group("matrices")
+            for spec in genomes:
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "processing",
+                            "completed": completed_work,
+                            "total": total_work,
+                            "sample_name": "",
+                            "genome": spec.genome,
+                            "scaffold": "",
+                            "stored_rows": stored_rows,
+                            "detail": f"export_batch_mb={export_batch_mb:g}",
+                        }
+                    )
+                chunk_samples = _matrix_hdf5_chunk_sample_count(
+                    sample_count=sample_count,
+                    matrix_length=spec.matrix_length,
+                    dtype_name=dtype_name,
+                    target_batch_mb=export_batch_mb,
+                )
+                matrix_dataset = matrices_group.create_dataset(
+                    str(spec.genome_idx),
+                    shape=(sample_count, spec.matrix_length, 4),
+                    dtype=np_dtype,
+                    chunks=(chunk_samples, spec.matrix_length, 4),
+                    fillvalue=0,
+                )
+                ordered_sample_ids = [sample_idx for sample_idx, _sample_name in samples]
+                for batch_start in range(0, sample_count, chunk_samples):
+                    batch_sample_ids = ordered_sample_ids[batch_start:batch_start + chunk_samples]
+                    if not batch_sample_ids:
+                        continue
+                    rows = read_conn.execute(
+                        f"""
+                        SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
+                        FROM matrix_db_sample_genome_matrices
+                        WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(batch_sample_ids))})
+                        ORDER BY sample_idx
+                        """,
+                        [spec.genome_idx, *batch_sample_ids],
+                    ).fetchall()
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "processing",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "sample_name": "",
+                                "genome": spec.genome,
+                                "scaffold": "",
+                                "stored_rows": stored_rows,
+                                "detail": f"batch_samples={len(rows)}",
+                            }
+                        )
+                    for sample_idx, stored_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
+                        rows_int = int(matrix_rows)
+                        cols_int = int(matrix_cols)
+                        if rows_int != spec.matrix_length or cols_int != 4:
+                            raise ValueError(
+                                f"Stored genome matrix shape mismatch for genome_idx={spec.genome_idx}, sample_idx={sample_idx}: "
+                                f"expected ({spec.matrix_length}, 4), found ({rows_int}, {cols_int})"
+                            )
+                        if str(stored_dtype) != dtype_name:
+                            raise ValueError(
+                                f"Stored genome matrix dtype mismatch for genome_idx={spec.genome_idx}, sample_idx={sample_idx}: "
+                                f"expected {dtype_name}, found {stored_dtype}"
+                            )
+                        matrix_dataset[row_pos_by_sample_idx[int(sample_idx)], :, :] = _unpack_matrix(
+                            memoryview(matrix_blob),
+                            dtype_name,
+                            (rows_int, cols_int),
+                        )
+                        completed_work += 1
+                        stored_rows += 1
+                        if progress_callback is not None:
+                            progress_callback(
+                                {
+                                    "phase": "advance",
+                                    "completed": completed_work,
+                                    "total": total_work,
+                                    "sample_name": "",
+                                    "genome": spec.genome,
+                                    "scaffold": "",
+                                    "stored_rows": stored_rows,
+                                }
+                            )
+        tmp_output.replace(output_file)
+    finally:
+        read_conn.close()
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "done",
+                "completed": completed_work,
+                "total": total_work,
+                "sample_name": "",
+                "genome": genome_scope,
+                "scaffold": "",
+                "stored_rows": stored_rows,
+            }
+        )
+    return output_file
+
+
 def _load_sample_genome_matrices(
     conn: duckdb.DuckDBPyConnection,
     genome_idx: int,
@@ -1703,7 +2364,7 @@ def _load_sample_genome_matrices(
                 f"expected {dtype_name}, found {stored_dtype}"
             )
         matrices[int(sample_idx)] = _unpack_matrix(
-            bytes(matrix_blob),
+            memoryview(matrix_blob),
             dtype_name,
             (rows_int, cols_int),
         ).astype(np_dtype, copy=False)
@@ -1955,18 +2616,348 @@ def _make_arrow_table_from_compare_payload(
 
 def _prepare_torch_matrix(
     compute_backend: MatrixPairComputeBackend,
-    matrix: np.ndarray,
+    matrix,
     matrix_value_semantics: str,
 ):
-    tensor = compute_backend.torch.from_numpy(np.ascontiguousarray(matrix))
+    torch_module = compute_backend.torch
+    if torch_module is not None and callable(getattr(torch_module, "is_tensor", None)) and torch_module.is_tensor(matrix):
+        tensor = matrix.contiguous()
+    else:
+        tensor = torch_module.from_numpy(np.ascontiguousarray(matrix))
     if compute_backend.device == "cuda" and hasattr(tensor, "pin_memory"):
         tensor = tensor.pin_memory()
         kwargs: dict[str, object] = {"device": compute_backend.device, "non_blocking": True}
     else:
         kwargs = {"device": compute_backend.device}
     if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-        kwargs["dtype"] = compute_backend.torch.float32
+        kwargs["dtype"] = torch_module.float32
     return tensor.to(**kwargs)
+
+
+def _torch_host_matrix_dtype(
+    torch_module,
+    dtype_name: str,
+    matrix_value_semantics: str,
+):
+    if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+        return torch_module.float32
+    attr_name = dtype_name
+    if hasattr(torch_module, attr_name):
+        return getattr(torch_module, attr_name)
+    return torch_module.int32
+
+
+def _torch_count_matrix_dtype(
+    torch_module,
+    dtype_name: str,
+):
+    if hasattr(torch_module, dtype_name):
+        return getattr(torch_module, dtype_name)
+    return None
+
+
+class _Hdf5GenomeMatrixTorchDataset:
+    def __init__(
+        self,
+        matrix_hdf5_file: Path,
+        genome_idx: int,
+        dtype_name: str,
+        matrix_value_semantics: str,
+        torch_module=None,
+    ) -> None:
+        self.matrix_hdf5_file = str(matrix_hdf5_file)
+        self.genome_idx = int(genome_idx)
+        self.torch_module = torch_module or importlib.import_module("torch")
+        self.h5py_module = _import_h5py()
+        self.host_dtype = _torch_host_matrix_dtype(
+            torch_module=self.torch_module,
+            dtype_name=dtype_name,
+            matrix_value_semantics=matrix_value_semantics,
+        )
+        self._h5_file = None
+        self._matrix_dataset = None
+
+    def _ensure_open(self) -> None:
+        if self._matrix_dataset is not None:
+            return
+        self._h5_file = self.h5py_module.File(self.matrix_hdf5_file, "r")
+        self._matrix_dataset = self._h5_file[_hdf5_matrix_dataset_path(self.genome_idx)]
+
+    def close(self) -> None:
+        if self._h5_file is not None:
+            self._h5_file.close()
+        self._h5_file = None
+        self._matrix_dataset = None
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __len__(self) -> int:
+        self._ensure_open()
+        return int(self._matrix_dataset.shape[0])
+
+    def __getitem__(self, sample_row: int):
+        self._ensure_open()
+        matrix_np = np.asarray(self._matrix_dataset[int(sample_row), :, :])
+        matrix_tensor = self.torch_module.from_numpy(matrix_np)
+        if matrix_tensor.dtype != self.host_dtype:
+            matrix_tensor = matrix_tensor.to(dtype=self.host_dtype)
+        return matrix_tensor
+
+    def load_range(self, start: int, stop: int):
+        self._ensure_open()
+        batch_np = np.asarray(self._matrix_dataset[int(start):int(stop), :, :])
+        batch_tensor = self.torch_module.from_numpy(batch_np)
+        if batch_tensor.dtype != self.host_dtype:
+            batch_tensor = batch_tensor.to(dtype=self.host_dtype)
+        return batch_tensor.permute(1, 2, 0).contiguous()
+
+
+def _decode_matrix_blob_to_torch(
+    matrix_blob,
+    dtype_name: str,
+    shape: tuple[int, int],
+    torch_module,
+):
+    expected = shape[0] * shape[1]
+    torch_dtype = _torch_count_matrix_dtype(torch_module, dtype_name)
+    if torch_dtype is not None and callable(getattr(torch_module, "frombuffer", None)):
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="The given buffer is not writable",
+                category=UserWarning,
+            )
+            out = torch_module.frombuffer(
+                memoryview(matrix_blob),
+                dtype=torch_dtype,
+                count=expected,
+            )
+        if int(out.numel()) != expected:
+            raise ValueError(f"Matrix blob has {int(out.numel())} values, expected {expected}")
+        return out.reshape(shape)
+    matrix_view = _unpack_matrix(
+        memoryview(matrix_blob),
+        dtype_name,
+        shape,
+    )
+    return torch_module.from_numpy(matrix_view)
+
+
+def _assemble_target_queue_block_for_torch(
+    rows,
+    block_ids: np.ndarray,
+    block_names: list[str],
+    matrix_length: int,
+    dtype_name: str,
+    matrix_value_semantics: str,
+    torch_module,
+    genome_idx: Optional[int] = None,
+) -> tuple[np.ndarray, list[str], np.ndarray, object]:
+    zero_matrix = np.zeros((matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
+    host_dtype = _torch_host_matrix_dtype(
+        torch_module=torch_module,
+        dtype_name=dtype_name,
+        matrix_value_semantics=matrix_value_semantics,
+    )
+    target_tensor = torch_module.zeros(
+        (matrix_length, 4, len(block_ids)),
+        dtype=host_dtype,
+        device="cpu",
+    )
+    sample_pos = {int(sample_idx): pos for pos, sample_idx in enumerate(block_ids.tolist())}
+    for sample_idx, stored_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
+        rows_int = int(matrix_rows)
+        cols_int = int(matrix_cols)
+        if rows_int != matrix_length or cols_int != 4:
+            raise ValueError(
+                f"Stored genome matrix shape mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
+                f"expected ({matrix_length}, 4), found ({rows_int}, {cols_int})"
+            )
+        if str(stored_dtype) != dtype_name:
+            raise ValueError(
+                f"Stored genome matrix dtype mismatch for sample_idx={sample_idx}: "
+                f"expected {dtype_name}, found {stored_dtype}"
+            )
+        source_tensor = _decode_matrix_blob_to_torch(
+            matrix_blob=matrix_blob,
+            dtype_name=dtype_name,
+            shape=(rows_int, cols_int),
+            torch_module=torch_module,
+        )
+        if source_tensor.dtype != host_dtype:
+            source_tensor = source_tensor.to(dtype=host_dtype)
+        target_tensor[:, :, sample_pos[int(sample_idx)]].copy_(source_tensor)
+    return block_ids, block_names, zero_matrix, target_tensor
+
+
+def _load_anchor_queue_batch_for_torch_direct(
+    matrix_db_file: Path,
+    genome_idx: int,
+    batch_rows: list[tuple[int, str]],
+    matrix_length: int,
+    dtype_name: str,
+    zero_matrix: np.ndarray,
+    matrix_value_semantics: str,
+    torch_module=None,
+) -> list[tuple[int, str, object]]:
+    if not batch_rows:
+        return []
+    if torch_module is None:
+        torch_module = importlib.import_module("torch")
+    sample_ids = [sample_idx for sample_idx, _sample_name in batch_rows]
+    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
+    try:
+        rows = read_conn.execute(
+            f"""
+            SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
+            FROM matrix_db_sample_genome_matrices
+            WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(sample_ids))})
+            ORDER BY sample_idx
+            """,
+            [genome_idx, *sample_ids],
+        ).fetchall()
+    finally:
+        read_conn.close()
+    host_dtype = _torch_host_matrix_dtype(
+        torch_module=torch_module,
+        dtype_name=dtype_name,
+        matrix_value_semantics=matrix_value_semantics,
+    )
+    loaded_anchors: dict[int, object] = {}
+    for sample_idx, stored_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
+        rows_int = int(matrix_rows)
+        cols_int = int(matrix_cols)
+        if rows_int != matrix_length or cols_int != 4:
+            raise ValueError(
+                f"Stored genome matrix shape mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
+                f"expected ({matrix_length}, 4), found ({rows_int}, {cols_int})"
+            )
+        if str(stored_dtype) != dtype_name:
+            raise ValueError(
+                f"Stored genome matrix dtype mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
+                f"expected {dtype_name}, found {stored_dtype}"
+            )
+        source_tensor = _decode_matrix_blob_to_torch(
+            matrix_blob=matrix_blob,
+            dtype_name=dtype_name,
+            shape=(rows_int, cols_int),
+            torch_module=torch_module,
+        )
+        if source_tensor.dtype != host_dtype:
+            source_tensor = source_tensor.to(dtype=host_dtype)
+        loaded_anchors[int(sample_idx)] = source_tensor
+    return [
+        (
+            sample_idx,
+            sample_name,
+            loaded_anchors.get(sample_idx, zero_matrix),
+        )
+        for sample_idx, sample_name in batch_rows
+    ]
+
+
+def _load_target_queue_block_for_torch_direct(
+    matrix_db_file: Path,
+    genome_idx: int,
+    block_rows: list[tuple[int, str]],
+    matrix_length: int,
+    dtype_name: str,
+    matrix_value_semantics: str,
+    torch_module=None,
+) -> tuple[np.ndarray, list[str], np.ndarray, object]:
+    if torch_module is None:
+        torch_module = importlib.import_module("torch")
+    block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
+    block_names = [sample_name for _sample_idx, sample_name in block_rows]
+    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
+    try:
+        rows = read_conn.execute(
+            f"""
+            SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
+            FROM matrix_db_sample_genome_matrices
+            WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(block_ids))})
+            ORDER BY sample_idx
+            """,
+            [genome_idx, *block_ids.tolist()],
+        ).fetchall()
+    finally:
+        read_conn.close()
+    return _assemble_target_queue_block_for_torch(
+        rows=rows,
+        block_ids=block_ids,
+        block_names=block_names,
+        matrix_length=matrix_length,
+        dtype_name=dtype_name,
+        matrix_value_semantics=matrix_value_semantics,
+        torch_module=torch_module,
+        genome_idx=genome_idx,
+    )
+
+
+def _load_target_queue_block_for_hdf5_torch(
+    matrix_hdf5_file: Path,
+    genome_idx: int,
+    block_rows: list[tuple[int, str]],
+    block_start: int,
+    matrix_length: int,
+    dtype_name: str,
+    matrix_value_semantics: str,
+    torch_module=None,
+) -> tuple[np.ndarray, list[str], np.ndarray, object]:
+    if torch_module is None:
+        torch_module = importlib.import_module("torch")
+    block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
+    block_names = [sample_name for _sample_idx, sample_name in block_rows]
+    zero_matrix = np.zeros((matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
+    dataset = _Hdf5GenomeMatrixTorchDataset(
+        matrix_hdf5_file=matrix_hdf5_file,
+        genome_idx=genome_idx,
+        dtype_name=dtype_name,
+        matrix_value_semantics=matrix_value_semantics,
+        torch_module=torch_module,
+    )
+    try:
+        target_tensor = dataset.load_range(block_start, block_start + len(block_rows))
+    finally:
+        dataset.close()
+    return block_ids, block_names, zero_matrix, target_tensor
+
+
+def _load_anchor_queue_batch_for_hdf5_torch(
+    matrix_hdf5_file: Path,
+    genome_idx: int,
+    batch_rows: list[tuple[int, str]],
+    batch_start: int,
+    matrix_length: int,
+    dtype_name: str,
+    zero_matrix: np.ndarray,
+    matrix_value_semantics: str,
+    torch_module=None,
+) -> list[tuple[int, str, object]]:
+    if not batch_rows:
+        return []
+    if torch_module is None:
+        torch_module = importlib.import_module("torch")
+    dataset = _Hdf5GenomeMatrixTorchDataset(
+        matrix_hdf5_file=matrix_hdf5_file,
+        genome_idx=genome_idx,
+        dtype_name=dtype_name,
+        matrix_value_semantics=matrix_value_semantics,
+        torch_module=torch_module,
+    )
+    try:
+        anchor_tensor = dataset.load_range(batch_start, batch_start + len(batch_rows))
+    finally:
+        dataset.close()
+    return [
+        (
+            sample_idx,
+            sample_name,
+            anchor_tensor[:, :, pos],
+        )
+        for pos, (sample_idx, sample_name) in enumerate(batch_rows)
+    ]
 
 
 def _load_anchor_queue_batch_for_torch(
@@ -2036,7 +3027,7 @@ def _load_target_prefetch_unit_for_torch(
     block_rows: list[tuple[int, str]],
     matrix_length: int,
     dtype_name: str,
-) -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]:
+) -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, object]]:
     return (
         unit_index,
         _load_target_queue_block_for_torch(
@@ -2045,6 +3036,52 @@ def _load_target_prefetch_unit_for_torch(
             block_rows=block_rows,
             matrix_length=matrix_length,
             dtype_name=dtype_name,
+        ),
+    )
+
+
+def _load_target_prefetch_unit_for_torch_direct(
+    unit_index: int,
+    matrix_db_file: Path,
+    genome_idx: int,
+    block_rows: list[tuple[int, str]],
+    matrix_length: int,
+    dtype_name: str,
+    matrix_value_semantics: str,
+) -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, object]]:
+    return (
+        unit_index,
+        _load_target_queue_block_for_torch_direct(
+            matrix_db_file=matrix_db_file,
+            genome_idx=genome_idx,
+            block_rows=block_rows,
+            matrix_length=matrix_length,
+            dtype_name=dtype_name,
+            matrix_value_semantics=matrix_value_semantics,
+        ),
+    )
+
+
+def _load_target_prefetch_unit_for_hdf5_torch(
+    unit_index: int,
+    matrix_hdf5_file: Path,
+    genome_idx: int,
+    block_rows: list[tuple[int, str]],
+    block_start: int,
+    matrix_length: int,
+    dtype_name: str,
+    matrix_value_semantics: str,
+) -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, object]]:
+    return (
+        unit_index,
+        _load_target_queue_block_for_hdf5_torch(
+            matrix_hdf5_file=matrix_hdf5_file,
+            genome_idx=genome_idx,
+            block_rows=block_rows,
+            block_start=block_start,
+            matrix_length=matrix_length,
+            dtype_name=dtype_name,
+            matrix_value_semantics=matrix_value_semantics,
         ),
     )
 
@@ -2188,7 +3225,8 @@ def _download_torch_result_tensor_batch(
 
 async def _matrix_compare_reuse_target_chunks_torch_async(
     matrix_db_file: Path,
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection],
+    matrix_input_format: str,
     compare_conn: Optional[duckdb.DuckDBPyConnection],
     output_file: Path,
     min_cov: int,
@@ -2223,6 +3261,12 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     dtype_name = str(metadata.get("count_dtype", "uint16"))
     default_tile_size = 0
     max_vector_length = max(spec.matrix_length for spec in genomes)
+    use_direct_torch_block_reads = bool(
+        compute_backend.kind == "torch"
+        and callable(getattr(compute_backend.torch, "from_numpy", None))
+        and callable(getattr(compute_backend.torch, "zeros", None))
+        and callable(getattr(compute_backend.torch, "frombuffer", None))
+    )
     global_block_size, _ = _plan_chunk_sizes(
         vector_length=max_vector_length,
         remaining_targets=len(samples),
@@ -2241,8 +3285,44 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
 
     def load_target_block_sync(
         spec: GenomeSpec,
+        block_start: int,
         block_rows: list[tuple[int, str]],
-    ) -> tuple[np.ndarray, list[str], np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, list[str], np.ndarray, object]:
+        if matrix_input_format == "hdf5":
+            return _load_target_queue_block_for_hdf5_torch(
+                matrix_hdf5_file=matrix_db_file,
+                genome_idx=spec.genome_idx,
+                block_rows=block_rows,
+                block_start=block_start,
+                matrix_length=spec.matrix_length,
+                dtype_name=dtype_name,
+                matrix_value_semantics=matrix_value_semantics,
+                torch_module=compute_backend.torch,
+            )
+        if use_direct_torch_block_reads:
+            block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
+            block_names = [sample_name for _sample_idx, sample_name in block_rows]
+            if conn is None:
+                raise RuntimeError("DuckDB connection is required for direct DuckDB matrix compare reads.")
+            rows = conn.execute(
+                f"""
+                SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
+                FROM matrix_db_sample_genome_matrices
+                WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(block_ids))})
+                ORDER BY sample_idx
+                """,
+                [spec.genome_idx, *block_ids.tolist()],
+            ).fetchall()
+            return _assemble_target_queue_block_for_torch(
+                rows=rows,
+                block_ids=block_ids,
+                block_names=block_names,
+                matrix_length=spec.matrix_length,
+                dtype_name=dtype_name,
+                matrix_value_semantics=matrix_value_semantics,
+                torch_module=compute_backend.torch,
+                genome_idx=spec.genome_idx,
+            )
         block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
         block_names = [sample_name for _sample_idx, sample_name in block_rows]
         zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
@@ -2298,9 +3378,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
         if samples[block_start:block_start + global_block_size]
     ]
     target_queue_capacity = max(0, target_queue_size - 1)
-    target_queue: deque[tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]] = deque()
+    target_queue: deque[tuple[int, tuple[np.ndarray, list[str], np.ndarray, object]]] = deque()
     next_target_prefetch_idx = 1
-    pending_target_future: Optional[asyncio.Future[tuple[int, tuple[np.ndarray, list[str], np.ndarray, np.ndarray]]]] = None
+    pending_target_future: Optional[asyncio.Future[tuple[int, tuple[np.ndarray, list[str], np.ndarray, object]]]] = None
 
     def submit_target_prefetch(current_unit_index: int) -> None:
         nonlocal next_target_prefetch_idx, pending_target_future
@@ -2314,17 +3394,43 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
             return
         unit_index = next_target_prefetch_idx
         next_target_prefetch_idx += 1
-        _prefetch_block_start, prefetch_block_rows, prefetch_spec = work_units[unit_index]
-        pending_target_future = loop.run_in_executor(
-            target_loader_executor,
-            _load_target_prefetch_unit_for_torch,
-            unit_index,
-            matrix_db_file,
-            prefetch_spec.genome_idx,
-            prefetch_block_rows,
-            prefetch_spec.matrix_length,
-            dtype_name,
-        )
+        prefetch_block_start, prefetch_block_rows, prefetch_spec = work_units[unit_index]
+        if matrix_input_format == "hdf5":
+            pending_target_future = loop.run_in_executor(
+                target_loader_executor,
+                _load_target_prefetch_unit_for_hdf5_torch,
+                unit_index,
+                matrix_db_file,
+                prefetch_spec.genome_idx,
+                prefetch_block_rows,
+                prefetch_block_start,
+                prefetch_spec.matrix_length,
+                dtype_name,
+                matrix_value_semantics,
+            )
+        elif use_direct_torch_block_reads:
+            pending_target_future = loop.run_in_executor(
+                target_loader_executor,
+                _load_target_prefetch_unit_for_torch_direct,
+                unit_index,
+                matrix_db_file,
+                prefetch_spec.genome_idx,
+                prefetch_block_rows,
+                prefetch_spec.matrix_length,
+                dtype_name,
+                matrix_value_semantics,
+            )
+        else:
+            pending_target_future = loop.run_in_executor(
+                target_loader_executor,
+                _load_target_prefetch_unit_for_torch,
+                unit_index,
+                matrix_db_file,
+                prefetch_spec.genome_idx,
+                prefetch_block_rows,
+                prefetch_spec.matrix_length,
+                dtype_name,
+            )
 
     async def drain_target_prefetch(force: bool = False) -> None:
         nonlocal pending_target_future
@@ -2345,7 +3451,11 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
             if target_queue and target_queue[0][0] == unit_index:
                 block_ids, block_names, zero_matrix, target_matrices = target_queue.popleft()[1]
             else:
-                block_ids, block_names, zero_matrix, target_matrices = load_target_block_sync(spec, block_rows)
+                block_ids, block_names, zero_matrix, target_matrices = load_target_block_sync(
+                    spec,
+                    block_start,
+                    block_rows,
+                )
             submit_target_prefetch(unit_index)
             completed_pairs_in_block = completed_pairs_by_genome.get(spec.genome_idx, set())
             external_rows = []
@@ -2397,6 +3507,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 matrix=target_matrices,
                 matrix_value_semantics=matrix_value_semantics,
             )
+            del target_matrices
             processed_pairs_for_block = 0
             target_chunks += 1
             pending_device_results: list[dict[str, object]] = []
@@ -2501,9 +3612,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         }
                     )
 
-            anchor_queue: deque[tuple[int, str, np.ndarray]] = deque()
+            anchor_queue: deque[tuple[int, str, object]] = deque()
             next_anchor_offset = 0
-            pending_anchor_future: Optional[asyncio.Future[list[tuple[int, str, np.ndarray]]]] = None
+            pending_anchor_future: Optional[asyncio.Future[list[tuple[int, str, object]]]] = None
 
             def submit_anchor_prefetch() -> None:
                 nonlocal next_anchor_offset, pending_anchor_future
@@ -2518,16 +3629,42 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 if not batch_rows:
                     return
                 next_anchor_offset += len(batch_rows)
-                pending_anchor_future = loop.run_in_executor(
-                    anchor_loader_executor,
-                    _load_anchor_queue_batch_for_torch,
-                    matrix_db_file,
-                    spec.genome_idx,
-                    batch_rows,
-                    spec.matrix_length,
-                    dtype_name,
-                    zero_matrix,
-                )
+                if matrix_input_format == "hdf5":
+                    pending_anchor_future = loop.run_in_executor(
+                        anchor_loader_executor,
+                        _load_anchor_queue_batch_for_hdf5_torch,
+                        matrix_db_file,
+                        spec.genome_idx,
+                        batch_rows,
+                        next_anchor_offset - len(batch_rows),
+                        spec.matrix_length,
+                        dtype_name,
+                        zero_matrix,
+                        matrix_value_semantics,
+                    )
+                elif use_direct_torch_block_reads:
+                    pending_anchor_future = loop.run_in_executor(
+                        anchor_loader_executor,
+                        _load_anchor_queue_batch_for_torch_direct,
+                        matrix_db_file,
+                        spec.genome_idx,
+                        batch_rows,
+                        spec.matrix_length,
+                        dtype_name,
+                        zero_matrix,
+                        matrix_value_semantics,
+                    )
+                else:
+                    pending_anchor_future = loop.run_in_executor(
+                        anchor_loader_executor,
+                        _load_anchor_queue_batch_for_torch,
+                        matrix_db_file,
+                        spec.genome_idx,
+                        batch_rows,
+                        spec.matrix_length,
+                        dtype_name,
+                        zero_matrix,
+                    )
 
             async def drain_anchor_prefetch(force: bool = False) -> None:
                 nonlocal pending_anchor_future
@@ -2657,6 +3794,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 raise RuntimeError(
                     "Torch block compare progress accounting drifted from the expected remaining pair count."
                 )
+            del target_torch
             await drain_target_prefetch(force=False)
             submit_target_prefetch(unit_index)
 
@@ -2685,7 +3823,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
 
 def _matrix_compare_reuse_target_chunks_torch(
     matrix_db_file: Path,
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection],
+    matrix_input_format: str,
     compare_conn: Optional[duckdb.DuckDBPyConnection],
     output_file: Path,
     min_cov: int,
@@ -2716,6 +3855,7 @@ def _matrix_compare_reuse_target_chunks_torch(
         _matrix_compare_reuse_target_chunks_torch_async(
             matrix_db_file=matrix_db_file,
             conn=conn,
+            matrix_input_format=matrix_input_format,
             compare_conn=compare_conn,
             output_file=output_file,
             min_cov=min_cov,
@@ -2756,6 +3896,7 @@ def matrix_compare(
     result_transfer_batch_size: int = MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT,
     loader_executor_kind: str = "thread",
     writer_executor_kind: str = "thread",
+    matrix_input_format: str = "auto",
     position_tile_size: Optional[int] = None,
     backend: str = "numpy",
     calculate: Optional[str] = "all",
@@ -2778,6 +3919,10 @@ def matrix_compare(
         raise ValueError(
             f"writer_executor_kind must be one of {', '.join(MATRIX_IO_EXECUTOR_KINDS)}"
         )
+    if matrix_input_format not in MATRIX_COMPARE_INPUT_FORMATS:
+        raise ValueError(
+            f"matrix_input_format must be one of {', '.join(MATRIX_COMPARE_INPUT_FORMATS)}"
+        )
     matrix_db_file = matrix_db_file.resolve()
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2786,22 +3931,42 @@ def matrix_compare(
     calculations = parse_matrix_calculations(calculate)
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
     run_start_time = time.monotonic()
-    conn = duckdb.connect(str(matrix_db_file), read_only=True)
+    resolved_input_format = _resolve_matrix_input_format(matrix_db_file, matrix_input_format)
+    if resolved_input_format == "hdf5" and compute_backend.kind != "torch":
+        raise ValueError("HDF5 matrix input is currently supported only for torch backends.")
+    conn: Optional[duckdb.DuckDBPyConnection] = None
     compare_conn: Optional[duckdb.DuckDBPyConnection] = None
     try:
-        metadata = _load_matrix_db_metadata(conn)
-        matrix_value_semantics = metadata.get("matrix_value_semantics")
-        if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-            raise ValueError(
-                "This matrix DB uses an unsupported legacy storage layout. "
-                "Rebuild it with 'zipstrain utilities build-matrix-db'."
-            )
-        samples = _load_matrix_db_samples(conn)
         genome_scope = None if genome == "all" else genome
-        genomes = _load_matrix_db_genomes(conn, genome=genome_scope)
-        if not genomes:
-            raise ValueError(f"No scaffolds found for genome scope: {genome}")
-        genome_scaffolds = _load_matrix_db_genome_scaffolds(conn, genome=genome_scope)
+        if resolved_input_format == "duckdb":
+            conn = duckdb.connect(str(matrix_db_file), read_only=True)
+            metadata = _load_matrix_db_metadata(conn)
+            metadata["input_format"] = "duckdb"
+            matrix_value_semantics = metadata.get("matrix_value_semantics")
+            if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+                raise ValueError(
+                    "This matrix DB uses an unsupported legacy storage layout. "
+                    "Rebuild it with 'zipstrain utilities build-matrix-db'."
+                )
+            samples = _load_matrix_db_samples(conn)
+            genomes = _load_matrix_db_genomes(conn, genome=genome_scope)
+            if not genomes:
+                raise ValueError(f"No scaffolds found for genome scope: {genome}")
+            genome_scaffolds = _load_matrix_db_genome_scaffolds(conn, genome=genome_scope)
+        else:
+            metadata = _load_matrix_hdf5_metadata(matrix_db_file)
+            metadata["input_format"] = "hdf5"
+            matrix_value_semantics = metadata.get("matrix_value_semantics")
+            if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+                raise ValueError(
+                    "This HDF5 matrix store uses an unsupported storage layout. "
+                    "Rebuild it from a current matrix DB."
+                )
+            samples = _load_matrix_hdf5_samples(matrix_db_file)
+            genomes = _load_matrix_hdf5_genomes(matrix_db_file, genome=genome_scope)
+            if not genomes:
+                raise ValueError(f"No scaffolds found for genome scope: {genome}")
+            genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_db_file, genome=genome_scope)
         compare_conn = _prepare_matrix_compare_db(
             output_file=output_file,
             matrix_metadata=metadata,
@@ -2838,6 +4003,7 @@ def matrix_compare(
             return _matrix_compare_reuse_target_chunks_torch(
                 matrix_db_file=matrix_db_file,
                 conn=conn,
+                matrix_input_format=resolved_input_format,
                 compare_conn=compare_conn,
                 output_file=output_file,
                 min_cov=min_cov,
@@ -2872,6 +4038,8 @@ def matrix_compare(
         anchor_groups = 0
 
         dtype_name = str(metadata.get("count_dtype", "uint16"))
+        if resolved_input_format == "hdf5":
+            raise ValueError("HDF5 matrix input is currently supported only for torch backends.")
         for anchor_offset, (sample_1_idx, sample_1_name) in enumerate(samples[:-1]):
             target_sample_rows = samples[anchor_offset + 1 :]
             if not target_sample_rows:
@@ -3064,7 +4232,8 @@ def matrix_compare(
             position_tile_size=position_tile_size or default_tile_size,
             )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
         if compare_conn is not None:
             compare_conn.close()
 

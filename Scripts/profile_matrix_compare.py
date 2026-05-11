@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Profile zipstrain matrix compare and print useful host-side timings on completion or Ctrl+C.",
     )
-    parser.add_argument("--matrix-db-file", "-m", required=True, type=Path, help="Input DuckDB matrix database.")
+    parser.add_argument("--matrix-db-file", "-m", required=True, type=Path, help="Input matrix store (DuckDB or HDF5).")
     parser.add_argument("--output-file", "-o", required=True, type=Path, help="Output DuckDB compare database.")
     parser.add_argument("--genome", "-g", default="all", help="Optional genome scope.")
     parser.add_argument("--memory-limit-gb", type=float, default=16.0, help="Approximate memory budget for compare.")
@@ -133,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=mp.MATRIX_IO_EXECUTOR_KINDS,
         default="thread",
         help="Executor used for torch result writing/checkpoint work.",
+    )
+    parser.add_argument(
+        "--matrix-input-format",
+        choices=mp.MATRIX_COMPARE_INPUT_FORMATS,
+        default="auto",
+        help="Matrix input format. 'auto' infers from the file extension.",
     )
     parser.add_argument(
         "--position-tile-size",
@@ -243,8 +249,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         "_plan_chunk_sizes",
         "_load_sample_genome_matrices",
         "_load_target_queue_block_for_torch",
+        "_load_target_queue_block_for_hdf5_torch",
         "_load_target_prefetch_unit_for_torch",
+        "_load_target_prefetch_unit_for_hdf5_torch",
         "_load_anchor_queue_batch_for_torch",
+        "_load_anchor_queue_batch_for_hdf5_torch",
         "_prepare_torch_matrix",
         "_compare_anchor_against_target_chunk_torch_device",
         "_compare_anchor_against_target_chunk_torch",
@@ -273,6 +282,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 result_transfer_batch_size=args.result_transfer_batch_size,
                 loader_executor_kind=args.loader_executor,
                 writer_executor_kind=args.writer_executor,
+                matrix_input_format=args.matrix_input_format,
                 position_tile_size=args.position_tile_size,
                 backend=args.backend,
                 calculate=args.calculate,
