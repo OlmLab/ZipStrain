@@ -412,101 +412,10 @@ def build_profile_db(profile_db_csv, output_file):
 
 @utilities.command("build-matrix-db")
 @click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
-@click.option('--output-file', '-o', required=True, help="Output DuckDB matrix database.")
+@click.option('--output-file', '-o', required=True, help="Output matrix store.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--bed-file', '-b', default=None, help="Optional BED file to define scaffold extents instead of inferring min/max positions from profiles.")
-@click.option(
-    '--count-dtype',
-    type=click.Choice(sorted(mp.COUNT_DTYPES.keys())),
-    default="uint16",
-    show_default=True,
-    help="Stored dtype for whole-genome matrix blobs.",
-)
-@click.option(
-    '--memory-limit-gb',
-    type=float,
-    default=16.0,
-    show_default=True,
-    help="Approximate maximum memory budget for the entire matrix build process.",
-)
-def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb):
-    """
-    Build an experimental DuckDB database of per-sample, per-genome dense matrices.
-
-    Each genome is stored on one whole-genome axis inferred from the selected
-    scaffolds, with one synthetic zero separator row inserted between
-    scaffolds of the same genome. Each stored matrix is shaped positions x 4
-    (A/T/C/G) and is intended for the experimental matrix compare utilities.
-    """
-    progress_console = Console(stderr=True)
-    use_progress_bar = sys.stderr.isatty()
-
-    if use_progress_bar:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            TextColumn("stored={task.fields[stored_rows]}"),
-            TimeElapsedColumn(),
-            console=progress_console,
-            transient=True,
-        ) as progress:
-            task_id = progress.add_task(
-                "Building matrix DB",
-                total=1,
-                completed=0,
-                stored_rows="0",
-            )
-
-            def _progress_callback(event: dict[str, object]) -> None:
-                total = int(event.get("total", 0)) or 1
-                completed = int(event.get("completed", 0))
-                stored_rows = str(event.get("stored_rows", 0))
-                progress.update(
-                    task_id,
-                    total=total,
-                    completed=completed,
-                    stored_rows=stored_rows,
-                )
-
-            summary = mp.build_matrix_db(
-                profile_dir=pathlib.Path(profile_dir),
-                output_file=pathlib.Path(output_file),
-                genome=genome,
-                bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
-                count_dtype=count_dtype,
-                memory_limit_gb=memory_limit_gb,
-                progress_callback=_progress_callback,
-            )
-    else:
-        progress_logger = _ThrottledMatrixLogger(
-            "MATRIX-BUILD",
-            lambda event: {"stored_rows": event.get("stored_rows", 0)},
-        )
-        summary = mp.build_matrix_db(
-            profile_dir=pathlib.Path(profile_dir),
-            output_file=pathlib.Path(output_file),
-            genome=genome,
-            bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
-            count_dtype=count_dtype,
-            memory_limit_gb=memory_limit_gb,
-            progress_callback=progress_logger,
-        )
-    click.echo(
-        f"wrote={summary.output_file} "
-        f"samples={summary.sample_count} "
-        f"scaffolds={summary.scaffold_count} "
-        f"stored_rows={summary.stored_rows}"
-    )
-
-
-@utilities.command("build-matrix-hdf5")
-@click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
-@click.option('--output-file', '-o', required=True, help="Output HDF5 matrix store.")
-@click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
-@click.option('--bed-file', '-b', default=None, help="Optional BED file to define scaffold extents instead of inferring min/max positions from profiles.")
+@click.option('--gene-range-table', default=None, help="Optional headerless TSV of gene, scaffold, start, end to store gene-coordinate ranges for gene ANI.")
 @click.option(
     '--count-dtype',
     type=click.Choice(sorted(mp.COUNT_DTYPES.keys())),
@@ -526,15 +435,15 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, count_dtype, mem
     type=float,
     default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
     show_default=True,
-    help="Approximate HDF5 sample-axis chunk target size, in MiB.",
+    help="Approximate matrix-store sample-axis chunk target size, in MiB.",
 )
-def build_matrix_hdf5(profile_dir, output_file, genome, bed_file, count_dtype, memory_limit_gb, export_batch_mb):
+def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table, count_dtype, memory_limit_gb, export_batch_mb):
     """
-    Build an experimental HDF5 matrix store directly from classic profile parquets.
+    Build a matrix store directly from classic profile parquets.
 
     Each genome is stored as one sample-major dense dataset with shape
     samples x positions x 4, while preserving the same whole-genome axis and
-    separator-row rules as build-matrix-db.
+    separator-row rules used by matrix compare.
     """
     progress_console = Console(stderr=True)
     use_progress_bar = sys.stderr.isatty()
@@ -552,7 +461,7 @@ def build_matrix_hdf5(profile_dir, output_file, genome, bed_file, count_dtype, m
             transient=True,
         ) as progress:
             task_id = progress.add_task(
-                "Building matrix HDF5",
+                "Building matrix store",
                 total=1,
                 completed=0,
                 stored_rows="0",
@@ -574,6 +483,7 @@ def build_matrix_hdf5(profile_dir, output_file, genome, bed_file, count_dtype, m
                 output_file=pathlib.Path(output_file),
                 genome=genome,
                 bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
+                gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
                 count_dtype=count_dtype,
                 memory_limit_gb=memory_limit_gb,
                 export_batch_mb=export_batch_mb,
@@ -581,7 +491,7 @@ def build_matrix_hdf5(profile_dir, output_file, genome, bed_file, count_dtype, m
             )
     else:
         progress_logger = _ThrottledMatrixLogger(
-            "MATRIX-HDF5-BUILD",
+            "MATRIX-BUILD",
             lambda event: {"stored_rows": event.get("stored_rows", 0)},
         )
         summary = mp.build_matrix_hdf5(
@@ -589,6 +499,7 @@ def build_matrix_hdf5(profile_dir, output_file, genome, bed_file, count_dtype, m
             output_file=pathlib.Path(output_file),
             genome=genome,
             bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
+            gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
             count_dtype=count_dtype,
             memory_limit_gb=memory_limit_gb,
             export_batch_mb=export_batch_mb,
@@ -604,7 +515,7 @@ def build_matrix_hdf5(profile_dir, output_file, genome, bed_file, count_dtype, m
 
 @utilities.command("append-matrix-db")
 @click.option('--profile-dir', '-p', required=True, help="Directory containing new classic ZipStrain profile parquets to append.")
-@click.option('--matrix-db-file', '-m', required=True, help="Existing DuckDB matrix database to append to.")
+@click.option('--matrix-db-file', '-m', required=True, help="Existing matrix store to append to.")
 @click.option(
     '--memory-limit-gb',
     type=float,
@@ -612,12 +523,19 @@ def build_matrix_hdf5(profile_dir, output_file, genome, bed_file, count_dtype, m
     show_default=True,
     help="Approximate maximum memory budget for the append process.",
 )
-def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
+@click.option(
+    '--export-batch-mb',
+    type=float,
+    default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    show_default=True,
+    help="Approximate matrix-store sample-axis chunk target size, in MiB, used when rewriting the store.",
+)
+def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_mb):
     """
-    Append new profiles to an existing matrix DB.
+    Append new profiles to an existing matrix store.
 
     The append uses the existing genome/scaffold layout already stored in the
-    matrix DB as the contract. New profiles must use the same genomes,
+    matrix store as the contract. New profiles must use the same genomes,
     scaffolds, and coordinate ranges. Sample names must also be new.
     """
     progress_console = Console(stderr=True)
@@ -636,7 +554,7 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
             transient=True,
         ) as progress:
             task_id = progress.add_task(
-                "Appending matrix DB",
+                "Appending matrix store",
                 total=1,
                 completed=0,
                 stored_rows="0",
@@ -653,10 +571,11 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
                     stored_rows=stored_rows,
                 )
 
-            summary = mp.append_matrix_db(
+            summary = mp.append_matrix_hdf5(
                 profile_dir=pathlib.Path(profile_dir),
-                matrix_db_file=pathlib.Path(matrix_db_file),
+                matrix_hdf5_file=pathlib.Path(matrix_db_file),
                 memory_limit_gb=memory_limit_gb,
+                export_batch_mb=export_batch_mb,
                 progress_callback=_progress_callback,
             )
     else:
@@ -664,10 +583,11 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
             "MATRIX-APPEND",
             lambda event: {"stored_rows": event.get("stored_rows", 0)},
         )
-        summary = mp.append_matrix_db(
+        summary = mp.append_matrix_hdf5(
             profile_dir=pathlib.Path(profile_dir),
-            matrix_db_file=pathlib.Path(matrix_db_file),
+            matrix_hdf5_file=pathlib.Path(matrix_db_file),
             memory_limit_gb=memory_limit_gb,
+            export_batch_mb=export_batch_mb,
             progress_callback=progress_logger,
         )
     click.echo(
@@ -680,7 +600,7 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
 
 
 @utilities.command("matrix-compare")
-@click.option('--matrix-db-file', '-m', required=True, help="Input matrix store from build-matrix-db, build-matrix-hdf5, or matrix-db-to-hdf5.")
+@click.option('--matrix-db-file', '-m', required=True, help="Input matrix store from build-matrix-db or matrix-db-to-hdf5.")
 @click.option('--output-file', '-o', required=True, help="Output DuckDB compare database. If it already exists, only remaining pairs are added.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
@@ -706,10 +626,10 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb):
     type=click.Choice(mp.MATRIX_COMPARE_INPUT_FORMATS),
     default="auto",
     show_default=True,
-    help="Input matrix format. 'auto' infers from the file extension.",
+    help="Input matrix format. 'auto' infers from the file signature when possible, otherwise the file extension.",
 )
 @click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per genome tile.")
-@click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani or ani+ibs. 'all' currently means ani+ibs.")
+@click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani, ibs, gene. Combine with '+'. 'all' means ani+ibs, and also gene when the matrix store has gene annotations.")
 @click.option(
     '--backend',
     type=click.Choice(mp.MATRIX_PAIR_BACKENDS),
@@ -755,7 +675,7 @@ def matrix_compare(
             transient=True,
         ) as progress:
             task_id = progress.add_task(
-                "Comparing matrix DB",
+                "Comparing matrix store",
                 total=1,
                 completed=0,
                 target_chunks="0",
@@ -765,9 +685,9 @@ def matrix_compare(
                 total = int(event.get("total", 0)) or 1
                 completed = int(event.get("completed", 0))
                 target_chunks = str(event.get("target_chunks", 0))
-                description = "Comparing matrix DB"
+                description = "Comparing matrix store"
                 if event.get("phase") == "processing" and event.get("detail"):
-                    description = f"Comparing matrix DB: {event['detail']}"
+                    description = f"Comparing matrix store: {event['detail']}"
                 progress.update(
                     task_id,
                     description=description,
@@ -824,7 +744,7 @@ def matrix_compare(
 
 
 @utilities.command("matrix-db-to-hdf5")
-@click.option('--matrix-db-file', '-m', required=True, help="Input DuckDB matrix database from build-matrix-db.")
+@click.option('--matrix-db-file', '-m', required=True, help="Input legacy DuckDB matrix database from older matrix-store builds.")
 @click.option('--output-file', '-o', required=False, default=None, help="Output HDF5 matrix file. Defaults to the same path with a .h5 suffix.")
 @click.option(
     '--export-batch-mb',
@@ -835,7 +755,7 @@ def matrix_compare(
 )
 def matrix_db_to_hdf5(matrix_db_file, output_file, export_batch_mb):
     """
-    Convert a matrix DuckDB into an HDF5 matrix store for torch compare experiments.
+    Convert a legacy DuckDB matrix database into the current matrix-store format.
     """
     matrix_db_path = pathlib.Path(matrix_db_file)
     output_path = pathlib.Path(output_file) if output_file is not None else matrix_db_path.with_suffix(".h5")
@@ -899,14 +819,26 @@ def matrix_db_to_hdf5(matrix_db_file, output_file, export_batch_mb):
 @utilities.command("matrix-compare-export")
 @click.option('--matrix-compare-db-file', '-m', required=True, help="Input DuckDB matrix compare database from matrix-compare.")
 @click.option('--output-file', '-o', required=True, help="Output parquet file.")
-def matrix_compare_export(matrix_compare_db_file, output_file):
+@click.option(
+    '--table',
+    'result_table',
+    type=click.Choice(["genome", "gene"]),
+    default="genome",
+    show_default=True,
+    help="Which compare results table to export.",
+)
+def matrix_compare_export(matrix_compare_db_file, output_file, result_table):
     """
     Export a matrix compare DuckDB database to parquet.
     """
-    exported = mp.export_matrix_compare_parquet(
-        matrix_compare_db_file=pathlib.Path(matrix_compare_db_file),
-        output_file=pathlib.Path(output_file),
-    )
+    try:
+        exported = mp.export_matrix_compare_parquet(
+            matrix_compare_db_file=pathlib.Path(matrix_compare_db_file),
+            output_file=pathlib.Path(output_file),
+            table=result_table,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(f"wrote={exported}")
 
 

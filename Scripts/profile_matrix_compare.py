@@ -72,6 +72,8 @@ class MonkeyPatchWallTimers:
 
     def __enter__(self):
         for name in self.function_names:
+            if not hasattr(self.module, name):
+                continue
             original = getattr(self.module, name)
             self.originals[name] = original
 
@@ -255,8 +257,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         "_load_anchor_queue_batch_for_torch",
         "_load_anchor_queue_batch_for_hdf5_torch",
         "_prepare_torch_matrix",
+        "_compare_tile_presence_torch_tensors",
+        "_compare_tile_presence_torch_tensors_with_mask",
         "_compare_anchor_against_target_chunk_torch_device",
-        "_compare_anchor_against_target_chunk_torch",
+        "_accumulate_gene_counts_from_full_torch_masks",
+        "_max_ibs_from_torch_mask",
+        "_update_ibs_numpy",
         "_download_torch_result_tensor_batch",
         "_make_arrow_table_from_compare_payload",
         "_write_matrix_compare_payload_batch",

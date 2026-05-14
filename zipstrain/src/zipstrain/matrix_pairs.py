@@ -34,9 +34,20 @@ MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps"
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
 MATRIX_COMPARE_INPUT_FORMATS = ("auto", "duckdb", "hdf5")
 MATRIX_HDF5_SUFFIXES = (".h5", ".hdf5", ".hd5")
+HDF5_FILE_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
-MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs")
+MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs", "gene")
+MATRIX_COMPARISON_CALCULATION_ALIASES = {
+    "ani": "ani",
+    "popani": "ani",
+    "ibs": "ibs",
+    "max_block": "ibs",
+    "max_consecutive_length": "ibs",
+    "gene": "gene",
+    "genes": "gene",
+    "gene_ani": "gene",
+}
 MATRIX_BUILD_FIXED_HEADROOM_BYTES = 128 * 1024 * 1024
 MATRIX_BUILD_TEMP_BYTES_PER_POSITION = 32
 MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES = 256 * 1024 * 1024
@@ -81,12 +92,48 @@ def _emit_matrix_compare_writer_log(
     sys.stderr.write(f"MATRIX-COMPARE PROGRESS {payload}\n")
     sys.stderr.flush()
 
-def parse_matrix_calculations(calculate: Optional[str] = None) -> tuple[str, ...]:
-    calculations = cp.parse_genome_calculations(calculate)
-    supported = tuple(metric for metric in MATRIX_COMPARISON_SUPPORTED_CALCULATIONS if metric in calculations)
+def parse_matrix_calculations(
+    calculate: Optional[str] = None,
+    *,
+    include_gene_from_all: bool = False,
+) -> tuple[str, ...]:
+    raw_tokens: list[str] = []
+    if calculate is None:
+        raw_tokens = ["all"]
+    elif isinstance(calculate, str):
+        for plus_part in calculate.split("+"):
+            for comma_part in plus_part.split(","):
+                token = comma_part.strip().lower()
+                if token:
+                    raw_tokens.append(token)
+    else:
+        raw_tokens = [str(calculate).strip().lower()]
+
+    if not raw_tokens:
+        raw_tokens = ["all"]
+
+    normalized: set[str] = set()
+    if "all" in raw_tokens:
+        normalized.update(("ani", "ibs"))
+        if include_gene_from_all:
+            normalized.add("gene")
+
+    for token in raw_tokens:
+        if token == "all":
+            continue
+        mapped = MATRIX_COMPARISON_CALCULATION_ALIASES.get(token)
+        if mapped is None:
+            supported = "all," + ",".join(MATRIX_COMPARISON_SUPPORTED_CALCULATIONS)
+            raise ValueError(f"Unsupported matrix calculation '{token}'. Supported values: {supported}")
+        normalized.add(mapped)
+
+    if "gene" in normalized:
+        normalized.add("ani")
+
+    supported = tuple(metric for metric in MATRIX_COMPARISON_SUPPORTED_CALCULATIONS if metric in normalized)
     if supported:
         return supported
-    raise ValueError("Matrix compare currently supports only ani and ibs calculations.")
+    raise ValueError("Matrix compare requires at least one supported calculation.")
 
 
 def matrix_metric_output_columns(calculate: Optional[str] = None) -> list[str]:
@@ -136,6 +183,21 @@ def matrix_compare_result_db_schema() -> pa.Schema:
     )
 
 
+def matrix_compare_gene_result_db_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("sample_idx_1", pa.int64()),
+            pa.field("sample_idx_2", pa.int64()),
+            pa.field("sample_1", pa.string()),
+            pa.field("sample_2", pa.string()),
+            pa.field("genome_idx", pa.int64()),
+            pa.field("genome", pa.string()),
+            pa.field("gene", pa.string()),
+            pa.field("gene_pop_ani", pa.float64()),
+        ]
+    )
+
+
 @dataclass(frozen=True)
 class ScaffoldSpec:
     scaffold_idx: int
@@ -171,6 +233,17 @@ class GenomeScaffoldOffset:
 
 
 @dataclass(frozen=True)
+class GeneRangeSpec:
+    gene_idx: int
+    gene: str
+    genome_idx: int
+    genome: str
+    chrom: str
+    axis_start: int
+    axis_end: int
+
+
+@dataclass(frozen=True)
 class MatrixDbSummary:
     output_file: Path
     profile_files: int
@@ -196,6 +269,19 @@ class MatrixHdf5Summary:
 
 @dataclass(frozen=True)
 class MatrixDbAppendSummary:
+    output_file: Path
+    appended_profile_files: int
+    appended_sample_count: int
+    total_sample_count: int
+    scaffold_count: int
+    stored_rows: int
+    count_dtype: str
+    genome_scope: str
+    memory_limit_gb: float
+
+
+@dataclass(frozen=True)
+class MatrixHdf5AppendSummary:
     output_file: Path
     appended_profile_files: int
     appended_sample_count: int
@@ -311,6 +397,13 @@ def _resolve_matrix_input_format(
                 f"matrix_input_format must be one of {', '.join(MATRIX_COMPARE_INPUT_FORMATS)}"
             )
         return requested_format
+    if matrix_file.exists():
+        try:
+            with matrix_file.open("rb") as fh:
+                if fh.read(len(HDF5_FILE_SIGNATURE)) == HDF5_FILE_SIGNATURE:
+                    return "hdf5"
+        except OSError:
+            pass
     suffix = matrix_file.suffix.lower()
     if suffix == ".duckdb":
         return "duckdb"
@@ -332,12 +425,18 @@ def _write_hdf5_string_dataset(
     values: list[str],
     *,
     h5py_module,
+    maxshape=None,
+    chunks=None,
 ) -> None:
-    group.create_dataset(
-        name,
-        data=np.asarray(values, dtype=object),
-        dtype=_hdf5_string_dtype(h5py_module),
-    )
+    kwargs = {
+        "data": np.asarray(values, dtype=object),
+        "dtype": _hdf5_string_dtype(h5py_module),
+    }
+    if maxshape is not None:
+        kwargs["maxshape"] = maxshape
+    if chunks is not None:
+        kwargs["chunks"] = chunks
+    group.create_dataset(name, **kwargs)
 
 
 def _read_hdf5_string_dataset(dataset) -> list[str]:
@@ -354,6 +453,10 @@ def _hdf5_matrix_dataset_path(genome_idx: int) -> str:
     return f"matrices/{int(genome_idx)}"
 
 
+def _matrix_hdf5_sample_axis_chunk_length(sample_count: int) -> int:
+    return max(1, min(int(sample_count), 1024))
+
+
 def _matrix_hdf5_chunk_sample_count(
     *,
     sample_count: int,
@@ -367,6 +470,27 @@ def _matrix_hdf5_chunk_sample_count(
     per_sample_bytes = max(1, matrix_length * 4 * np.dtype(dtype).itemsize)
     target_batch_bytes = int(target_batch_mb * (1024 ** 2))
     return max(1, min(sample_count, int(target_batch_bytes // per_sample_bytes) or 1))
+
+
+def _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file: Path) -> bool:
+    h5py_module = _import_h5py()
+    with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
+        try:
+            sample_idx_ds = h5_file["samples"]["sample_idx"]
+            sample_name_ds = h5_file["samples"]["sample_name"]
+            if sample_idx_ds.maxshape is None or sample_name_ds.maxshape is None:
+                return False
+            if sample_idx_ds.maxshape[0] is not None:
+                return False
+            if sample_name_ds.maxshape[0] is not None:
+                return False
+            matrices_group = h5_file["matrices"]
+            for dataset in matrices_group.values():
+                if dataset.maxshape is None or dataset.maxshape[0] is not None:
+                    return False
+        except Exception:
+            return False
+    return True
 
 def _looks_like_profile_parquet(path: Path) -> bool:
     try:
@@ -576,6 +700,178 @@ def _build_genome_specs(
             )
         )
     return genomes, offsets
+
+
+def _collect_gene_range_specs(
+    *,
+    gene_range_table: Path,
+    genome_scaffolds: list[GenomeScaffoldOffset],
+) -> list[GeneRangeSpec]:
+    gene_range_path = Path(gene_range_table)
+    if not gene_range_path.exists():
+        raise FileNotFoundError(f"Gene range table does not exist: {gene_range_path}")
+    if not gene_range_path.is_file():
+        raise FileNotFoundError(f"Gene range table path is not a file: {gene_range_path}")
+
+    scaffold_offsets_by_chrom: dict[str, GenomeScaffoldOffset] = {}
+    duplicate_scaffolds: set[str] = set()
+    for offset in genome_scaffolds:
+        if offset.chrom in scaffold_offsets_by_chrom:
+            duplicate_scaffolds.add(offset.chrom)
+            continue
+        scaffold_offsets_by_chrom[offset.chrom] = offset
+    if duplicate_scaffolds:
+        raise ValueError(
+            "Gene range table requires unique scaffold names across the selected matrix scope. "
+            "Duplicate scaffold names found: " + ", ".join(sorted(duplicate_scaffolds))
+        )
+
+    gene_ranges = (
+        pl.scan_csv(
+            gene_range_path,
+            has_header=False,
+            separator="\t",
+        )
+        .rename(
+            {
+                "column_1": "gene",
+                "column_2": "scaffold",
+                "column_3": "start",
+                "column_4": "end",
+            }
+        )
+        .select(
+            pl.col("gene").cast(pl.Utf8),
+            pl.col("scaffold").cast(pl.Utf8),
+            pl.col("start").cast(pl.Int64),
+            pl.col("end").cast(pl.Int64),
+        )
+        .collect(engine="streaming")
+    )
+
+    specs: list[GeneRangeSpec] = []
+    for row in gene_ranges.iter_rows(named=True):
+        chrom = str(row["scaffold"])
+        offset = scaffold_offsets_by_chrom.get(chrom)
+        if offset is None:
+            continue
+        start = int(row["start"])
+        end = int(row["end"])
+        if end < start:
+            raise ValueError(
+                f"Gene {row['gene']} on scaffold {chrom} has end < start ({end} < {start})."
+            )
+        if start < offset.min_pos or end > offset.max_pos:
+            raise ValueError(
+                f"Gene {row['gene']} on scaffold {chrom} falls outside the matrix coordinate range: "
+                f"gene={start}-{end}, matrix={offset.min_pos}-{offset.max_pos}"
+            )
+        axis_start = offset.axis_start + (start - offset.index_base)
+        axis_end = offset.axis_start + (end - offset.index_base)
+        specs.append(
+            GeneRangeSpec(
+                gene_idx=-1,
+                gene=str(row["gene"]),
+                genome_idx=offset.genome_idx,
+                genome=offset.genome,
+                chrom=chrom,
+                axis_start=int(axis_start),
+                axis_end=int(axis_end),
+            )
+        )
+    sorted_specs = sorted(
+        specs,
+        key=lambda item: (item.genome_idx, item.axis_start, item.axis_end, item.gene),
+    )
+    return [
+        GeneRangeSpec(
+            gene_idx=idx,
+            gene=spec.gene,
+            genome_idx=spec.genome_idx,
+            genome=spec.genome,
+            chrom=spec.chrom,
+            axis_start=spec.axis_start,
+            axis_end=spec.axis_end,
+        )
+        for idx, spec in enumerate(sorted_specs)
+    ]
+
+
+def _expand_scaffold_specs_with_gene_ranges(
+    *,
+    scaffolds: list[ScaffoldSpec],
+    gene_range_table: Path,
+) -> list[ScaffoldSpec]:
+    gene_range_path = Path(gene_range_table)
+    if not gene_range_path.exists():
+        raise FileNotFoundError(f"Gene range table does not exist: {gene_range_path}")
+    if not gene_range_path.is_file():
+        raise FileNotFoundError(f"Gene range table path is not a file: {gene_range_path}")
+
+    scaffolds_by_chrom: dict[str, ScaffoldSpec] = {}
+    duplicate_scaffolds: set[str] = set()
+    for spec in scaffolds:
+        if spec.chrom in scaffolds_by_chrom:
+            duplicate_scaffolds.add(spec.chrom)
+            continue
+        scaffolds_by_chrom[spec.chrom] = spec
+    if duplicate_scaffolds:
+        raise ValueError(
+            "Gene range table requires unique scaffold names across the selected matrix scope. "
+            "Duplicate scaffold names found: " + ", ".join(sorted(duplicate_scaffolds))
+        )
+
+    gene_bounds = (
+        pl.scan_csv(
+            gene_range_path,
+            has_header=False,
+            separator="\t",
+        )
+        .rename(
+            {
+                "column_1": "gene",
+                "column_2": "scaffold",
+                "column_3": "start",
+                "column_4": "end",
+            }
+        )
+        .select(
+            pl.col("scaffold").cast(pl.Utf8),
+            pl.col("start").cast(pl.Int64),
+            pl.col("end").cast(pl.Int64),
+        )
+        .group_by("scaffold")
+        .agg(
+            pl.col("start").min().alias("min_start"),
+            pl.col("end").max().alias("max_end"),
+        )
+        .collect(engine="streaming")
+    )
+
+    expanded_by_chrom: dict[str, ScaffoldSpec] = {spec.chrom: spec for spec in scaffolds}
+    for row in gene_bounds.iter_rows(named=True):
+        chrom = str(row["scaffold"])
+        spec = scaffolds_by_chrom.get(chrom)
+        if spec is None:
+            continue
+        min_start = int(row["min_start"])
+        max_end = int(row["max_end"])
+        if max_end < min_start:
+            raise ValueError(
+                f"Gene range table has end < start on scaffold {chrom} ({max_end} < {min_start})."
+            )
+        new_min = min(spec.min_pos, min_start)
+        new_max = max(spec.max_pos, max_end)
+        expanded_by_chrom[chrom] = ScaffoldSpec(
+            scaffold_idx=spec.scaffold_idx,
+            genome=spec.genome,
+            chrom=spec.chrom,
+            index_base=new_min,
+            vector_length=new_max - new_min + 1,
+            min_pos=new_min,
+            max_pos=new_max,
+        )
+    return [expanded_by_chrom[spec.chrom] for spec in scaffolds]
 
 
 def _pack_matrix(matrix: np.ndarray) -> bytes:
@@ -796,6 +1092,20 @@ def _init_matrix_compare_db_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE matrix_compare_gene_results (
+          sample_idx_1 INTEGER NOT NULL,
+          sample_idx_2 INTEGER NOT NULL,
+          sample_1 VARCHAR NOT NULL,
+          sample_2 VARCHAR NOT NULL,
+          genome_idx INTEGER NOT NULL,
+          genome VARCHAR NOT NULL,
+          gene VARCHAR NOT NULL,
+          gene_pop_ani DOUBLE NOT NULL
+        )
+        """
+    )
 
 
 def _compare_db_metadata_rows(
@@ -872,6 +1182,27 @@ def _ensure_matrix_compare_completed_table(
         )
         """
     )
+
+
+def _ensure_matrix_compare_gene_results_table(
+    compare_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    if _matrix_compare_table_exists(compare_conn, "matrix_compare_gene_results"):
+        return
+    compare_conn.execute(
+        """
+        CREATE TABLE matrix_compare_gene_results (
+          sample_idx_1 INTEGER NOT NULL,
+          sample_idx_2 INTEGER NOT NULL,
+          sample_1 VARCHAR NOT NULL,
+          sample_2 VARCHAR NOT NULL,
+          genome_idx INTEGER NOT NULL,
+          genome VARCHAR NOT NULL,
+          gene VARCHAR NOT NULL,
+          gene_pop_ani DOUBLE NOT NULL
+        )
+        """
+    )
     compare_conn.execute(
         """
         INSERT OR IGNORE INTO matrix_compare_completed_pair_genomes
@@ -926,6 +1257,7 @@ def _prepare_matrix_compare_db(
             calculations=calculations,
         )
         _ensure_matrix_compare_completed_table(compare_conn)
+        _ensure_matrix_compare_gene_results_table(compare_conn)
 
     compare_conn.executemany(
         "INSERT OR REPLACE INTO matrix_compare_samples VALUES (?, ?)",
@@ -1011,6 +1343,33 @@ def _insert_matrix_compare_result_table(
         compare_conn.unregister("_matrix_compare_result_batch")
 
 
+def _insert_matrix_compare_gene_result_table(
+    compare_conn: duckdb.DuckDBPyConnection,
+    table: pa.Table,
+) -> None:
+    if table.num_rows == 0:
+        return
+    compare_conn.register("_matrix_compare_gene_result_batch", table)
+    try:
+        compare_conn.execute(
+            """
+            INSERT INTO matrix_compare_gene_results
+            SELECT
+              sample_idx_1,
+              sample_idx_2,
+              sample_1,
+              sample_2,
+              genome_idx,
+              genome,
+              gene,
+              gene_pop_ani
+            FROM _matrix_compare_gene_result_batch
+            """
+        )
+    finally:
+        compare_conn.unregister("_matrix_compare_gene_result_batch")
+
+
 def _mark_completed_pair_genomes(
     compare_conn: duckdb.DuckDBPyConnection,
     completed_pair_genomes: list[tuple[int, int, int]],
@@ -1058,30 +1417,6 @@ def _completed_pair_rows_from_payload(
     ]
 
 
-def _write_matrix_compare_batch(
-    output_file: Path,
-    batch_tables: list[pa.Table],
-    batch_completed_rows: list[tuple[int, int, int]],
-) -> int:
-    batch_rows = 0
-    write_conn = duckdb.connect(str(output_file))
-    write_conn.execute("SET preserve_insertion_order=false")
-    try:
-        write_conn.execute("BEGIN")
-        try:
-            for table in batch_tables:
-                _insert_matrix_compare_result_table(write_conn, table)
-                batch_rows += table.num_rows
-            _mark_completed_pair_genomes(write_conn, batch_completed_rows)
-            write_conn.execute("COMMIT")
-        except Exception:
-            write_conn.execute("ROLLBACK")
-            raise
-    finally:
-        write_conn.close()
-    return batch_rows
-
-
 def _write_matrix_compare_payload_batch(
     output_file: Path,
     batch_payloads: list[dict[str, object]],
@@ -1097,10 +1432,12 @@ def _write_matrix_compare_payload_batch(
             for payload in batch_payloads:
                 completed_rows.extend(_completed_pair_rows_from_payload(payload))
                 table = _make_arrow_table_from_compare_payload(payload)
-                if table is None:
-                    continue
-                _insert_matrix_compare_result_table(write_conn, table)
-                batch_rows += table.num_rows
+                if table is not None:
+                    _insert_matrix_compare_result_table(write_conn, table)
+                    batch_rows += table.num_rows
+                gene_table = _make_gene_arrow_table_from_compare_payload(payload)
+                if gene_table is not None:
+                    _insert_matrix_compare_gene_result_table(write_conn, gene_table)
             _mark_completed_pair_genomes(write_conn, completed_rows)
             write_conn.execute("COMMIT")
         except Exception:
@@ -1147,6 +1484,34 @@ def _validate_matrix_db_appendable(metadata: dict[str, str]) -> tuple[str, str]:
     if count_dtype not in COUNT_DTYPES:
         raise ValueError(
             f"Matrix DB count dtype '{count_dtype}' is not supported for append."
+        )
+    genome_scope = metadata.get("genome_scope", "all")
+    return count_dtype, genome_scope
+
+
+def _validate_matrix_hdf5_appendable(metadata: dict[str, str]) -> tuple[str, str]:
+    layout = metadata.get("layout", "")
+    if layout != CURRENT_MATRIX_HDF5_LAYOUT:
+        raise ValueError(
+            "Matrix store layout is not append-compatible with this builder. "
+            "Rebuild the matrix store with the current builder."
+        )
+    semantics = metadata.get("matrix_value_semantics", "")
+    if semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+        raise ValueError(
+            "Matrix store value semantics are incompatible with append. "
+            "Rebuild the matrix store with the current builder."
+        )
+    min_cov = metadata.get("coverage_filter_min_cov")
+    if min_cov != str(MATRIX_BUILD_MIN_COV):
+        raise ValueError(
+            "Matrix store coverage filter is incompatible with append. "
+            "Rebuild the matrix store with the current builder."
+        )
+    count_dtype = metadata.get("count_dtype", "")
+    if count_dtype not in COUNT_DTYPES:
+        raise ValueError(
+            f"Matrix store count dtype '{count_dtype}' is not supported for append."
         )
     genome_scope = metadata.get("genome_scope", "all")
     return count_dtype, genome_scope
@@ -1267,7 +1632,7 @@ def _validate_profile_against_matrix_contract(
         errors.append("out-of-range positions " + "; ".join(sorted(out_of_range)))
     if errors:
         raise ValueError(
-            f"Profile {profile_path.name} does not match the existing matrix DB contract: "
+            f"Profile {profile_path.name} does not match the existing matrix store contract: "
             + " | ".join(errors)
         )
 
@@ -1493,6 +1858,7 @@ def build_matrix_hdf5(
     count_dtype: str = "uint16",
     memory_limit_gb: float = 16.0,
     bed_file: Optional[Path] = None,
+    gene_range_table: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
 ) -> MatrixHdf5Summary:
@@ -1510,7 +1876,20 @@ def build_matrix_hdf5(
             bed_file=Path(bed_file),
             genome=genome_scope,
         )
+    if gene_range_table is not None:
+        scaffolds = _expand_scaffold_specs_with_gene_ranges(
+            scaffolds=scaffolds,
+            gene_range_table=Path(gene_range_table),
+        )
     genomes, genome_scaffolds = _build_genome_specs(scaffolds)
+    gene_ranges = (
+        _collect_gene_range_specs(
+            gene_range_table=Path(gene_range_table),
+            genome_scaffolds=genome_scaffolds,
+        )
+        if gene_range_table is not None
+        else []
+    )
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
 
     output_file = output_file.resolve()
@@ -1554,7 +1933,10 @@ def build_matrix_hdf5(
             "export_batch_mb": str(export_batch_mb),
             "separator_rows_between_scaffolds": "1",
             "input_format": "hdf5",
+            "has_gene_ranges": "1" if gene_ranges else "0",
         }
+        if gene_range_table is not None:
+            metadata_rows["gene_range_table"] = str(Path(gene_range_table).resolve())
         scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
         for offset in genome_scaffolds:
             scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
@@ -1565,16 +1947,22 @@ def build_matrix_hdf5(
             for key, value in metadata_rows.items():
                 metadata_group.attrs[str(key)] = str(value)
 
+            sample_count = len(sample_rows)
+            sample_chunk_len = _matrix_hdf5_sample_axis_chunk_length(sample_count)
             samples_group = h5_file.create_group("samples")
             samples_group.create_dataset(
                 "sample_idx",
                 data=np.asarray([sample_idx for sample_idx, _sample_name, _profile_path_str, _profile_path in sample_rows], dtype=np.int64),
+                chunks=(sample_chunk_len,),
+                maxshape=(None,),
             )
             _write_hdf5_string_dataset(
                 samples_group,
                 "sample_name",
                 [sample_name for _sample_idx, sample_name, _profile_path_str, _profile_path in sample_rows],
                 h5py_module=h5py_module,
+                chunks=(sample_chunk_len,),
+                maxshape=(None,),
             )
 
             genomes_group = h5_file.create_group("genomes")
@@ -1628,6 +2016,43 @@ def build_matrix_hdf5(
                     data=np.asarray([getattr(spec, field_name) for spec in genome_scaffolds], dtype=np.int64),
                 )
 
+            if gene_ranges:
+                genes_group = h5_file.create_group("genes")
+                genes_group.create_dataset(
+                    "gene_idx",
+                    data=np.asarray([spec.gene_idx for spec in gene_ranges], dtype=np.int64),
+                )
+                genes_group.create_dataset(
+                    "genome_idx",
+                    data=np.asarray([spec.genome_idx for spec in gene_ranges], dtype=np.int64),
+                )
+                _write_hdf5_string_dataset(
+                    genes_group,
+                    "genome",
+                    [spec.genome for spec in gene_ranges],
+                    h5py_module=h5py_module,
+                )
+                _write_hdf5_string_dataset(
+                    genes_group,
+                    "chrom",
+                    [spec.chrom for spec in gene_ranges],
+                    h5py_module=h5py_module,
+                )
+                _write_hdf5_string_dataset(
+                    genes_group,
+                    "gene",
+                    [spec.gene for spec in gene_ranges],
+                    h5py_module=h5py_module,
+                )
+                genes_group.create_dataset(
+                    "axis_start",
+                    data=np.asarray([spec.axis_start for spec in gene_ranges], dtype=np.int64),
+                )
+                genes_group.create_dataset(
+                    "axis_end",
+                    data=np.asarray([spec.axis_end for spec in gene_ranges], dtype=np.int64),
+                )
+
             matrices_group = h5_file.create_group("matrices")
             matrix_datasets: dict[int, object] = {}
             for spec in genomes:
@@ -1649,6 +2074,7 @@ def build_matrix_hdf5(
                     shape=(len(sample_rows), spec.matrix_length, 4),
                     dtype=COUNT_DTYPES[count_dtype],
                     chunks=(chunk_samples, spec.matrix_length, 4),
+                    maxshape=(None, spec.matrix_length, 4),
                     fillvalue=0,
                 )
 
@@ -1718,6 +2144,454 @@ def build_matrix_hdf5(
         count_dtype=count_dtype,
         genome_scope=genome_scope or "all",
         memory_limit_gb=memory_limit_gb,
+    )
+
+
+def _append_matrix_hdf5_in_place(
+    *,
+    matrix_hdf5_file: Path,
+    genomes: list[GenomeSpec],
+    genome_scaffolds: list[GenomeScaffoldOffset],
+    existing_samples: list[tuple[int, str]],
+    appended_samples: list[tuple[int, str, str, Path]],
+    count_dtype: str,
+    genome_scope: str,
+    memory_limit_gb: float,
+    memory_limit_bytes: int,
+    progress_callback: Optional[BuildProgressCallback],
+) -> MatrixHdf5AppendSummary:
+    total_work = len(appended_samples) * len(genomes)
+    completed_work = 0
+    stored_rows = 0
+    total_sample_count = len(existing_samples) + len(appended_samples)
+    existing_sample_count = len(existing_samples)
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "start",
+                "completed": completed_work,
+                "total": total_work,
+                "sample_name": "",
+                "genome": genome_scope or "all",
+                "scaffold": "",
+                "stored_rows": 0,
+            }
+        )
+
+    scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
+    for offset in genome_scaffolds:
+        scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
+
+    h5py_module = _import_h5py()
+    with h5py_module.File(str(matrix_hdf5_file), "r+") as h5_file:
+        sample_idx_ds = h5_file["samples"]["sample_idx"]
+        sample_name_ds = h5_file["samples"]["sample_name"]
+        sample_idx_ds.resize((total_sample_count,))
+        sample_name_ds.resize((total_sample_count,))
+        sample_idx_ds[existing_sample_count:total_sample_count] = np.asarray(
+            [sample_idx for sample_idx, _sample_name, _profile_path_str, _profile_path in appended_samples],
+            dtype=np.int64,
+        )
+        sample_name_ds[existing_sample_count:total_sample_count] = np.asarray(
+            [sample_name for _sample_idx, sample_name, _profile_path_str, _profile_path in appended_samples],
+            dtype=object,
+        )
+
+        for spec in genomes:
+            estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
+            if estimated_python_peak > memory_limit_bytes:
+                raise MemoryError(
+                    f"Genome {spec.genome} is estimated to require about "
+                    f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory, "
+                    f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
+                )
+            dataset = h5_file[_hdf5_matrix_dataset_path(spec.genome_idx)]
+            dataset.resize((total_sample_count, spec.matrix_length, 4))
+            for appended_offset, (_sample_idx, sample_name, _profile_path_str, profile_path) in enumerate(appended_samples):
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "processing",
+                            "completed": completed_work,
+                            "total": total_work,
+                            "sample_name": sample_name,
+                            "genome": spec.genome,
+                            "scaffold": "",
+                            "stored_rows": stored_rows,
+                        }
+                    )
+                matrix = _load_profile_genome_matrix(
+                    profile_path=profile_path,
+                    genome_spec=spec,
+                    genome_offsets=scaffolds_by_genome_idx[spec.genome_idx],
+                    count_dtype=count_dtype,
+                    min_cov=MATRIX_BUILD_MIN_COV,
+                )
+                dataset[existing_sample_count + appended_offset, :, :] = matrix
+                stored_rows += 1
+                completed_work += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "advance",
+                            "completed": completed_work,
+                            "total": total_work,
+                            "sample_name": sample_name,
+                            "genome": spec.genome,
+                            "scaffold": "",
+                            "stored_rows": stored_rows,
+                        }
+                    )
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "done",
+                "completed": completed_work,
+                "total": total_work,
+                "sample_name": "",
+                "genome": genome_scope or "all",
+                "scaffold": "",
+                "stored_rows": stored_rows,
+            }
+        )
+
+    return MatrixHdf5AppendSummary(
+        output_file=matrix_hdf5_file,
+        appended_profile_files=len(appended_samples),
+        appended_sample_count=len(appended_samples),
+        total_sample_count=total_sample_count,
+        scaffold_count=len(genome_scaffolds),
+        stored_rows=stored_rows,
+        count_dtype=count_dtype,
+        genome_scope=genome_scope or "all",
+        memory_limit_gb=memory_limit_gb,
+    )
+
+
+def _append_matrix_hdf5_via_rewrite(
+    *,
+    matrix_hdf5_file: Path,
+    metadata: dict[str, str],
+    genomes: list[GenomeSpec],
+    genome_scaffolds: list[GenomeScaffoldOffset],
+    existing_samples: list[tuple[int, str]],
+    appended_samples: list[tuple[int, str, str, Path]],
+    count_dtype: str,
+    genome_scope: str,
+    memory_limit_gb: float,
+    memory_limit_bytes: int,
+    export_batch_mb: float,
+    progress_callback: Optional[BuildProgressCallback],
+) -> MatrixHdf5AppendSummary:
+    total_work = len(appended_samples) * len(genomes)
+    completed_work = 0
+    stored_rows = 0
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "start",
+                "completed": completed_work,
+                "total": total_work,
+                "sample_name": "",
+                "genome": genome_scope or "all",
+                "scaffold": "",
+                "stored_rows": 0,
+            }
+        )
+
+    scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
+    for offset in genome_scaffolds:
+        scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
+
+    h5py_module = _import_h5py()
+    tmp_output = matrix_hdf5_file.with_suffix(matrix_hdf5_file.suffix + ".tmp")
+    if tmp_output.exists():
+        tmp_output.unlink()
+    append_succeeded = False
+    try:
+        with h5py_module.File(str(matrix_hdf5_file), "r") as src_h5, h5py_module.File(str(tmp_output), "w") as dst_h5:
+            dst_h5.attrs["zipstrain_hdf5_version"] = str(
+                src_h5.attrs.get("zipstrain_hdf5_version", MATRIX_HDF5_FILE_VERSION)
+            )
+
+            metadata_group = dst_h5.create_group("metadata")
+            for key, value in metadata.items():
+                metadata_group.attrs[str(key)] = str(value)
+
+            all_sample_rows = list(existing_samples) + [
+                (sample_idx, sample_name) for sample_idx, sample_name, _profile_path_str, _profile_path in appended_samples
+            ]
+            total_sample_count = len(all_sample_rows)
+            existing_sample_count = len(existing_samples)
+            sample_chunk_len = _matrix_hdf5_sample_axis_chunk_length(total_sample_count)
+            samples_group = dst_h5.create_group("samples")
+            samples_group.create_dataset(
+                "sample_idx",
+                data=np.asarray([sample_idx for sample_idx, _sample_name in all_sample_rows], dtype=np.int64),
+                chunks=(sample_chunk_len,),
+                maxshape=(None,),
+            )
+            _write_hdf5_string_dataset(
+                samples_group,
+                "sample_name",
+                [sample_name for _sample_idx, sample_name in all_sample_rows],
+                h5py_module=h5py_module,
+                chunks=(sample_chunk_len,),
+                maxshape=(None,),
+            )
+
+            genomes_group = dst_h5.create_group("genomes")
+            genomes_group.create_dataset(
+                "genome_idx",
+                data=np.asarray([spec.genome_idx for spec in genomes], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                genomes_group,
+                "genome",
+                [spec.genome for spec in genomes],
+                h5py_module=h5py_module,
+            )
+            genomes_group.create_dataset(
+                "matrix_length",
+                data=np.asarray([spec.matrix_length for spec in genomes], dtype=np.int64),
+            )
+            genomes_group.create_dataset(
+                "true_length",
+                data=np.asarray([spec.true_length for spec in genomes], dtype=np.int64),
+            )
+            genomes_group.create_dataset(
+                "scaffold_count",
+                data=np.asarray([spec.scaffold_count for spec in genomes], dtype=np.int64),
+            )
+
+            scaffold_group = dst_h5.create_group("genome_scaffolds")
+            scaffold_group.create_dataset(
+                "genome_idx",
+                data=np.asarray([spec.genome_idx for spec in genome_scaffolds], dtype=np.int64),
+            )
+            scaffold_group.create_dataset(
+                "scaffold_ordinal",
+                data=np.asarray([spec.scaffold_ordinal for spec in genome_scaffolds], dtype=np.int64),
+            )
+            _write_hdf5_string_dataset(
+                scaffold_group,
+                "genome",
+                [spec.genome for spec in genome_scaffolds],
+                h5py_module=h5py_module,
+            )
+            _write_hdf5_string_dataset(
+                scaffold_group,
+                "chrom",
+                [spec.chrom for spec in genome_scaffolds],
+                h5py_module=h5py_module,
+            )
+            for field_name in ("axis_start", "axis_end", "index_base", "vector_length", "min_pos", "max_pos"):
+                scaffold_group.create_dataset(
+                    field_name,
+                    data=np.asarray([getattr(spec, field_name) for spec in genome_scaffolds], dtype=np.int64),
+                )
+
+            if "genes" in src_h5:
+                src_genes = src_h5["genes"]
+                genes_group = dst_h5.create_group("genes")
+                genes_group.create_dataset(
+                    "gene_idx",
+                    data=np.asarray(src_genes["gene_idx"][...], dtype=np.int64),
+                )
+                genes_group.create_dataset(
+                    "genome_idx",
+                    data=np.asarray(src_genes["genome_idx"][...], dtype=np.int64),
+                )
+                for field_name in ("genome", "chrom", "gene"):
+                    _write_hdf5_string_dataset(
+                        genes_group,
+                        field_name,
+                        _read_hdf5_string_dataset(src_genes[field_name]),
+                        h5py_module=h5py_module,
+                    )
+                for field_name in ("axis_start", "axis_end"):
+                    genes_group.create_dataset(
+                        field_name,
+                        data=np.asarray(src_genes[field_name][...], dtype=np.int64),
+                    )
+
+            matrices_group = dst_h5.create_group("matrices")
+            for spec in genomes:
+                estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
+                if estimated_python_peak > memory_limit_bytes:
+                    raise MemoryError(
+                        f"Genome {spec.genome} is estimated to require about "
+                        f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory, "
+                        f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
+                    )
+                src_dataset = src_h5[_hdf5_matrix_dataset_path(spec.genome_idx)]
+                src_chunk_samples = (
+                    int(src_dataset.chunks[0])
+                    if src_dataset.chunks is not None and len(src_dataset.chunks) > 0
+                    else _matrix_hdf5_chunk_sample_count(
+                        sample_count=total_sample_count,
+                        matrix_length=spec.matrix_length,
+                        dtype_name=count_dtype,
+                        target_batch_mb=export_batch_mb,
+                    )
+                )
+                chunk_samples = max(1, min(total_sample_count, src_chunk_samples))
+                dst_dataset = matrices_group.create_dataset(
+                    str(spec.genome_idx),
+                    shape=(total_sample_count, spec.matrix_length, 4),
+                    dtype=COUNT_DTYPES[count_dtype],
+                    chunks=(chunk_samples, spec.matrix_length, 4),
+                    maxshape=(None, spec.matrix_length, 4),
+                    fillvalue=0,
+                )
+                for batch_start in range(0, existing_sample_count, chunk_samples):
+                    batch_stop = min(existing_sample_count, batch_start + chunk_samples)
+                    dst_dataset[batch_start:batch_stop, :, :] = src_dataset[batch_start:batch_stop, :, :]
+
+                for appended_offset, (_sample_idx, sample_name, _profile_path_str, profile_path) in enumerate(appended_samples):
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "processing",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "sample_name": sample_name,
+                                "genome": spec.genome,
+                                "scaffold": "",
+                                "stored_rows": stored_rows,
+                            }
+                        )
+                    matrix = _load_profile_genome_matrix(
+                        profile_path=profile_path,
+                        genome_spec=spec,
+                        genome_offsets=scaffolds_by_genome_idx[spec.genome_idx],
+                        count_dtype=count_dtype,
+                        min_cov=MATRIX_BUILD_MIN_COV,
+                    )
+                    dst_dataset[existing_sample_count + appended_offset, :, :] = matrix
+                    stored_rows += 1
+                    completed_work += 1
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "advance",
+                                "completed": completed_work,
+                                "total": total_work,
+                                "sample_name": sample_name,
+                                "genome": spec.genome,
+                                "scaffold": "",
+                                "stored_rows": stored_rows,
+                            }
+                        )
+        tmp_output.replace(matrix_hdf5_file)
+        append_succeeded = True
+    finally:
+        if not append_succeeded and tmp_output.exists():
+            tmp_output.unlink(missing_ok=True)
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "done",
+                "completed": completed_work,
+                "total": total_work,
+                "sample_name": "",
+                "genome": genome_scope or "all",
+                "scaffold": "",
+                "stored_rows": stored_rows,
+            }
+        )
+
+    return MatrixHdf5AppendSummary(
+        output_file=matrix_hdf5_file,
+        appended_profile_files=len(appended_samples),
+        appended_sample_count=len(appended_samples),
+        total_sample_count=len(existing_samples) + len(appended_samples),
+        scaffold_count=len(genome_scaffolds),
+        stored_rows=stored_rows,
+        count_dtype=count_dtype,
+        genome_scope=genome_scope or "all",
+        memory_limit_gb=memory_limit_gb,
+    )
+
+
+def append_matrix_hdf5(
+    profile_dir: Path,
+    matrix_hdf5_file: Path,
+    memory_limit_gb: float = 16.0,
+    progress_callback: Optional[BuildProgressCallback] = None,
+    export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+) -> MatrixHdf5AppendSummary:
+    if export_batch_mb <= 0:
+        raise ValueError("export_batch_mb must be > 0")
+    profile_paths = discover_profile_parquets(profile_dir)
+    matrix_hdf5_file = Path(matrix_hdf5_file).resolve()
+    if not matrix_hdf5_file.exists():
+        raise FileNotFoundError(f"Matrix store file does not exist: {matrix_hdf5_file}")
+    if _resolve_matrix_input_format(matrix_hdf5_file, "auto") != "hdf5":
+        raise ValueError(
+            "append-matrix-db expects the current HDF5-backed matrix store format. "
+            "If you have a legacy DuckDB matrix database, convert it first with "
+            "'zipstrain utilities matrix-db-to-hdf5'."
+        )
+
+    metadata = _load_matrix_hdf5_metadata(matrix_hdf5_file)
+    count_dtype, genome_scope = _validate_matrix_hdf5_appendable(metadata)
+    genomes = _load_matrix_hdf5_genomes(matrix_hdf5_file)
+    genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_hdf5_file)
+    existing_samples = _load_matrix_hdf5_samples(matrix_hdf5_file)
+
+    existing_sample_names = {sample_name for _sample_idx, sample_name in existing_samples}
+    duplicate_sample_names = sorted(path.stem for path in profile_paths if path.stem in existing_sample_names)
+    if duplicate_sample_names:
+        raise ValueError(
+            "Cannot append profiles whose sample names already exist in the matrix store: "
+            + ", ".join(duplicate_sample_names)
+        )
+
+    for profile_path in profile_paths:
+        _validate_profile_against_matrix_contract(
+            profile_path=profile_path,
+            genomes=genomes,
+            genome_scaffolds=genome_scaffolds,
+        )
+
+    memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
+    next_sample_idx = max((sample_idx for sample_idx, _sample_name in existing_samples), default=-1) + 1
+    appended_samples = [
+        (next_sample_idx + idx, profile_path.stem, str(profile_path.resolve()), profile_path)
+        for idx, profile_path in enumerate(profile_paths)
+    ]
+
+    if _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file):
+        return _append_matrix_hdf5_in_place(
+            matrix_hdf5_file=matrix_hdf5_file,
+            genomes=genomes,
+            genome_scaffolds=genome_scaffolds,
+            existing_samples=existing_samples,
+            appended_samples=appended_samples,
+            count_dtype=count_dtype,
+            genome_scope=genome_scope,
+            memory_limit_gb=memory_limit_gb,
+            memory_limit_bytes=memory_limit_bytes,
+            progress_callback=progress_callback,
+        )
+    return _append_matrix_hdf5_via_rewrite(
+        matrix_hdf5_file=matrix_hdf5_file,
+        metadata=metadata,
+        genomes=genomes,
+        genome_scaffolds=genome_scaffolds,
+        existing_samples=existing_samples,
+        appended_samples=appended_samples,
+        count_dtype=count_dtype,
+        genome_scope=genome_scope,
+        memory_limit_gb=memory_limit_gb,
+        memory_limit_bytes=memory_limit_bytes,
+        export_batch_mb=export_batch_mb,
+        progress_callback=progress_callback,
     )
 
 
@@ -2103,6 +2977,53 @@ def _load_matrix_hdf5_genome_scaffolds(
     return sorted(offsets, key=lambda item: (item.genome_idx, item.scaffold_ordinal))
 
 
+def _load_matrix_hdf5_gene_ranges(
+    matrix_hdf5_file: Path,
+    genome_idx: Optional[int] = None,
+    genome: Optional[str] = None,
+) -> list[GeneRangeSpec]:
+    h5py_module = _import_h5py()
+    with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
+        if "genes" not in h5_file:
+            return []
+        gene_group = h5_file["genes"]
+        rows = list(
+            zip(
+                np.asarray(gene_group["gene_idx"][...], dtype=np.int64).tolist(),
+                np.asarray(gene_group["genome_idx"][...], dtype=np.int64).tolist(),
+                _read_hdf5_string_dataset(gene_group["genome"]),
+                _read_hdf5_string_dataset(gene_group["chrom"]),
+                _read_hdf5_string_dataset(gene_group["gene"]),
+                np.asarray(gene_group["axis_start"][...], dtype=np.int64).tolist(),
+                np.asarray(gene_group["axis_end"][...], dtype=np.int64).tolist(),
+            )
+        )
+    specs = [
+        GeneRangeSpec(
+            gene_idx=int(gene_idx_val),
+            gene=str(gene_name),
+            genome_idx=int(genome_idx_val),
+            genome=str(genome_name),
+            chrom=str(chrom),
+            axis_start=int(axis_start),
+            axis_end=int(axis_end),
+        )
+        for gene_idx_val, genome_idx_val, genome_name, chrom, gene_name, axis_start, axis_end in rows
+        if (genome_idx is None or int(genome_idx_val) == int(genome_idx))
+        and (genome is None or str(genome_name) == genome)
+    ]
+    return sorted(specs, key=lambda item: (item.genome_idx, item.axis_start, item.axis_end, item.gene))
+
+
+def _group_gene_ranges_by_genome(
+    gene_ranges: list[GeneRangeSpec],
+) -> dict[int, list[GeneRangeSpec]]:
+    grouped: dict[int, list[GeneRangeSpec]] = {}
+    for spec in gene_ranges:
+        grouped.setdefault(spec.genome_idx, []).append(spec)
+    return grouped
+
+
 def export_matrix_db_hdf5(
     matrix_db_file: Path,
     output_file: Path,
@@ -2134,6 +3055,7 @@ def export_matrix_db_hdf5(
         converted_metadata["source_layout"] = str(metadata.get("layout", ""))
         converted_metadata["layout"] = CURRENT_MATRIX_HDF5_LAYOUT
         converted_metadata["input_format"] = "hdf5"
+        converted_metadata["has_gene_ranges"] = "0"
         tmp_output = output_file.with_suffix(output_file.suffix + ".tmp")
         if tmp_output.exists():
             tmp_output.unlink()
@@ -2160,16 +3082,21 @@ def export_matrix_db_hdf5(
             for key, value in converted_metadata.items():
                 metadata_group.attrs[str(key)] = str(value)
 
+            sample_chunk_len = _matrix_hdf5_sample_axis_chunk_length(sample_count)
             samples_group = h5_file.create_group("samples")
             samples_group.create_dataset(
                 "sample_idx",
                 data=np.asarray([sample_idx for sample_idx, _sample_name in samples], dtype=np.int64),
+                chunks=(sample_chunk_len,),
+                maxshape=(None,),
             )
             _write_hdf5_string_dataset(
                 samples_group,
                 "sample_name",
                 [sample_name for _sample_idx, sample_name in samples],
                 h5py_module=h5py_module,
+                chunks=(sample_chunk_len,),
+                maxshape=(None,),
             )
 
             genomes_group = h5_file.create_group("genomes")
@@ -2249,6 +3176,7 @@ def export_matrix_db_hdf5(
                     shape=(sample_count, spec.matrix_length, 4),
                     dtype=np_dtype,
                     chunks=(chunk_samples, spec.matrix_length, 4),
+                    maxshape=(None, spec.matrix_length, 4),
                     fillvalue=0,
                 )
                 ordered_sample_ids = [sample_idx for sample_idx, _sample_name in samples]
@@ -2389,14 +3317,6 @@ def _plan_chunk_sizes(
         per_position_anchor += 4 * dtype_bytes
         per_position_target += 4 * dtype_bytes
 
-    if position_tile_size is not None:
-        tile_size = min(vector_length, position_tile_size)
-        max_targets = max(
-            1,
-            int((budget / max(tile_size, 1) - per_position_anchor) // max(per_position_target, 1)),
-        )
-        return min(remaining_targets, max_targets), tile_size
-
     max_targets_full = max(
         1,
         int((budget / max(vector_length, 1) - per_position_anchor) // max(per_position_target, 1)),
@@ -2404,8 +3324,7 @@ def _plan_chunk_sizes(
     if max_targets_full >= 1:
         return min(remaining_targets, max_targets_full), vector_length
 
-    tile_size = max(1, int(budget // max(per_position_anchor + per_position_target, 1)))
-    return 1, min(vector_length, tile_size)
+    return 1, vector_length
 
 
 def _compare_tile_presence_numpy(
@@ -2436,24 +3355,6 @@ def _compare_tile_presence_torch_tensors(
     shared_scores = torch_module.matmul(anchor_t.unsqueeze(1), targets_t).squeeze(1)
     shared = (shared_scores > 0).sum(dim=0, dtype=torch_module.int64)
     return totals, shared
-
-
-def _effective_torch_tile_size(
-    compute_backend: MatrixPairComputeBackend,
-    requested_tile_size: int,
-    target_count: int,
-) -> int:
-    tile_size = max(1, int(requested_tile_size))
-    if compute_backend.device != "mps":
-        return tile_size
-    max_elements = max(
-        1,
-        int(MPS_MAX_GRAPH_TENSOR_ELEMENTS * MPS_GRAPH_TENSOR_HEADROOM_FRACTION),
-    )
-    per_position_target_elements = 4 * max(int(target_count), 1)
-    max_tile_for_targets = max(1, max_elements // per_position_target_elements)
-    max_tile_for_anchor = max(1, max_elements // 4)
-    return min(tile_size, max_tile_for_targets, max_tile_for_anchor)
 
 
 def _compare_tile_presence_numpy_with_mask(
@@ -2489,6 +3390,24 @@ def _compare_tile_presence_torch_tensors_with_mask(
     anchor_cov = anchor_t.amax(dim=1)
     target_cov = targets_t.amax(dim=1)
     totals = torch_module.matmul(anchor_cov.unsqueeze(0), target_cov).squeeze(0).to(torch_module.int64)
+    total_mask = (anchor_cov.unsqueeze(1) > 0) & (target_cov > 0)
+    shared_mask = _shared_mask_presence_torch_tensors(
+        torch_module=torch_module,
+        anchor_t=anchor_t,
+        targets_t=targets_t,
+    )
+    shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
+    return totals, shared, total_mask, shared_mask
+
+
+def _compare_tile_presence_torch_tensors_with_shared_mask(
+    torch_module,
+    anchor_t,
+    targets_t,
+):
+    anchor_cov = anchor_t.amax(dim=1)
+    target_cov = targets_t.amax(dim=1)
+    totals = torch_module.matmul(anchor_cov.unsqueeze(0), target_cov).squeeze(0).to(torch_module.int64)
     shared_mask = _shared_mask_presence_torch_tensors(
         torch_module=torch_module,
         anchor_t=anchor_t,
@@ -2496,6 +3415,44 @@ def _compare_tile_presence_torch_tensors_with_mask(
     )
     shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
     return totals, shared, shared_mask
+
+
+def _accumulate_gene_counts_from_full_torch_masks(
+    *,
+    torch_module,
+    total_mask,
+    shared_mask,
+    gene_ranges: list[GeneRangeSpec],
+) -> tuple[np.ndarray, np.ndarray]:
+    if not gene_ranges:
+        target_count = int(total_mask.shape[1]) if int(total_mask.ndim) > 1 else 0
+        empty = np.zeros((0, target_count), dtype=np.int64)
+        return empty, empty
+
+    device = total_mask.device
+    prefix_dtype = getattr(torch_module, "int32", torch_module.int64)
+    gene_starts = torch_module.tensor(
+        [int(gene.axis_start) for gene in gene_ranges],
+        dtype=torch_module.int64,
+        device=device,
+    )
+    gene_stops = torch_module.tensor(
+        [int(gene.axis_end) for gene in gene_ranges],
+        dtype=torch_module.int64,
+        device=device,
+    )
+    total_prefix = total_mask.to(prefix_dtype).cumsum(dim=0)
+    shared_prefix = shared_mask.to(prefix_dtype).cumsum(dim=0)
+    total_stop = total_prefix.index_select(0, gene_stops)
+    shared_stop = shared_prefix.index_select(0, gene_stops)
+    start_positions = torch_module.clamp(gene_starts - 1, min=0)
+    has_start = (gene_starts > 0).unsqueeze(1).to(prefix_dtype)
+    total_start = total_prefix.index_select(0, start_positions) * has_start
+    shared_start = shared_prefix.index_select(0, start_positions) * has_start
+
+    gene_total_positions = (total_stop - total_start).detach().cpu().numpy().astype(np.int64, copy=False)
+    gene_share_allele_pos = (shared_stop - shared_start).detach().cpu().numpy().astype(np.int64, copy=False)
+    return gene_total_positions, gene_share_allele_pos
 
 
 def _update_ibs_numpy(
@@ -2523,6 +3480,19 @@ def _update_ibs_numpy(
         if col_mask[-1]:
             next_runs[col_idx] = lengths[-1]
     return next_runs, updated_max
+
+
+def _max_ibs_from_shared_mask_numpy(shared_mask) -> np.ndarray:
+    shared_mask_np = _shared_mask_to_numpy(shared_mask)
+    target_count = int(shared_mask_np.shape[1]) if int(shared_mask_np.ndim) > 1 else 0
+    current_runs = np.zeros(target_count, dtype=np.int64)
+    max_runs = np.zeros(target_count, dtype=np.int64)
+    _, max_runs = _update_ibs_numpy(
+        shared_mask=shared_mask_np,
+        current_runs=current_runs,
+        max_runs=max_runs,
+    )
+    return max_runs
 
 
 def _shared_mask_to_numpy(shared_mask) -> np.ndarray:
@@ -2611,6 +3581,48 @@ def _make_arrow_table_from_compare_payload(
         total_positions=total_positions_all[mask] if "ani" in calculations else None,
         share_allele_pos=share_allele_pos_all[mask] if "ani" in calculations else None,
         max_consecutive_length=max_consecutive_all[mask] if max_consecutive_all is not None else None,
+    )
+
+
+def _make_gene_arrow_table_from_compare_payload(
+    payload: dict[str, object],
+) -> Optional[pa.Table]:
+    gene_names = list(payload.get("gene_names") or [])
+    if not gene_names:
+        return None
+    gene_total_all = np.asarray(payload.get("gene_total_positions"), dtype=np.int64)
+    gene_shared_all = np.asarray(payload.get("gene_share_allele_pos"), dtype=np.int64)
+    if gene_total_all.size == 0 or gene_shared_all.size == 0:
+        return None
+    valid_mask = gene_total_all > 0
+    if not bool(valid_mask.any()):
+        return None
+
+    gene_idx_flat, target_idx_flat = np.nonzero(valid_mask)
+    total_positions = gene_total_all[gene_idx_flat, target_idx_flat].astype(np.float64, copy=False)
+    shared_positions = gene_shared_all[gene_idx_flat, target_idx_flat].astype(np.float64, copy=False)
+    ani_values = (shared_positions / total_positions) * 100.0
+
+    sample_2_idx_all = np.asarray(payload["sample_2_idx"], dtype=np.int64)
+    sample_2_all = list(payload["sample_2"])
+    sample_1_idx = int(payload["sample_1_idx"])
+    sample_1 = str(payload["sample_1"])
+    genome_idx = int(payload["genome_idx"])
+    genome = str(payload["genome"])
+
+    row_count = len(gene_idx_flat)
+    return pa.Table.from_arrays(
+        [
+            pa.array([sample_1_idx] * row_count, type=pa.int64()),
+            pa.array(sample_2_idx_all[target_idx_flat].astype(np.int64, copy=False), type=pa.int64()),
+            pa.array([sample_1] * row_count, type=pa.string()),
+            pa.array([sample_2_all[idx] for idx in target_idx_flat.tolist()], type=pa.string()),
+            pa.array([genome_idx] * row_count, type=pa.int64()),
+            pa.array([genome] * row_count, type=pa.string()),
+            pa.array([gene_names[idx] for idx in gene_idx_flat.tolist()], type=pa.string()),
+            pa.array(ani_values.tolist(), type=pa.float64()),
+        ],
+        schema=matrix_compare_gene_result_db_schema(),
     )
 
 
@@ -3094,38 +4106,6 @@ def _build_matrix_io_executor(kind: str):
     raise ValueError(f"Unsupported matrix I/O executor kind '{kind}'.")
 
 
-def _compare_anchor_against_target_chunk_torch(
-    compute_backend: MatrixPairComputeBackend,
-    anchor_torch,
-    target_torch,
-    vector_length: int,
-    tile_size: int,
-    matrix_value_semantics: str,
-    need_ibs: bool = False,
-) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-    target_count = int(target_torch.shape[2])
-    tile_size = _effective_torch_tile_size(
-        compute_backend=compute_backend,
-        requested_tile_size=tile_size,
-        target_count=target_count,
-    )
-    chunk_totals_torch, chunk_shared_torch, max_runs = _compare_anchor_against_target_chunk_torch_device(
-        compute_backend=compute_backend,
-        anchor_torch=anchor_torch,
-        target_torch=target_torch,
-        vector_length=vector_length,
-        tile_size=tile_size,
-        matrix_value_semantics=matrix_value_semantics,
-        need_ibs=need_ibs,
-    )
-    combined_np = _download_torch_result_tensor_batch(
-        compute_backend=compute_backend,
-        totals_tensors=[chunk_totals_torch],
-        shared_tensors=[chunk_shared_torch],
-    )
-    return combined_np[0, 0, :target_count].copy(), combined_np[0, 1, :target_count].copy(), max_runs
-
-
 def _compare_anchor_against_target_chunk_torch_device(
     compute_backend: MatrixPairComputeBackend,
     anchor_torch,
@@ -3134,13 +4114,9 @@ def _compare_anchor_against_target_chunk_torch_device(
     tile_size: int,
     matrix_value_semantics: str,
     need_ibs: bool = False,
+    gene_ranges: Optional[list[GeneRangeSpec]] = None,
 ):
     target_count = int(target_torch.shape[2])
-    tile_size = _effective_torch_tile_size(
-        compute_backend=compute_backend,
-        requested_tile_size=tile_size,
-        target_count=target_count,
-    )
     chunk_totals_torch = compute_backend.torch.zeros(
         target_count,
         dtype=compute_backend.torch.int64,
@@ -3151,34 +4127,44 @@ def _compare_anchor_against_target_chunk_torch_device(
         dtype=compute_backend.torch.int64,
         device=compute_backend.device,
     )
-    current_runs = None
     max_runs = None
-    if need_ibs:
-        current_runs = np.zeros(target_count, dtype=np.int64)
-        max_runs = np.zeros(target_count, dtype=np.int64)
-    for tile_start in range(0, vector_length, tile_size):
-        tile_stop = min(vector_length, tile_start + tile_size)
-        if need_ibs:
-            total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
-                torch_module=compute_backend.torch,
-                anchor_t=anchor_torch[tile_start:tile_stop, :],
-                targets_t=target_torch[tile_start:tile_stop, :, :],
-            )
-        else:
-            total_inc, shared_inc = _compare_tile_presence_torch_tensors(
-                torch_module=compute_backend.torch,
-                anchor_t=anchor_torch[tile_start:tile_stop, :],
-                targets_t=target_torch[tile_start:tile_stop, :, :],
-            )
+    gene_total_positions = None
+    gene_share_allele_pos = None
+    if gene_ranges:
+        total_inc, shared_inc, total_mask, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
+            torch_module=compute_backend.torch,
+            anchor_t=anchor_torch[:vector_length, :],
+            targets_t=target_torch[:vector_length, :, :],
+        )
         chunk_totals_torch += total_inc
         chunk_shared_torch += shared_inc
-        if need_ibs:
-            current_runs, max_runs = _update_ibs_numpy(
-                shared_mask=_shared_mask_to_numpy(shared_mask),
-                current_runs=current_runs,
-                max_runs=max_runs,
+        if gene_ranges:
+            gene_total_positions, gene_share_allele_pos = _accumulate_gene_counts_from_full_torch_masks(
+                torch_module=compute_backend.torch,
+                total_mask=total_mask,
+                shared_mask=shared_mask,
+                gene_ranges=gene_ranges,
             )
-    return chunk_totals_torch, chunk_shared_torch, max_runs
+        if need_ibs:
+            max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
+    elif need_ibs:
+        total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_shared_mask(
+            torch_module=compute_backend.torch,
+            anchor_t=anchor_torch[:vector_length, :],
+            targets_t=target_torch[:vector_length, :, :],
+        )
+        chunk_totals_torch += total_inc
+        chunk_shared_torch += shared_inc
+        max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
+    else:
+        total_inc, shared_inc = _compare_tile_presence_torch_tensors(
+            torch_module=compute_backend.torch,
+            anchor_t=anchor_torch[:vector_length, :],
+            targets_t=target_torch[:vector_length, :, :],
+        )
+        chunk_totals_torch += total_inc
+        chunk_shared_torch += shared_inc
+    return chunk_totals_torch, chunk_shared_torch, max_runs, gene_total_positions, gene_share_allele_pos
 
 
 def _download_torch_result_tensor_batch(
@@ -3249,6 +4235,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
     calculations: tuple[str, ...],
+    gene_ranges: list[GeneRangeSpec],
     emit_writer_logs: bool,
     run_start_time: float,
     progress_callback: Optional[CompareProgressCallback] = None,
@@ -3277,6 +4264,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     )
     global_block_size = max(1, global_block_size)
     samples_by_id = {sample_idx: sample_name for sample_idx, sample_name in samples}
+    gene_ranges_by_genome = _group_gene_ranges_by_genome(gene_ranges)
     loop = asyncio.get_running_loop()
     target_loader_executor = _build_matrix_io_executor(loader_executor_kind)
     anchor_loader_executor = _build_matrix_io_executor(loader_executor_kind)
@@ -3488,6 +4476,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 continue
 
             genome_name = spec.genome
+            genome_gene_ranges = gene_ranges_by_genome.get(spec.genome_idx, [])
             tile_targets, tile_size = _plan_chunk_sizes(
                 vector_length=spec.matrix_length,
                 remaining_targets=len(block_ids),
@@ -3577,6 +4566,13 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                             "total_positions": combined_np[result_idx, 0, :valid_count].astype(np.int64, copy=True),
                             "share_allele_pos": combined_np[result_idx, 1, :valid_count].astype(np.int64, copy=True),
                             "max_consecutive_length": item["max_consecutive_length"],
+                            "gene_names": list(item.get("gene_names") or []),
+                            "gene_total_positions": None
+                            if item.get("gene_total_positions") is None
+                            else np.asarray(item["gene_total_positions"], dtype=np.int64)[:, :valid_count].copy(),
+                            "gene_share_allele_pos": None
+                            if item.get("gene_share_allele_pos") is None
+                            else np.asarray(item["gene_share_allele_pos"], dtype=np.int64)[:, :valid_count].copy(),
                         }
                     )
 
@@ -3695,7 +4691,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     matrix=anchor_matrix,
                     matrix_value_semantics=matrix_value_semantics,
                 )
-                total_inc_torch, shared_inc_torch, ibs_inc = _compare_anchor_against_target_chunk_torch_device(
+                total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
                     anchor_torch=anchor_torch,
                     target_torch=target_torch,
@@ -3703,6 +4699,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     tile_size=tile_size,
                     matrix_value_semantics=matrix_value_semantics,
                     need_ibs="ibs" in calculations,
+                    gene_ranges=genome_gene_ranges if "gene" in calculations else None,
                 )
                 await drain_anchor_prefetch(force=False)
                 pending_device_results.append(
@@ -3719,6 +4716,13 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "max_consecutive_length": None
                         if ibs_inc is None
                         else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
+                        "gene_total_positions": None
+                        if gene_total_inc is None
+                        else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
+                        "gene_share_allele_pos": None
+                        if gene_shared_inc is None
+                        else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
                         "valid_count": len(missing_positions),
                     }
                 )
@@ -3743,7 +4747,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 missing_positions = internal_missing_positions.get(local_anchor_pos, [])
                 if not missing_positions:
                     continue
-                total_inc_torch, shared_inc_torch, ibs_inc = _compare_anchor_against_target_chunk_torch_device(
+                total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
                     anchor_torch=target_torch[:, :, local_anchor_pos],
                     target_torch=target_torch[:, :, local_anchor_pos + 1:],
@@ -3751,6 +4755,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     tile_size=tile_size,
                     matrix_value_semantics=matrix_value_semantics,
                     need_ibs="ibs" in calculations,
+                    gene_ranges=genome_gene_ranges if "gene" in calculations else None,
                 )
                 later_ids = block_ids[local_anchor_pos + 1:]
                 later_names = block_names[local_anchor_pos + 1:]
@@ -3768,6 +4773,13 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "max_consecutive_length": None
                         if ibs_inc is None
                         else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
+                        "gene_total_positions": None
+                        if gene_total_inc is None
+                        else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
+                        "gene_share_allele_pos": None
+                        if gene_shared_inc is None
+                        else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
                         "valid_count": len(missing_positions),
                     }
                 )
@@ -3847,6 +4859,7 @@ def _matrix_compare_reuse_target_chunks_torch(
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
     calculations: tuple[str, ...],
+    gene_ranges: list[GeneRangeSpec],
     emit_writer_logs: bool,
     run_start_time: float,
     progress_callback: Optional[CompareProgressCallback] = None,
@@ -3878,6 +4891,7 @@ def _matrix_compare_reuse_target_chunks_torch(
             compute_backend=compute_backend,
             matrix_value_semantics=matrix_value_semantics,
             calculations=calculations,
+            gene_ranges=gene_ranges,
             emit_writer_logs=emit_writer_logs,
             run_start_time=run_start_time,
             progress_callback=progress_callback,
@@ -3928,7 +4942,6 @@ def matrix_compare(
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     compute_backend = MatrixPairComputeBackend(backend)
-    calculations = parse_matrix_calculations(calculate)
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
     run_start_time = time.monotonic()
     resolved_input_format = _resolve_matrix_input_format(matrix_db_file, matrix_input_format)
@@ -3938,6 +4951,7 @@ def matrix_compare(
     compare_conn: Optional[duckdb.DuckDBPyConnection] = None
     try:
         genome_scope = None if genome == "all" else genome
+        gene_ranges: list[GeneRangeSpec] = []
         if resolved_input_format == "duckdb":
             conn = duckdb.connect(str(matrix_db_file), read_only=True)
             metadata = _load_matrix_db_metadata(conn)
@@ -3959,14 +4973,24 @@ def matrix_compare(
             matrix_value_semantics = metadata.get("matrix_value_semantics")
             if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
                 raise ValueError(
-                    "This HDF5 matrix store uses an unsupported storage layout. "
-                    "Rebuild it from a current matrix DB."
+                    "This matrix store uses an unsupported storage layout. "
+                    "Rebuild it with 'zipstrain utilities build-matrix-db'."
                 )
             samples = _load_matrix_hdf5_samples(matrix_db_file)
             genomes = _load_matrix_hdf5_genomes(matrix_db_file, genome=genome_scope)
             if not genomes:
                 raise ValueError(f"No scaffolds found for genome scope: {genome}")
             genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_db_file, genome=genome_scope)
+            gene_ranges = _load_matrix_hdf5_gene_ranges(matrix_db_file, genome=genome_scope)
+        calculations = parse_matrix_calculations(
+            calculate,
+            include_gene_from_all=bool(gene_ranges),
+        )
+        if "gene" in calculations and not gene_ranges:
+            raise ValueError(
+                "Gene ANI was requested, but this matrix store does not contain gene annotations. "
+                "Rebuild it with --gene-range-table."
+            )
         compare_conn = _prepare_matrix_compare_db(
             output_file=output_file,
             matrix_metadata=metadata,
@@ -4026,6 +5050,7 @@ def matrix_compare(
                 compute_backend=compute_backend,
                 matrix_value_semantics=matrix_value_semantics,
                 calculations=calculations,
+                gene_ranges=gene_ranges,
                 emit_writer_logs=emit_writer_logs,
                 run_start_time=run_start_time,
                 progress_callback=progress_callback,
@@ -4156,33 +5181,25 @@ def matrix_compare(
                         [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in chunk_ids],
                         axis=2,
                     )
-                    totals_chunk = np.zeros(len(chunk_ids), dtype=np.int64)
-                    shared_chunk = np.zeros(len(chunk_ids), dtype=np.int64)
+                    if "ibs" in calculations:
+                        totals_chunk, shared_chunk, shared_mask = _compare_tile_presence_numpy_with_mask(
+                            anchor_matrix=anchor_matrix,
+                            target_matrices=target_matrices,
+                        )
+                    else:
+                        totals_chunk, shared_chunk = _compare_tile_presence_numpy(
+                            anchor_matrix=anchor_matrix,
+                            target_matrices=target_matrices,
+                        )
                     ibs_max = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
                     current_runs = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
-                    for tile_start in range(0, spec.matrix_length, tile_size):
-                        tile_stop = min(spec.matrix_length, tile_start + tile_size)
-                        anchor_tile = anchor_matrix[tile_start:tile_stop, :]
-                        target_tile = target_matrices[tile_start:tile_stop, :, :]
-                        if "ibs" in calculations:
-                            total_inc, shared_inc, shared_mask = _compare_tile_presence_numpy_with_mask(
-                                anchor_matrix=anchor_tile,
-                                target_matrices=target_tile,
-                            )
-                        else:
-                            total_inc, shared_inc = _compare_tile_presence_numpy(
-                                anchor_matrix=anchor_tile,
-                                target_matrices=target_tile,
-                            )
-                        totals_chunk += total_inc
-                        shared_chunk += shared_inc
-                        if "ibs" in calculations and current_runs is not None and ibs_max is not None:
-                            current_runs, updated_max = _update_ibs_numpy(
-                                shared_mask=shared_mask,
-                                current_runs=current_runs,
-                                max_runs=ibs_max,
-                            )
-                            ibs_max[:] = updated_max
+                    if "ibs" in calculations and current_runs is not None and ibs_max is not None:
+                        current_runs, updated_max = _update_ibs_numpy(
+                            shared_mask=shared_mask,
+                            current_runs=current_runs,
+                            max_runs=ibs_max,
+                        )
+                        ibs_max[:] = updated_max
                     mask = totals_chunk > 0
                     if mask.any():
                         pending_tables.append(
@@ -4241,6 +5258,7 @@ def matrix_compare(
 def export_matrix_compare_parquet(
     matrix_compare_db_file: Path,
     output_file: Path,
+    table: str = "genome",
 ) -> Path:
     matrix_compare_db_file = Path(matrix_compare_db_file).resolve()
     output_file = Path(output_file).resolve()
@@ -4250,17 +5268,40 @@ def export_matrix_compare_parquet(
 
     conn = duckdb.connect(str(matrix_compare_db_file), read_only=True)
     try:
-        compare_metadata = {
-            str(k): str(v)
-            for k, v in conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
-        }
-        calculate = compare_metadata.get("calculate", "ani")
-        columns = matrix_metric_output_columns(calculate)
-        query = f"""
-            SELECT {', '.join(columns)}
-            FROM matrix_compare_results
-            ORDER BY sample_idx_1, sample_idx_2, genome_idx
-        """
+        if table == "genome":
+            compare_metadata = {
+                str(k): str(v)
+                for k, v in conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
+            }
+            calculate = compare_metadata.get("calculate", "ani")
+            columns = matrix_metric_output_columns(calculate)
+            query = f"""
+                SELECT {', '.join(columns)}
+                FROM matrix_compare_results
+                ORDER BY sample_idx_1, sample_idx_2, genome_idx
+            """
+        elif table == "gene":
+            if not _matrix_compare_table_exists(conn, "matrix_compare_gene_results"):
+                raise ValueError(
+                    "Gene export was requested, but matrix_compare_gene_results is not present in the compare database."
+                )
+            gene_row_count = int(conn.execute("SELECT count(*) FROM matrix_compare_gene_results").fetchone()[0])
+            if gene_row_count == 0:
+                raise ValueError(
+                    "Gene export was requested, but the compare database does not contain any gene comparison rows."
+                )
+            query = """
+                SELECT
+                  sample_1,
+                  sample_2,
+                  genome,
+                  gene,
+                  gene_pop_ani
+                FROM matrix_compare_gene_results
+                ORDER BY sample_idx_1, sample_idx_2, genome_idx, gene
+            """
+        else:
+            raise ValueError(f"Unsupported export table '{table}'. Expected one of: genome, gene.")
         conn.execute(
             f"COPY ({query}) TO ? (FORMAT PARQUET, COMPRESSION ZSTD)",
             [str(output_file)],
