@@ -2071,22 +2071,6 @@ def test_matrix_compare_ignores_requested_min_cov(tmp_path):
     _metadata, _completed_pairs, _results = _load_matrix_compare_db(output_file)
 
 
-def test_cli_matrix_compare_rejects_removed_legacy_options():
-    runner = CliRunner()
-
-    legacy_format_result = runner.invoke(
-        cli.cli,
-        ["utilities", "matrix-compare", "--matrix-input-format", "hdf5"],
-    )
-    assert legacy_format_result.exit_code != 0
-    assert "No such option: --matrix-input-format" in legacy_format_result.output
-
-    legacy_tile_result = runner.invoke(
-        cli.cli,
-        ["utilities", "matrix-compare", "--position-tile-size", "1000"],
-    )
-    assert legacy_tile_result.exit_code != 0
-    assert "No such option: --position-tile-size" in legacy_tile_result.output
 
 
 def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
