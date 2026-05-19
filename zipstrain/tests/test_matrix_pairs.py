@@ -1,6 +1,5 @@
 from pathlib import Path
 from itertools import combinations
-from types import SimpleNamespace
 
 from click.testing import CliRunner
 import duckdb
@@ -166,27 +165,11 @@ def _write_gene_range_table(gene_range_table: Path) -> None:
     ).write_csv(gene_range_table, separator="\t", include_header=False)
 
 
-def _load_matrix_db(matrix_db: Path):
-    conn = duckdb.connect(str(matrix_db), read_only=True)
-    try:
-        samples = conn.execute(
-            "SELECT sample_idx, sample_name FROM matrix_db_samples ORDER BY sample_idx"
-        ).fetchall()
-        genomes = conn.execute(
-            "SELECT genome_idx, genome, matrix_length, true_length, scaffold_count "
-            "FROM matrix_db_genomes ORDER BY genome_idx"
-        ).fetchall()
-        scaffolds = conn.execute(
-            "SELECT genome_idx, scaffold_ordinal, genome, chrom, axis_start, axis_end, vector_length "
-            "FROM matrix_db_genome_scaffolds ORDER BY genome_idx, scaffold_ordinal"
-        ).fetchall()
-        matrices = conn.execute(
-            "SELECT sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob "
-            "FROM matrix_db_sample_genome_matrices ORDER BY sample_idx, genome_idx"
-        ).fetchall()
-    finally:
-        conn.close()
-    return samples, genomes, scaffolds, matrices
+def test_parse_matrix_calculations_supports_all_and_gene_aliases():
+    assert mp.parse_matrix_calculations("all") == ("ani", "ibs")
+    assert mp.parse_matrix_calculations("all", include_gene_from_all=True) == ("ani", "ibs", "gene")
+    assert mp.parse_matrix_calculations("+gene") == ("ani", "gene")
+    assert mp.parse_matrix_calculations("popani,max_block") == ("ani", "ibs")
 
 
 def _load_matrix_compare_db(compare_db: Path):
@@ -318,25 +301,89 @@ def _expected_classic_pairwise_results(
     return pl.concat(expected_frames).sort(["sample_1", "sample_2", "genome"])
 
 
-def test_resolve_matrix_input_format_auto():
-    assert mp._resolve_matrix_input_format(Path("/tmp/matrix.duckdb")) == "duckdb"
-    assert mp._resolve_matrix_input_format(Path("/tmp/matrix.h5")) == "hdf5"
-    assert mp._resolve_matrix_input_format(Path("/tmp/matrix.hdf5")) == "hdf5"
+def test_is_hdf5_matrix_store_detects_signature_and_suffix(tmp_path):
+    hdf5_path = tmp_path / "matrix.h5"
+    hdf5_path.write_bytes(mp.HDF5_FILE_SIGNATURE + b"rest")
+    legacy_path = tmp_path / "matrix.duckdb"
+    legacy_path.write_bytes(b"DUCK")
+    suffix_only = tmp_path / "missing.hdf5"
+
+    assert mp._is_hdf5_matrix_store(hdf5_path) is True
+    assert mp._is_hdf5_matrix_store(legacy_path) is False
+    assert mp._is_hdf5_matrix_store(suffix_only) is True
+
+
+def _write_legacy_matrix_db(matrix_db: Path) -> None:
+    conn = duckdb.connect(str(matrix_db))
+    try:
+        mp._init_matrix_db_schema(conn)
+        conn.executemany(
+            "INSERT INTO matrix_db_metadata VALUES (?, ?)",
+            [
+                ("profiles_dir", str(matrix_db.parent)),
+                ("profile_format", "classic_zipstrain_profile_parquet"),
+                ("genome_scope", "all"),
+                ("count_dtype", "uint16"),
+                ("layout", mp.CURRENT_MATRIX_DB_LAYOUT),
+                ("matrix_value_semantics", mp.FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS),
+                ("coverage_filter_min_cov", str(mp.MATRIX_BUILD_MIN_COV)),
+                ("separator_rows_between_scaffolds", "1"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO matrix_db_samples VALUES (?, ?, ?)",
+            [
+                (0, "sample_a", "/tmp/sample_a.parquet"),
+                (1, "sample_b", "/tmp/sample_b.parquet"),
+                (2, "sample_c", "/tmp/sample_c.parquet"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO matrix_db_genomes VALUES (?, ?, ?, ?, ?)",
+            [
+                (0, "genome1", 3, 3, 1),
+                (1, "genome2", 3, 3, 1),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO matrix_db_genome_scaffolds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (0, 0, "genome1", "chr1", 0, 2, 0, 3, 0, 2),
+                (1, 0, "genome2", "chr2", 0, 2, 0, 3, 0, 2),
+            ],
+        )
+        matrices = {
+            (0, 0): np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]], dtype=np.uint16),
+            (1, 0): np.array([[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]], dtype=np.uint16),
+            (2, 0): np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]], dtype=np.uint16),
+            (0, 1): np.array([[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], dtype=np.uint16),
+            (1, 1): np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]], dtype=np.uint16),
+            (2, 1): np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]], dtype=np.uint16),
+        }
+        for (sample_idx, genome_idx), matrix in matrices.items():
+            conn.execute(
+                """
+                INSERT INTO matrix_db_sample_genome_matrices
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    sample_idx,
+                    genome_idx,
+                    "uint16",
+                    int(matrix.shape[0]),
+                    int(matrix.shape[1]),
+                    mp._pack_matrix(matrix),
+                ],
+            )
+    finally:
+        conn.close()
 
 
 def test_export_matrix_db_hdf5_roundtrip(tmp_path):
     h5py = pytest.importorskip("h5py")
-    profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
     matrix_hdf5 = tmp_path / "matrix.h5"
-    _write_profiles(profile_dir)
-
-    mp.build_matrix_db(
-        profile_dir=profile_dir,
-        output_file=matrix_db,
-        count_dtype="uint16",
-        memory_limit_gb=1.0,
-    )
+    _write_legacy_matrix_db(matrix_db)
 
     exported = mp.export_matrix_db_hdf5(
         matrix_db_file=matrix_db,
@@ -526,17 +573,9 @@ def test_build_matrix_hdf5_gene_ranges_follow_multiscaffold_axis_offsets(tmp_pat
 
 def test_export_matrix_db_hdf5_reports_progress(tmp_path):
     pytest.importorskip("h5py")
-    profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
     matrix_hdf5 = tmp_path / "matrix.h5"
-    _write_profiles(profile_dir)
-
-    mp.build_matrix_db(
-        profile_dir=profile_dir,
-        output_file=matrix_db,
-        count_dtype="uint16",
-        memory_limit_gb=1.0,
-    )
+    _write_legacy_matrix_db(matrix_db)
 
     events: list[dict[str, object]] = []
     mp.export_matrix_db_hdf5(
@@ -553,52 +592,21 @@ def test_export_matrix_db_hdf5_reports_progress(tmp_path):
     assert advance_events[-1]["stored_rows"] == 6
 
 
-def test_matrix_compare_hdf5_torch_cpu_matches_duckdb(tmp_path):
-    pytest.importorskip("h5py")
-    pytest.importorskip("torch")
+def test_matrix_compare_rejects_legacy_duckdb_matrix_input(tmp_path):
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
-    matrix_hdf5 = tmp_path / "matrix.h5"
-    compare_duckdb = tmp_path / "compare_duckdb.duckdb"
-    compare_hdf5 = tmp_path / "compare_hdf5.duckdb"
+    legacy_matrix_db = tmp_path / "matrix.duckdb"
+    compare_db = tmp_path / "compare.duckdb"
     _write_profiles(profile_dir)
+    _write_legacy_matrix_db(legacy_matrix_db)
 
-    mp.build_matrix_db(
-        profile_dir=profile_dir,
-        output_file=matrix_db,
-        count_dtype="uint16",
-        memory_limit_gb=1.0,
-    )
-    mp.export_matrix_db_hdf5(
-        matrix_db_file=matrix_db,
-        output_file=matrix_hdf5,
-    )
-
-    mp.matrix_compare(
-        matrix_db_file=matrix_db,
-        output_file=compare_duckdb,
-        min_cov=mp.MATRIX_BUILD_MIN_COV,
-        backend="torch-cpu",
-        calculate="ani",
-        loader_executor_kind="thread",
-        writer_executor_kind="thread",
-    )
-    mp.matrix_compare(
-        matrix_db_file=matrix_hdf5,
-        output_file=compare_hdf5,
-        min_cov=mp.MATRIX_BUILD_MIN_COV,
-        backend="torch-cpu",
-        calculate="ani",
-        matrix_input_format="hdf5",
-        loader_executor_kind="thread",
-        writer_executor_kind="thread",
-    )
-
-    _duck_meta, duck_pairs, duck_results = _load_matrix_compare_db(compare_duckdb)
-    _hdf_meta, hdf_pairs, hdf_results = _load_matrix_compare_db(compare_hdf5)
-
-    assert duck_pairs == hdf_pairs
-    assert duck_results.equals(hdf_results)
+    with pytest.raises(ValueError, match="convert it first with 'zipstrain utilities matrix-db-to-hdf5'"):
+        mp.matrix_compare(
+            matrix_db_file=legacy_matrix_db,
+            output_file=compare_db,
+            min_cov=mp.MATRIX_BUILD_MIN_COV,
+            backend="numpy",
+            calculate="ani",
+        )
 
 
 def test_matrix_compare_hdf5_gene_results_match_classic_compare(tmp_path):
@@ -624,7 +632,6 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare(tmp_path):
         memory_limit_gb=1.0,
         backend="torch-cpu",
         calculate="all",
-        matrix_input_format="hdf5",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -670,7 +677,6 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare_multiscaffold(tm
         memory_limit_gb=1.0,
         backend="torch-cpu",
         calculate="+gene",
-        matrix_input_format="hdf5",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -780,72 +786,6 @@ def test_max_ibs_from_shared_mask_numpy_matches_numpy_reference():
     np.testing.assert_array_equal(observed, expected)
 
 
-def test_matrix_compare_hdf5_gene_results_ignore_position_tile_size(tmp_path):
-    pytest.importorskip("h5py")
-    pytest.importorskip("torch")
-    profile_dir = tmp_path / "profiles"
-    matrix_hdf5 = tmp_path / "matrix.h5"
-    compare_small_tile = tmp_path / "compare_small_tile.duckdb"
-    compare_large_tile = tmp_path / "compare_large_tile.duckdb"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
-    _write_profiles_multiscaffold_same_genome(profile_dir)
-    pl.DataFrame(
-        {
-            "gene": ["gene1", "gene2"],
-            "scaffold": ["chr1", "chr2"],
-            "start": [0, 0],
-            "end": [1, 1],
-        }
-    ).write_csv(gene_range_table, separator="\t", include_header=False)
-
-    mp.build_matrix_hdf5(
-        profile_dir=profile_dir,
-        output_file=matrix_hdf5,
-        memory_limit_gb=1.0,
-        gene_range_table=gene_range_table,
-    )
-    mp.matrix_compare(
-        matrix_db_file=matrix_hdf5,
-        output_file=compare_small_tile,
-        min_cov=mp.MATRIX_BUILD_MIN_COV,
-        memory_limit_gb=1.0,
-        backend="torch-cpu",
-        calculate="all",
-        matrix_input_format="hdf5",
-        position_tile_size=1,
-        loader_executor_kind="thread",
-        writer_executor_kind="thread",
-    )
-    mp.matrix_compare(
-        matrix_db_file=matrix_hdf5,
-        output_file=compare_large_tile,
-        min_cov=mp.MATRIX_BUILD_MIN_COV,
-        memory_limit_gb=1.0,
-        backend="torch-cpu",
-        calculate="all",
-        matrix_input_format="hdf5",
-        position_tile_size=1_000_000,
-        loader_executor_kind="thread",
-        writer_executor_kind="thread",
-    )
-
-    _small_meta, _small_pairs, small_results = _load_matrix_compare_db(compare_small_tile)
-    _large_meta, _large_pairs, large_results = _load_matrix_compare_db(compare_large_tile)
-    small_gene_results = _load_matrix_compare_gene_results(compare_small_tile).select(
-        ["sample_1", "sample_2", "genome", "gene", "gene_pop_ani"]
-    )
-    large_gene_results = _load_matrix_compare_gene_results(compare_large_tile).select(
-        ["sample_1", "sample_2", "genome", "gene", "gene_pop_ani"]
-    )
-
-    assert small_results.sort(["sample_1", "sample_2", "genome"]).equals(
-        large_results.sort(["sample_1", "sample_2", "genome"])
-    )
-    assert small_gene_results.sort(["sample_1", "sample_2", "genome", "gene"]).equals(
-        large_gene_results.sort(["sample_1", "sample_2", "genome", "gene"])
-    )
-
-
 def test_matrix_compare_hdf5_explicit_gene_results_match_classic_compare(tmp_path):
     pytest.importorskip("h5py")
     pytest.importorskip("torch")
@@ -869,7 +809,6 @@ def test_matrix_compare_hdf5_explicit_gene_results_match_classic_compare(tmp_pat
         memory_limit_gb=1.0,
         backend="torch-cpu",
         calculate="+gene",
-        matrix_input_format="hdf5",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -908,7 +847,6 @@ def test_matrix_compare_gene_requires_gene_annotations(tmp_path):
             memory_limit_gb=1.0,
             backend="torch-cpu",
             calculate="+gene",
-            matrix_input_format="hdf5",
             loader_executor_kind="thread",
             writer_executor_kind="thread",
         )
@@ -988,7 +926,6 @@ def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
     )
     summary = mp.matrix_compare(
         matrix_db_file=matrix_hdf5,
-        matrix_input_format="hdf5",
         output_file=output_file,
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
@@ -1009,8 +946,9 @@ def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
 
 
 def test_build_matrix_db(tmp_path):
+    pytest.importorskip("h5py")
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
     _write_profiles(profile_dir)
     progress_events: list[dict[str, object]] = []
 
@@ -1036,45 +974,33 @@ def test_build_matrix_db(tmp_path):
     assert any(event["sample_name"] == "sample_a" for event in progress_events)
     assert all(event["scaffold"] == "" for event in progress_events if "scaffold" in event)
 
-    samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
+    metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_db)
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
-    assert genomes == [
+    assert [(spec.genome_idx, spec.genome, spec.matrix_length, spec.true_length, spec.scaffold_count) for spec in genomes] == [
         (0, "genome1", 3, 3, 1),
         (1, "genome2", 3, 3, 1),
     ]
-    assert scaffolds == [
+    assert [(spec.genome_idx, spec.scaffold_ordinal, spec.genome, spec.chrom, spec.axis_start, spec.axis_end, spec.vector_length) for spec in scaffolds] == [
         (0, 0, "genome1", "chr1", 0, 2, 3),
         (1, 0, "genome2", "chr2", 0, 2, 3),
     ]
-    conn = duckdb.connect(str(matrix_db), read_only=True)
-    try:
-        metadata = dict(conn.execute("SELECT key, value FROM matrix_db_metadata").fetchall())
-    finally:
-        conn.close()
     assert metadata["matrix_value_semantics"] == mp.FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS
     assert metadata["coverage_filter_min_cov"] == str(mp.MATRIX_BUILD_MIN_COV)
-    assert metadata["layout"] == "per_sample_per_genome_dense_matrix"
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_LAYOUT
     assert metadata["separator_rows_between_scaffolds"] == "1"
 
-    unpacked = {}
-    for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
-        unpacked[(sample_idx, genome_idx)] = mp._unpack_matrix(
-            bytes(matrix_blob),
-            count_dtype,
-            (matrix_rows, matrix_cols),
-        ).tolist()
-
-    assert unpacked[(0, 0)] == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
-    assert unpacked[(1, 0)] == [[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
-    assert unpacked[(2, 0)] == [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
-    assert unpacked[(0, 1)] == [[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
-    assert unpacked[(1, 1)] == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
-    assert unpacked[(2, 1)] == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+    assert matrices["0"][0].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
+    assert matrices["0"][1].tolist() == [[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
+    assert matrices["0"][2].tolist() == [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
+    assert matrices["1"][0].tolist() == [[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+    assert matrices["1"][1].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+    assert matrices["1"][2].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
 
 
 def test_build_matrix_db_with_small_commit_batches(tmp_path):
+    pytest.importorskip("h5py")
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix_small_batches.duckdb"
+    matrix_db = tmp_path / "matrix_small_batches.h5"
     _write_profiles(profile_dir)
 
     summary = mp.build_matrix_db(
@@ -1086,16 +1012,18 @@ def test_build_matrix_db_with_small_commit_batches(tmp_path):
     )
 
     assert summary.stored_rows == 6
-    samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
+    _metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_db)
     assert len(samples) == 3
     assert len(genomes) == 2
     assert len(scaffolds) == 2
-    assert len(matrices) == 6
+    assert matrices["0"].shape[0] == 3
+    assert matrices["1"].shape[0] == 3
 
 
 def test_build_matrix_db_with_optional_bed_file(tmp_path):
+    pytest.importorskip("h5py")
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix_bed.duckdb"
+    matrix_db = tmp_path / "matrix_bed.h5"
     bed_file = tmp_path / "genomes.bed"
     _write_profiles_one_based(profile_dir)
     bed_file.write_text("chr1\t0\t2\nchr1\t2\t5\nchr2\t5\t7\nchr2\t7\t10\n")
@@ -1111,31 +1039,23 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
     assert summary.profile_files == 2
     assert summary.scaffold_count == 2
 
-    _samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
-    assert genomes == [
+    _metadata, _samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_db)
+    assert [(spec.genome_idx, spec.genome, spec.matrix_length, spec.true_length, spec.scaffold_count) for spec in genomes] == [
         (0, "genome1", 5, 5, 1),
         (1, "genome2", 5, 5, 1),
     ]
-    assert scaffolds == [
+    assert [(spec.genome_idx, spec.scaffold_ordinal, spec.genome, spec.chrom, spec.axis_start, spec.axis_end, spec.vector_length) for spec in scaffolds] == [
         (0, 0, "genome1", "chr1", 0, 4, 5),
         (1, 0, "genome2", "chr2", 0, 4, 5),
     ]
-    unpacked = {}
-    for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
-        unpacked[(sample_idx, genome_idx)] = mp._unpack_matrix(
-            bytes(matrix_blob),
-            count_dtype,
-            (matrix_rows, matrix_cols),
-        ).tolist()
-
-    assert unpacked[(0, 0)] == [
+    assert matrices["0"][0].tolist() == [
         [1, 0, 0, 0],
         [0, 0, 0, 0],
         [0, 0, 1, 1],
         [0, 0, 0, 0],
         [0, 0, 0, 0],
     ]
-    assert unpacked[(1, 0)] == [
+    assert matrices["0"][1].tolist() == [
         [0, 0, 0, 0],
         [0, 1, 0, 0],
         [0, 0, 0, 0],
@@ -1145,9 +1065,10 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
 
 
 def test_append_matrix_db_success(tmp_path):
+    pytest.importorskip("h5py")
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_append"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
 
     _write_profiles(initial_profile_dir)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1178,11 +1099,12 @@ def test_append_matrix_db_success(tmp_path):
     assert progress_events[-1]["completed"] == 2
     assert progress_events[-1]["total"] == 2
 
-    samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
+    _metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_db)
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
     assert len(genomes) == 2
     assert len(scaffolds) == 2
-    assert len(matrices) == 6
+    assert matrices["0"].shape[0] == 3
+    assert matrices["1"].shape[0] == 3
 
 
 def test_append_matrix_hdf5_success(tmp_path):
@@ -1259,9 +1181,10 @@ def test_append_matrix_hdf5_uses_in_place_path_for_resizable_store(tmp_path, mon
 
 
 def test_append_matrix_db_rejects_incompatible_profile_without_mutation(tmp_path):
+    pytest.importorskip("h5py")
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_bad"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
 
     _write_profiles(initial_profile_dir)
     (initial_profile_dir / "sample_c.parquet").unlink()
@@ -1272,7 +1195,7 @@ def test_append_matrix_db_rejects_incompatible_profile_without_mutation(tmp_path
         output_file=matrix_db,
         memory_limit_gb=1.0,
     )
-    samples_before, genomes_before, scaffolds_before, matrices_before = _load_matrix_db(matrix_db)
+    metadata_before, samples_before, genomes_before, scaffolds_before, matrices_before, genes_before = _load_matrix_hdf5_store(matrix_db)
 
     with pytest.raises(ValueError, match="does not match the existing matrix store contract"):
         mp.append_matrix_db(
@@ -1281,11 +1204,15 @@ def test_append_matrix_db_rejects_incompatible_profile_without_mutation(tmp_path
             memory_limit_gb=1.0,
         )
 
-    samples_after, genomes_after, scaffolds_after, matrices_after = _load_matrix_db(matrix_db)
+    metadata_after, samples_after, genomes_after, scaffolds_after, matrices_after, genes_after = _load_matrix_hdf5_store(matrix_db)
+    assert metadata_after == metadata_before
     assert samples_after == samples_before
     assert genomes_after == genomes_before
     assert scaffolds_after == scaffolds_before
-    assert matrices_after == matrices_before
+    assert matrices_after.keys() == matrices_before.keys()
+    for genome_idx in matrices_before:
+        assert np.array_equal(matrices_after[genome_idx], matrices_before[genome_idx])
+    assert genes_after == genes_before
 
 
 def test_append_matrix_hdf5_rejects_incompatible_profile_without_mutation(tmp_path):
@@ -1447,17 +1374,17 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
 
 def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
     mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
-    original_load = mp._load_sample_genome_matrices
+    original_load_indices = mp._Hdf5GenomeMatrixNumpyDataset.load_indices
     call_sizes: list[int] = []
 
-    def tracking_load(conn, genome_idx, sample_ids, matrix_length, dtype_name):
-        call_sizes.append(len(sample_ids))
-        return original_load(conn, genome_idx, sample_ids, matrix_length, dtype_name)
+    def tracking_load_indices(self, sample_rows):
+        call_sizes.append(len(sample_rows))
+        return original_load_indices(self, sample_rows)
 
     def two_target_plan(
         vector_length: int,
@@ -1465,11 +1392,10 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
-        position_tile_size=None,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
 
-    monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
+    monkeypatch.setattr(mp._Hdf5GenomeMatrixNumpyDataset, "load_indices", tracking_load_indices)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
 
     mp.matrix_compare(
@@ -1482,8 +1408,7 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
     )
 
     assert call_sizes
-    assert 2 in call_sizes
-    assert max(call_sizes) == 2
+    assert sorted(call_sizes) == [1, 1, 2, 2]
 
 
 def test_cli_matrix_build_and_compare(tmp_path):
@@ -1655,6 +1580,87 @@ def test_cli_matrix_compare_export_gene_table(tmp_path):
         "gene_pop_ani",
     ]
     assert "gene1" in out["gene"].to_list()
+
+
+def test_export_matrix_compare_parquet_supports_genome_and_gene_tables(tmp_path):
+    pytest.importorskip("h5py")
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    gene_range_table = tmp_path / "gene_ranges.tsv"
+    matrix_db = tmp_path / "matrix.h5"
+    compare_db = tmp_path / "matrix_compare.duckdb"
+    genome_export = tmp_path / "matrix_compare.parquet"
+    gene_export = tmp_path / "matrix_compare_gene.parquet"
+    _write_profiles(profile_dir)
+    _write_gene_range_table(gene_range_table)
+
+    mp.build_matrix_hdf5(
+        profile_dir=profile_dir,
+        output_file=matrix_db,
+        memory_limit_gb=1.0,
+        gene_range_table=gene_range_table,
+    )
+    mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=compare_db,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="torch-cpu",
+        calculate="all",
+        loader_executor_kind="thread",
+        writer_executor_kind="thread",
+    )
+
+    written_genome = mp.export_matrix_compare_parquet(
+        matrix_compare_db_file=compare_db,
+        output_file=genome_export,
+        table="genome",
+    )
+    written_gene = mp.export_matrix_compare_parquet(
+        matrix_compare_db_file=compare_db,
+        output_file=gene_export,
+        table="gene",
+    )
+
+    assert written_genome == genome_export.resolve()
+    assert written_gene == gene_export.resolve()
+    genome_df = pl.read_parquet(genome_export)
+    gene_df = pl.read_parquet(gene_export)
+    assert genome_df.columns[:3] == ["sample_1", "sample_2", "genome"]
+    assert gene_df.columns == ["sample_1", "sample_2", "genome", "gene", "gene_pop_ani"]
+
+
+def test_export_matrix_compare_parquet_gene_requires_gene_rows(tmp_path):
+    pytest.importorskip("h5py")
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix.h5"
+    compare_db = tmp_path / "matrix_compare.duckdb"
+    gene_export = tmp_path / "matrix_compare_gene.parquet"
+    _write_profiles(profile_dir)
+
+    mp.build_matrix_hdf5(
+        profile_dir=profile_dir,
+        output_file=matrix_db,
+        memory_limit_gb=1.0,
+    )
+    mp.matrix_compare(
+        matrix_db_file=matrix_db,
+        output_file=compare_db,
+        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        memory_limit_gb=1.0,
+        backend="torch-cpu",
+        calculate="ani",
+        loader_executor_kind="thread",
+        writer_executor_kind="thread",
+    )
+
+    with pytest.raises(ValueError, match="does not contain any gene comparison rows"):
+        mp.export_matrix_compare_parquet(
+            matrix_compare_db_file=compare_db,
+            output_file=gene_export,
+            table="gene",
+        )
 
 
 def test_cli_legacy_build_matrix_hdf5_command_is_removed(tmp_path):
@@ -1857,7 +1863,6 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
     )
     first_summary = mp.matrix_compare(
         matrix_db_file=matrix_hdf5,
-        matrix_input_format="hdf5",
         output_file=compare_db,
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
@@ -1875,7 +1880,6 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
     )
     second_summary = mp.matrix_compare(
         matrix_db_file=matrix_hdf5,
-        matrix_input_format="hdf5",
         output_file=compare_db,
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
@@ -2067,43 +2071,22 @@ def test_matrix_compare_ignores_requested_min_cov(tmp_path):
     _metadata, _completed_pairs, _results = _load_matrix_compare_db(output_file)
 
 
-def test_matrix_compare_numpy_results_ignore_position_tile_size(tmp_path):
-    profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
-    compare_small_tile = tmp_path / "compare_small_tile.duckdb"
-    compare_large_tile = tmp_path / "compare_large_tile.duckdb"
-    _write_profiles(profile_dir)
+def test_cli_matrix_compare_rejects_removed_legacy_options():
+    runner = CliRunner()
 
-    mp.build_matrix_db(
-        profile_dir=profile_dir,
-        output_file=matrix_db,
-        memory_limit_gb=1.0,
+    legacy_format_result = runner.invoke(
+        cli.cli,
+        ["utilities", "matrix-compare", "--matrix-input-format", "hdf5"],
     )
-    mp.matrix_compare(
-        matrix_db_file=matrix_db,
-        output_file=compare_small_tile,
-        min_cov=mp.MATRIX_BUILD_MIN_COV,
-        memory_limit_gb=1.0,
-        backend="numpy",
-        calculate="ani+ibs",
-        position_tile_size=1,
-    )
-    mp.matrix_compare(
-        matrix_db_file=matrix_db,
-        output_file=compare_large_tile,
-        min_cov=mp.MATRIX_BUILD_MIN_COV,
-        memory_limit_gb=1.0,
-        backend="numpy",
-        calculate="ani+ibs",
-        position_tile_size=1_000_000,
-    )
+    assert legacy_format_result.exit_code != 0
+    assert "No such option: --matrix-input-format" in legacy_format_result.output
 
-    _small_meta, _small_pairs, small_results = _load_matrix_compare_db(compare_small_tile)
-    _large_meta, _large_pairs, large_results = _load_matrix_compare_db(compare_large_tile)
-
-    assert small_results.sort(["sample_1", "sample_2", "genome"]).equals(
-        large_results.sort(["sample_1", "sample_2", "genome"])
+    legacy_tile_result = runner.invoke(
+        cli.cli,
+        ["utilities", "matrix-compare", "--position-tile-size", "1000"],
     )
+    assert legacy_tile_result.exit_code != 0
+    assert "No such option: --position-tile-size" in legacy_tile_result.output
 
 
 def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
@@ -2148,8 +2131,9 @@ def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
 
 
 def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monkeypatch):
+    torch_module = pytest.importorskip("torch")
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
     mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
@@ -2159,14 +2143,17 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
             self.requested = backend
             self.kind = "torch"
             self.device = "cpu"
-            self.torch = SimpleNamespace()
+            self.torch = torch_module
 
-    original_load = mp._load_sample_genome_matrices
-    call_sizes: list[int] = []
+    original_target_load = mp._load_target_queue_block_for_hdf5_torch
+    block_sizes: list[int] = []
 
-    def tracking_load(conn, genome_idx, sample_ids, matrix_length, dtype_name):
-        call_sizes.append(len(sample_ids))
-        return original_load(conn, genome_idx, sample_ids, matrix_length, dtype_name)
+    def tracking_target_load(*args, **kwargs):
+        block_rows = kwargs.get("block_rows")
+        if block_rows is None:
+            block_rows = args[2]
+        block_sizes.append(len(block_rows))
+        return original_target_load(*args, **kwargs)
 
     def two_target_plan(
         vector_length: int,
@@ -2174,7 +2161,6 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
-        position_tile_size=None,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
 
@@ -2186,7 +2172,6 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         anchor_torch,
         target_torch,
         vector_length: int,
-        tile_size: int,
         matrix_value_semantics: str,
         need_ibs: bool = False,
         gene_ranges=None,
@@ -2208,7 +2193,7 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
-    monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
+    monkeypatch.setattr(mp, "_load_target_queue_block_for_hdf5_torch", tracking_target_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
     monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
@@ -2224,13 +2209,13 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
     )
 
     assert summary.target_chunks == 3
-    assert call_sizes.count(2) == 2
-    assert call_sizes.count(1) == 7
+    assert sorted(block_sizes) == [1, 2, 2]
 
 
 def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypatch):
+    torch_module = pytest.importorskip("torch")
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
     mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
@@ -2240,14 +2225,17 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
             self.requested = backend
             self.kind = "torch"
             self.device = "cpu"
-            self.torch = SimpleNamespace()
+            self.torch = torch_module
 
-    original_load = mp._load_sample_genome_matrices
-    call_sizes: list[int] = []
+    original_anchor_load = mp._load_anchor_queue_batch_for_hdf5_torch
+    batch_sizes: list[int] = []
 
-    def tracking_load(conn, genome_idx, sample_ids, matrix_length, dtype_name):
-        call_sizes.append(len(sample_ids))
-        return original_load(conn, genome_idx, sample_ids, matrix_length, dtype_name)
+    def tracking_anchor_load(*args, **kwargs):
+        batch_rows = kwargs.get("batch_rows")
+        if batch_rows is None:
+            batch_rows = args[2]
+        batch_sizes.append(len(batch_rows))
+        return original_anchor_load(*args, **kwargs)
 
     def two_target_plan(
         vector_length: int,
@@ -2255,7 +2243,6 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
-        position_tile_size=None,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
 
@@ -2267,7 +2254,6 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
         anchor_torch,
         target_torch,
         vector_length: int,
-        tile_size: int,
         matrix_value_semantics: str,
         need_ibs: bool = False,
         gene_ranges=None,
@@ -2289,7 +2275,7 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
         return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
-    monkeypatch.setattr(mp, "_load_sample_genome_matrices", tracking_load)
+    monkeypatch.setattr(mp, "_load_anchor_queue_batch_for_hdf5_torch", tracking_anchor_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
     monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
@@ -2306,12 +2292,13 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
     )
 
     assert summary.target_chunks == 3
-    assert call_sizes.count(2) >= 3
+    assert 2 in batch_sizes
 
 
 def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypatch):
+    torch_module = pytest.importorskip("torch")
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
     mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
@@ -2321,14 +2308,17 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
             self.requested = backend
             self.kind = "torch"
             self.device = "cpu"
-            self.torch = SimpleNamespace()
+            self.torch = torch_module
 
-    original_target_load = mp._load_target_queue_block_for_torch
+    original_prefetch = mp._load_target_prefetch_unit_for_hdf5_torch
     prefetched_block_sizes: list[int] = []
 
-    def tracking_target_load(matrix_db_file, genome_idx, block_rows, matrix_length, dtype_name):
+    def tracking_prefetch(*args, **kwargs):
+        block_rows = kwargs.get("block_rows")
+        if block_rows is None:
+            block_rows = args[3]
         prefetched_block_sizes.append(len(block_rows))
-        return original_target_load(matrix_db_file, genome_idx, block_rows, matrix_length, dtype_name)
+        return original_prefetch(*args, **kwargs)
 
     def two_target_plan(
         vector_length: int,
@@ -2336,7 +2326,6 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
-        position_tile_size=None,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
 
@@ -2348,7 +2337,6 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
         anchor_torch,
         target_torch,
         vector_length: int,
-        tile_size: int,
         matrix_value_semantics: str,
         need_ibs: bool = False,
         gene_ranges=None,
@@ -2370,7 +2358,7 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
         return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
-    monkeypatch.setattr(mp, "_load_target_queue_block_for_torch", tracking_target_load)
+    monkeypatch.setattr(mp, "_load_target_prefetch_unit_for_hdf5_torch", tracking_prefetch)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
     monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
     monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
@@ -2392,8 +2380,9 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
 
 
 def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
+    torch_module = pytest.importorskip("torch")
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
     mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
@@ -2403,7 +2392,7 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
             self.requested = backend
             self.kind = "torch"
             self.device = "cpu"
-            self.torch = SimpleNamespace()
+            self.torch = torch_module
 
     def two_target_plan(
         vector_length: int,
@@ -2411,7 +2400,6 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
-        position_tile_size=None,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
 
@@ -2423,7 +2411,6 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
         anchor_torch,
         target_torch,
         vector_length: int,
-        tile_size: int,
         matrix_value_semantics: str,
         need_ibs: bool = False,
         gene_ranges=None,
@@ -2502,7 +2489,7 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
 
 def test_build_matrix_db_inserts_separator_rows_for_multiscaffold_genome(tmp_path):
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix_multi.duckdb"
+    matrix_db = tmp_path / "matrix_multi.h5"
     _write_profiles_multiscaffold_same_genome(profile_dir)
 
     summary = mp.build_matrix_db(
@@ -2512,30 +2499,27 @@ def test_build_matrix_db_inserts_separator_rows_for_multiscaffold_genome(tmp_pat
     )
 
     assert summary.sample_count == 2
-    samples, genomes, scaffolds, matrices = _load_matrix_db(matrix_db)
+    _metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_db)
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b"]
-    assert genomes == [
-        (0, "genome1", 5, 4, 2),
-    ]
-    assert scaffolds == [
+    assert [
+        (spec.genome_idx, spec.genome, spec.matrix_length, spec.true_length, spec.scaffold_count)
+        for spec in genomes
+    ] == [(0, "genome1", 5, 4, 2)]
+    assert [
+        (spec.genome_idx, spec.scaffold_ordinal, spec.genome, spec.chrom, spec.axis_start, spec.axis_end, spec.vector_length)
+        for spec in scaffolds
+    ] == [
         (0, 0, "genome1", "chr1", 0, 1, 2),
         (0, 1, "genome1", "chr2", 3, 4, 2),
     ]
-    unpacked = {}
-    for sample_idx, genome_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob in matrices:
-        unpacked[(sample_idx, genome_idx)] = mp._unpack_matrix(
-            bytes(matrix_blob),
-            count_dtype,
-            (matrix_rows, matrix_cols),
-        ).tolist()
     # row 2 is the synthetic separator row between the two scaffolds
-    assert unpacked[(0, 0)][2] == [0, 0, 0, 0]
-    assert unpacked[(1, 0)][2] == [0, 0, 0, 0]
+    assert matrices["0"][0][2].tolist() == [0, 0, 0, 0]
+    assert matrices["0"][1][2].tolist() == [0, 0, 0, 0]
 
 
 def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
     profile_dir = tmp_path / "profiles"
-    matrix_db = tmp_path / "matrix_multi.duckdb"
+    matrix_db = tmp_path / "matrix_multi.h5"
     output_file = tmp_path / "matrix_multi_compare.duckdb"
     _write_profiles_multiscaffold_same_genome(profile_dir)
     mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)

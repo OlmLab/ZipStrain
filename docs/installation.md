@@ -13,15 +13,15 @@ Follow the steps below to set up ZipStrain on your system.
 
 2. Install ZipStrain:
 
-    ```bash
+    ```
     pip install zipstrain
     ```
 
     This installs all Python dependencies **except samtools**. Install samtools separately from [htslib.org](http://www.htslib.org/download/) or via your package manager (e.g., `brew install samtools`, `apt install samtools`).
 
-3. If you want the experimental matrix utilities with Torch-backed CPU/GPU execution, install the optional extra:
+3. If you want the matrix-store workflow with Torch-backed CPU/GPU execution, install the optional extra:
 
-    ```bash
+    ```
     pip install "zipstrain[matrix]"
     ```
 
@@ -30,7 +30,7 @@ Follow the steps below to set up ZipStrain on your system.
     - On Apple Silicon, the standard `torch` wheel can use Metal through the MPS backend.
     - On Linux with NVIDIA GPUs, install the ZipStrain extra and then replace Torch with the CUDA wheel that matches your system. For example:
 
-      ```bash
+      ```
       pip install "zipstrain[matrix]"
       pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu124
       ```

@@ -1,64 +1,238 @@
 # Tutorial
-This tutorial will guide you through the basics of using ZipStrain.
 
-!!! warning "Work in progress"
-    The following sections are still being completed:
+This tutorial walks through the current ZipStrain workflow from mapped reads to comparison outputs.
 
-    - [ ] Download links for example input/output files throughout the tutorial
-    - [ ] Step 6: Comparing profiled samples at the genome level
-    - [ ] Step 7: Comparing profiled samples at the gene level
-    - [ ] Code examples for strain sharing and downstream analyses
-    - [ ] Completing the "Recommended Workflow" section
+It covers two current comparison methods:
 
-## Introduction to ZipStrain
-ZipStrain is a tool for profiling a metagenomics sample against a database of reference genomes and performing comparisons between the profiles as well as downstream analyses. 
+1. The **standard** method, which compares profile tables directly with table operations
+2. The **matrix** method, which first builds dense whole-genome matrices and then compares from that store
 
-The typical workflow consists of the following steps:
+The most important difference is not “old versus new.” It is when each method is a better fit.
 
-1- Mapping reads to a reference database using any read mapper of your choice (e.g., BWA, Bowtie2, Minimap2).
+- The **standard** method is easier to start with, more general, and usually the better choice when you only have a few samples or only need a modest number of comparisons.
+- The **matrix** method is worth the extra setup when you expect repeated all-vs-all comparison runs against the same reference set, especially when your analysis is centered on one genome or a small set of target genomes across many samples.
 
-2- Generating a profile from the mapped reads using ZipStrain. This step will generate a parquet file containing nucleotide frequencies for all positions in the reference genomes.
+## Before You Start
 
-3- Comparing the generated profiles against each other and/or against a reference profile.
+You should already have one of these two starting points:
 
-4- Performing downstream analyses, such as Identity-By-State (IBS), StrainSharing, and clustering.
+1. mapped BAM files for your samples, plus the reference bundle they were mapped against
+2. raw reads for your samples, plus enough information to build the reference bundle first
 
-### Mapping Reads
+The reference bundle means:
 
-In this step, you will map your metagenomics reads to a reference database using a read mapper of your choice. The reference database is a concatenation of all reference genomes you want to profile against. The output of this step should be a BAM file. It is recommended to discard unmapped reads to reduce file size. Currently, you can use the nextflow pipeline accompanying ZipStrain to perform this step with Bowtie2. Here is an example command using Bowtie2, but for more information about the nextflow pipeline, please refer to the [Nextflow Pipeline Documentation](./NextflowPipeline.md).
+- a reference genome FASTA
+- an STB file mapping scaffolds to genomes
 
+You can provide that bundle directly, or generate it from Sylph abundance output.
+
+Optionally, you may also have:
+
+- a Prodigal-style gene FASTA
+- or a scaffold-relative gene range table
+
+If you need installation details first, see [installation](./installation.md).
+If you need pipeline-specific details, see [NextflowPipeline](./NextflowPipeline.md).
+If you want command-by-command help, see [cli](./cli.md).
+
+## Workflow Overview
+
+A typical ZipStrain project now looks like this:
+
+1. Prepare a reference bundle, or build one from Sylph.
+2. Map reads to that reference genome database.
+3. Build profiling assets.
+4. Build a null model.
+5. Generate one profile parquet per sample.
+6. Choose a comparison route:
+   - standard compare directly from profile parquets
+   - matrix compare from a prebuilt matrix store
+7. Export or analyze the results.
+
+If you are starting from BAM files that are already mapped against the right reference bundle, you can skip the bundle-building and mapping steps.
+
+## Route Selection
+
+If you are deciding which route to use before doing anything else, use this rule of thumb:
+
+- Choose **standard** if you want the simplest path from profiles to results.
+- Choose **matrix** if you expect to reuse the same profile cohort for repeated comparison jobs.
+
+Use the standard workflow when:
+
+- you only need a few comparisons
+- you want the fewest moving parts
+- you want direct profile-table operations without building another artifact first
+- you want the most general route across genomes and workflows
+
+Use the matrix workflow when:
+
+- you have many samples against the same reference set
+- you want resumable all-vs-all comparison runs
+- you expect to append new samples over time
+- you want one prebuilt store that can be reused for many comparison jobs
+- you are mainly focused on one genome or a small set of genomes and want repeated comparison throughput
+
+In practice:
+
+- standard compare is simpler for small ad hoc work
+- matrix compare is usually not worth it for only a few samples, because you first have to build the matrix store
+- matrix compare becomes attractive once repeated comparison cost becomes the bottleneck
+
+One important clarification:
+
+- the **standard comparison route** can be run in two practical ways:
+  - a Python/CLI workflow
+  - a Nextflow workflow
+- the **matrix comparison route** is currently a CLI workflow built on top of standard profile outputs
+
+## Worked Example Map
+
+If you want a concrete starting point instead of reading the whole reference flow first, use one of these:
+
+1. [Worked Example A: Standard workflow with the Python CLI](#worked-example-a-standard-workflow-with-the-python-cli)
+2. [Worked Example B: Standard workflow with Nextflow](#worked-example-b-standard-workflow-with-nextflow)
+3. [Worked Example C: Matrix workflow for repeated all-vs-all comparison](#worked-example-c-matrix-workflow-for-repeated-all-vs-all-comparison)
+
+## Step 1: Prepare the Reference Bundle and Map Reads
+
+ZipStrain expects reads to be mapped to a concatenated reference genome set.
+The output of this step should be BAM files.
+
+There are two normal ways to get there:
+
+1. start with an existing reference FASTA and STB
+2. build the reference bundle from Sylph, then map reads
+
+### Option A: Use an Existing Reference Bundle
+
+If you already have:
+
+- `reference_genomes.fna`
+- `reference_genomes.stb`
+
+you can map reads directly with either the CLI/your own mapper or the Nextflow pipeline.
+
+Example with the Nextflow pipeline:
+
+```bash
+nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --reference_genome reference_genomes.fna \
+  --stb reference_genomes.stb \
+  --output_dir out_map \
+  -c conf.config \
+  -profile docker \
+  -resume
 ```
 
-nextflow run zipstrain.nf --mode 'map_reads' --input_type 'sra|local' --input_table 'path/to/your/input_table.tsv' --reference_genome <path/to/your/reference_db.fasta> --output_dir <path/to/your/output_dir> -c conf.config -profile <your_profile> -resume
+### Option B: Build the Reference Bundle from Sylph
 
+If you do not already have a prepared reference bundle, ZipStrain can build one from Sylph abundance output.
+
+You can do that in either workflow style:
+
+- with the Python CLI using `zipstrain utilities build-genome-db`
+- or inside Nextflow by omitting `--reference_genome` and letting the pipeline build the bundle from Sylph
+
+CLI example:
+
+```bash
+zipstrain utilities build-genome-db \
+  --tool sylph \
+  --abundance-table sylph_abundance.csv \
+  --cache-dir genome_cache \
+  --output-dir reference_bundle
 ```
 
-NOTE: map_reads mode can work with either SRA accessions or local FASTQ files. Please refer to the Nextflow Pipeline Documentation for more details.
+This creates:
 
-This step will generate BAM files for each of your samples in the specified output directory.
+- `reference_bundle/reference_genomes.fna`
+- `reference_bundle/reference_genomes.stb`
 
-### Generating Profiles
+Nextflow example:
 
-In this step, you will generate profiles from the mapped reads using ZipStrain. A profile is simply a table in parquet format that contains the 
-following columns:
-
+```bash
+nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --output_dir out_map \
+  --genome_db_cache_dir genome_cache \
+  --sylph_db /path/to/custom.syldb \
+  -c conf.config \
+  -profile docker \
+  -resume
 ```
 
-|chrom|genome|gene|pos|A|C|G|T|
+In that mode, Nextflow runs Sylph, builds the reference bundle, and then maps reads.
 
+### Reads Table Example
+
+```csv
+sample_name,reads1,reads2
+sample1,/data/sample1_R1.fastq.gz,/data/sample1_R2.fastq.gz
+sample2,/data/sample2_R1.fastq.gz,/data/sample2_R2.fastq.gz
 ```
 
-Where `chrom` is the scaffold, `genome` is the genome name (derived from the STB file), `gene` is the gene name (if a gene file is provided), `pos` is the position in the reference genome, and `A`, `C`, `G`, and `T` are the counts of each nucleotide at that position based on the mapped reads.
+This step produces BAM files for each sample.
 
-The information will be generated for every position in the reference genomes that has at least one read mapped to it. There are two ways to generate profiles using ZipStrain: 
+## Step 2: Prepare Profiling Assets
 
-- ZipStrain as a command-line tool
+If you are using the CLI profile workflow, generate the supporting assets once:
 
-- ZipStrain Nextflow pipeline.
+```bash
+zipstrain utilities prepare_profiling \
+  --reference-fasta reference_genomes.fna \
+  --gene-fasta reference_genes.fna \
+  --stb-file reference_genomes.stb \
+  --output-dir profiling_assets
+```
 
-You can profile multiple BAM files using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods.
-For both you need to prepare a csv file containing the paths to the bam files to be profiled and the sample names. Example of such a csv file:
+This creates:
 
+- `genomes_bed_file.bed`
+- `genome_lengths.parquet`
+- `gene_range_table.tsv`
+
+Notes:
+
+- `--gene-fasta` is optional, but recommended if you want gene-aware outputs later.
+- The generated `gene_range_table.tsv` is scaffold-relative and can also be reused by the matrix workflow.
+
+## Step 3: Build the Null Model
+
+ZipStrain uses a null model for sequencing-error adjustment during profiling.
+Build it once from any representative BAM file:
+
+```bash
+zipstrain utilities build-null-model \
+  --bam-file /path/to/example.bam \
+  --output-file null_model.parquet
+```
+
+## Step 4: Generate Profiles
+
+Profiles are parquet tables with nucleotide counts at covered positions.
+Each sample profile contains columns like:
+
+```text
+chrom | genome | gene | pos | A | C | G | T
+```
+
+Where:
+
+- `chrom` is the scaffold
+- `genome` is the genome name
+- `gene` is the gene label if gene context is available
+- `pos` is the coordinate on the scaffold
+- `A/C/G/T` are nucleotide counts
+
+### CLI Profile Workflow
+
+Prepare a CSV of BAM files:
 
 ```csv
 sample_name,bamfile
@@ -67,374 +241,744 @@ sample2,/path/to/sample2.bam
 sample3,/path/to/sample3.bam
 ```
 
-#### ZipStrain CLI
-
-To profile multiple BAM files using the ZipStrain CLI, you should first prepare some files:
+Then run:
 
 ```bash
-zipstrain utilities prepare_profiling  --reference-fasta <path/to/reference/fasta> --gene-fasta <path/to/reference/fasta/genes> --stb-file  <path/to/stb/file> --output-dir <directory/to/save/outputs>
+zipstrain profile \
+  --input-table bams.csv \
+  --stb-file reference_genomes.stb \
+  --null-model null_model.parquet \
+  --gene-range-table profiling_assets/gene_range_table.tsv \
+  --bed-file profiling_assets/genomes_bed_file.bed \
+  --genome-length-file profiling_assets/genome_lengths.parquet \
+  --run-dir out_profile
 ```
 
-Your output directory should contain the following files:
-
--   genomes_bed_file.bed
--   genome_lengths.parquet
--   gene_range_table.tsv
-
-You also need to build a null model for sequencing error adjustment:
+### Nextflow Profile Workflow
 
 ```bash
-zipstrain utilities build-null-model --bam-file <path/to/any/sample.bam> --output-file <path/to/null_model.parquet>
+nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table bams.csv \
+  --reference_genome reference_genomes.fna \
+  --gene_file reference_genes.fna \
+  --stb reference_genomes.stb \
+  --output_dir out_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
 ```
 
-Now you can profile your bam files:
+Outputs include:
 
-```bash
-zipstrain profile --input-table <path/to/bam/csv> --stb-file <path/to/stb/file> --null-model <path/to/null_model.parquet> --gene-range-table <path/to/gene/range> --bed-file <path/to/bed/file> --genome-length-file <path/to/genome_lengths.parquet> --run-dir <path/to/save/generated/files>
-```
+- `*_profile.parquet`
+- `*_genome_stats.parquet`
+- `*_gene_stats.parquet`
 
+## Step 5A: Standard Comparison Route
 
-#### Nextflow Pipeline
+This route compares profile parquets directly.
 
-To profile multiple BAM files using Nextflow, you can create a Nextflow script as follows:
+### Single Pair Compare
 
-```
-
-nextflow run zipstrain.nf --mode "profile" --input_table <path/to/bam/csv>  --gene_file <path/to/reference/fasta/genes> --stb <path/to/stb/file>  --output_dir <path/to/save/generated/files> --reference_genome <path/to/reference/fasta> -c conf.config -profile <your/system/specific/profile> -resume
-
-```
-
-**Note**  With the nextflow pipeline, you don't need the preparation step and those will be made along the way.
-
-**Note** `profile` mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:
-
-```zipstrain utilities generate_stb --genomes-dir-file <path/to/genomes_dir_file>```
-
-If you have trouble generating the STB file, you can simply make one using a custom script. The STB file is a tab-separated file with two columns: scaffold name and genome file name. 
-
-### Compare genomes in multiple profiled samples 
-
-You can compare multiple profiled samples using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods. The two approaches are slightly different in terms of input requirements. First let's see how this is done using the ZipStrain CLI.
-
-#### ZipStrain CLI
-To compare multiple profiled samples using the ZipStrain CLI, first you need to build a profile database that contains all the profiled samples you want to compare. You can do this by running the following command:
-
-```bash
-zipstrain utilities build-profile-db --profile-db-csv <path/to/profiles/csv> --output-file <path/to/save/profile/db>
-```
-The input CSV file should have the following columns:
-
-    
-    - profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
-    
-    - profile_location: The location of the profile
-    
-    - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
-    
-    - gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.
-
-Running this command will perform the necessary checks and if successful, it will create a profile database in parquet format at the specified output location.
-
-Next, You use this profile database build a configuration json file that will be used to calculate the pairs that need to be compared. In this step you need to define the required parameters for comparison such as min_coverage, etc. You can make the configuration file by running the following command:
-
-```bash
-zipstrain utilities build-genome-comparison-config \
---profile-db <path/to/profile/db> \
---gene-db-id <gene_db_id_used_in_profile_db> \
---reference-genome-id <reference_db_id_used_in_profile_db> \
---scope "all" \
---min-cov 5 \
---min-gene-compare-len 200 \
---stb-file-loc <path/to/stb/file> \
---current-comp-table <path/to/current/comparison/table.parquet> \
---output-file <path/to/save/comparison/config.json>
-```
-Note that providing current-comp-table is optional. If provided, the comparison config will only include pairs that are not already compared in the current comparison table.
-
-Finally, you can run the comparison using the generated configuration file and the profile database:
-
-```bash
-zipstrain compare genomes \
---genome-comparison-object <path/to/comparison/config.json> \
---run-dir <path/to/save/comparison/outputs> \
---calculate ani \
---ani-method popani \
---engine duckdb \
---calculate ani+ibs+identical_genes \
---max-concurrent-batches 1 \
---duckdb-threads 8
-```
-
-`single_compare_genome` supports `--engine polars|duckdb` (default: `polars`) and metric selection via `--calculate` (default: `all`). For lower-memory machines, set DuckDB's memory limit, and for CPU control set DuckDB threads:
+For one pair of samples:
 
 ```bash
 zipstrain utilities single_compare_genome \
---mpileup-contig-1 <profile_1.parquet> \
---mpileup-contig-2 <profile_2.parquet> \
---stb-file <path/to/stb.tsv> \
---calculate ani+ibs+identical_genes \
---engine duckdb \
---output-file <out.parquet> \
---duckdb-memory-limit 2GB \
---duckdb-threads 8 \
---duckdb-temp-directory /tmp
+  --mpileup-contig-1 sample1_profile.parquet \
+  --mpileup-contig-2 sample2_profile.parquet \
+  --stb-file reference_genomes.stb \
+  --calculate ani+ibs \
+  --engine duckdb \
+  --output-file sample1_vs_sample2.parquet
 ```
 
-#### Nextflow Workflow
+### Large Standard Compare Runs
 
-There are two ways you can run the comparison workflow in ZipStrain Nextflow pipeline. 
+For many standard comparisons, the direct profile-table workflow is still:
 
-1- I have a comparison config file already made using the ZipStrain CLI as explained above.
+1. build a profile DB
+2. build a comparison config
+3. run `zipstrain compare genomes`
 
-In this case you obtain a table of remaining pairs to be compared from the comparison config file and run the comparison as follows:
-
-```
-zipstrain utilities to-complete-table --genome-comparison-object <path/to/comparison/config.json> --output-file <path/to/output/remaining_pairs.csv>
-```
-
-Then you can run the comparison using the following command:
-
-```
-nextflow run zipstrain.nf --mode compare_genomes \
- --input_table <path/to/output/remaining_pairs.csv> \
- --input_type "pair_table" --gene_file <path/to/gene/fasta/file> \
- --reference_genome <path/to/reference/genome.fasta> \  
- --stb <path/to/stb/file.stb> -c conf.config \
- --output_dir "<path/to/output/directory>" \
- --compare_genome_scope "all" \
- --compare_memory_mode "heavy" \
- --parallel_mode "batched" \
- --batch_size 2000 -profile <profile_name> \
- --batch_compare_n_parallel 3 -qs 200 -resume
-```
-
-2- I don't have a comparison config file and I want to run the comparison directly from the profile lists.
-
-In this case, the nextflow pipeline will run all non-redundant pairwise comparisons between the provided profiles. Here is an example command:
+Example:
 
 ```bash
-nextflow run zipstrain.nf --mode compare_genomes \
- --input_table <path/to/profiles/csv> \
- --input_type "profile_table" --gene_file <path/to/gene/fasta/file> \
- --reference_genome <path/to/reference/genome.fasta> \
- --stb <path/to/stb/file.stb> -c conf.config \
- --output_dir "<path/to/output/directory>" \
- --compare_genome_scope "all" \
- --compare_memory_mode "heavy" \
- --parallel_mode "batched" \
- --batch_size 2000 -profile <profile_name> \
- --batch_compare_n_parallel 3 -qs 200 -resume
+zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file profile_db.parquet
 ```
-
-For more information, refer to the [Nextflow Pipeline Documentation](./NextflowPipeline.md).
-
-#### Output files
-
-Comparing profiles yields a results table containing all compared profile pairs. When using the ZipStrain CLI, the output is at `<run_dir>/Outputs/all_comparisons.parquet`; with Nextflow, it is `merged_comparisons.parquet`. The table has the following columns:
-
-|genome|total_positions|share_allele_pos|genome_pop_ani|max_consecutive_length|shared_genes_count|identical_gene_count|perc_id_genes|sample_1|sample_2|
-|-----|---------------|----------------|--------------|---------------------|------------------|--------------------|-------------|--------|--------|
-
-
-
-### Downstream Analyses
-
-In this step, you can use the perform statiscal analyses on the comparison results generated in the previous step and visualize them using ZipStrain's Python API. All of the functionalities in the visualization module are explained below:
-
-#### Strain Sharing Analysis
-
-Definition of strain sharing is somewhat losely defined in the literature. In ZipStrain, we use the following steps to define strainsharing:
-
--   For each genome in the reference fasta for which the profiling is done, popANI is calculated between each pair of samples in the comparison step.
-
--   If the popANI between two samples for a given genome is above a certain threshold (default: 99.9%), and the breadth of coverage for that genome in both samples is above a certain threshold (default: 0.5), then the two samples are considered to share a strain for that genome.
-
--  The strain sharing is checked for all genomes in the reference fasta.
-
--  Each sample is mapped to a group using a sample to population mapping file provided by the user (See the example below). 
-
--  Finally, the strain sharing between group A,B is calculated as the number of genome strains shared between samples in group A and samples in group B divided by the total number of genomes in group A. As a result the order of the groups matters here. The main justification for this definition is that in many cases this ordering is biologically relevant. For example, when looking at mother-infant pairs, if only 3 genomes are present in infants, but 100 genomes are present in mothers, and they share all 3 genomes in the infants, we would like to see that the infants have 100% of their strains shared with mothers, while mothers only have 3% of their strains shared with infants.
-
-### Recommended Workflow
-
-ZipStrain's Python API provides functionalities needed to create and organize your profiles and comparisons tables. It is highly recommended to use this workflow to manage your profiles and comparisons if you plan to use ZipStrain for multiple studies to utilize the full potential of ZipStrain. Here is a recommended workflow:
-
-#### 1- Create a centralized database for your profiles
-
-Database module in ZipStrain provides functionalities to create and manage a centralized database for your profiles. The easiest way to create a profile database is to provide a CSV file that has necessary information about each profile. Your CSV file should have the following columns (and only these columns):
-
-- profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
-    
-- profile_location: The location of the profile in parquet format. This is the main parquet file generated during the profiling step.
-
-- reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to. Could be used for filtering profiles based on reference database later on.
-    
-- gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier of your choice for the database that the reads are mapped to. Could be used for filtering profiles based on gene database later on.
-
-
-
-## An Example Workflow
-
-This example guides you through a complete workflow of using ZipStrain from building a genome database all the way to perform pairwise genome and gene comparisons and between multiple samples. Here we use MGnify Genomes mouse gut catalogue v1.0 as our reference genome database and use some example reads provided below to demonstrate the workflow. For each step, you can download the necessary input files from the provided links and follow the instructions to produce the outputs or if you want to skip a step, you can directly download the output files from the provided links.
-
-### Step 1- Prepare Reference Database
-
-|Inputs|Link|
-|------|-----|
-| MGnify Genomes mouse gut catalogue v1.0 metadata | [Link](https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/genomes-all_metadata.tsv) |
-
-|Outputs|Link|
-|-------|-----|
-| Concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
-| STB file | [Link](TOBEIMPLEMENTED) |
-
-We first need to extract the accessions of the species representatives genomes from the metadata file provided above. You can use any tool of your choice to extract the accessions. Here is an example command using polars library (installed when you install ZipStrain) in python:
-
-```python
-import polars as pl
-metadata_df = pl.read_csv("genomes-all_metadata.tsv", separator="\t") #Load metadata table downloaded from the provided link
-metadata_df.join(pl.read_csv("genomes-all_metadata.tsv",separator="\t").select('Species_rep',"FTP_download").unique("Species_rep"),left_on="Genome",right_on="Species_rep",how="inner").select("Genome").with_columns("https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/species_catalogue/"+
-pl.col("Genome").str.slice(0,11)+"/"+pl.col("Genome")+"/genome/"+pl.col("Genome")+".fna").select("literal"
-).write_csv("sp_rep_genomes.csv",include_header=False) # A one(ish) liner that generates the link of each species representative genome
-```
-
-This will a text file containing the link to download each genome. Using the tool of your choice, download all the genomes. Here is an example command using `wget`:
 
 ```bash
-mkdir genomes
-for link in $(cat genome_accessions.txt); do
-    wget $link -P genomes/
-done
+zipstrain utilities build-genome-comparison-config \
+  --profile-db profile_db.parquet \
+  --gene-db-id ref_genes_v1 \
+  --reference-genome-id ref_genomes_v1 \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file-loc reference_genomes.stb \
+  --output-file genome_compare_config.json
 ```
-
-Now you can use ZipStrain to build the STB file:
 
 ```bash
-zipstrain utilities generate_stb -g genomes/ -o  mgnify_mouse_gut_genomes.stb --extension ".fna"
+zipstrain compare genomes \
+  --genome-comparison-object genome_compare_config.json \
+  --run-dir compare_run \
+  --calculate ani+ibs+identical_genes \
+  --ani-method popani \
+  --engine duckdb \
+  --duckdb-threads 8
 ```
 
-Finally, concatenate all the genomes into a single fasta file:
+This route is still valid, but it is not the best option once you repeatedly compare many samples against the same reference set.
+
+## Step 5B: Matrix Comparison Route
+
+This route converts standard sample profiles into a reusable matrix store, then compares all non-redundant sample pairs from that store.
+
+### Why Use the Matrix Route
+
+The matrix route is useful when:
+
+- you want to compare many samples repeatedly
+- you want appendable sample growth over time
+- you want resumable compare state in a DuckDB result database
+- you want ANI, IBS, and optional gene ANI from the same store
+
+### Matrix Route Overview
+
+The matrix route has four steps:
+
+1. build the matrix store
+2. optionally append new samples later
+3. run matrix compare
+4. export the compare DB to parquet
+
+### Build the Matrix Store
 
 ```bash
-cat genomes/*.fna > mgnify_mouse_gut_genomes.fa 
+zipstrain utilities build-matrix-db \
+  --profile-dir out_profile \
+  --output-file matrix_db.h5 \
+  --gene-range-table profiling_assets/gene_range_table.tsv \
+  --memory-limit-gb 16
 ```
 
-This will be your reference genome database for profiling.
+What this does:
 
-### Step 2- Find genes in the reference genomes by running Prodigal
+- scans all standard profile parquets in `out_profile`
+- builds one HDF5-backed matrix store
+- keeps one dense whole-genome matrix per sample per genome
+- stores gene coordinate metadata if `--gene-range-table` is provided
 
-|Inputs|Link|
-|------|-----|
-| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+Important notes:
 
-|Outputs|Link|
-|-------|-----|
-| Prodigal gene fasta file | [Link](TOBEIMPLEMENTED) |  
+- `matrix_db.h5` is the current matrix-store format
+- this store is appendable on the sample axis
+- if gene ranges are included here, matrix compare can also compute gene ANI later
 
-For this example, we can directly use the concatenated genome fasta file from Step 1. You can run Prodigal to find genes in the reference genomes using the following command:
+### Append New Samples Later
+
+If you later generate more profiles against the same reference set:
 
 ```bash
-prodigal -i mgnify_mouse_gut_genomes.fa -d mgnify_mouse_gut_genes.fasta  -p meta
+zipstrain utilities append-matrix-db \
+  --profile-dir out_profile_new \
+  --matrix-db-file matrix_db.h5 \
+  --memory-limit-gb 16
 ```
 
-### Step 3- Map example reads to the reference database
+This validates that the new profiles match the stored genome/scaffold contract and appends only new sample rows.
 
-|Inputs|Link|
-|------|-----|
-| Example metagenomics reads | [Link](TOBEIMPLEMENTED) |
-| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
+### Convert a Legacy Matrix DuckDB
 
-|Outputs|Link|
-|-------|-----|
-| Mapped BAM files | [Link](TOBEIMPLEMENTED) |
-
-You can use any read mapper of your choice to map the reads to the reference database. Here we use the bowtie2 option provided in the ZipStrain Nextflow pipeline to perform the mapping. First, prepare an input CSV file containing the sample names and paths to the FASTQ files:
-
-```csv
-sample_name,reads1,reads2
-sample1,/path/to/sample1_R1.fastq,/path/to/sample1_R2.fastq
-sample2,/path/to/sample2_R1.fastq,/path/to/sample2_R2.fastq
-```
-
-Then run the following Nextflow command to perform the mapping:
+If you already have an old matrix DuckDB from a previous workflow:
 
 ```bash
-nextflow run zipstrain.nf --mode 'map_reads' --input_type 'local' --input_table 'path/to/your/input_table.csv' --reference_genome mgnify_mouse_gut_genomes.fa --output_dir mapping_output/ -c conf.config -profile <your_profile> -resume
+zipstrain utilities matrix-db-to-hdf5 \
+  --matrix-db-file legacy_matrix.duckdb \
+  --output-file matrix_db.h5
 ```
 
-This will generate BAM files for each sample in the `mapping_output/` directory.
+This is only needed for older matrix builds. New matrix workflows should start directly from `build-matrix-db`.
 
-### Step 4- Prepare necessary files for profiling
+### Run Matrix Compare
 
-|Inputs|Link|
-|------|-----|
-| MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file | [Link](TOBEIMPLEMENTED) |
-| Prodigal gene fasta file | [Link](TOBEIMPLEMENTED) |
-| STB file | [Link](TOBEIMPLEMENTED)|
-
-|Outputs|Link|
-|-------|-----|
-| Bed file | [Link](TOBEIMPLEMENTED) |
-| Genome lengths parquet file | [Link](TOBEIMPLEMENTED) |
-| Gene range table TSV file | [Link](TOBEIMPLEMENTED) |
-
-You can use ZipStrain to prepare the necessary files for profiling using the following command:
+Run all-vs-all sample comparison from the matrix store:
 
 ```bash
-zipstrain utilities prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
-``` 
+zipstrain utilities matrix-compare \
+  --matrix-db-file matrix_db.h5 \
+  --output-file matrix_compare.duckdb \
+  --memory-limit-gb 16 \
+  --loader-executor thread \
+  --writer-executor thread \
+  --backend torch-cpu \
+  --calculate all
+```
 
-This will generate the following files in the `preprofiles/` directory:
+What `--calculate` means here:
 
-- genomes_bed_file.bed
-- genome_lengths.parquet
-- gene_range_table.tsv
+- `ani`: genome ANI only
+- `ani+ibs`: genome ANI plus IBS
+- `+gene` or `gene`: gene ANI, which also implies ANI
+- `all`: `ani+ibs`, and also `gene` when the matrix store contains gene annotations
 
-### Step 5- Profile the mapped BAM files
+Backend choices:
 
-|Inputs                       |Link                                 |
-|-----------------------------|-------------------------------------|
-| Mapped BAM files            | [mapped_bam](TOBEIMPLEMENTED)       |
-| Bed file                    | [bed_file](TOBEIMPLEMENTED)         |
-| Genome lengths parquet file | [genome_lengths](TOBEIMPLEMENTED)   |
-| Gene range table TSV file   | [gene_range_table](TOBEIMPLEMENTED) |
-| STB file                    | [stb_file](TOBEIMPLEMENTED)         |
-| Null model parquet file     | [null_model](TOBEIMPLEMENTED)       |
+- `numpy`: simple CPU path
+- `torch-cpu`: torch on CPU
+- `torch-cuda`: NVIDIA GPU
+- `torch-mps`: Apple Silicon GPU
+- `torch`: auto-select device
 
-|Outputs                          |Link                                 |
-|---------------------------------|-------------------------------------|
-| Profile parquet files           |[profile_link](TOBEIMPLEMENTED)      |
-| Genome Statistics parquet files |[genome_stats_link](TOBEIMPLEMENTED) |
-| Gene Statistics parquet files   |[gene_stats_link](TOBEIMPLEMENTED)   |
+Recommended starting points:
 
-Now we have to make a CSV file containing the sample names and paths to the BAM files:
+- Apple Silicon: `--backend torch-mps`
+- NVIDIA GPU: `--backend torch-cuda`
+- debugging or CPU-only: `--backend torch-cpu`
+
+Important operational notes:
+
+- the compare output is a DuckDB database, not parquet
+- the compare DB is resumable
+- rerunning the same command on the same output file only processes unfinished sample pairs
+- `--memory-limit-gb` is the main throughput control for target block size
+- `--position-tile-size` is currently a legacy compatibility option and is not used by the current full-genome compare path
+
+### Export Matrix Compare Results
+
+Export genome-level rows:
+
+```bash
+zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file matrix_compare.duckdb \
+  --output-file matrix_compare.parquet
+```
+
+Export gene-level ANI rows:
+
+```bash
+zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file matrix_compare.duckdb \
+  --output-file matrix_compare_gene.parquet \
+  --table gene
+```
+
+If the compare DB does not contain gene results, the gene export command raises a clear error.
+
+## Understanding Matrix Inputs and Outputs
+
+### Matrix Store Input
+
+The matrix store is:
+
+- built from standard profile parquets
+- stored as HDF5
+- organized by genome
+- reused across many compare runs
+
+### Matrix Compare Output
+
+The compare DB contains:
+
+- genome-level results in `matrix_compare_results`
+- optional gene-level results in `matrix_compare_gene_results`
+- resume metadata for completed sample-pair/genome work
+
+Genome parquet exports contain name-based columns such as:
+
+- `sample_1`
+- `sample_2`
+- `genome`
+- `total_positions`
+- `share_allele_pos`
+- `genome_pop_ani`
+- `max_consecutive_length` when IBS is requested
+
+Gene parquet exports contain:
+
+- `sample_1`
+- `sample_2`
+- `genome`
+- `gene`
+- `gene_pop_ani`
+
+## Choosing Between Standard and Matrix Compare
+
+Use standard compare when:
+
+- you only need a limited number of pairwise comparisons
+- you want direct profile-to-profile comparison without building another store
+- your existing workflow is already based on comparison config objects or Nextflow standard compare jobs
+
+Use matrix compare when:
+
+- you want to compare all samples against all samples repeatedly
+- you want resumability at the compare-DB level
+- you expect to append new profiles over time
+- you want one reusable comparison substrate for ANI, IBS, and gene ANI
+
+## Current Limitations and Practical Notes
+
+- The matrix route is currently a CLI workflow, not a Nextflow mode.
+- HDF5 matrix input currently requires a torch backend.
+- Gene ANI from matrix compare requires that the matrix store was built with `--gene-range-table`.
+- The matrix route does not replace the standard `zipstrain compare` workflow everywhere yet; both routes remain supported.
+
+## Recommended Starting Point
+
+For a new project:
+
+1. generate standard sample profiles
+2. build one matrix store from those profiles
+3. run matrix compare into a resumable DuckDB compare DB
+4. append new samples into the matrix store as the cohort grows
+
+This gives you:
+
+- reusable comparison input
+- resumable output state
+- fast repeated cohort comparison runs
+- one place to export genome and gene comparison tables
+
+## Worked Example A: Standard Workflow with the Python CLI
+
+This is the most direct standard ZipStrain workflow when you already have mapped BAM files and want to stay in the CLI.
+
+If you do not already have `reference_genomes.fna` and `reference_genomes.stb`, build them first with `zipstrain utilities build-genome-db --tool sylph ...` as shown earlier in Step 1.
+
+### When to use this route
+
+Use this when:
+
+- you already have BAM files
+- you want profile-parquet outputs directly
+- you only need a modest number of comparisons
+- you want the standard profile-table compare behavior without building a matrix store
+
+### Example layout
+
+```text
+project/
+├── mapped_bams/
+│   ├── sample1.bam
+│   ├── sample2.bam
+│   └── sample3.bam
+├── reference/
+│   ├── reference_genomes.fna
+│   ├── reference_genes.fna
+│   └── reference_genomes.stb
+└── outputs/
+```
+
+### 1. Prepare profiling assets once
+
+```bash
+zipstrain utilities prepare_profiling \
+  --reference-fasta reference/reference_genomes.fna \
+  --gene-fasta reference/reference_genes.fna \
+  --stb-file reference/reference_genomes.stb \
+  --output-dir outputs/profiling_assets
+```
+
+### 2. Build the null model once
+
+```bash
+zipstrain utilities build-null-model \
+  --bam-file mapped_bams/sample1.bam \
+  --output-file outputs/null_model.parquet
+```
+
+### 3. Make the BAM input table
+
+`bams.csv`
 
 ```csv
 sample_name,bamfile
-sample1,/path/to/mapping_output/sample1.bam
-sample2,/path/to/mapping_output/sample2.bam
+sample1,/abs/path/project/mapped_bams/sample1.bam
+sample2,/abs/path/project/mapped_bams/sample2.bam
+sample3,/abs/path/project/mapped_bams/sample3.bam
 ```
 
-First, build the null model for sequencing error adjustment (you only need to do this once per reference database, using any one of your BAM files):
+### 4. Generate profiles
 
 ```bash
-zipstrain utilities build-null-model --bam-file mapping_output/sample1.bam --output-file null_model.parquet
+zipstrain profile \
+  --input-table bams.csv \
+  --stb-file reference/reference_genomes.stb \
+  --null-model outputs/null_model.parquet \
+  --gene-range-table outputs/profiling_assets/gene_range_table.tsv \
+  --bed-file outputs/profiling_assets/genomes_bed_file.bed \
+  --genome-length-file outputs/profiling_assets/genome_lengths.parquet \
+  --run-dir outputs/profile_run
 ```
 
-You can profile the mapped BAM files using ZipStrain with the following command:
+This gives you one profile parquet per sample plus gene and genome stats tables.
+
+### 5. Build the profile DB table
+
+Create `profiles.csv`:
+
+```csv
+sample_name,profile_loc
+sample1,/abs/path/project/outputs/profile_run/sample1_profile.parquet
+sample2,/abs/path/project/outputs/profile_run/sample2_profile.parquet
+sample3,/abs/path/project/outputs/profile_run/sample3_profile.parquet
+```
+
+Then build the DB:
 
 ```bash
-zipstrain profile --input-table <path/to/bam/csv> --stb-file mgnify_mouse_gut_genomes.stb --null-model null_model.parquet --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file outputs/profile_db.parquet
 ```
 
-This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the `profiling_output/` directory.
-
-As an alternative, you can use the Nextflow pipeline to perform the profiling:
+### 6. Build the standard compare config
 
 ```bash
-nextflow run zipstrain.nf --mode "profile" --input_table <path/to/bam/csv>  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile <your/system/specific/profile> -resume
+zipstrain utilities build-genome-comparison-config \
+  --profile-db outputs/profile_db.parquet \
+  --gene-db-id tutorial_genes_v1 \
+  --reference-genome-id tutorial_reference_v1 \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file-loc reference/reference_genomes.stb \
+  --output-file outputs/genome_compare_config.json
 ```
 
-### Step 6- Compare the profiled samples at the genome level
+### 7. Run the standard compare
 
-### Step 7- Compare the profiled samples at the gene level
+```bash
+zipstrain compare genomes \
+  --genome-comparison-object outputs/genome_compare_config.json \
+  --run-dir outputs/standard_compare \
+  --calculate ani+ibs+identical_genes \
+  --ani-method popani \
+  --engine duckdb \
+  --duckdb-threads 8
+```
+
+### Result
+
+This route gives you standard profile-based comparison outputs without building a matrix store. It is the best tutorial example when you want the simplest direct route from profiles to compare results.
+
+## Worked Example B: Standard Workflow with Nextflow
+
+This is the best route when you want orchestration, batch execution, resumability at the pipeline level, and easier deployment on clusters.
+
+### When to use this route
+
+Use this when:
+
+- you want mapping, profiling, and comparison wrapped in one pipeline framework
+- you are running on a cluster or container-based environment
+- you want the standard workflow but do not want to script every CLI step yourself
+
+### 1. Prepare the read input table
+
+`reads.csv`
+
+```csv
+sample_name,reads1,reads2
+sample1,/data/sample1_R1.fastq.gz,/data/sample1_R2.fastq.gz
+sample2,/data/sample2_R1.fastq.gz,/data/sample2_R2.fastq.gz
+sample3,/data/sample3_R1.fastq.gz,/data/sample3_R2.fastq.gz
+```
+
+### 2. Map reads
+
+If you already have a reference bundle, use it directly:
+
+```bash
+nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --reference_genome reference/reference_genomes.fna \
+  --stb reference/reference_genomes.stb \
+  --output_dir outputs/nf_map \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+If you do not already have a prepared reference bundle, use the Sylph-backed route from Step 1 Option B instead and let Nextflow build it first.
+
+### 3. Generate profiles
+
+Build a BAM table that points at the BAM outputs from the map step, then run:
+
+```bash
+nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table bams.csv \
+  --reference_genome reference/reference_genomes.fna \
+  --gene_file reference/reference_genes.fna \
+  --stb reference/reference_genomes.stb \
+  --output_dir outputs/nf_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+This writes profile parquets under `outputs/nf_profile/profiles/`.
+
+### 4. Build the profile list for compare
+
+`profiles.csv`
+
+```csv
+sample_names,mpileup_files
+sample1,/abs/path/project/outputs/nf_profile/profiles/sample1_profile.parquet
+sample2,/abs/path/project/outputs/nf_profile/profiles/sample2_profile.parquet
+sample3,/abs/path/project/outputs/nf_profile/profiles/sample3_profile.parquet
+```
+
+### 5. Run genome comparison in Nextflow
+
+```bash
+nextflow run zipstrain.nf \
+  --mode compare_genomes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference/reference_genomes.stb \
+  --compare_genome_scope all \
+  --compare_calculate ani+ibs+identical_genes \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --compare_duckdb_memory_limit 4GB \
+  --output_dir outputs/nf_compare_genomes \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+### 6. Optional gene compare
+
+```bash
+nextflow run zipstrain.nf \
+  --mode compare_genes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference/reference_genomes.stb \
+  --compare_gene_scope all:all \
+  --compare_ani_method popani \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --compare_duckdb_memory_limit 4GB \
+  --output_dir outputs/nf_compare_genes \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+### Result
+
+This route keeps you in the standard profile-based world, but uses Nextflow to orchestrate the work instead of calling the underlying CLI tools manually.
+
+## Worked Example C: Matrix Workflow for Repeated All-vs-All Comparison
+
+This is the best route when you expect to compare many samples repeatedly against the same reference set.
+
+### When to use this route
+
+Use this when:
+
+- you already have standard profile parquets
+- you want resumable all-vs-all compare runs
+- you expect to add new samples over time
+- you want genome ANI, IBS, and optional gene ANI from one reusable matrix store
+
+### 1. Start from standard profiles
+
+This route assumes you already produced profile parquets using either:
+
+- the Python CLI profile workflow
+- the Nextflow profile workflow
+
+For example:
+
+```text
+outputs/profile_run/sample1_profile.parquet
+outputs/profile_run/sample2_profile.parquet
+outputs/profile_run/sample3_profile.parquet
+```
+
+### 2. Build the matrix store
+
+```bash
+zipstrain utilities build-matrix-db \
+  --profile-dir outputs/profile_run \
+  --output-file outputs/matrix_db.h5 \
+  --gene-range-table outputs/profiling_assets/gene_range_table.tsv \
+  --memory-limit-gb 16
+```
+
+### 3. Run matrix compare
+
+```bash
+zipstrain utilities matrix-compare \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --output-file outputs/matrix_compare.duckdb \
+  --memory-limit-gb 16 \
+  --loader-executor thread \
+  --writer-executor thread \
+  --backend torch-cpu \
+  --calculate all
+```
+
+Typical backend substitutions:
+
+- Apple Silicon: `--backend torch-mps`
+- NVIDIA GPU: `--backend torch-cuda`
+- CPU only: `--backend torch-cpu`
+
+### 4. Export genome-level results
+
+```bash
+zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file outputs/matrix_compare.duckdb \
+  --output-file outputs/matrix_compare.parquet
+```
+
+### 5. Export gene-level results
+
+```bash
+zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file outputs/matrix_compare.duckdb \
+  --output-file outputs/matrix_compare_gene.parquet \
+  --table gene
+```
+
+### 6. Append new samples later
+
+When more profiles arrive against the same reference set:
+
+```bash
+zipstrain utilities append-matrix-db \
+  --profile-dir outputs/new_profile_run \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --memory-limit-gb 16
+```
+
+Then rerun `matrix-compare` against the same compare DB. Already completed sample pairs remain marked complete, and only unfinished work is processed.
+
+### Result
+
+This route turns standard per-sample profile parquets into a reusable comparison substrate. It is the best example for large or growing cohorts where repeated comparison cost matters more than one-time matrix construction.
+
+## Optional: Add a New Sample Later and Run Only the Remaining Pairs
+
+This is the practical “my cohort grew by one sample” scenario.
+The two methods handle it differently.
+
+### Standard Method
+
+The standard method does not maintain a dedicated resumable compare database in the same way the matrix route does. Instead, you:
+
+1. add the new sample profile to the profile DB
+2. point the new comparison config at the previous comparison table
+3. regenerate only the remaining pairs
+4. rerun compare on the updated config
+
+#### 1. Update the profile DB input table
+
+Extend your `profiles.csv` to include the new sample:
+
+```csv
+sample_name,profile_loc
+sample1,/abs/path/project/outputs/profile_run/sample1_profile.parquet
+sample2,/abs/path/project/outputs/profile_run/sample2_profile.parquet
+sample3,/abs/path/project/outputs/profile_run/sample3_profile.parquet
+sample4,/abs/path/project/outputs/profile_run/sample4_profile.parquet
+```
+
+Rebuild the profile DB:
+
+```bash
+zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file outputs/profile_db.parquet
+```
+
+#### 2. Rebuild the standard compare config with the current comparison table
+
+Point `--current-comp-table` at the existing genome comparison parquet from your previous standard run. The path below is an example placeholder; use the actual parquet produced by your earlier standard compare workflow:
+
+```bash
+zipstrain utilities build-genome-comparison-config \
+  --profile-db outputs/profile_db.parquet \
+  --gene-db-id tutorial_genes_v1 \
+  --reference-genome-id tutorial_reference_v1 \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file-loc reference/reference_genomes.stb \
+  --current-comp-table outputs/standard_compare/genome_compare_results.parquet \
+  --output-file outputs/genome_compare_config_updated.json
+```
+
+#### 3. Optionally inspect the remaining pairs
+
+```bash
+zipstrain utilities to-complete-table \
+  --genome-comparison-object outputs/genome_compare_config_updated.json \
+  --output-file outputs/remaining_pairs.csv
+```
+
+This gives you the not-yet-completed sample pairs implied by the updated config.
+
+#### 4. Rerun standard compare
+
+```bash
+zipstrain compare genomes \
+  --genome-comparison-object outputs/genome_compare_config_updated.json \
+  --run-dir outputs/standard_compare_update \
+  --calculate ani+ibs+identical_genes \
+  --ani-method popani \
+  --engine duckdb \
+  --duckdb-threads 8
+```
+
+In other words, the standard route handles incremental updates by carrying forward the previous comparison table into a new config.
+
+### Matrix Method
+
+The matrix method is simpler here because resumability is built into the compare DB itself.
+
+#### 1. Append the new sample into the matrix store
+
+```bash
+zipstrain utilities append-matrix-db \
+  --profile-dir outputs/new_profile_run \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --memory-limit-gb 16
+```
+
+#### 2. Rerun matrix compare against the same compare DB
+
+```bash
+zipstrain utilities matrix-compare \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --output-file outputs/matrix_compare.duckdb \
+  --memory-limit-gb 16 \
+  --loader-executor thread \
+  --writer-executor thread \
+  --backend torch-cpu \
+  --calculate all
+```
+
+Because the compare DB tracks completed sample-pair/genome work, the rerun only processes unfinished work. That is one of the main reasons the matrix route is attractive for growing cohorts.
+
+## Further Reading
+
+- [CLI Reference](./cli.md)
+- [Installation](./installation.md)
+- [Nextflow Pipeline](./NextflowPipeline.md)
+- [API Reference](./api.md)

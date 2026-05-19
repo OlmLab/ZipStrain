@@ -7,7 +7,6 @@ import gc
 import importlib
 import sys
 import time
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -32,7 +31,6 @@ CURRENT_MATRIX_HDF5_LAYOUT = "per_genome_sample_major_dense_matrix_hdf5"
 MATRIX_HDF5_FILE_VERSION = "1"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
-MATRIX_COMPARE_INPUT_FORMATS = ("auto", "duckdb", "hdf5")
 MATRIX_HDF5_SUFFIXES = (".h5", ".hdf5", ".hd5")
 HDF5_FILE_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 BuildProgressCallback = Callable[[dict[str, object]], None]
@@ -57,8 +55,6 @@ MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS = 4
 MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS = 16
 MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT = 1
 MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT = 128.0
-MPS_MAX_GRAPH_TENSOR_ELEMENTS = (2**31) - 1
-MPS_GRAPH_TENSOR_HEADROOM_FRACTION = 0.9
 
 
 def _emit_matrix_compare_writer_log(
@@ -97,6 +93,23 @@ def parse_matrix_calculations(
     *,
     include_gene_from_all: bool = False,
 ) -> tuple[str, ...]:
+    """Normalize matrix compare metric selections into a stable tuple.
+
+    Parameters
+    ----------
+    calculate:
+        User-facing metric selection string such as ``ani``, ``ani+ibs``,
+        ``+gene``, or ``all``. Commas and plus signs are both accepted as
+        separators.
+    include_gene_from_all:
+        When ``True``, interpret ``all`` as ``ani+ibs+gene``. This is used for
+        matrix stores that already contain gene annotations.
+
+    Returns
+    -------
+    tuple[str, ...]
+        A tuple ordered according to ZipStrain's supported matrix metrics.
+    """
     raw_tokens: list[str] = []
     if calculate is None:
         raw_tokens = ["all"]
@@ -307,7 +320,6 @@ class MatrixCompareSummary:
     backend: str
     device: str
     memory_limit_gb: float
-    position_tile_size: int
 
 
 @dataclass(frozen=True)
@@ -387,32 +399,14 @@ def _import_h5py():
         ) from exc
 
 
-def _resolve_matrix_input_format(
-    matrix_file: Path,
-    requested_format: str = "auto",
-) -> str:
-    if requested_format != "auto":
-        if requested_format not in MATRIX_COMPARE_INPUT_FORMATS:
-            raise ValueError(
-                f"matrix_input_format must be one of {', '.join(MATRIX_COMPARE_INPUT_FORMATS)}"
-            )
-        return requested_format
+def _is_hdf5_matrix_store(matrix_file: Path) -> bool:
     if matrix_file.exists():
         try:
             with matrix_file.open("rb") as fh:
-                if fh.read(len(HDF5_FILE_SIGNATURE)) == HDF5_FILE_SIGNATURE:
-                    return "hdf5"
+                return fh.read(len(HDF5_FILE_SIGNATURE)) == HDF5_FILE_SIGNATURE
         except OSError:
-            pass
-    suffix = matrix_file.suffix.lower()
-    if suffix == ".duckdb":
-        return "duckdb"
-    if suffix in MATRIX_HDF5_SUFFIXES:
-        return "hdf5"
-    raise ValueError(
-        f"Could not infer matrix input format from '{matrix_file}'. "
-        "Use --matrix-input-format duckdb or --matrix-input-format hdf5."
-    )
+            return False
+    return matrix_file.suffix.lower() in MATRIX_HDF5_SUFFIXES
 
 
 def _hdf5_string_dtype(h5py_module):
@@ -1115,7 +1109,7 @@ def _compare_db_metadata_rows(
     calculations: tuple[str, ...],
 ) -> list[tuple[str, str]]:
     return [
-        ("matrix_input_format", matrix_metadata.get("input_format", "duckdb")),
+        ("matrix_input_format", "hdf5"),
         ("matrix_db_layout", matrix_metadata.get("layout", "")),
         ("matrix_value_semantics", matrix_metadata.get("matrix_value_semantics", "")),
         ("matrix_count_dtype", matrix_metadata.get("count_dtype", "")),
@@ -1247,9 +1241,9 @@ def _prepare_matrix_compare_db(
         if "matrix_input_format" not in compare_metadata:
             compare_conn.execute(
                 "INSERT OR REPLACE INTO matrix_compare_metadata VALUES (?, ?)",
-                ["matrix_input_format", "duckdb"],
+                ["matrix_input_format", "hdf5"],
             )
-            compare_metadata["matrix_input_format"] = "duckdb"
+            compare_metadata["matrix_input_format"] = "hdf5"
         _validate_matrix_compare_db_metadata(
             compare_metadata=compare_metadata,
             matrix_metadata=matrix_metadata,
@@ -1647,207 +1641,28 @@ def build_matrix_db(
     bed_file: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
 ) -> MatrixDbSummary:
-    if count_dtype not in COUNT_DTYPES:
-        raise ValueError(f"Unsupported count dtype '{count_dtype}'. Choose one of {', '.join(COUNT_DTYPES)}.")
-    profile_paths = discover_profile_parquets(profile_dir)
-    genome_scope = None if genome == "all" else genome
-    if bed_file is None:
-        scaffolds = _collect_scaffold_specs(profile_paths=profile_paths, genome=genome_scope)
-    else:
-        scaffolds = _collect_scaffold_specs_from_bed(
-            profile_paths=profile_paths,
-            bed_file=Path(bed_file),
-            genome=genome_scope,
-        )
-    genomes, genome_scaffolds = _build_genome_specs(scaffolds)
-    memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
-    memory_plan = _plan_matrix_build_memory(
-        genomes=genomes,
-        count_dtype=count_dtype,
-        memory_limit_bytes=memory_limit_bytes,
-        commit_batch_gb=commit_batch_gb,
-    )
-
-    output_file = output_file.resolve()
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    if output_file.exists():
-        raise FileExistsError(f"Output file already exists: {output_file}")
-
-    total_work = len(profile_paths) * len(genomes)
-    completed_work = 0
-
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "phase": "start",
-                "completed": completed_work,
-                "total": total_work,
-                "sample_name": "",
-                "genome": genome_scope or "all",
-                "scaffold": "",
-                "stored_rows": 0,
-            }
-        )
-
-    conn = _open_matrix_build_connection(output_file, memory_plan.duckdb_memory_limit_bytes)
-    build_succeeded = False
-    try:
-        _init_matrix_db_schema(conn)
-        conn.execute("BEGIN")
-        metadata_rows = [
-            ("profiles_dir", str(profile_dir.resolve())),
-            ("profile_format", "classic_zipstrain_profile_parquet"),
-            ("genome_scope", genome_scope or "all"),
-            ("count_dtype", count_dtype),
-            ("layout", CURRENT_MATRIX_DB_LAYOUT),
-            ("matrix_value_semantics", FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS),
-            ("coverage_filter_min_cov", str(MATRIX_BUILD_MIN_COV)),
-            ("memory_limit_gb", str(memory_limit_gb)),
-            ("duckdb_memory_limit_gb", f"{memory_plan.duckdb_memory_limit_bytes / (1024 ** 3):.6f}"),
-            ("effective_commit_batch_gb", f"{memory_plan.commit_batch_bytes / (1024 ** 3):.6f}"),
-            ("estimated_python_peak_gb", f"{memory_plan.estimated_python_peak_bytes / (1024 ** 3):.6f}"),
-            ("separator_rows_between_scaffolds", "1"),
-        ]
-        sample_rows = [(idx, path.stem, str(path.resolve())) for idx, path in enumerate(profile_paths)]
-        genome_rows = [
-            (
-                spec.genome_idx,
-                spec.genome,
-                spec.matrix_length,
-                spec.true_length,
-                spec.scaffold_count,
-            )
-            for spec in genomes
-        ]
-        scaffold_rows = [
-            (
-                spec.genome_idx,
-                spec.scaffold_ordinal,
-                spec.genome,
-                spec.chrom,
-                spec.axis_start,
-                spec.axis_end,
-                spec.index_base,
-                spec.vector_length,
-                spec.min_pos,
-                spec.max_pos,
-            )
-            for spec in genome_scaffolds
-        ]
-        conn.executemany("INSERT INTO matrix_db_metadata VALUES (?, ?)", metadata_rows)
-        conn.executemany("INSERT INTO matrix_db_samples VALUES (?, ?, ?)", sample_rows)
-        conn.executemany(
-            "INSERT INTO matrix_db_genomes VALUES (?, ?, ?, ?, ?)",
-            genome_rows,
-        )
-        conn.executemany(
-            "INSERT INTO matrix_db_genome_scaffolds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            scaffold_rows,
-        )
-        conn = _restart_matrix_build_transaction(conn, output_file, memory_plan.duckdb_memory_limit_bytes)
-
-        stored_rows = 0
-        scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
-        for offset in genome_scaffolds:
-            scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
-        for sample_idx, profile_path in enumerate(profile_paths):
-            sample_name = profile_path.stem
-            for genome_spec in genomes:
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "phase": "processing",
-                            "completed": completed_work,
-                            "total": total_work,
-                            "sample_name": sample_name,
-                            "genome": genome_spec.genome,
-                            "scaffold": "",
-                            "stored_rows": stored_rows,
-                        }
-                    )
-                estimated_python_peak = _estimate_builder_python_peak_bytes(genome_spec.matrix_length, count_dtype)
-                if estimated_python_peak + memory_plan.duckdb_memory_limit_bytes > memory_limit_bytes:
-                    raise MemoryError(
-                        f"Genome {genome_spec.genome} for sample {profile_path.name} is estimated to use about "
-                        f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory plus "
-                        f"{_format_memory_bytes(memory_plan.duckdb_memory_limit_bytes)} for DuckDB, "
-                        f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
-                    )
-                matrix = _load_profile_genome_matrix(
-                    profile_path=profile_path,
-                    genome_spec=genome_spec,
-                    genome_offsets=scaffolds_by_genome_idx[genome_spec.genome_idx],
-                    count_dtype=count_dtype,
-                    min_cov=MATRIX_BUILD_MIN_COV,
-                )
-                conn.execute(
-                    """
-                    INSERT INTO matrix_db_sample_genome_matrices
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        sample_idx,
-                        genome_spec.genome_idx,
-                        count_dtype,
-                        int(matrix.shape[0]),
-                        int(matrix.shape[1]),
-                        _pack_matrix(matrix),
-                    ],
-                )
-                stored_rows += 1
-                completed_work += 1
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "phase": "advance",
-                            "completed": completed_work,
-                            "total": total_work,
-                            "sample_name": sample_name,
-                            "genome": genome_spec.genome,
-                            "scaffold": "",
-                            "stored_rows": stored_rows,
-                        }
-                    )
-                conn = _restart_matrix_build_transaction(
-                    conn,
-                    output_file,
-                    memory_plan.duckdb_memory_limit_bytes,
-                )
-        conn.execute("COMMIT")
-        build_succeeded = True
-    except Exception:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-    finally:
-        conn.close()
-        if not build_succeeded and output_file.exists():
-            output_file.unlink(missing_ok=True)
-
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "phase": "done",
-                "completed": completed_work,
-                "total": total_work,
-                "sample_name": "",
-                "genome": genome_scope or "all",
-                "scaffold": "",
-                "stored_rows": stored_rows,
-            }
-        )
-
-    return MatrixDbSummary(
+    summary = build_matrix_hdf5(
+        profile_dir=profile_dir,
         output_file=output_file,
-        profile_files=len(profile_paths),
-        sample_count=len(profile_paths),
-        scaffold_count=len(scaffolds),
-        stored_rows=stored_rows,
+        genome=genome,
         count_dtype=count_dtype,
-        genome_scope=genome_scope or "all",
         memory_limit_gb=memory_limit_gb,
+        bed_file=bed_file,
+        progress_callback=progress_callback,
+        export_batch_mb=max(
+            MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+            (commit_batch_gb or 0.0) * 1024.0,
+        ),
+    )
+    return MatrixDbSummary(
+        output_file=summary.output_file,
+        profile_files=summary.profile_files,
+        sample_count=summary.sample_count,
+        scaffold_count=summary.scaffold_count,
+        stored_rows=summary.stored_rows,
+        count_dtype=summary.count_dtype,
+        genome_scope=summary.genome_scope,
+        memory_limit_gb=summary.memory_limit_gb,
     )
 
 
@@ -1862,6 +1677,11 @@ def build_matrix_hdf5(
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
 ) -> MatrixHdf5Summary:
+    """Build the current HDF5-backed matrix store from classic profile parquets.
+
+    The resulting matrix store keeps one dense whole-genome dataset per genome
+    and is intended for repeated, resumable matrix comparisons.
+    """
     if count_dtype not in COUNT_DTYPES:
         raise ValueError(f"Unsupported count dtype '{count_dtype}'. Choose one of {', '.join(COUNT_DTYPES)}.")
     if export_batch_mb <= 0:
@@ -2525,13 +2345,14 @@ def append_matrix_hdf5(
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
 ) -> MatrixHdf5AppendSummary:
+    """Append new profile parquets into an existing HDF5 matrix store."""
     if export_batch_mb <= 0:
         raise ValueError("export_batch_mb must be > 0")
     profile_paths = discover_profile_parquets(profile_dir)
     matrix_hdf5_file = Path(matrix_hdf5_file).resolve()
     if not matrix_hdf5_file.exists():
         raise FileNotFoundError(f"Matrix store file does not exist: {matrix_hdf5_file}")
-    if _resolve_matrix_input_format(matrix_hdf5_file, "auto") != "hdf5":
+    if not _is_hdf5_matrix_store(matrix_hdf5_file):
         raise ValueError(
             "append-matrix-db expects the current HDF5-backed matrix store format. "
             "If you have a legacy DuckDB matrix database, convert it first with "
@@ -2601,191 +2422,22 @@ def append_matrix_db(
     memory_limit_gb: float = 16.0,
     progress_callback: Optional[BuildProgressCallback] = None,
 ) -> MatrixDbAppendSummary:
-    profile_paths = discover_profile_parquets(profile_dir)
-    matrix_db_file = Path(matrix_db_file).resolve()
-    if not matrix_db_file.exists():
-        raise FileNotFoundError(f"Matrix DB file does not exist: {matrix_db_file}")
-
-    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
-    try:
-        metadata = _load_matrix_db_metadata(read_conn)
-        count_dtype, genome_scope = _validate_matrix_db_appendable(metadata)
-        genomes = _load_matrix_db_genomes(read_conn)
-        genome_scaffolds = _load_matrix_db_genome_scaffolds(read_conn)
-        existing_samples = _load_matrix_db_samples(read_conn)
-    finally:
-        read_conn.close()
-
-    existing_sample_names = {sample_name for _sample_idx, sample_name in existing_samples}
-    duplicate_sample_names = sorted(path.stem for path in profile_paths if path.stem in existing_sample_names)
-    if duplicate_sample_names:
-        raise ValueError(
-            "Cannot append profiles whose sample names already exist in the matrix DB: "
-            + ", ".join(duplicate_sample_names)
-        )
-
-    for profile_path in profile_paths:
-        _validate_profile_against_matrix_contract(
-            profile_path=profile_path,
-            genomes=genomes,
-            genome_scaffolds=genome_scaffolds,
-        )
-
-    memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
-    memory_plan = _plan_matrix_build_memory(
-        genomes=genomes,
-        count_dtype=count_dtype,
-        memory_limit_bytes=memory_limit_bytes,
-    )
-
-    next_sample_idx = max((sample_idx for sample_idx, _sample_name in existing_samples), default=-1) + 1
-    appended_samples = [
-        (next_sample_idx + idx, profile_path.stem, str(profile_path.resolve()), profile_path)
-        for idx, profile_path in enumerate(profile_paths)
-    ]
-    total_work = len(appended_samples) * len(genomes)
-    completed_work = 0
-    stored_rows = 0
-
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "phase": "start",
-                "completed": completed_work,
-                "total": total_work,
-                "sample_name": "",
-                "genome": genome_scope or "all",
-                "scaffold": "",
-                "stored_rows": 0,
-            }
-        )
-
-    scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
-    for offset in genome_scaffolds:
-        scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
-
-    conn = _open_matrix_build_connection(matrix_db_file, memory_plan.duckdb_memory_limit_bytes)
-    append_succeeded = False
-    appended_sample_indices = [sample_idx for sample_idx, _sample_name, _profile_path, _profile_file in appended_samples]
-    try:
-        conn.execute("BEGIN")
-        conn.executemany(
-            "INSERT INTO matrix_db_samples VALUES (?, ?, ?)",
-            [(sample_idx, sample_name, profile_path_str) for sample_idx, sample_name, profile_path_str, _profile_path in appended_samples],
-        )
-        conn = _restart_matrix_build_transaction(conn, matrix_db_file, memory_plan.duckdb_memory_limit_bytes)
-
-        for sample_idx, sample_name, _profile_path_str, profile_path in appended_samples:
-            for genome_spec in genomes:
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "phase": "processing",
-                            "completed": completed_work,
-                            "total": total_work,
-                            "sample_name": sample_name,
-                            "genome": genome_spec.genome,
-                            "scaffold": "",
-                            "stored_rows": stored_rows,
-                        }
-                    )
-                estimated_python_peak = _estimate_builder_python_peak_bytes(genome_spec.matrix_length, count_dtype)
-                if estimated_python_peak + memory_plan.duckdb_memory_limit_bytes > memory_limit_bytes:
-                    raise MemoryError(
-                        f"Genome {genome_spec.genome} for sample {profile_path.name} is estimated to use about "
-                        f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory plus "
-                        f"{_format_memory_bytes(memory_plan.duckdb_memory_limit_bytes)} for DuckDB, "
-                        f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
-                    )
-                matrix = _load_profile_genome_matrix(
-                    profile_path=profile_path,
-                    genome_spec=genome_spec,
-                    genome_offsets=scaffolds_by_genome_idx[genome_spec.genome_idx],
-                    count_dtype=count_dtype,
-                    min_cov=MATRIX_BUILD_MIN_COV,
-                )
-                conn.execute(
-                    """
-                    INSERT INTO matrix_db_sample_genome_matrices
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        sample_idx,
-                        genome_spec.genome_idx,
-                        count_dtype,
-                        int(matrix.shape[0]),
-                        int(matrix.shape[1]),
-                        _pack_matrix(matrix),
-                    ],
-                )
-                stored_rows += 1
-                completed_work += 1
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "phase": "advance",
-                            "completed": completed_work,
-                            "total": total_work,
-                            "sample_name": sample_name,
-                            "genome": genome_spec.genome,
-                            "scaffold": "",
-                            "stored_rows": stored_rows,
-                        }
-                    )
-                conn = _restart_matrix_build_transaction(
-                    conn,
-                    matrix_db_file,
-                    memory_plan.duckdb_memory_limit_bytes,
-                )
-        conn.execute("COMMIT")
-        append_succeeded = True
-    except Exception:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-    finally:
-        conn.close()
-        if not append_succeeded and appended_sample_indices:
-            cleanup_conn = duckdb.connect(str(matrix_db_file))
-            compare_conn.commit()
-            compare_conn.execute("BEGIN")
-            try:
-                cleanup_conn.execute(
-                    f"DELETE FROM matrix_db_sample_genome_matrices WHERE sample_idx IN ({','.join(['?'] * len(appended_sample_indices))})",
-                    appended_sample_indices,
-                )
-                cleanup_conn.execute(
-                    f"DELETE FROM matrix_db_samples WHERE sample_idx IN ({','.join(['?'] * len(appended_sample_indices))})",
-                    appended_sample_indices,
-                )
-            finally:
-                cleanup_conn.close()
-
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "phase": "done",
-                "completed": completed_work,
-                "total": total_work,
-                "sample_name": "",
-                "genome": genome_scope or "all",
-                "scaffold": "",
-                "stored_rows": stored_rows,
-            }
-        )
-
-    return MatrixDbAppendSummary(
-        output_file=matrix_db_file,
-        appended_profile_files=len(profile_paths),
-        appended_sample_count=len(profile_paths),
-        total_sample_count=len(existing_samples) + len(profile_paths),
-        scaffold_count=len(genome_scaffolds),
-        stored_rows=stored_rows,
-        count_dtype=count_dtype,
-        genome_scope=genome_scope or "all",
+    summary = append_matrix_hdf5(
+        profile_dir=profile_dir,
+        matrix_hdf5_file=matrix_db_file,
         memory_limit_gb=memory_limit_gb,
+        progress_callback=progress_callback,
+    )
+    return MatrixDbAppendSummary(
+        output_file=summary.output_file,
+        appended_profile_files=summary.appended_profile_files,
+        appended_sample_count=summary.appended_sample_count,
+        total_sample_count=summary.total_sample_count,
+        scaffold_count=summary.scaffold_count,
+        stored_rows=summary.stored_rows,
+        count_dtype=summary.count_dtype,
+        genome_scope=summary.genome_scope,
+        memory_limit_gb=summary.memory_limit_gb,
     )
 
 
@@ -3030,6 +2682,7 @@ def export_matrix_db_hdf5(
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
 ) -> Path:
+    """Convert a legacy DuckDB matrix database into the current HDF5 store."""
     matrix_db_file = matrix_db_file.resolve()
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3256,56 +2909,12 @@ def export_matrix_db_hdf5(
     return output_file
 
 
-def _load_sample_genome_matrices(
-    conn: duckdb.DuckDBPyConnection,
-    genome_idx: int,
-    sample_ids: list[int],
-    matrix_length: int,
-    dtype_name: str,
-) -> dict[int, np.ndarray]:
-    if not sample_ids:
-        raise ValueError("sample_ids must not be empty")
-    np_dtype = COUNT_DTYPES[dtype_name]
-    rows = conn.execute(
-        f"""
-        SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
-        FROM matrix_db_sample_genome_matrices
-        WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(sample_ids))})
-        ORDER BY sample_idx
-        """,
-        [genome_idx, *sample_ids],
-    ).fetchall()
-    if not rows:
-        return {}
-    matrices: dict[int, np.ndarray] = {}
-    for sample_idx, stored_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
-        rows_int = int(matrix_rows)
-        cols_int = int(matrix_cols)
-        if rows_int != matrix_length or cols_int != 4:
-            raise ValueError(
-                f"Stored genome matrix shape mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
-                f"expected ({matrix_length}, 4), found ({rows_int}, {cols_int})"
-            )
-        if str(stored_dtype) != dtype_name:
-            raise ValueError(
-                f"Stored genome matrix dtype mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
-                f"expected {dtype_name}, found {stored_dtype}"
-            )
-        matrices[int(sample_idx)] = _unpack_matrix(
-            memoryview(matrix_blob),
-            dtype_name,
-            (rows_int, cols_int),
-        ).astype(np_dtype, copy=False)
-    return matrices
-
-
 def _plan_chunk_sizes(
     vector_length: int,
     remaining_targets: int,
     dtype_name: str,
     memory_limit_bytes: int,
     backend_kind: str,
-    position_tile_size: Optional[int] = None,
 ) -> tuple[int, int]:
     dtype_bytes = np.dtype(COUNT_DTYPES[dtype_name]).itemsize
     reserve = int(memory_limit_bytes * 0.15)
@@ -3679,6 +3288,8 @@ class _Hdf5GenomeMatrixTorchDataset:
     ) -> None:
         self.matrix_hdf5_file = str(matrix_hdf5_file)
         self.genome_idx = int(genome_idx)
+        self._h5_file = None
+        self._matrix_dataset = None
         self.torch_module = torch_module or importlib.import_module("torch")
         self.h5py_module = _import_h5py()
         self.host_dtype = _torch_host_matrix_dtype(
@@ -3686,8 +3297,6 @@ class _Hdf5GenomeMatrixTorchDataset:
             dtype_name=dtype_name,
             matrix_value_semantics=matrix_value_semantics,
         )
-        self._h5_file = None
-        self._matrix_dataset = None
 
     def _ensure_open(self) -> None:
         if self._matrix_dataset is not None:
@@ -3725,186 +3334,43 @@ class _Hdf5GenomeMatrixTorchDataset:
         return batch_tensor.permute(1, 2, 0).contiguous()
 
 
-def _decode_matrix_blob_to_torch(
-    matrix_blob,
-    dtype_name: str,
-    shape: tuple[int, int],
-    torch_module,
-):
-    expected = shape[0] * shape[1]
-    torch_dtype = _torch_count_matrix_dtype(torch_module, dtype_name)
-    if torch_dtype is not None and callable(getattr(torch_module, "frombuffer", None)):
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="The given buffer is not writable",
-                category=UserWarning,
-            )
-            out = torch_module.frombuffer(
-                memoryview(matrix_blob),
-                dtype=torch_dtype,
-                count=expected,
-            )
-        if int(out.numel()) != expected:
-            raise ValueError(f"Matrix blob has {int(out.numel())} values, expected {expected}")
-        return out.reshape(shape)
-    matrix_view = _unpack_matrix(
-        memoryview(matrix_blob),
-        dtype_name,
-        shape,
-    )
-    return torch_module.from_numpy(matrix_view)
+class _Hdf5GenomeMatrixNumpyDataset:
+    def __init__(
+        self,
+        matrix_hdf5_file: Path,
+        genome_idx: int,
+        dtype_name: str,
+    ) -> None:
+        self.matrix_hdf5_file = str(matrix_hdf5_file)
+        self.genome_idx = int(genome_idx)
+        self.h5py_module = _import_h5py()
+        self.numpy_dtype = COUNT_DTYPES[dtype_name]
+        self._h5_file = None
+        self._matrix_dataset = None
 
+    def _ensure_open(self) -> None:
+        if self._matrix_dataset is not None:
+            return
+        self._h5_file = self.h5py_module.File(self.matrix_hdf5_file, "r")
+        self._matrix_dataset = self._h5_file[_hdf5_matrix_dataset_path(self.genome_idx)]
 
-def _assemble_target_queue_block_for_torch(
-    rows,
-    block_ids: np.ndarray,
-    block_names: list[str],
-    matrix_length: int,
-    dtype_name: str,
-    matrix_value_semantics: str,
-    torch_module,
-    genome_idx: Optional[int] = None,
-) -> tuple[np.ndarray, list[str], np.ndarray, object]:
-    zero_matrix = np.zeros((matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
-    host_dtype = _torch_host_matrix_dtype(
-        torch_module=torch_module,
-        dtype_name=dtype_name,
-        matrix_value_semantics=matrix_value_semantics,
-    )
-    target_tensor = torch_module.zeros(
-        (matrix_length, 4, len(block_ids)),
-        dtype=host_dtype,
-        device="cpu",
-    )
-    sample_pos = {int(sample_idx): pos for pos, sample_idx in enumerate(block_ids.tolist())}
-    for sample_idx, stored_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
-        rows_int = int(matrix_rows)
-        cols_int = int(matrix_cols)
-        if rows_int != matrix_length or cols_int != 4:
-            raise ValueError(
-                f"Stored genome matrix shape mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
-                f"expected ({matrix_length}, 4), found ({rows_int}, {cols_int})"
-            )
-        if str(stored_dtype) != dtype_name:
-            raise ValueError(
-                f"Stored genome matrix dtype mismatch for sample_idx={sample_idx}: "
-                f"expected {dtype_name}, found {stored_dtype}"
-            )
-        source_tensor = _decode_matrix_blob_to_torch(
-            matrix_blob=matrix_blob,
-            dtype_name=dtype_name,
-            shape=(rows_int, cols_int),
-            torch_module=torch_module,
-        )
-        if source_tensor.dtype != host_dtype:
-            source_tensor = source_tensor.to(dtype=host_dtype)
-        target_tensor[:, :, sample_pos[int(sample_idx)]].copy_(source_tensor)
-    return block_ids, block_names, zero_matrix, target_tensor
+    def close(self) -> None:
+        if self._h5_file is not None:
+            self._h5_file.close()
+        self._h5_file = None
+        self._matrix_dataset = None
 
+    def __del__(self) -> None:
+        self.close()
 
-def _load_anchor_queue_batch_for_torch_direct(
-    matrix_db_file: Path,
-    genome_idx: int,
-    batch_rows: list[tuple[int, str]],
-    matrix_length: int,
-    dtype_name: str,
-    zero_matrix: np.ndarray,
-    matrix_value_semantics: str,
-    torch_module=None,
-) -> list[tuple[int, str, object]]:
-    if not batch_rows:
-        return []
-    if torch_module is None:
-        torch_module = importlib.import_module("torch")
-    sample_ids = [sample_idx for sample_idx, _sample_name in batch_rows]
-    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
-    try:
-        rows = read_conn.execute(
-            f"""
-            SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
-            FROM matrix_db_sample_genome_matrices
-            WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(sample_ids))})
-            ORDER BY sample_idx
-            """,
-            [genome_idx, *sample_ids],
-        ).fetchall()
-    finally:
-        read_conn.close()
-    host_dtype = _torch_host_matrix_dtype(
-        torch_module=torch_module,
-        dtype_name=dtype_name,
-        matrix_value_semantics=matrix_value_semantics,
-    )
-    loaded_anchors: dict[int, object] = {}
-    for sample_idx, stored_dtype, matrix_rows, matrix_cols, matrix_blob in rows:
-        rows_int = int(matrix_rows)
-        cols_int = int(matrix_cols)
-        if rows_int != matrix_length or cols_int != 4:
-            raise ValueError(
-                f"Stored genome matrix shape mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
-                f"expected ({matrix_length}, 4), found ({rows_int}, {cols_int})"
-            )
-        if str(stored_dtype) != dtype_name:
-            raise ValueError(
-                f"Stored genome matrix dtype mismatch for genome_idx={genome_idx}, sample_idx={sample_idx}: "
-                f"expected {dtype_name}, found {stored_dtype}"
-            )
-        source_tensor = _decode_matrix_blob_to_torch(
-            matrix_blob=matrix_blob,
-            dtype_name=dtype_name,
-            shape=(rows_int, cols_int),
-            torch_module=torch_module,
-        )
-        if source_tensor.dtype != host_dtype:
-            source_tensor = source_tensor.to(dtype=host_dtype)
-        loaded_anchors[int(sample_idx)] = source_tensor
-    return [
-        (
-            sample_idx,
-            sample_name,
-            loaded_anchors.get(sample_idx, zero_matrix),
-        )
-        for sample_idx, sample_name in batch_rows
-    ]
+    def get_row(self, sample_row: int) -> np.ndarray:
+        self._ensure_open()
+        return np.asarray(self._matrix_dataset[int(sample_row), :, :], dtype=self.numpy_dtype)
 
-
-def _load_target_queue_block_for_torch_direct(
-    matrix_db_file: Path,
-    genome_idx: int,
-    block_rows: list[tuple[int, str]],
-    matrix_length: int,
-    dtype_name: str,
-    matrix_value_semantics: str,
-    torch_module=None,
-) -> tuple[np.ndarray, list[str], np.ndarray, object]:
-    if torch_module is None:
-        torch_module = importlib.import_module("torch")
-    block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
-    block_names = [sample_name for _sample_idx, sample_name in block_rows]
-    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
-    try:
-        rows = read_conn.execute(
-            f"""
-            SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
-            FROM matrix_db_sample_genome_matrices
-            WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(block_ids))})
-            ORDER BY sample_idx
-            """,
-            [genome_idx, *block_ids.tolist()],
-        ).fetchall()
-    finally:
-        read_conn.close()
-    return _assemble_target_queue_block_for_torch(
-        rows=rows,
-        block_ids=block_ids,
-        block_names=block_names,
-        matrix_length=matrix_length,
-        dtype_name=dtype_name,
-        matrix_value_semantics=matrix_value_semantics,
-        torch_module=torch_module,
-        genome_idx=genome_idx,
-    )
+    def load_indices(self, sample_rows: np.ndarray) -> np.ndarray:
+        self._ensure_open()
+        batch_np = np.asarray(self._matrix_dataset[sample_rows.tolist(), :, :], dtype=self.numpy_dtype)
+        return np.transpose(batch_np, (1, 2, 0))
 
 
 def _load_target_queue_block_for_hdf5_torch(
@@ -3972,108 +3438,6 @@ def _load_anchor_queue_batch_for_hdf5_torch(
     ]
 
 
-def _load_anchor_queue_batch_for_torch(
-    matrix_db_file: Path,
-    genome_idx: int,
-    batch_rows: list[tuple[int, str]],
-    matrix_length: int,
-    dtype_name: str,
-    zero_matrix: np.ndarray,
-) -> list[tuple[int, str, np.ndarray]]:
-    if not batch_rows:
-        return []
-    sample_ids = [sample_idx for sample_idx, _sample_name in batch_rows]
-    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
-    try:
-        loaded_anchors = _load_sample_genome_matrices(
-            read_conn,
-            genome_idx=genome_idx,
-            sample_ids=sample_ids,
-            matrix_length=matrix_length,
-            dtype_name=dtype_name,
-        )
-    finally:
-        read_conn.close()
-    return [
-        (
-            sample_idx,
-            sample_name,
-            loaded_anchors.get(sample_idx, zero_matrix),
-        )
-        for sample_idx, sample_name in batch_rows
-    ]
-
-
-def _load_target_queue_block_for_torch(
-    matrix_db_file: Path,
-    genome_idx: int,
-    block_rows: list[tuple[int, str]],
-    matrix_length: int,
-    dtype_name: str,
-) -> tuple[np.ndarray, list[str], np.ndarray, np.ndarray]:
-    block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
-    block_names = [sample_name for _sample_idx, sample_name in block_rows]
-    zero_matrix = np.zeros((matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
-    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
-    try:
-        loaded_targets = _load_sample_genome_matrices(
-            read_conn,
-            genome_idx=genome_idx,
-            sample_ids=block_ids.tolist(),
-            matrix_length=matrix_length,
-            dtype_name=dtype_name,
-        )
-    finally:
-        read_conn.close()
-    target_matrices = np.stack(
-        [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
-        axis=2,
-    )
-    return block_ids, block_names, zero_matrix, target_matrices
-
-
-def _load_target_prefetch_unit_for_torch(
-    unit_index: int,
-    matrix_db_file: Path,
-    genome_idx: int,
-    block_rows: list[tuple[int, str]],
-    matrix_length: int,
-    dtype_name: str,
-) -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, object]]:
-    return (
-        unit_index,
-        _load_target_queue_block_for_torch(
-            matrix_db_file=matrix_db_file,
-            genome_idx=genome_idx,
-            block_rows=block_rows,
-            matrix_length=matrix_length,
-            dtype_name=dtype_name,
-        ),
-    )
-
-
-def _load_target_prefetch_unit_for_torch_direct(
-    unit_index: int,
-    matrix_db_file: Path,
-    genome_idx: int,
-    block_rows: list[tuple[int, str]],
-    matrix_length: int,
-    dtype_name: str,
-    matrix_value_semantics: str,
-) -> tuple[int, tuple[np.ndarray, list[str], np.ndarray, object]]:
-    return (
-        unit_index,
-        _load_target_queue_block_for_torch_direct(
-            matrix_db_file=matrix_db_file,
-            genome_idx=genome_idx,
-            block_rows=block_rows,
-            matrix_length=matrix_length,
-            dtype_name=dtype_name,
-            matrix_value_semantics=matrix_value_semantics,
-        ),
-    )
-
-
 def _load_target_prefetch_unit_for_hdf5_torch(
     unit_index: int,
     matrix_hdf5_file: Path,
@@ -4111,7 +3475,6 @@ def _compare_anchor_against_target_chunk_torch_device(
     anchor_torch,
     target_torch,
     vector_length: int,
-    tile_size: int,
     matrix_value_semantics: str,
     need_ibs: bool = False,
     gene_ranges: Optional[list[GeneRangeSpec]] = None,
@@ -4138,13 +3501,12 @@ def _compare_anchor_against_target_chunk_torch_device(
         )
         chunk_totals_torch += total_inc
         chunk_shared_torch += shared_inc
-        if gene_ranges:
-            gene_total_positions, gene_share_allele_pos = _accumulate_gene_counts_from_full_torch_masks(
-                torch_module=compute_backend.torch,
-                total_mask=total_mask,
-                shared_mask=shared_mask,
-                gene_ranges=gene_ranges,
-            )
+        gene_total_positions, gene_share_allele_pos = _accumulate_gene_counts_from_full_torch_masks(
+            torch_module=compute_backend.torch,
+            total_mask=total_mask,
+            shared_mask=shared_mask,
+            gene_ranges=gene_ranges,
+        )
         if need_ibs:
             max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
     elif need_ibs:
@@ -4211,9 +3573,6 @@ def _download_torch_result_tensor_batch(
 
 async def _matrix_compare_reuse_target_chunks_torch_async(
     matrix_db_file: Path,
-    conn: Optional[duckdb.DuckDBPyConnection],
-    matrix_input_format: str,
-    compare_conn: Optional[duckdb.DuckDBPyConnection],
     output_file: Path,
     min_cov: int,
     genome_scope: Optional[str],
@@ -4231,7 +3590,6 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     result_transfer_batch_size: int,
     loader_executor_kind: str,
     writer_executor_kind: str,
-    position_tile_size: Optional[int],
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
     calculations: tuple[str, ...],
@@ -4246,21 +3604,13 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     target_chunks = 0
     anchor_groups = max(len(samples) - 1, 0)
     dtype_name = str(metadata.get("count_dtype", "uint16"))
-    default_tile_size = 0
     max_vector_length = max(spec.matrix_length for spec in genomes)
-    use_direct_torch_block_reads = bool(
-        compute_backend.kind == "torch"
-        and callable(getattr(compute_backend.torch, "from_numpy", None))
-        and callable(getattr(compute_backend.torch, "zeros", None))
-        and callable(getattr(compute_backend.torch, "frombuffer", None))
-    )
     global_block_size, _ = _plan_chunk_sizes(
         vector_length=max_vector_length,
         remaining_targets=len(samples),
         dtype_name=dtype_name,
         memory_limit_bytes=memory_limit_bytes,
         backend_kind=compute_backend.kind,
-        position_tile_size=position_tile_size,
     )
     global_block_size = max(1, global_block_size)
     samples_by_id = {sample_idx: sample_name for sample_idx, sample_name in samples}
@@ -4276,56 +3626,16 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
         block_start: int,
         block_rows: list[tuple[int, str]],
     ) -> tuple[np.ndarray, list[str], np.ndarray, object]:
-        if matrix_input_format == "hdf5":
-            return _load_target_queue_block_for_hdf5_torch(
-                matrix_hdf5_file=matrix_db_file,
-                genome_idx=spec.genome_idx,
-                block_rows=block_rows,
-                block_start=block_start,
-                matrix_length=spec.matrix_length,
-                dtype_name=dtype_name,
-                matrix_value_semantics=matrix_value_semantics,
-                torch_module=compute_backend.torch,
-            )
-        if use_direct_torch_block_reads:
-            block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
-            block_names = [sample_name for _sample_idx, sample_name in block_rows]
-            if conn is None:
-                raise RuntimeError("DuckDB connection is required for direct DuckDB matrix compare reads.")
-            rows = conn.execute(
-                f"""
-                SELECT sample_idx, count_dtype, matrix_rows, matrix_cols, matrix_blob
-                FROM matrix_db_sample_genome_matrices
-                WHERE genome_idx = ? AND sample_idx IN ({','.join(['?'] * len(block_ids))})
-                ORDER BY sample_idx
-                """,
-                [spec.genome_idx, *block_ids.tolist()],
-            ).fetchall()
-            return _assemble_target_queue_block_for_torch(
-                rows=rows,
-                block_ids=block_ids,
-                block_names=block_names,
-                matrix_length=spec.matrix_length,
-                dtype_name=dtype_name,
-                matrix_value_semantics=matrix_value_semantics,
-                torch_module=compute_backend.torch,
-                genome_idx=spec.genome_idx,
-            )
-        block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
-        block_names = [sample_name for _sample_idx, sample_name in block_rows]
-        zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
-        loaded_targets = _load_sample_genome_matrices(
-            conn,
+        return _load_target_queue_block_for_hdf5_torch(
+            matrix_hdf5_file=matrix_db_file,
             genome_idx=spec.genome_idx,
-            sample_ids=block_ids.tolist(),
+            block_rows=block_rows,
+            block_start=block_start,
             matrix_length=spec.matrix_length,
             dtype_name=dtype_name,
+            matrix_value_semantics=matrix_value_semantics,
+            torch_module=compute_backend.torch,
         )
-        target_matrices = np.stack(
-            [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in block_ids],
-            axis=2,
-        )
-        return block_ids, block_names, zero_matrix, target_matrices
 
     async def drain_writer_results(force_one: bool = False, force_all: bool = False) -> None:
         nonlocal written_rows, completed_work
@@ -4383,42 +3693,18 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
         unit_index = next_target_prefetch_idx
         next_target_prefetch_idx += 1
         prefetch_block_start, prefetch_block_rows, prefetch_spec = work_units[unit_index]
-        if matrix_input_format == "hdf5":
-            pending_target_future = loop.run_in_executor(
-                target_loader_executor,
-                _load_target_prefetch_unit_for_hdf5_torch,
-                unit_index,
-                matrix_db_file,
-                prefetch_spec.genome_idx,
-                prefetch_block_rows,
-                prefetch_block_start,
-                prefetch_spec.matrix_length,
-                dtype_name,
-                matrix_value_semantics,
-            )
-        elif use_direct_torch_block_reads:
-            pending_target_future = loop.run_in_executor(
-                target_loader_executor,
-                _load_target_prefetch_unit_for_torch_direct,
-                unit_index,
-                matrix_db_file,
-                prefetch_spec.genome_idx,
-                prefetch_block_rows,
-                prefetch_spec.matrix_length,
-                dtype_name,
-                matrix_value_semantics,
-            )
-        else:
-            pending_target_future = loop.run_in_executor(
-                target_loader_executor,
-                _load_target_prefetch_unit_for_torch,
-                unit_index,
-                matrix_db_file,
-                prefetch_spec.genome_idx,
-                prefetch_block_rows,
-                prefetch_spec.matrix_length,
-                dtype_name,
-            )
+        pending_target_future = loop.run_in_executor(
+            target_loader_executor,
+            _load_target_prefetch_unit_for_hdf5_torch,
+            unit_index,
+            matrix_db_file,
+            prefetch_spec.genome_idx,
+            prefetch_block_rows,
+            prefetch_block_start,
+            prefetch_spec.matrix_length,
+            dtype_name,
+            matrix_value_semantics,
+        )
 
     async def drain_target_prefetch(force: bool = False) -> None:
         nonlocal pending_target_future
@@ -4477,15 +3763,13 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
 
             genome_name = spec.genome
             genome_gene_ranges = gene_ranges_by_genome.get(spec.genome_idx, [])
-            tile_targets, tile_size = _plan_chunk_sizes(
+            tile_targets, _ = _plan_chunk_sizes(
                 vector_length=spec.matrix_length,
                 remaining_targets=len(block_ids),
                 dtype_name=dtype_name,
                 memory_limit_bytes=memory_limit_bytes,
                 backend_kind=compute_backend.kind,
-                position_tile_size=position_tile_size,
             )
-            default_tile_size = tile_size
             if tile_targets < len(block_ids):
                 raise RuntimeError(
                     "Internal target block size exceeded the planned torch chunk capacity. "
@@ -4625,42 +3909,18 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 if not batch_rows:
                     return
                 next_anchor_offset += len(batch_rows)
-                if matrix_input_format == "hdf5":
-                    pending_anchor_future = loop.run_in_executor(
-                        anchor_loader_executor,
-                        _load_anchor_queue_batch_for_hdf5_torch,
-                        matrix_db_file,
-                        spec.genome_idx,
-                        batch_rows,
-                        next_anchor_offset - len(batch_rows),
-                        spec.matrix_length,
-                        dtype_name,
-                        zero_matrix,
-                        matrix_value_semantics,
-                    )
-                elif use_direct_torch_block_reads:
-                    pending_anchor_future = loop.run_in_executor(
-                        anchor_loader_executor,
-                        _load_anchor_queue_batch_for_torch_direct,
-                        matrix_db_file,
-                        spec.genome_idx,
-                        batch_rows,
-                        spec.matrix_length,
-                        dtype_name,
-                        zero_matrix,
-                        matrix_value_semantics,
-                    )
-                else:
-                    pending_anchor_future = loop.run_in_executor(
-                        anchor_loader_executor,
-                        _load_anchor_queue_batch_for_torch,
-                        matrix_db_file,
-                        spec.genome_idx,
-                        batch_rows,
-                        spec.matrix_length,
-                        dtype_name,
-                        zero_matrix,
-                    )
+                pending_anchor_future = loop.run_in_executor(
+                    anchor_loader_executor,
+                    _load_anchor_queue_batch_for_hdf5_torch,
+                    matrix_db_file,
+                    spec.genome_idx,
+                    batch_rows,
+                    next_anchor_offset - len(batch_rows),
+                    spec.matrix_length,
+                    dtype_name,
+                    zero_matrix,
+                    matrix_value_semantics,
+                )
 
             async def drain_anchor_prefetch(force: bool = False) -> None:
                 nonlocal pending_anchor_future
@@ -4696,7 +3956,6 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     anchor_torch=anchor_torch,
                     target_torch=target_torch,
                     vector_length=spec.matrix_length,
-                    tile_size=tile_size,
                     matrix_value_semantics=matrix_value_semantics,
                     need_ibs="ibs" in calculations,
                     gene_ranges=genome_gene_ranges if "gene" in calculations else None,
@@ -4752,7 +4011,6 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     anchor_torch=target_torch[:, :, local_anchor_pos],
                     target_torch=target_torch[:, :, local_anchor_pos + 1:],
                     vector_length=spec.matrix_length,
-                    tile_size=tile_size,
                     matrix_value_semantics=matrix_value_semantics,
                     need_ibs="ibs" in calculations,
                     gene_ranges=genome_gene_ranges if "gene" in calculations else None,
@@ -4829,15 +4087,11 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
         backend=compute_backend.kind,
         device=compute_backend.device,
         memory_limit_gb=memory_limit_gb,
-        position_tile_size=position_tile_size or default_tile_size,
     )
 
 
 def _matrix_compare_reuse_target_chunks_torch(
     matrix_db_file: Path,
-    conn: Optional[duckdb.DuckDBPyConnection],
-    matrix_input_format: str,
-    compare_conn: Optional[duckdb.DuckDBPyConnection],
     output_file: Path,
     min_cov: int,
     genome_scope: Optional[str],
@@ -4855,7 +4109,6 @@ def _matrix_compare_reuse_target_chunks_torch(
     result_transfer_batch_size: int,
     loader_executor_kind: str,
     writer_executor_kind: str,
-    position_tile_size: Optional[int],
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
     calculations: tuple[str, ...],
@@ -4867,9 +4120,6 @@ def _matrix_compare_reuse_target_chunks_torch(
     return asyncio.run(
         _matrix_compare_reuse_target_chunks_torch_async(
             matrix_db_file=matrix_db_file,
-            conn=conn,
-            matrix_input_format=matrix_input_format,
-            compare_conn=compare_conn,
             output_file=output_file,
             min_cov=min_cov,
             genome_scope=genome_scope,
@@ -4887,7 +4137,6 @@ def _matrix_compare_reuse_target_chunks_torch(
             result_transfer_batch_size=result_transfer_batch_size,
             loader_executor_kind=loader_executor_kind,
             writer_executor_kind=writer_executor_kind,
-            position_tile_size=position_tile_size,
             compute_backend=compute_backend,
             matrix_value_semantics=matrix_value_semantics,
             calculations=calculations,
@@ -4910,13 +4159,17 @@ def matrix_compare(
     result_transfer_batch_size: int = MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT,
     loader_executor_kind: str = "thread",
     writer_executor_kind: str = "thread",
-    matrix_input_format: str = "auto",
-    position_tile_size: Optional[int] = None,
     backend: str = "numpy",
     calculate: Optional[str] = "all",
     emit_writer_logs: bool = False,
     progress_callback: Optional[CompareProgressCallback] = None,
 ) -> MatrixCompareSummary:
+    """Run resumable all-vs-all matrix comparison on the current matrix store.
+
+    Results are written into a DuckDB compare database. Re-running the same
+    command against an existing compare database resumes from the remaining
+    uncompleted pairs.
+    """
     if min_cov < 1:
         raise ValueError("min_cov must be >= 1")
     if anchor_queue_size < 1:
@@ -4933,10 +4186,6 @@ def matrix_compare(
         raise ValueError(
             f"writer_executor_kind must be one of {', '.join(MATRIX_IO_EXECUTOR_KINDS)}"
         )
-    if matrix_input_format not in MATRIX_COMPARE_INPUT_FORMATS:
-        raise ValueError(
-            f"matrix_input_format must be one of {', '.join(MATRIX_COMPARE_INPUT_FORMATS)}"
-        )
     matrix_db_file = matrix_db_file.resolve()
     output_file = output_file.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -4944,44 +4193,30 @@ def matrix_compare(
     compute_backend = MatrixPairComputeBackend(backend)
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
     run_start_time = time.monotonic()
-    resolved_input_format = _resolve_matrix_input_format(matrix_db_file, matrix_input_format)
-    if resolved_input_format == "hdf5" and compute_backend.kind != "torch":
-        raise ValueError("HDF5 matrix input is currently supported only for torch backends.")
-    conn: Optional[duckdb.DuckDBPyConnection] = None
+    if not _is_hdf5_matrix_store(matrix_db_file):
+        raise ValueError(
+            "matrix-compare expects the current HDF5-backed matrix store format. "
+            "If you have a legacy DuckDB matrix database, convert it first with "
+            "'zipstrain utilities matrix-db-to-hdf5'."
+        )
     compare_conn: Optional[duckdb.DuckDBPyConnection] = None
     try:
         genome_scope = None if genome == "all" else genome
         gene_ranges: list[GeneRangeSpec] = []
-        if resolved_input_format == "duckdb":
-            conn = duckdb.connect(str(matrix_db_file), read_only=True)
-            metadata = _load_matrix_db_metadata(conn)
-            metadata["input_format"] = "duckdb"
-            matrix_value_semantics = metadata.get("matrix_value_semantics")
-            if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-                raise ValueError(
-                    "This matrix DB uses an unsupported legacy storage layout. "
-                    "Rebuild it with 'zipstrain utilities build-matrix-db'."
-                )
-            samples = _load_matrix_db_samples(conn)
-            genomes = _load_matrix_db_genomes(conn, genome=genome_scope)
-            if not genomes:
-                raise ValueError(f"No scaffolds found for genome scope: {genome}")
-            genome_scaffolds = _load_matrix_db_genome_scaffolds(conn, genome=genome_scope)
-        else:
-            metadata = _load_matrix_hdf5_metadata(matrix_db_file)
-            metadata["input_format"] = "hdf5"
-            matrix_value_semantics = metadata.get("matrix_value_semantics")
-            if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-                raise ValueError(
-                    "This matrix store uses an unsupported storage layout. "
-                    "Rebuild it with 'zipstrain utilities build-matrix-db'."
-                )
-            samples = _load_matrix_hdf5_samples(matrix_db_file)
-            genomes = _load_matrix_hdf5_genomes(matrix_db_file, genome=genome_scope)
-            if not genomes:
-                raise ValueError(f"No scaffolds found for genome scope: {genome}")
-            genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_db_file, genome=genome_scope)
-            gene_ranges = _load_matrix_hdf5_gene_ranges(matrix_db_file, genome=genome_scope)
+        metadata = _load_matrix_hdf5_metadata(matrix_db_file)
+        metadata["input_format"] = "hdf5"
+        matrix_value_semantics = metadata.get("matrix_value_semantics")
+        if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+            raise ValueError(
+                "This matrix store uses an unsupported storage layout. "
+                "Rebuild it with 'zipstrain utilities build-matrix-db'."
+            )
+        samples = _load_matrix_hdf5_samples(matrix_db_file)
+        genomes = _load_matrix_hdf5_genomes(matrix_db_file, genome=genome_scope)
+        if not genomes:
+            raise ValueError(f"No scaffolds found for genome scope: {genome}")
+        genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_db_file, genome=genome_scope)
+        gene_ranges = _load_matrix_hdf5_gene_ranges(matrix_db_file, genome=genome_scope)
         calculations = parse_matrix_calculations(
             calculate,
             include_gene_from_all=bool(gene_ranges),
@@ -5018,7 +4253,6 @@ def matrix_compare(
                 backend=compute_backend.kind,
                 device=compute_backend.device,
                 memory_limit_gb=memory_limit_gb,
-                position_tile_size=position_tile_size or 0,
             )
 
         if compute_backend.kind == "torch":
@@ -5026,9 +4260,6 @@ def matrix_compare(
             compare_conn = None
             return _matrix_compare_reuse_target_chunks_torch(
                 matrix_db_file=matrix_db_file,
-                conn=conn,
-                matrix_input_format=resolved_input_format,
-                compare_conn=compare_conn,
                 output_file=output_file,
                 min_cov=min_cov,
                 genome_scope=genome_scope,
@@ -5046,7 +4277,6 @@ def matrix_compare(
                 result_transfer_batch_size=result_transfer_batch_size,
                 loader_executor_kind=loader_executor_kind,
                 writer_executor_kind=writer_executor_kind,
-                position_tile_size=position_tile_size,
                 compute_backend=compute_backend,
                 matrix_value_semantics=matrix_value_semantics,
                 calculations=calculations,
@@ -5059,12 +4289,9 @@ def matrix_compare(
         completed_work = 0
         written_rows = 0
         target_chunks = 0
-        default_tile_size = 0
         anchor_groups = 0
 
         dtype_name = str(metadata.get("count_dtype", "uint16"))
-        if resolved_input_format == "hdf5":
-            raise ValueError("HDF5 matrix input is currently supported only for torch backends.")
         for anchor_offset, (sample_1_idx, sample_1_name) in enumerate(samples[:-1]):
             target_sample_rows = samples[anchor_offset + 1 :]
             if not target_sample_rows:
@@ -5079,159 +4306,157 @@ def matrix_compare(
                 ]
                 if not remaining_target_rows:
                     continue
+                remaining_target_row_indices = np.array(
+                    [
+                        row_idx
+                        for row_idx in range(anchor_offset + 1, len(samples))
+                        if (sample_1_idx, samples[row_idx][0]) not in completed_pairs_for_genome
+                    ],
+                    dtype=np.int64,
+                )
                 target_ids_all = np.array([sample_idx for sample_idx, _sample_name in remaining_target_rows], dtype=np.int64)
                 target_names_all = [sample_name for _sample_idx, sample_name in remaining_target_rows]
                 zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
-                anchor_loaded = _load_sample_genome_matrices(
-                    conn,
+                dataset = _Hdf5GenomeMatrixNumpyDataset(
+                    matrix_hdf5_file=matrix_db_file,
                     genome_idx=spec.genome_idx,
-                    sample_ids=[sample_1_idx],
-                    matrix_length=spec.matrix_length,
                     dtype_name=dtype_name,
                 )
-                anchor_matrix = anchor_loaded.get(sample_1_idx, zero_matrix)
-                pending_tables: list[pa.Table] = []
-                pending_completed_rows: list[tuple[int, int, int]] = []
-                pending_progress: list[dict[str, int]] = []
+                try:
+                    anchor_matrix = dataset.get_row(anchor_offset)
+                    pending_tables: list[pa.Table] = []
+                    pending_completed_rows: list[tuple[int, int, int]] = []
+                    pending_progress: list[dict[str, int]] = []
 
-                def flush_pending_numpy_chunks() -> None:
-                    nonlocal written_rows, completed_work
-                    if not pending_tables and not pending_completed_rows and not pending_progress:
-                        return
-                    batch_rows = 0
-                    batch_pairs = sum(progress_info["delta"] for progress_info in pending_progress)
-                    if pending_tables:
-                        compare_conn.commit()
-                        compare_conn.execute("BEGIN")
-                        try:
-                            for table in pending_tables:
-                                _insert_matrix_compare_result_table(compare_conn, table)
-                                batch_rows += table.num_rows
-                            _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
-                            compare_conn.execute("COMMIT")
-                        except Exception:
-                            compare_conn.execute("ROLLBACK")
-                            raise
-                        written_rows += batch_rows
-                    elif pending_completed_rows:
-                        compare_conn.commit()
-                        compare_conn.execute("BEGIN")
-                        try:
-                            _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
-                            compare_conn.execute("COMMIT")
-                        except Exception:
-                            compare_conn.execute("ROLLBACK")
-                            raise
-                    for progress_info in pending_progress:
-                        completed_work += progress_info["delta"]
-                    if pending_progress:
-                        last_progress = pending_progress[-1]
-                        if emit_writer_logs:
-                            _emit_matrix_compare_writer_log(
-                                start_time=run_start_time,
-                                completed=completed_work,
-                                total=total_work,
-                                batch_pairs=batch_pairs,
-                                batch_rows=batch_rows,
-                                anchor_name=sample_1_name,
-                                genome=spec.genome,
-                                targets_completed=last_progress["targets_completed"],
-                                targets_total=len(target_ids_all),
-                                target_chunks=target_chunks,
-                            )
-                        if progress_callback is not None:
-                            progress_callback(
-                                {
-                                    "phase": "advance",
-                                    "completed": completed_work,
-                                    "total": total_work,
-                                    "anchor_name": sample_1_name,
-                                    "genome": spec.genome,
-                                    "scaffold": "",
-                                    "targets_completed": last_progress["targets_completed"],
-                                    "targets_total": len(target_ids_all),
-                                    "target_chunks": target_chunks,
-                                }
-                            )
-                    pending_tables.clear()
-                    pending_completed_rows.clear()
-                    pending_progress.clear()
+                    def flush_pending_numpy_chunks() -> None:
+                        nonlocal written_rows, completed_work
+                        if not pending_tables and not pending_completed_rows and not pending_progress:
+                            return
+                        batch_rows = 0
+                        batch_pairs = sum(progress_info["delta"] for progress_info in pending_progress)
+                        if pending_tables:
+                            compare_conn.commit()
+                            compare_conn.execute("BEGIN")
+                            try:
+                                for table in pending_tables:
+                                    _insert_matrix_compare_result_table(compare_conn, table)
+                                    batch_rows += table.num_rows
+                                _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
+                                compare_conn.execute("COMMIT")
+                            except Exception:
+                                compare_conn.execute("ROLLBACK")
+                                raise
+                            written_rows += batch_rows
+                        elif pending_completed_rows:
+                            compare_conn.commit()
+                            compare_conn.execute("BEGIN")
+                            try:
+                                _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
+                                compare_conn.execute("COMMIT")
+                            except Exception:
+                                compare_conn.execute("ROLLBACK")
+                                raise
+                        for progress_info in pending_progress:
+                            completed_work += progress_info["delta"]
+                        if pending_progress:
+                            last_progress = pending_progress[-1]
+                            if emit_writer_logs:
+                                _emit_matrix_compare_writer_log(
+                                    start_time=run_start_time,
+                                    completed=completed_work,
+                                    total=total_work,
+                                    batch_pairs=batch_pairs,
+                                    batch_rows=batch_rows,
+                                    anchor_name=sample_1_name,
+                                    genome=spec.genome,
+                                    targets_completed=last_progress["targets_completed"],
+                                    targets_total=len(target_ids_all),
+                                    target_chunks=target_chunks,
+                                )
+                            if progress_callback is not None:
+                                progress_callback(
+                                    {
+                                        "phase": "advance",
+                                        "completed": completed_work,
+                                        "total": total_work,
+                                        "anchor_name": sample_1_name,
+                                        "genome": spec.genome,
+                                        "scaffold": "",
+                                        "targets_completed": last_progress["targets_completed"],
+                                        "targets_total": len(target_ids_all),
+                                        "target_chunks": target_chunks,
+                                    }
+                                )
+                        pending_tables.clear()
+                        pending_completed_rows.clear()
+                        pending_progress.clear()
 
-                target_offset = 0
-                while target_offset < len(target_ids_all):
-                    max_targets, tile_size = _plan_chunk_sizes(
-                        vector_length=spec.matrix_length,
-                        remaining_targets=len(target_ids_all) - target_offset,
-                        dtype_name=dtype_name,
-                        memory_limit_bytes=memory_limit_bytes,
-                        backend_kind=compute_backend.kind,
-                        position_tile_size=position_tile_size,
-                    )
-                    default_tile_size = tile_size
-                    chunk_ids = target_ids_all[target_offset: target_offset + max_targets]
-                    chunk_names = target_names_all[target_offset: target_offset + max_targets]
-                    loaded_targets = _load_sample_genome_matrices(
-                        conn,
-                        genome_idx=spec.genome_idx,
-                        sample_ids=chunk_ids.tolist(),
-                        matrix_length=spec.matrix_length,
-                        dtype_name=dtype_name,
-                    )
-                    target_matrices = np.stack(
-                        [loaded_targets.get(int(sample_idx), zero_matrix) for sample_idx in chunk_ids],
-                        axis=2,
-                    )
-                    if "ibs" in calculations:
-                        totals_chunk, shared_chunk, shared_mask = _compare_tile_presence_numpy_with_mask(
-                            anchor_matrix=anchor_matrix,
-                            target_matrices=target_matrices,
+                    target_offset = 0
+                    while target_offset < len(target_ids_all):
+                        max_targets, _ = _plan_chunk_sizes(
+                            vector_length=spec.matrix_length,
+                            remaining_targets=len(target_ids_all) - target_offset,
+                            dtype_name=dtype_name,
+                            memory_limit_bytes=memory_limit_bytes,
+                            backend_kind=compute_backend.kind,
                         )
-                    else:
-                        totals_chunk, shared_chunk = _compare_tile_presence_numpy(
-                            anchor_matrix=anchor_matrix,
-                            target_matrices=target_matrices,
-                        )
-                    ibs_max = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
-                    current_runs = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
-                    if "ibs" in calculations and current_runs is not None and ibs_max is not None:
-                        current_runs, updated_max = _update_ibs_numpy(
-                            shared_mask=shared_mask,
-                            current_runs=current_runs,
-                            max_runs=ibs_max,
-                        )
-                        ibs_max[:] = updated_max
-                    mask = totals_chunk > 0
-                    if mask.any():
-                        pending_tables.append(
-                            _make_arrow_table(
-                                sample_1_idx=sample_1_idx,
-                                sample_1=sample_1_name,
-                                sample_2_idx=[int(chunk_ids[idx]) for idx, keep in enumerate(mask) if keep],
-                                sample_2=[name for idx, name in enumerate(chunk_names) if mask[idx]],
-                                genome_idx=spec.genome_idx,
-                                genome=spec.genome,
-                                calculations=calculations,
-                                total_positions=totals_chunk[mask] if "ani" in calculations else None,
-                                share_allele_pos=shared_chunk[mask] if "ani" in calculations else None,
-                                max_consecutive_length=ibs_max[mask] if "ibs" in calculations else None,
+                        chunk_ids = target_ids_all[target_offset: target_offset + max_targets]
+                        chunk_names = target_names_all[target_offset: target_offset + max_targets]
+                        chunk_rows = remaining_target_row_indices[target_offset: target_offset + max_targets]
+                        target_matrices = dataset.load_indices(chunk_rows)
+                        if "ibs" in calculations:
+                            totals_chunk, shared_chunk, shared_mask = _compare_tile_presence_numpy_with_mask(
+                                anchor_matrix=anchor_matrix,
+                                target_matrices=target_matrices,
                             )
+                        else:
+                            totals_chunk, shared_chunk = _compare_tile_presence_numpy(
+                                anchor_matrix=anchor_matrix,
+                                target_matrices=target_matrices,
+                            )
+                        ibs_max = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
+                        current_runs = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
+                        if "ibs" in calculations and current_runs is not None and ibs_max is not None:
+                            current_runs, updated_max = _update_ibs_numpy(
+                                shared_mask=shared_mask,
+                                current_runs=current_runs,
+                                max_runs=ibs_max,
+                            )
+                            ibs_max[:] = updated_max
+                        mask = totals_chunk > 0
+                        if mask.any():
+                            pending_tables.append(
+                                _make_arrow_table(
+                                    sample_1_idx=sample_1_idx,
+                                    sample_1=sample_1_name,
+                                    sample_2_idx=[int(chunk_ids[idx]) for idx, keep in enumerate(mask) if keep],
+                                    sample_2=[name for idx, name in enumerate(chunk_names) if mask[idx]],
+                                    genome_idx=spec.genome_idx,
+                                    genome=spec.genome,
+                                    calculations=calculations,
+                                    total_positions=totals_chunk[mask] if "ani" in calculations else None,
+                                    share_allele_pos=shared_chunk[mask] if "ani" in calculations else None,
+                                    max_consecutive_length=ibs_max[mask] if "ibs" in calculations else None,
+                                )
+                            )
+                        pending_completed_rows.extend(
+                            (sample_1_idx, int(target_idx), spec.genome_idx)
+                            for target_idx in chunk_ids.tolist()
                         )
-                    pending_completed_rows.extend(
-                        (sample_1_idx, int(target_idx), spec.genome_idx)
-                        for target_idx in chunk_ids.tolist()
-                    )
-                    target_offset += max_targets
-                    target_chunks += 1
-                    pending_progress.append(
-                        {
-                            "delta": len(chunk_ids),
-                            "targets_completed": target_offset,
-                        }
-                    )
-                    if len(pending_progress) >= MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS:
-                        flush_pending_numpy_chunks()
+                        target_offset += max_targets
+                        target_chunks += 1
+                        pending_progress.append(
+                            {
+                                "delta": len(chunk_ids),
+                                "targets_completed": target_offset,
+                            }
+                        )
+                        if len(pending_progress) >= MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS:
+                            flush_pending_numpy_chunks()
 
-                flush_pending_numpy_chunks()
+                    flush_pending_numpy_chunks()
+                finally:
+                    dataset.close()
 
         return MatrixCompareSummary(
             output_file=output_file,
@@ -5246,11 +4471,8 @@ def matrix_compare(
             backend=compute_backend.kind,
             device=compute_backend.device,
             memory_limit_gb=memory_limit_gb,
-            position_tile_size=position_tile_size or default_tile_size,
             )
     finally:
-        if conn is not None:
-            conn.close()
         if compare_conn is not None:
             compare_conn.close()
 
@@ -5260,6 +4482,18 @@ def export_matrix_compare_parquet(
     output_file: Path,
     table: str = "genome",
 ) -> Path:
+    """Export matrix compare results from DuckDB into parquet.
+
+    Parameters
+    ----------
+    matrix_compare_db_file:
+        DuckDB compare database produced by :func:`matrix_compare`.
+    output_file:
+        Destination parquet file.
+    table:
+        ``"genome"`` for genome-level comparison rows or ``"gene"`` for
+        gene-level ANI rows.
+    """
     matrix_compare_db_file = Path(matrix_compare_db_file).resolve()
     output_file = Path(output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)

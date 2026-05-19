@@ -621,14 +621,6 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
     show_default=True,
     help="Executor used for torch result writing/checkpoint work.",
 )
-@click.option(
-    '--matrix-input-format',
-    type=click.Choice(mp.MATRIX_COMPARE_INPUT_FORMATS),
-    default="auto",
-    show_default=True,
-    help="Input matrix format. 'auto' infers from the file signature when possible, otherwise the file extension.",
-)
-@click.option('--position-tile-size', type=int, default=None, help="Optional override for positions processed per genome tile.")
 @click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani, ibs, gene. Combine with '+'. 'all' means ani+ibs, and also gene when the matrix store has gene annotations.")
 @click.option(
     '--backend',
@@ -647,13 +639,11 @@ def matrix_compare(
     result_transfer_batch_size,
     loader_executor,
     writer_executor,
-    matrix_input_format,
-    position_tile_size,
     calculate,
     backend,
 ):
     """
-    Run experimental genome-level matrix compare on all non-redundant, non-self sample pairs.
+    Run resumable matrix compare on all non-redundant, non-self sample pairs.
 
     This command writes results into a DuckDB compare database. If that compare
     DB already exists, only pairs that are not yet marked completed are
@@ -707,8 +697,6 @@ def matrix_compare(
                 result_transfer_batch_size=result_transfer_batch_size,
                 loader_executor_kind=loader_executor,
                 writer_executor_kind=writer_executor,
-                matrix_input_format=matrix_input_format,
-                position_tile_size=position_tile_size,
                 backend=backend,
                 calculate=calculate,
                 emit_writer_logs=False,
@@ -726,8 +714,6 @@ def matrix_compare(
             result_transfer_batch_size=result_transfer_batch_size,
             loader_executor_kind=loader_executor,
             writer_executor_kind=writer_executor,
-            matrix_input_format=matrix_input_format,
-            position_tile_size=position_tile_size,
             backend=backend,
             calculate=calculate,
             emit_writer_logs=True,

@@ -1,5 +1,12 @@
 # ZipStrain Command Line Interface
 
+This page is the command reference.
+If you want end-to-end examples first, use the [Tutorial](./Tutorial.md), which includes:
+
+- a standard workflow using the Python CLI
+- a standard workflow using Nextflow
+- a matrix workflow for repeated all-vs-all comparison
+
 This page is organized by workflow area for easier navigation:
 
 - [Profile](#profile)
@@ -356,7 +363,7 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities build-matrix-db` | Build the current per-sample genome matrix store directly from profile parquets |
 | `zipstrain utilities append-matrix-db` | Append new profiles into an existing matrix store |
 | `zipstrain utilities matrix-db-to-hdf5` | Convert a legacy matrix DuckDB into the current matrix-store format |
-| `zipstrain utilities matrix-compare` | Experimental ANI compare into a resumable DuckDB compare DB |
+| `zipstrain utilities matrix-compare` | Resumable all-vs-all matrix compare into a DuckDB compare DB |
 | `zipstrain utilities matrix-compare-export` | Export a matrix compare DuckDB to parquet |
 | `zipstrain utilities build-genome-db` | Build local genome reference bundle from abundance table |
 | `zipstrain utilities presence-profile` | Presence profile from coverage + read locations |
@@ -397,7 +404,8 @@ What it does:
 - builds one matrix store directly from those profiles
 - stores each genome as one sample-major dense dataset with shape `samples x positions x 4`
 - positions with total coverage below `5` are zeroed during matrix build
-- intended for many requested comparisons that reuse the same anchor sample
+- can optionally store scaffold-relative gene ranges for later gene ANI
+- is intended for repeated cohort-scale comparison runs against the same reference set
 
 Important options:
 
@@ -411,8 +419,6 @@ Important options:
 
 Notes:
 
-- this is an experimental utility path
-- it does not affect the standard `zipstrain compare` workflow
 - the output matrix store is intended for `zipstrain utilities matrix-compare`
 - new matrix stores are append-friendly on the sample axis
 - install matrix support with `pip install "zipstrain[matrix]"`
@@ -488,12 +494,10 @@ What it does:
 - reads a per-sample genome-matrix store from `build-matrix-db` or `matrix-db-to-hdf5`
 - writes results into a DuckDB compare database
 - if the compare DB already exists, only pairs not yet marked completed are processed
-- groups remaining pairs by anchor sample or target block depending on backend
 - loads one anchor sample plus as many target samples as fit the memory budget
-- computes ANI-only genome output scaffold-by-scaffold
-- uses matrix multiplication for `total_positions`
-- uses allele-presence matrix multiplication plus per-position thresholding for `share_allele_pos`
-- when `ibs` is requested, scans the shared-allele boolean in position order to compute `max_consecutive_length`
+- computes genome ANI from dense whole-genome matrices
+- computes IBS from the shared-allele boolean mask
+- computes gene ANI when gene annotations are present in the matrix store and `gene` is requested
 - stores result rows and completion metadata in the compare DB incrementally
 
 Important options:
@@ -507,11 +511,11 @@ Important options:
 - `--result-transfer-batch-size` number of torch compare units to batch before transferring result vectors back to CPU (default: `1`)
 - `--loader-executor` executor kind for torch loader prefetch work (`thread|process`, default: `thread`)
 - `--writer-executor` executor kind for torch result writing/checkpoint work (`thread|process`, default: `thread`)
-- `--position-tile-size` optional manual override for positions processed per scaffold tile
 - `--calculate` matrix metrics to compute:
   - `ani`
   - `ani+ibs`
-  - `all` currently behaves like `ani+ibs`
+  - `+gene` or `gene` for gene ANI
+  - `all` means `ani+ibs`, and also `gene` when the matrix store contains gene annotations
 - `--backend` compute backend:
   - `numpy`
   - `torch`
@@ -521,13 +525,11 @@ Important options:
 
 Notes:
 
-- this is an experimental utility path
-- it does not affect the standard `zipstrain compare` workflow
 - install Torch support with `pip install "zipstrain[matrix]"`
 - on Apple Silicon, the standard `torch` wheel can use MPS
 - on Linux with NVIDIA GPUs, replace Torch with the CUDA wheel that matches your system, for example:
 
-  ```bash
+  ```
   pip install "zipstrain[matrix]"
   pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu124
   ```
@@ -535,6 +537,7 @@ Notes:
 - MPS requires native macOS; Linux containers cannot expose Apple Metal
 - `torch` auto-selects CUDA, then MPS, then CPU
 - for torch backends, GPU work stays on the main process while loader and writer stages can run through either thread or process executors
+- the compare database is resumable; rerunning the same command on the same output file only processes unfinished sample pairs
 - the CLI shows a progress bar in an interactive terminal
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
 

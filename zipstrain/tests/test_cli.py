@@ -1,6 +1,7 @@
 from click.testing import CliRunner
 from zipstrain import cli
 from zipstrain import compare as cp
+from zipstrain import database as db
 from pathlib import Path
 import pytest
 import polars as pl
@@ -30,6 +31,69 @@ def _project_version() -> str:
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         return tomllib.load(handle)["project"]["version"]
+
+
+def _write_profile_db_for_compare_config_tests(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_paths: dict[str, Path] = {}
+    for idx, sample_name in enumerate(("sample_a", "sample_b", "sample_c"), start=1):
+        profile_path = profile_dir / f"{sample_name}.parquet"
+        pl.DataFrame(
+            {
+                "chrom": ["chr1"],
+                "genome": ["genome1"],
+                "pos": [idx],
+                "gene": ["NA"],
+                "A": [1],
+                "T": [0],
+                "C": [0],
+                "G": [0],
+            }
+        ).write_parquet(profile_path)
+        profile_paths[sample_name] = profile_path
+
+    profile_db = tmp_path / "profile_db.parquet"
+    pl.DataFrame(
+        {
+            "profile_name": list(profile_paths.keys()),
+            "profile_location": [str(path) for path in profile_paths.values()],
+            "reference_db_id": ["ref_1", "ref_1", "ref_1"],
+            "gene_db_id": ["gene_ref_1", "gene_ref_1", "gene_ref_1"],
+        }
+    ).write_parquet(profile_db)
+    return profile_db, profile_paths
+
+
+def _write_genome_compare_table_for_config_tests(compare_path: Path) -> None:
+    pl.DataFrame(
+        {
+            "genome": ["genome1"],
+            "total_positions": [10],
+            "share_allele_pos": [10],
+            "genome_pop_ani": [100.0],
+            "max_consecutive_length": [10],
+            "shared_genes_count": [0],
+            "identical_gene_count": [0],
+            "perc_id_genes": [0.0],
+            "sample_1": ["sample_a"],
+            "sample_2": ["sample_b"],
+        }
+    ).write_parquet(compare_path)
+
+
+def _write_gene_compare_table_for_config_tests(compare_path: Path) -> None:
+    pl.DataFrame(
+        {
+            "genome": ["genome1"],
+            "gene": ["gene1"],
+            "total_positions": [10],
+            "share_allele_pos": [10],
+            "ani": [100.0],
+            "sample_1": ["sample_a"],
+            "sample_2": ["sample_b"],
+        }
+    ).write_parquet(compare_path)
 
 @pytest.fixture
 def profile_1()->pl.LazyFrame:
@@ -833,6 +897,163 @@ def test_cli_build_profile_db_minimal_columns(tmp_path):
 
     built_db = pl.read_parquet(output_db)
     assert set(built_db.columns) == {"profile_name", "profile_location", "reference_db_id", "gene_db_id"}
+
+
+def test_cli_build_genome_comparison_config_with_current_comp_table(tmp_path):
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    current_compare = tmp_path / "current_genome_compare.parquet"
+    output_json = tmp_path / "genome_compare_config.json"
+    stb_file = tmp_path / "reference.stb"
+    _write_genome_compare_table_for_config_tests(current_compare)
+    stb_file.write_text("chr1\tgenome1\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-genome-comparison-config",
+            "--profile-db",
+            str(profile_db),
+            "--gene-db-id",
+            "gene_ref_1",
+            "--reference-genome-id",
+            "ref_1",
+            "--scope",
+            "genome1",
+            "--min-cov",
+            "7",
+            "--min-gene-compare-len",
+            "150",
+            "--stb-file-loc",
+            str(stb_file),
+            "--current-comp-table",
+            str(current_compare),
+            "--output-file",
+            str(output_json),
+        ],
+    )
+
+    assert result.exit_code == 0
+    loaded = db.GenomeComparisonDatabase.load_obj(output_json)
+    assert loaded.comp_db_loc == current_compare.resolve()
+    assert loaded.config.reference_id == "ref_1"
+    assert loaded.config.gene_db_id == "gene_ref_1"
+    assert loaded.config.scope == "genome1"
+    assert loaded.config.min_cov == 7
+    assert loaded.config.min_gene_compare_len == 150
+    assert loaded.config.stb_file_loc == str(stb_file)
+
+
+def test_cli_build_gene_comparison_config_with_current_comp_table(tmp_path):
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    current_compare = tmp_path / "current_gene_compare.parquet"
+    output_json = tmp_path / "gene_compare_config.json"
+    stb_file = tmp_path / "reference.stb"
+    _write_gene_compare_table_for_config_tests(current_compare)
+    stb_file.write_text("chr1\tgenome1\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-gene-comparison-config",
+            "--profile-db",
+            str(profile_db),
+            "--gene-db-id",
+            "gene_ref_1",
+            "--reference-genome-id",
+            "ref_1",
+            "--scope",
+            "genome1:gene1",
+            "--min-cov",
+            "6",
+            "--min-gene-compare-len",
+            "125",
+            "--stb-file-loc",
+            str(stb_file),
+            "--current-comp-table",
+            str(current_compare),
+            "--output-file",
+            str(output_json),
+        ],
+    )
+
+    assert result.exit_code == 0
+    loaded = db.GeneComparisonDatabase.load_obj(output_json)
+    assert loaded.comp_db_loc == current_compare.resolve()
+    assert loaded.config.reference_genome_id == "ref_1"
+    assert loaded.config.gene_db_id == "gene_ref_1"
+    assert loaded.config.scope == "genome1:gene1"
+    assert loaded.config.min_cov == 6
+    assert loaded.config.min_gene_compare_len == 125
+    assert loaded.config.stb_file_loc == str(stb_file)
+
+
+def test_cli_to_complete_table_uses_current_comparison_state(tmp_path):
+    profile_db, profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    current_compare = tmp_path / "current_genome_compare.parquet"
+    config_json = tmp_path / "genome_compare_config.json"
+    output_csv = tmp_path / "remaining_pairs.csv"
+    stb_file = tmp_path / "reference.stb"
+    _write_genome_compare_table_for_config_tests(current_compare)
+    stb_file.write_text("chr1\tgenome1\n")
+
+    runner = CliRunner()
+    build_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-genome-comparison-config",
+            "--profile-db",
+            str(profile_db),
+            "--gene-db-id",
+            "gene_ref_1",
+            "--reference-genome-id",
+            "ref_1",
+            "--scope",
+            "all",
+            "--min-cov",
+            "5",
+            "--min-gene-compare-len",
+            "100",
+            "--stb-file-loc",
+            str(stb_file),
+            "--current-comp-table",
+            str(current_compare),
+            "--output-file",
+            str(config_json),
+        ],
+    )
+    assert build_result.exit_code == 0
+
+    complete_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "to-complete-table",
+            "--genome-comparison-object",
+            str(config_json),
+            "--output-file",
+            str(output_csv),
+        ],
+    )
+    assert complete_result.exit_code == 0
+
+    remaining = pl.read_csv(output_csv)
+    assert remaining.select(["sample_name_1", "sample_name_2"]).rows() == [
+        ("sample_a", "sample_c"),
+        ("sample_b", "sample_c"),
+    ]
+    assert remaining["profile_location_1"].to_list() == [
+        str(profile_paths["sample_a"]),
+        str(profile_paths["sample_b"]),
+    ]
+    assert remaining["profile_location_2"].to_list() == [
+        str(profile_paths["sample_c"]),
+        str(profile_paths["sample_c"]),
+    ]
 
 
 def test_cli_merge_parquet_batched_mode(tmp_path):
