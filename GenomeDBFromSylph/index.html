@@ -561,9 +561,9 @@
   --abundance-table /path/to/sylph_abundance.csv \
   --cache-dir /path/to/genome_cache \
   --output-dir /path/to/reference_bundle \
-  --download-retries 3 \
-  --retry-backoff-seconds 1.0 \
-  --download-workers 4
+  --download-retries 8 \
+  --retry-backoff-seconds 10.0 \
+  --download-workers 1
 </code></pre>
 <h2 id="inputs">Inputs</h2>
 <ul>
@@ -599,14 +599,14 @@ ZipStrain loads it directly into cache first, then only downloads what is still 
 </ul>
 <p>Re-running with the same cache directory avoids redownloading genomes that already exist.</p>
 <h2 id="retry-behavior">Retry behavior</h2>
-<p>For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 3 attempts per genome).<br />
+<p>For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 8 attempts per genome).<br />
 If a genome still fails after retries, it is skipped, and the reference bundle is built from successfully fetched genomes.
 Parallelism for remote fetch is controlled with <code>--download-workers</code>.</p>
 <p>If you see repeated <code>Too Many Requests</code> errors on large runs:</p>
 <ul>
 <li>lower <code>--download-workers</code> (for example <code>1</code> or <code>2</code>)</li>
 <li>increase <code>--download-retries</code> (for example <code>8</code>)</li>
-<li>increase <code>--retry-backoff-seconds</code> (for example <code>3</code> to <code>5</code>)</li>
+<li>increase <code>--retry-backoff-seconds</code> (for example <code>10</code> to <code>20</code>)</li>
 </ul>
 <h2 id="console-summary">Console summary</h2>
 <p><code>build-genome-db</code> prints a short run summary:</p>

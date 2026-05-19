@@ -228,6 +228,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      Requirements
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#install-using-pip" class="md-nav__link">
     <span class="md-ellipsis">
       Install using pip
@@ -246,9 +255,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#use-docker" class="md-nav__link">
+  <a href="#docker" class="md-nav__link">
     <span class="md-ellipsis">
-      Use Docker
+      Docker
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#apptainer-singularity" class="md-nav__link">
+    <span class="md-ellipsis">
+      Apptainer (Singularity)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
     </span>
   </a>
   
@@ -399,6 +426,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      Requirements
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#install-using-pip" class="md-nav__link">
     <span class="md-ellipsis">
       Install using pip
@@ -417,9 +453,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#use-docker" class="md-nav__link">
+  <a href="#docker" class="md-nav__link">
     <span class="md-ellipsis">
-      Use Docker
+      Docker
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#apptainer-singularity" class="md-nav__link">
+    <span class="md-ellipsis">
+      Apptainer (Singularity)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
     </span>
   </a>
   
@@ -442,31 +496,87 @@
 
 
 <h1 id="installation">Installation</h1>
-<p>Welcome to the installation guide! Follow the steps below to set up ZipStrain on your system</p>
+<p>Follow the steps below to set up ZipStrain on your system.</p>
+<h2 id="requirements">Requirements</h2>
+<ul>
+<li><strong>Python 3.12 or higher</strong></li>
+<li><strong>samtools</strong> (not bundled with the pip install — see below)</li>
+</ul>
 <h2 id="install-using-pip">Install using pip</h2>
-<p>To install ZipStrain using pip, follow these steps:</p>
-<p>1- Make sure you have Python 3.12 or higher installed in your Python environment and activate it.</p>
-<p>2- Open your terminal and run the following command to install ZipStrain:</p>
-<pre><code>pip install zipstrain
-</code></pre>
-<p>This will install all the necessary dependencies along with ZipStrain <strong>except samtools</strong>. Refer to samtools website for installation instructions: http://www.htslib.org/download/</p>
-<p>3- Make sure the installation was successful by testing ZipStrain:</p>
-<pre><code>zipstrain test
-</code></pre>
+<ol>
+<li>
+<p>Make sure you have Python 3.12+ installed and your environment is activated.</p>
+</li>
+<li>
+<p>Install ZipStrain:</p>
+<p><code>pip install zipstrain</code></p>
+<p>This installs all Python dependencies <strong>except samtools</strong>. Install samtools separately from <a href="http://www.htslib.org/download/">htslib.org</a> or via your package manager (e.g., <code>brew install samtools</code>, <code>apt install samtools</code>).</p>
+</li>
+<li>
+<p>If you want the matrix-store workflow with Torch-backed CPU/GPU execution, install the optional extra:</p>
+<p><code>pip install "zipstrain[matrix]"</code></p>
+<p>Notes:</p>
+<ul>
+<li>On Apple Silicon, the standard <code>torch</code> wheel can use Metal through the MPS backend.</li>
+<li>On Linux with NVIDIA GPUs, install the ZipStrain extra and then replace Torch with the CUDA wheel that matches your system. For example:</li>
+</ul>
+<p><code>pip install "zipstrain[matrix]"
+  pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu124</code></p>
+<ul>
+<li>MPS requires a native macOS Python environment. Docker, Singularity, and Apptainer containers on Linux will not expose Apple Metal.</li>
+</ul>
+</li>
+<li>
+<p>Verify the installation:</p>
+<p><code>bash
+zipstrain test</code></p>
+</li>
+</ol>
 <h2 id="install-using-conda">Install using Conda</h2>
-<p>To install ZipStrain using Conda, run the following command in your conda environment with Python 3.12 or higher:</p>
-<pre><code>conda install -c conda-forge -c bioconda -c defaults zipstrain
+<p>Conda installs ZipStrain <strong>and</strong> samtools together:</p>
+<pre><code class="language-bash">conda install -c conda-forge -c bioconda -c defaults zipstrain
 </code></pre>
-<p>This will install all the necessary dependencies along with ZipStrain <strong>including samtools</strong>.</p>
-<h2 id="use-docker">Use Docker</h2>
-<p>To use ZipStrain with Docker, follow these steps:</p>
-<p>1- Make sure you have Docker installed on your system. </p>
-<p>2- Run ZipStrain using the Docker image:</p>
-<pre><code>docker run -it parsaghadermazi/zipstrain:latest zipstrain test
+<p>Verify with:</p>
+<pre><code class="language-bash">zipstrain test
 </code></pre>
-<p><strong><em>Note</em></strong>: Apptainer works in a very similar way to Docker:</p>
-<pre><code>apptainer run docker://parsaghadermazi/zipstrain:latest zipstrain test
+<h2 id="docker">Docker</h2>
+<ol>
+<li>
+<p>Make sure Docker is installed on your system.</p>
+</li>
+<li>
+<p>Run ZipStrain:</p>
+<p><code>bash
+docker run -it parsaghadermazi/zipstrain:&lt;version&gt; zipstrain test</code></p>
+</li>
+</ol>
+<p>To use ZipStrain interactively or with local data, mount your data directory:</p>
+<pre><code class="language-bash">docker run -it -v /path/to/your/data:/data parsaghadermazi/zipstrain:&lt;version&gt; bash
 </code></pre>
+<p>Optional CUDA image for Linux/NVIDIA hosts:</p>
+<pre><code class="language-bash">docker run -it --gpus all parsaghadermazi/zipstrain:&lt;version&gt;-cuda11.8 zipstrain test
+</code></pre>
+<p>Available GPU image tags:</p>
+<ul>
+<li><code>:&lt;version&gt;-cuda11.8</code> for older CUDA 11 era drivers</li>
+<li><code>:&lt;version&gt;-cuda12.4</code> for newer CUDA 12.4 capable drivers</li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>Docker images are published for <code>linux/amd64</code>.</li>
+<li>The base image includes the CPU implementation of all supported ZipStrain commands.</li>
+</ul>
+<h2 id="apptainer-singularity">Apptainer (Singularity)</h2>
+<p>Apptainer can pull directly from the Docker image:</p>
+<pre><code class="language-bash">apptainer run docker://parsaghadermazi/zipstrain:&lt;version&gt; zipstrain test
+</code></pre>
+<p>This is especially useful on HPC clusters where Docker is not available.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li><strong><code>samtools</code> not found</strong>: ZipStrain requires samtools for profiling. Make sure it is on your <code>PATH</code>. Run <code>samtools --version</code> to check.</li>
+<li><strong>Python version errors</strong>: ZipStrain requires Python 3.12+. Check with <code>python --version</code>.</li>
+<li><strong><code>zipstrain test</code> fails</strong>: Ensure all dependencies are installed. If using pip, double-check that samtools is available.</li>
+</ul>
 
 
 

@@ -899,6 +899,12 @@
 
 <h1 id="nextflow-pipeline-for-zipstrain">Nextflow Pipeline for ZipStrain</h1>
 <p>This page reflects the current <code>zipstrain.nf</code> workflow in this repository.</p>
+<p>Important scope note:</p>
+<ul>
+<li>the classic profile-based compare workflows are available in Nextflow</li>
+<li>the newer matrix-store workflow is currently CLI-driven and is documented in <a href="../Tutorial/">Tutorial</a> and <a href="../cli/">CLI</a></li>
+<li>if you want a worked standard example, the <a href="../Tutorial/">Tutorial</a> now includes both a Python/CLI route and a Nextflow route</li>
+</ul>
 <h2 id="what-the-pipeline-supports">What the Pipeline Supports</h2>
 <ul>
 <li>Read mapping with Bowtie2 (<code>map_reads</code>)</li>
@@ -913,10 +919,11 @@
   --input_table &lt;path/to/input.csv&gt; \
   --output_dir &lt;path/to/output_dir&gt; \
   -c conf.config \
-  -profile &lt;docker|alpine|gutbot|blanca&gt; \
+  -profile &lt;docker|alpine|gutbot|blanca|fiji&gt; \
   -resume
 </code></pre>
-<p><code>conf.config</code> already defines resources for the current process set and includes example execution profiles.</p>
+<p><code>conf.config</code> already defines resources for the current process set and includes example execution profiles.
+The <code>fiji</code> profile is configured for Slurm plus Singularity, which is useful on clusters that provide Singularity rather than Apptainer.</p>
 <h2 id="key-pipeline-parameters">Key Pipeline Parameters</h2>
 <ul>
 <li><code>--mode</code>: <code>map_reads</code>, <code>profile</code>, <code>from_sra_to_profile</code>, <code>compare_genomes</code>, <code>compare_genes</code></li>
@@ -925,7 +932,9 @@
 <li><code>--batch_size</code>: number of pairs per batch when <code>--parallel_mode batched</code></li>
 <li><code>--batch_compare_n_parallel</code>: parallel jobs inside each batched comparison task</li>
 <li><code>--compare_genome_scope</code>: genome scope for genome comparisons (<code>all</code> or genome ID)</li>
+<li><code>--compare_genome_calculate</code>: genome metrics to compute (<code>all</code> or <code>ani</code>)</li>
 <li><code>--compare_gene_scope</code>: gene scope for gene comparisons (<code>all:all</code>, <code>&lt;genome&gt;:all</code>, <code>all:&lt;gene&gt;</code>, <code>&lt;genome&gt;:&lt;gene&gt;</code>)</li>
+<li><code>--compare_ani_method</code>: ANI method forwarded to compare tasks (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;threshold&gt;</code>)</li>
 <li><code>--compare_duckdb_memory_limit</code>: forwarded to single compare commands</li>
 <li><code>--compare_calculate</code>: genome metrics for genome compare (<code>ani</code>, <code>ibs</code>, <code>identical_genes</code>, <code>all</code>, or <code>+</code> combinations). Default: <code>all</code></li>
 </ul>
@@ -1077,6 +1086,7 @@ S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
   --input_table profiles.csv \
   --stb reference_genomes.stb \
   --compare_gene_scope all:all \
+  --compare_ani_method popani \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \

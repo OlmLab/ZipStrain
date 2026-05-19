@@ -250,47 +250,635 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#introduction-to-zipstrain" class="md-nav__link">
+  <a href="#before-you-start" class="md-nav__link">
     <span class="md-ellipsis">
-      Introduction to ZipStrain
+      Before You Start
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Introduction to ZipStrain">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workflow-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Workflow Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#route-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Route Selection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example Map
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-prepare-the-reference-bundle-and-map-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 1: Prepare the Reference Bundle and Map Reads
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 1: Prepare the Reference Bundle and Map Reads">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#mapping-reads" class="md-nav__link">
+  <a href="#option-a-use-an-existing-reference-bundle" class="md-nav__link">
     <span class="md-ellipsis">
-      Mapping Reads
+      Option A: Use an Existing Reference Bundle
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#generating-profiles" class="md-nav__link">
+  <a href="#option-b-build-the-reference-bundle-from-sylph" class="md-nav__link">
     <span class="md-ellipsis">
-      Generating Profiles
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Generating Profiles">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#zipstrain-cli" class="md-nav__link">
-    <span class="md-ellipsis">
-      ZipStrain CLI
+      Option B: Build the Reference Bundle from Sylph
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#nextflow-pipeline" class="md-nav__link">
+  <a href="#reads-table-example" class="md-nav__link">
     <span class="md-ellipsis">
-      Nextflow Pipeline
+      Reads Table Example
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-prepare-profiling-assets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 2: Prepare Profiling Assets
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-build-the-null-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 3: Build the Null Model
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-generate-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 4: Generate Profiles
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 4: Generate Profiles">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cli-profile-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      CLI Profile Workflow
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nextflow-profile-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Nextflow Profile Workflow
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5a-standard-comparison-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 5A: Standard Comparison Route
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 5A: Standard Comparison Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-pair-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Single Pair Compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#large-standard-compare-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Large Standard Compare Runs
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5b-matrix-comparison-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 5B: Matrix Comparison Route
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 5B: Matrix Comparison Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-use-the-matrix-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      Why Use the Matrix Route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix-route-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Matrix Route Overview
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-the-matrix-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build the Matrix Store
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#append-new-samples-later" class="md-nav__link">
+    <span class="md-ellipsis">
+      Append New Samples Later
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#convert-a-legacy-matrix-duckdb" class="md-nav__link">
+    <span class="md-ellipsis">
+      Convert a Legacy Matrix DuckDB
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run-matrix-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Run Matrix Compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#export-matrix-compare-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      Export Matrix Compare Results
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#understanding-matrix-inputs-and-outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Understanding Matrix Inputs and Outputs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Understanding Matrix Inputs and Outputs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#matrix-store-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      Matrix Store Input
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix-compare-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      Matrix Compare Output
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-between-standard-and-matrix-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Choosing Between Standard and Matrix Compare
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-limitations-and-practical-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Current Limitations and Practical Notes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-starting-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Starting Point
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-a-standard-workflow-with-the-python-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example A: Standard Workflow with the Python CLI
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Worked Example A: Standard Workflow with the Python CLI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-this-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      When to use this route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      Example layout
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1-prepare-profiling-assets-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Prepare profiling assets once
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-build-the-null-model-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Build the null model once
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-make-the-bam-input-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Make the BAM input table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-generate-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Generate profiles
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-build-the-profile-db-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Build the profile DB table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-build-the-standard-compare-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Build the standard compare config
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-run-the-standard-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Run the standard compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-b-standard-workflow-with-nextflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example B: Standard Workflow with Nextflow
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Worked Example B: Standard Workflow with Nextflow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-this-route_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      When to use this route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1-prepare-the-read-input-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Prepare the read input table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-map-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Map reads
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-generate-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Generate profiles
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-build-the-profile-list-for-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Build the profile list for compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-run-genome-comparison-in-nextflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Run genome comparison in Nextflow
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-optional-gene-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Optional gene compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-c-matrix-workflow-for-repeated-all-vs-all-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example C: Matrix Workflow for Repeated All-vs-All Comparison
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Worked Example C: Matrix Workflow for Repeated All-vs-All Comparison">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-this-route_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      When to use this route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1-start-from-standard-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Start from standard profiles
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-build-the-matrix-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Build the matrix store
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-run-matrix-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Run matrix compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-export-genome-level-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Export genome-level results
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-export-gene-level-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Export gene-level results
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-append-new-samples-later" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Append new samples later
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-add-a-new-sample-later-and-run-only-the-remaining-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Optional: Add a New Sample Later and Run Only the Remaining Pairs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Optional: Add a New Sample Later and Run Only the Remaining Pairs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#standard-method" class="md-nav__link">
+    <span class="md-ellipsis">
+      Standard Method
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Standard Method">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-update-the-profile-db-input-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Update the profile DB input table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-rebuild-the-standard-compare-config-with-the-current-comparison-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Rebuild the standard compare config with the current comparison table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-optionally-inspect-the-remaining-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Optionally inspect the remaining pairs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-rerun-standard-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Rerun standard compare
     </span>
   </a>
   
@@ -302,85 +890,28 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#compare-genomes-in-multiple-profiled-samples" class="md-nav__link">
+  <a href="#matrix-method" class="md-nav__link">
     <span class="md-ellipsis">
-      Compare genomes in multiple profiled samples
+      Matrix Method
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Compare genomes in multiple profiled samples">
+    <nav class="md-nav" aria-label="Matrix Method">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#zipstrain-cli_1" class="md-nav__link">
+  <a href="#1-append-the-new-sample-into-the-matrix-store" class="md-nav__link">
     <span class="md-ellipsis">
-      ZipStrain CLI
+      1. Append the new sample into the matrix store
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#nextflow-workflow" class="md-nav__link">
+  <a href="#2-rerun-matrix-compare-against-the-same-compare-db" class="md-nav__link">
     <span class="md-ellipsis">
-      Nextflow Workflow
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#output-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      Output files
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#downstream-analyses" class="md-nav__link">
-    <span class="md-ellipsis">
-      Downstream Analyses
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Downstream Analyses">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#strain-sharing-analysis" class="md-nav__link">
-    <span class="md-ellipsis">
-      Strain Sharing Analysis
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#recommended-workflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      Recommended Workflow
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Recommended Workflow">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-create-a-centralized-database-for-your-profiles" class="md-nav__link">
-    <span class="md-ellipsis">
-      1- Create a centralized database for your profiles
+      2. Rerun matrix compare against the same compare DB
     </span>
   </a>
   
@@ -397,80 +928,11 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#an-example-workflow" class="md-nav__link">
+  <a href="#further-reading" class="md-nav__link">
     <span class="md-ellipsis">
-      An Example Workflow
+      Further Reading
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="An Example Workflow">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#step-1-prepare-reference-database" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 1- Prepare Reference Database
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-2-find-genes-in-the-reference-genomes-by-running-prodigal" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 2- Find genes in the reference genomes by running Prodigal
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-3-map-example-reads-to-the-reference-database" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 3- Map example reads to the reference database
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-4-prepare-necessary-files-for-profiling" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 4- Prepare necessary files for profiling
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-5-profile-the-mapped-bam-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 5- Profile the mapped BAM files
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-6-compare-the-profiled-samples-at-the-genome-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 6- Compare the profiled samples at the genome level
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-7-compare-the-profiled-samples-at-the-gene-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 7- Compare the profiled samples at the gene level
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -597,47 +1059,635 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#introduction-to-zipstrain" class="md-nav__link">
+  <a href="#before-you-start" class="md-nav__link">
     <span class="md-ellipsis">
-      Introduction to ZipStrain
+      Before You Start
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Introduction to ZipStrain">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workflow-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Workflow Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#route-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Route Selection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example Map
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-prepare-the-reference-bundle-and-map-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 1: Prepare the Reference Bundle and Map Reads
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 1: Prepare the Reference Bundle and Map Reads">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#mapping-reads" class="md-nav__link">
+  <a href="#option-a-use-an-existing-reference-bundle" class="md-nav__link">
     <span class="md-ellipsis">
-      Mapping Reads
+      Option A: Use an Existing Reference Bundle
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#generating-profiles" class="md-nav__link">
+  <a href="#option-b-build-the-reference-bundle-from-sylph" class="md-nav__link">
     <span class="md-ellipsis">
-      Generating Profiles
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Generating Profiles">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#zipstrain-cli" class="md-nav__link">
-    <span class="md-ellipsis">
-      ZipStrain CLI
+      Option B: Build the Reference Bundle from Sylph
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#nextflow-pipeline" class="md-nav__link">
+  <a href="#reads-table-example" class="md-nav__link">
     <span class="md-ellipsis">
-      Nextflow Pipeline
+      Reads Table Example
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-prepare-profiling-assets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 2: Prepare Profiling Assets
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-build-the-null-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 3: Build the Null Model
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-generate-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 4: Generate Profiles
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 4: Generate Profiles">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cli-profile-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      CLI Profile Workflow
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nextflow-profile-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Nextflow Profile Workflow
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5a-standard-comparison-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 5A: Standard Comparison Route
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 5A: Standard Comparison Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-pair-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Single Pair Compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#large-standard-compare-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Large Standard Compare Runs
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5b-matrix-comparison-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 5B: Matrix Comparison Route
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 5B: Matrix Comparison Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-use-the-matrix-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      Why Use the Matrix Route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix-route-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Matrix Route Overview
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-the-matrix-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      Build the Matrix Store
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#append-new-samples-later" class="md-nav__link">
+    <span class="md-ellipsis">
+      Append New Samples Later
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#convert-a-legacy-matrix-duckdb" class="md-nav__link">
+    <span class="md-ellipsis">
+      Convert a Legacy Matrix DuckDB
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run-matrix-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Run Matrix Compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#export-matrix-compare-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      Export Matrix Compare Results
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#understanding-matrix-inputs-and-outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Understanding Matrix Inputs and Outputs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Understanding Matrix Inputs and Outputs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#matrix-store-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      Matrix Store Input
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix-compare-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      Matrix Compare Output
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-between-standard-and-matrix-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Choosing Between Standard and Matrix Compare
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-limitations-and-practical-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Current Limitations and Practical Notes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-starting-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Starting Point
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-a-standard-workflow-with-the-python-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example A: Standard Workflow with the Python CLI
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Worked Example A: Standard Workflow with the Python CLI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-this-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      When to use this route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      Example layout
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1-prepare-profiling-assets-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Prepare profiling assets once
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-build-the-null-model-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Build the null model once
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-make-the-bam-input-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Make the BAM input table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-generate-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Generate profiles
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-build-the-profile-db-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Build the profile DB table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-build-the-standard-compare-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Build the standard compare config
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-run-the-standard-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Run the standard compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-b-standard-workflow-with-nextflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example B: Standard Workflow with Nextflow
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Worked Example B: Standard Workflow with Nextflow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-this-route_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      When to use this route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1-prepare-the-read-input-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Prepare the read input table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-map-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Map reads
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-generate-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Generate profiles
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-build-the-profile-list-for-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Build the profile list for compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-run-genome-comparison-in-nextflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Run genome comparison in Nextflow
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-optional-gene-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Optional gene compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example-c-matrix-workflow-for-repeated-all-vs-all-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked Example C: Matrix Workflow for Repeated All-vs-All Comparison
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Worked Example C: Matrix Workflow for Repeated All-vs-All Comparison">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-this-route_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      When to use this route
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1-start-from-standard-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Start from standard profiles
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-build-the-matrix-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Build the matrix store
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-run-matrix-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Run matrix compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-export-genome-level-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Export genome-level results
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-export-gene-level-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Export gene-level results
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-append-new-samples-later" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Append new samples later
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-add-a-new-sample-later-and-run-only-the-remaining-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Optional: Add a New Sample Later and Run Only the Remaining Pairs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Optional: Add a New Sample Later and Run Only the Remaining Pairs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#standard-method" class="md-nav__link">
+    <span class="md-ellipsis">
+      Standard Method
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Standard Method">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-update-the-profile-db-input-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Update the profile DB input table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-rebuild-the-standard-compare-config-with-the-current-comparison-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Rebuild the standard compare config with the current comparison table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-optionally-inspect-the-remaining-pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Optionally inspect the remaining pairs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-rerun-standard-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Rerun standard compare
     </span>
   </a>
   
@@ -649,85 +1699,28 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#compare-genomes-in-multiple-profiled-samples" class="md-nav__link">
+  <a href="#matrix-method" class="md-nav__link">
     <span class="md-ellipsis">
-      Compare genomes in multiple profiled samples
+      Matrix Method
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Compare genomes in multiple profiled samples">
+    <nav class="md-nav" aria-label="Matrix Method">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#zipstrain-cli_1" class="md-nav__link">
+  <a href="#1-append-the-new-sample-into-the-matrix-store" class="md-nav__link">
     <span class="md-ellipsis">
-      ZipStrain CLI
+      1. Append the new sample into the matrix store
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#nextflow-workflow" class="md-nav__link">
+  <a href="#2-rerun-matrix-compare-against-the-same-compare-db" class="md-nav__link">
     <span class="md-ellipsis">
-      Nextflow Workflow
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#output-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      Output files
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#downstream-analyses" class="md-nav__link">
-    <span class="md-ellipsis">
-      Downstream Analyses
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Downstream Analyses">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#strain-sharing-analysis" class="md-nav__link">
-    <span class="md-ellipsis">
-      Strain Sharing Analysis
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#recommended-workflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      Recommended Workflow
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Recommended Workflow">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-create-a-centralized-database-for-your-profiles" class="md-nav__link">
-    <span class="md-ellipsis">
-      1- Create a centralized database for your profiles
+      2. Rerun matrix compare against the same compare DB
     </span>
   </a>
   
@@ -744,80 +1737,11 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#an-example-workflow" class="md-nav__link">
+  <a href="#further-reading" class="md-nav__link">
     <span class="md-ellipsis">
-      An Example Workflow
+      Further Reading
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="An Example Workflow">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#step-1-prepare-reference-database" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 1- Prepare Reference Database
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-2-find-genes-in-the-reference-genomes-by-running-prodigal" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 2- Find genes in the reference genomes by running Prodigal
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-3-map-example-reads-to-the-reference-database" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 3- Map example reads to the reference database
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-4-prepare-necessary-files-for-profiling" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 4- Prepare necessary files for profiling
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-5-profile-the-mapped-bam-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 5- Profile the mapped BAM files
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-6-compare-the-profiled-samples-at-the-genome-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 6- Compare the profiled samples at the genome level
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-7-compare-the-profiled-samples-at-the-gene-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      Step 7- Compare the profiled samples at the gene level
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -838,475 +1762,768 @@
 
 
 <h1 id="tutorial">Tutorial</h1>
-<p>This tutorial will guide you through the basics of using ZipStrain.</p>
-<h2 id="introduction-to-zipstrain">Introduction to ZipStrain</h2>
-<p>ZipStrain is a tool for profiling a metagenomics sample against a database of reference genomes and performing comparisons between the profiles as well as downstream analyses. </p>
-<p>The typical workflow consists of the following steps:</p>
-<p>1- Mapping reads to a reference database using any read mapper of your choice (e.g., BWA, Bowtie2, Minimap2).</p>
-<p>2- Generating a profile from the mapped reads using ZipStrain. This step will generate a parquet file containing nucleotide frequencies for all positions in the reference genomes.</p>
-<p>3- Comparing the generated profiles against each other and/or against a reference profile.</p>
-<p>4- Performing downstream analyses, such as Identity-By-State (IBS), StrainSharing, and clustering.</p>
-<h3 id="mapping-reads">Mapping Reads</h3>
-<p>In this step, you will map your metagenomics reads to a reference database using a read mapper of your choice. The reference database is a concatenation of all reference genomes you want to profile against. The output of this step should be a BAM file. It is recommended to discard unmapped reads to reduce file size. Currently, you can use the nextflow pipeline accompanying ZipStrain to perform this step with Bowtie2. Here is an example command using Bowtie2, but for more information about the nextflow pipeline, please refer to the <a href="../NextflowPipeline/">Nextflow Pipeline Documentation</a>.</p>
-<pre><code>
-nextflow run zipstrain.nf --mode 'map_reads' --input_type 'sra|local' --input_table 'path/to/your/input_table.tsv' --reference_genome &lt;path/to/your/reference_db.fasta&gt; --output_dir &lt;path/to/your/output_dir&gt; -c conf.config -profile &lt;your_profile&gt; -resume
-
-</code></pre>
-<p>NOTE: map_reads mode can work with either SRA accessions or local FASTQ files. Please refer to the Nextflow Pipeline Documentation for more details.</p>
-<p>This step will generate BAM files for each of your samples in the specified output directory.</p>
-<h3 id="generating-profiles">Generating Profiles</h3>
-<p>In this step, you will generate profiles from the mapped reads using ZipStrain. A profile is simply a table in parquet format that contains the 
-following columns:</p>
-<pre><code>
-|chrom|pos|gene|A|C|G|T|
-
-</code></pre>
-<p>Where <code>chrom</code> is the scaffold, <code>pos</code> is the position in the reference genome, <code>gene</code> is the gene name (if a gene file is provided), and <code>A</code>, <code>C</code>, <code>G</code>, and <code>T</code> are the counts of each nucleotide at that position based on the mapped reads.</p>
-<p>The information will be generated for every position in the reference genomes that has at least one read mapped to it. There are two ways to generate profiles using ZipStrain: </p>
+<p>This tutorial walks through the current ZipStrain workflow from mapped reads to comparison outputs.</p>
+<p>It covers two current comparison methods:</p>
+<ol>
+<li>The <strong>standard</strong> method, which compares profile tables directly with table operations</li>
+<li>The <strong>matrix</strong> method, which first builds dense whole-genome matrices and then compares from that store</li>
+</ol>
+<p>The most important difference is not “old versus new.” It is when each method is a better fit.</p>
 <ul>
-<li>
-<p>ZipStrain as a command-line tool</p>
-</li>
-<li>
-<p>ZipStrain Nextflow pipeline.</p>
-</li>
+<li>The <strong>standard</strong> method is easier to start with, more general, and usually the better choice when you only have a few samples or only need a modest number of comparisons.</li>
+<li>The <strong>matrix</strong> method is worth the extra setup when you expect repeated all-vs-all comparison runs against the same reference set, especially when your analysis is centered on one genome or a small set of target genomes across many samples.</li>
 </ul>
-<p>You can profile multiple BAM files using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods.
-For both you need to prepare a csv file containing the paths to the bam files to be profiled and the sample names. Example of such a csv file:</p>
+<h2 id="before-you-start">Before You Start</h2>
+<p>You should already have one of these two starting points:</p>
+<ol>
+<li>mapped BAM files for your samples, plus the reference bundle they were mapped against</li>
+<li>raw reads for your samples, plus enough information to build the reference bundle first</li>
+</ol>
+<p>The reference bundle means:</p>
+<ul>
+<li>a reference genome FASTA</li>
+<li>an STB file mapping scaffolds to genomes</li>
+</ul>
+<p>You can provide that bundle directly, or generate it from Sylph abundance output.</p>
+<p>Optionally, you may also have:</p>
+<ul>
+<li>a Prodigal-style gene FASTA</li>
+<li>or a scaffold-relative gene range table</li>
+</ul>
+<p>If you need installation details first, see <a href="../installation/">installation</a>.
+If you need pipeline-specific details, see <a href="../NextflowPipeline/">NextflowPipeline</a>.
+If you want command-by-command help, see <a href="../cli/">cli</a>.</p>
+<h2 id="workflow-overview">Workflow Overview</h2>
+<p>A typical ZipStrain project now looks like this:</p>
+<ol>
+<li>Prepare a reference bundle, or build one from Sylph.</li>
+<li>Map reads to that reference genome database.</li>
+<li>Build profiling assets.</li>
+<li>Build a null model.</li>
+<li>Generate one profile parquet per sample.</li>
+<li>Choose a comparison route:</li>
+<li>standard compare directly from profile parquets</li>
+<li>matrix compare from a prebuilt matrix store</li>
+<li>Export or analyze the results.</li>
+</ol>
+<p>If you are starting from BAM files that are already mapped against the right reference bundle, you can skip the bundle-building and mapping steps.</p>
+<h2 id="route-selection">Route Selection</h2>
+<p>If you are deciding which route to use before doing anything else, use this rule of thumb:</p>
+<ul>
+<li>Choose <strong>standard</strong> if you want the simplest path from profiles to results.</li>
+<li>Choose <strong>matrix</strong> if you expect to reuse the same profile cohort for repeated comparison jobs.</li>
+</ul>
+<p>Use the standard workflow when:</p>
+<ul>
+<li>you only need a few comparisons</li>
+<li>you want the fewest moving parts</li>
+<li>you want direct profile-table operations without building another artifact first</li>
+<li>you want the most general route across genomes and workflows</li>
+</ul>
+<p>Use the matrix workflow when:</p>
+<ul>
+<li>you have many samples against the same reference set</li>
+<li>you want resumable all-vs-all comparison runs</li>
+<li>you expect to append new samples over time</li>
+<li>you want one prebuilt store that can be reused for many comparison jobs</li>
+<li>you are mainly focused on one genome or a small set of genomes and want repeated comparison throughput</li>
+</ul>
+<p>In practice:</p>
+<ul>
+<li>standard compare is simpler for small ad hoc work</li>
+<li>matrix compare is usually not worth it for only a few samples, because you first have to build the matrix store</li>
+<li>matrix compare becomes attractive once repeated comparison cost becomes the bottleneck</li>
+</ul>
+<p>One important clarification:</p>
+<ul>
+<li>the <strong>standard comparison route</strong> can be run in two practical ways:</li>
+<li>a Python/CLI workflow</li>
+<li>a Nextflow workflow</li>
+<li>the <strong>matrix comparison route</strong> is currently a CLI workflow built on top of standard profile outputs</li>
+</ul>
+<h2 id="worked-example-map">Worked Example Map</h2>
+<p>If you want a concrete starting point instead of reading the whole reference flow first, use one of these:</p>
+<ol>
+<li><a href="#worked-example-a-standard-workflow-with-the-python-cli">Worked Example A: Standard workflow with the Python CLI</a></li>
+<li><a href="#worked-example-b-standard-workflow-with-nextflow">Worked Example B: Standard workflow with Nextflow</a></li>
+<li><a href="#worked-example-c-matrix-workflow-for-repeated-all-vs-all-comparison">Worked Example C: Matrix workflow for repeated all-vs-all comparison</a></li>
+</ol>
+<h2 id="step-1-prepare-the-reference-bundle-and-map-reads">Step 1: Prepare the Reference Bundle and Map Reads</h2>
+<p>ZipStrain expects reads to be mapped to a concatenated reference genome set.
+The output of this step should be BAM files.</p>
+<p>There are two normal ways to get there:</p>
+<ol>
+<li>start with an existing reference FASTA and STB</li>
+<li>build the reference bundle from Sylph, then map reads</li>
+</ol>
+<h3 id="option-a-use-an-existing-reference-bundle">Option A: Use an Existing Reference Bundle</h3>
+<p>If you already have:</p>
+<ul>
+<li><code>reference_genomes.fna</code></li>
+<li><code>reference_genomes.stb</code></li>
+</ul>
+<p>you can map reads directly with either the CLI/your own mapper or the Nextflow pipeline.</p>
+<p>Example with the Nextflow pipeline:</p>
+<pre><code class="language-bash">nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --reference_genome reference_genomes.fna \
+  --stb reference_genomes.stb \
+  --output_dir out_map \
+  -c conf.config \
+  -profile docker \
+  -resume
+</code></pre>
+<h3 id="option-b-build-the-reference-bundle-from-sylph">Option B: Build the Reference Bundle from Sylph</h3>
+<p>If you do not already have a prepared reference bundle, ZipStrain can build one from Sylph abundance output.</p>
+<p>You can do that in either workflow style:</p>
+<ul>
+<li>with the Python CLI using <code>zipstrain utilities build-genome-db</code></li>
+<li>or inside Nextflow by omitting <code>--reference_genome</code> and letting the pipeline build the bundle from Sylph</li>
+</ul>
+<p>CLI example:</p>
+<pre><code class="language-bash">zipstrain utilities build-genome-db \
+  --tool sylph \
+  --abundance-table sylph_abundance.csv \
+  --cache-dir genome_cache \
+  --output-dir reference_bundle
+</code></pre>
+<p>This creates:</p>
+<ul>
+<li><code>reference_bundle/reference_genomes.fna</code></li>
+<li><code>reference_bundle/reference_genomes.stb</code></li>
+</ul>
+<p>Nextflow example:</p>
+<pre><code class="language-bash">nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --output_dir out_map \
+  --genome_db_cache_dir genome_cache \
+  --sylph_db /path/to/custom.syldb \
+  -c conf.config \
+  -profile docker \
+  -resume
+</code></pre>
+<p>In that mode, Nextflow runs Sylph, builds the reference bundle, and then maps reads.</p>
+<h3 id="reads-table-example">Reads Table Example</h3>
+<pre><code class="language-csv">sample_name,reads1,reads2
+sample1,/data/sample1_R1.fastq.gz,/data/sample1_R2.fastq.gz
+sample2,/data/sample2_R1.fastq.gz,/data/sample2_R2.fastq.gz
+</code></pre>
+<p>This step produces BAM files for each sample.</p>
+<h2 id="step-2-prepare-profiling-assets">Step 2: Prepare Profiling Assets</h2>
+<p>If you are using the CLI profile workflow, generate the supporting assets once:</p>
+<pre><code class="language-bash">zipstrain utilities prepare_profiling \
+  --reference-fasta reference_genomes.fna \
+  --gene-fasta reference_genes.fna \
+  --stb-file reference_genomes.stb \
+  --output-dir profiling_assets
+</code></pre>
+<p>This creates:</p>
+<ul>
+<li><code>genomes_bed_file.bed</code></li>
+<li><code>genome_lengths.parquet</code></li>
+<li><code>gene_range_table.tsv</code></li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li><code>--gene-fasta</code> is optional, but recommended if you want gene-aware outputs later.</li>
+<li>The generated <code>gene_range_table.tsv</code> is scaffold-relative and can also be reused by the matrix workflow.</li>
+</ul>
+<h2 id="step-3-build-the-null-model">Step 3: Build the Null Model</h2>
+<p>ZipStrain uses a null model for sequencing-error adjustment during profiling.
+Build it once from any representative BAM file:</p>
+<pre><code class="language-bash">zipstrain utilities build-null-model \
+  --bam-file /path/to/example.bam \
+  --output-file null_model.parquet
+</code></pre>
+<h2 id="step-4-generate-profiles">Step 4: Generate Profiles</h2>
+<p>Profiles are parquet tables with nucleotide counts at covered positions.
+Each sample profile contains columns like:</p>
+<pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T
+</code></pre>
+<p>Where:</p>
+<ul>
+<li><code>chrom</code> is the scaffold</li>
+<li><code>genome</code> is the genome name</li>
+<li><code>gene</code> is the gene label if gene context is available</li>
+<li><code>pos</code> is the coordinate on the scaffold</li>
+<li><code>A/C/G/T</code> are nucleotide counts</li>
+</ul>
+<h3 id="cli-profile-workflow">CLI Profile Workflow</h3>
+<p>Prepare a CSV of BAM files:</p>
 <pre><code class="language-csv">sample_name,bamfile
 sample1,/path/to/sample1.bam
 sample2,/path/to/sample2.bam
 sample3,/path/to/sample3.bam
 </code></pre>
-<h4 id="zipstrain-cli">ZipStrain CLI</h4>
-<p>To profile multiple BAM files using the ZipStrain CLI, you should first prepare some files:</p>
-<pre><code class="language-bash">zipstrain utilities prepare_profiling  --reference-fasta &lt;path/to/reference/fasta&gt; --gene-fasta &lt;path/to/reference/fasta/genes&gt; --stb-file  &lt;path/to/stb/file&gt; --output-dir &lt;directory/to/save/outputs&gt;
+<p>Then run:</p>
+<pre><code class="language-bash">zipstrain profile \
+  --input-table bams.csv \
+  --stb-file reference_genomes.stb \
+  --null-model null_model.parquet \
+  --gene-range-table profiling_assets/gene_range_table.tsv \
+  --bed-file profiling_assets/genomes_bed_file.bed \
+  --genome-length-file profiling_assets/genome_lengths.parquet \
+  --run-dir out_profile
 </code></pre>
-<p>Your output directory should contain the following files:</p>
+<h3 id="nextflow-profile-workflow">Nextflow Profile Workflow</h3>
+<pre><code class="language-bash">nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table bams.csv \
+  --reference_genome reference_genomes.fna \
+  --gene_file reference_genes.fna \
+  --stb reference_genomes.stb \
+  --output_dir out_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
+</code></pre>
+<p>Outputs include:</p>
 <ul>
-<li>genomes_bed_file.bed</li>
-<li>genome_lengths.parquet</li>
-<li>gene_range_table.tsv</li>
+<li><code>*_profile.parquet</code></li>
+<li><code>*_genome_stats.parquet</code></li>
+<li><code>*_gene_stats.parquet</code></li>
 </ul>
-<p>Now you can profile your bam files:</p>
-<pre><code>zipstrain profile --input-table &lt;path/to/bam/csv&gt; --stb-file &lt;path/to/stb/file&gt; --gene-range-table &lt;path/to/gene/range&gt; --bed-file &lt;path/to/bed/file&gt; --genome-length-file &lt;path/to/bed/file&gt; --run-dir &lt;path/to/save/generated/files&gt;
-
-</code></pre>
-<h4 id="nextflow-pipeline">Nextflow Pipeline</h4>
-<p>To profile multiple BAM files using Nextflow, you can create a Nextflow script as follows:</p>
-<pre><code>
-nextflow run zipstrain.nf --mode &quot;profile&quot; --input_table &lt;path/to/bam/csv&gt;  --gene_file &lt;path/to/reference/fasta/genes&gt; --stb &lt;path/to/stb/file&gt;  --output_dir &lt;path/to/save/generated/files&gt; --reference_genome &lt;path/to/reference/fasta&gt; -c conf.config -profile &lt;your/system/specific/profile&gt; -resume
-
-</code></pre>
-<p><strong>Note</strong>  With the nextflow pipeline, you don't need the preparation step and those will be made along the way.</p>
-<p><strong>Note</strong> <code>profile</code> mode requires a gene file and a STB file. The gene file MUST BE following Prodigal NUCLEOTIDE format. For generating STB file, use the following command:</p>
-<p><code>zipstrain utilities generate_stb --genomes-dir-file &lt;path/to/genomes_dir_file&gt;</code></p>
-<p>If you have trouble generating the STB file, you can simply make one using a custom script. The STB file is a tab-separated file with two columns: scaffold name and genome file name. </p>
-<h3 id="compare-genomes-in-multiple-profiled-samples">Compare genomes in multiple profiled samples</h3>
-<p>You can compare multiple profiled samples using either the ZipStrain command-line interface (CLI) or Nextflow Pipeline. Below are examples of both methods. The two approaches are slightly different in terms of input requirements. First let's see how this is done using the ZipStrain CLI.</p>
-<h4 id="zipstrain-cli_1">ZipStrain CLI</h4>
-<p>To compare multiple profiled samples using the ZipStrain CLI, first you need to build a profile database that contains all the profiled samples you want to compare. You can do this by running the following command:</p>
-<pre><code class="language-bash">zipstrain utilities build-profile-db --profile-db-csv &lt;path/to/profiles/csv&gt; --output-file &lt;path/to/save/profile/db&gt;
-</code></pre>
-<p>The input CSV file should have the following columns:</p>
-<pre><code>- profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
-
-- profile_location: The location of the profile
-
-- reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
-
-- gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.
-</code></pre>
-<p>Running this command will perform the necessary checks and if successful, it will create a profile database in parquet format at the specified output location.</p>
-<p>Next, You use this profile database build a configuration json file that will be used to calculate the pairs that need to be compared. In this step you need to define the required parameters for comparison such as min_coverage, etc. You can make the configuration file by running the following command:</p>
-<pre><code class="language-bash">zipstrain utilities build-genome-comparison-config \
---profile-db &lt;path/to/profile/db&gt; \
---gene-db-id &lt;gene_db_id_used_in_profile_db&gt; \
---reference-genome-id &lt;reference_db_id_used_in_profile_db&gt; \
---scope &quot;all&quot; \
---min-cov 5 \
---min-gene-compare-len 200 \
---stb-file-loc &lt;path/to/stb/file&gt; \
---current-comp-table &lt;path/to/current/comparison/table.parquet&gt; \
---output-file &lt;path/to/save/comparison/config.json&gt;
-</code></pre>
-<p>Note that providing current-comp-table is optional. If provided, the comparison config will only include pairs that are not already compared in the current comparison table.</p>
-<p>Finally, you can run the comparison using the generated configuration file and the profile database:</p>
-<pre><code class="language-bash">zipstrain compare genomes \
---genome-comparison-object &lt;path/to/comparison/config.json&gt; \
---run-dir &lt;path/to/save/comparison/outputs&gt; \
---engine duckdb \
---calculate ani+ibs+identical_genes \
---max-concurrent-batches 1 \
---duckdb-threads 8
-</code></pre>
-<p><code>single_compare_genome</code> supports <code>--engine polars|duckdb</code> (default: <code>polars</code>) and metric selection via <code>--calculate</code> (default: <code>all</code>). For lower-memory machines, set DuckDB's memory limit, and for CPU control set DuckDB threads:</p>
+<h2 id="step-5a-standard-comparison-route">Step 5A: Standard Comparison Route</h2>
+<p>This route compares profile parquets directly.</p>
+<h3 id="single-pair-compare">Single Pair Compare</h3>
+<p>For one pair of samples:</p>
 <pre><code class="language-bash">zipstrain utilities single_compare_genome \
---mpileup-contig-1 &lt;profile_1.parquet&gt; \
---mpileup-contig-2 &lt;profile_2.parquet&gt; \
---stb-file &lt;path/to/stb.tsv&gt; \
---calculate ani+ibs+identical_genes \
---engine duckdb \
---output-file &lt;out.parquet&gt; \
---duckdb-memory-limit 2GB \
---duckdb-threads 8 \
---duckdb-temp-directory /tmp
+  --mpileup-contig-1 sample1_profile.parquet \
+  --mpileup-contig-2 sample2_profile.parquet \
+  --stb-file reference_genomes.stb \
+  --calculate ani+ibs \
+  --engine duckdb \
+  --output-file sample1_vs_sample2.parquet
 </code></pre>
-<h4 id="nextflow-workflow">Nextflow Workflow</h4>
-<p>There are two ways you can run the comparison workflow in ZipStrain Nextflow pipeline. </p>
-<p>1- I have a comparison config file already made using the ZipStrain CLI as explained above.</p>
-<p>In this case you obtain a table of remaining pairs to be compared from the comparison config file and run the comparison as follows:</p>
-<pre><code>zipstrain utilities to-complete-table --genome-comparison-object &lt;path/to/comparison/config.json&gt; --output-file &lt;path/to/output/remaining_pairs.csv&gt;
+<h3 id="large-standard-compare-runs">Large Standard Compare Runs</h3>
+<p>For many standard comparisons, the direct profile-table workflow is still:</p>
+<ol>
+<li>build a profile DB</li>
+<li>build a comparison config</li>
+<li>run <code>zipstrain compare genomes</code></li>
+</ol>
+<p>Example:</p>
+<pre><code class="language-bash">zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file profile_db.parquet
 </code></pre>
-<p>Then you can run the comparison using the following command:</p>
-<pre><code>nextflow run zipstrain.nf --mode fast_compare \
- --input_table &lt;path/to/output/remaining_pairs.csv&gt; \
- --input_type &quot;pair_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
- --reference_genome &lt;path/to/reference/genome.fasta&gt; \  
- --stb &lt;path/to/stb/file.stb&gt; -c conf.config \
- --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
- --compare_genome_scope &quot;all&quot; \
- --compare_memory_mode &quot;heavy&quot; \
- --parallel_mode &quot;batched&quot; \
- --batch_size 2000 -profile &lt;profile_name&gt; \
- --batch_compare_n_parallel 3 -qs 200 -resume
+<pre><code class="language-bash">zipstrain utilities build-genome-comparison-config \
+  --profile-db profile_db.parquet \
+  --gene-db-id ref_genes_v1 \
+  --reference-genome-id ref_genomes_v1 \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file-loc reference_genomes.stb \
+  --output-file genome_compare_config.json
 </code></pre>
-<p>2- I don't have a comparison config file and I want to run the comparison directly from the profile lists.</p>
-<p>In this case, the nextflow pipeline will run all non-redundant pairwise comparisons between the provided profiles. Here is an example command:</p>
-<pre><code class="language-bash">nextflow run zipstrain.nf --mode fast_compare \
- --input_table &lt;path/to/profiles/csv&gt; \
- --input_type &quot;profile_table&quot; --gene_file &lt;path/to/gene/fasta/file&gt; \
- --reference_genome &lt;path/to/reference/genome.fasta&gt; \
- --stb &lt;path/to/stb/file.stb&gt; -c conf.config \
- --output_dir &quot;&lt;path/to/output/directory&gt;&quot; \
- --compare_genome_scope &quot;all&quot; \
- --compare_memory_mode &quot;heavy&quot; \
- --parallel_mode &quot;batched&quot; \
- --batch_size 2000 -profile &lt;profile_name&gt; \
- --batch_compare_n_parallel 3 -qs 200 -resume
+<pre><code class="language-bash">zipstrain compare genomes \
+  --genome-comparison-object genome_compare_config.json \
+  --run-dir compare_run \
+  --calculate ani+ibs+identical_genes \
+  --ani-method popani \
+  --engine duckdb \
+  --duckdb-threads 8
 </code></pre>
-<p>For more information, refer to the <a href="../NextflowPipeline/">Nextflow Pipeline Documentation</a>.</p>
-<h4 id="output-files">Output files</h4>
-<p>Regardless of the execution workflow (ZipStrain CLI or Nextflow), comparing profiles yields a single table "merged_comparison.parquet" that contains the comparison results for all compared profile pairs. The table has the following columns:</p>
-<table>
-<thead>
-<tr>
-<th>genome</th>
-<th>total_positions</th>
-<th>share_allele_pos</th>
-<th>genome_pop_ani</th>
-<th>max_consecutive_length</th>
-<th>shared_genes_count</th>
-<th>identical_gene_count</th>
-<th>perc_id_genes</th>
-<th>sample_1</th>
-<th>sample_2</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-</tr>
-</tbody>
-</table>
-<h3 id="downstream-analyses">Downstream Analyses</h3>
-<p>In this step, you can use the perform statiscal analyses on the comparison results generated in the previous step and visualize them using ZipStrain's Python API. All of the functionalities in the visualization module are explained below:</p>
-<h4 id="strain-sharing-analysis">Strain Sharing Analysis</h4>
-<p>Definition of strain sharing is somewhat losely defined in the literature. In ZipStrain, we use the following steps to define strainsharing:</p>
+<p>This route is still valid, but it is not the best option once you repeatedly compare many samples against the same reference set.</p>
+<h2 id="step-5b-matrix-comparison-route">Step 5B: Matrix Comparison Route</h2>
+<p>This route converts standard sample profiles into a reusable matrix store, then compares all non-redundant sample pairs from that store.</p>
+<h3 id="why-use-the-matrix-route">Why Use the Matrix Route</h3>
+<p>The matrix route is useful when:</p>
 <ul>
-<li>
-<p>For each genome in the reference fasta for which the profiling is done, popANI is calculated between each pair of samples in the comparison step.</p>
-</li>
-<li>
-<p>If the popANI between two samples for a given genome is above a certain threshold (default: 99.9%), and the breadth of coverage for that genome in both samples is above a certain threshold (default: 0.5), then the two samples are considered to share a strain for that genome.</p>
-</li>
-<li>
-<p>The strain sharing is checked for all genomes in the reference fasta.</p>
-</li>
-<li>
-<p>Each sample is mapped to a group using a sample to population mapping file provided by the user (See the example below). </p>
-</li>
-<li>
-<p>Finally, the strain sharing between group A,B is calculated as the number of genome strains shared between samples in group A and samples in group B divided by the total number of genomes in group A. As a result the order of the groups matters here. The main justification for this definition is that in many cases this ordering is biologically relevant. For example, when looking at mother-infant pairs, if only 3 genomes are present in infants, but 100 genomes are present in mothers, and they share all 3 genomes in the infants, we would like to see that the infants have 100% of their strains shared with mothers, while mothers only have 3% of their strains shared with infants.</p>
-</li>
+<li>you want to compare many samples repeatedly</li>
+<li>you want appendable sample growth over time</li>
+<li>you want resumable compare state in a DuckDB result database</li>
+<li>you want ANI, IBS, and optional gene ANI from the same store</li>
 </ul>
-<h3 id="recommended-workflow">Recommended Workflow</h3>
-<p>ZipStrain's Python API provides functionalities needed to create and organize your profiles and comparisons tables. It is highly recommended to use this workflow to manage your profiles and comparisons if you plan to use ZipStrain for multiple studies to utilize the full potential of ZipStrain. Here is a recommended workflow:</p>
-<h4 id="1-create-a-centralized-database-for-your-profiles">1- Create a centralized database for your profiles</h4>
-<p>Database module in ZipStrain provides functionalities to create and manage a centralized database for your profiles. The easiest way to create a profile database is to provide a CSV file that has necessary information about each profile. Your CSV file should have the following columns (and only these columns):</p>
+<h3 id="matrix-route-overview">Matrix Route Overview</h3>
+<p>The matrix route has four steps:</p>
+<ol>
+<li>build the matrix store</li>
+<li>optionally append new samples later</li>
+<li>run matrix compare</li>
+<li>export the compare DB to parquet</li>
+</ol>
+<h3 id="build-the-matrix-store">Build the Matrix Store</h3>
+<pre><code class="language-bash">zipstrain utilities build-matrix-db \
+  --profile-dir out_profile \
+  --output-file matrix_db.h5 \
+  --gene-range-table profiling_assets/gene_range_table.tsv \
+  --memory-limit-gb 16
+</code></pre>
+<p>What this does:</p>
 <ul>
-<li>
-<p>profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)</p>
-</li>
-<li>
-<p>profile_location: The location of the profile in parquet format. This is the main parquet file generated during the profiling step.</p>
-</li>
-<li>
-<p>reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to. Could be used for filtering profiles based on reference database later on.</p>
-</li>
-<li>
-<p>gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier of your choice for the database that the reads are mapped to. Could be used for filtering profiles based on gene database later on.</p>
-</li>
+<li>scans all standard profile parquets in <code>out_profile</code></li>
+<li>builds one HDF5-backed matrix store</li>
+<li>keeps one dense whole-genome matrix per sample per genome</li>
+<li>stores gene coordinate metadata if <code>--gene-range-table</code> is provided</li>
 </ul>
-<h2 id="an-example-workflow">An Example Workflow</h2>
-<p>This example guides you through a complete workflow of using ZipStrain from building a genome database all the way to perform pairwise genome and gene comparisons and between multiple samples. Here we use MGnify Genomes mouse gut catalogue v1.0 as our reference genome database and use some example reads provided below to demonstrate the workflow. For each step, you can download the necessary input files from the provided links and follow the instructions to produce the outputs or if you want to skip a step, you can directly download the output files from the provided links.</p>
-<h3 id="step-1-prepare-reference-database">Step 1- Prepare Reference Database</h3>
-<table>
-<thead>
-<tr>
-<th>Inputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>MGnify Genomes mouse gut catalogue v1.0 metadata</td>
-<td><a href="https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/genomes-all_metadata.tsv">Link</a></td>
-</tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Outputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Concatenated reference genome fasta file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-<tr>
-<td>STB file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-</tbody>
-</table>
-<p>We first need to extract the accessions of the species representatives genomes from the metadata file provided above. You can use any tool of your choice to extract the accessions. Here is an example command using polars library (installed when you install ZipStrain) in python:</p>
-<pre><code class="language-python">import polars as pl
-metadata_df = pl.read_csv(&quot;genomes-all_metadata.tsv&quot;, separator=&quot;\t&quot;) #Load metadata table downloaded from the provided link
-metadata_df.join(pl.read_csv(&quot;genomes-all_metadata.tsv&quot;,separator=&quot;\t&quot;).select('Species_rep',&quot;FTP_download&quot;).unique(&quot;Species_rep&quot;),left_on=&quot;Genome&quot;,right_on=&quot;Species_rep&quot;,how=&quot;inner&quot;).select(&quot;Genome&quot;).with_columns(&quot;https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/mouse-gut/v1.0/species_catalogue/&quot;+
-pl.col(&quot;Genome&quot;).str.slice(0,11)+&quot;/&quot;+pl.col(&quot;Genome&quot;)+&quot;/genome/&quot;+pl.col(&quot;Genome&quot;)+&quot;.fna&quot;).select(&quot;literal&quot;
-).write_csv(&quot;sp_rep_genomes.csv&quot;,include_header=False) # A one(ish) liner that generates the link of each species representative genome
-</code></pre>
-<p>This will a text file containing the link to download each genome. Using the tool of your choice, download all the genomes. Here is an example command using <code>wget</code>:</p>
-<pre><code class="language-bash">mkdir genomes
-for link in $(cat genome_accessions.txt); do
-    wget $link -P genomes/
-done
-</code></pre>
-<p>Now you can use ZipStrain to build the STB file:</p>
-<pre><code class="language-bash">zipstrain utilities generate_stb -g genomes/ -o  mgnify_mouse_gut_genomes.stb --extension &quot;.fna&quot;
-</code></pre>
-<p>Finally, concatenate all the genomes into a single fasta file:</p>
-<pre><code class="language-bash">cat genomes/*.fna &gt; mgnify_mouse_gut_genomes.fa 
-</code></pre>
-<p>This will be your reference genome database for profiling.</p>
-<h3 id="step-2-find-genes-in-the-reference-genomes-by-running-prodigal">Step 2- Find genes in the reference genomes by running Prodigal</h3>
-<table>
-<thead>
-<tr>
-<th>Inputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Outputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Prodigal gene fasta file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-</tbody>
-</table>
-<p>For this example, we can directly use the concatenated genome fasta file from Step 1. You can run Prodigal to find genes in the reference genomes using the following command:</p>
-<pre><code class="language-bash">prodigal -i mgnify_mouse_gut_genomes.fa -d mgnify_mouse_gut_genes.fasta  -p meta
-</code></pre>
-<h3 id="step-3-map-example-reads-to-the-reference-database">Step 3- Map example reads to the reference database</h3>
-<table>
-<thead>
-<tr>
-<th>Inputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Example metagenomics reads</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-<tr>
-<td>MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Outputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Mapped BAM files</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-</tbody>
-</table>
-<p>You can use any read mapper of your choice to map the reads to the reference database. Here we use the bowtie2 option provided in the ZipStrain Nextflow pipeline to perform the mapping. First, prepare an input CSV file containing the sample names and paths to the FASTQ files:</p>
-<pre><code class="language-csv">sample_name,reads1,reads2
-sample1,/path/to/sample1_R1.fastq,/path/to/sample1_R2.fastq
-sample2,/path/to/sample2_R1.fastq,/path/to/sample2_R2.fastq
-</code></pre>
-<p>Then run the following Nextflow command to perform the mapping:</p>
-<pre><code class="language-bash">nextflow run zipstrain.nf --mode 'map_reads' --input_type 'local' --input_table 'path/to/your/input_table.csv' --reference_genome mgnify_mouse_gut_genomes.fa --output_dir mapping_output/ -c conf.config -profile &lt;your_profile&gt; -resume
-</code></pre>
-<p>This will generate BAM files for each sample in the <code>mapping_output/</code> directory.</p>
-<h3 id="step-4-prepare-necessary-files-for-profiling">Step 4- Prepare necessary files for profiling</h3>
-<table>
-<thead>
-<tr>
-<th>Inputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>MGnify Genomes mouse gut catalogue v1.0 concatenated reference genome fasta file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-<tr>
-<td>Prodigal gene fasta file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-<tr>
-<td>STB file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Outputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Bed file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-<tr>
-<td>Genome lengths parquet file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-<tr>
-<td>Gene range table TSV file</td>
-<td><a href="TOBEIMPLEMENTED">Link</a></td>
-</tr>
-</tbody>
-</table>
-<p>You can use ZipStrain to prepare the necessary files for profiling using the following command:</p>
-<pre><code class="language-bash">zipstrain utilities prepare_profiling -r mgnify_mouse_gut_genomes.fa -g mgnify_mouse_gut_genes.fasta -s mgnify_mouse_gut_genomes.stb  -o preprofiles
-</code></pre>
-<p>This will generate the following files in the <code>preprofiles/</code> directory:</p>
+<p>Important notes:</p>
 <ul>
-<li>genomes_bed_file.bed</li>
-<li>genome_lengths.parquet</li>
-<li>gene_range_table.tsv</li>
+<li><code>matrix_db.h5</code> is the current matrix-store format</li>
+<li>this store is appendable on the sample axis</li>
+<li>if gene ranges are included here, matrix compare can also compute gene ANI later</li>
 </ul>
-<h3 id="step-5-profile-the-mapped-bam-files">Step 5- Profile the mapped BAM files</h3>
-<table>
-<thead>
-<tr>
-<th>Inputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Mapped BAM files</td>
-<td><a href="TOBEIMPLEMENTED">mapped_bam</a></td>
-</tr>
-<tr>
-<td>Bed file</td>
-<td><a href="TOBEIMPLEMENTED">bed_file</a></td>
-</tr>
-<tr>
-<td>Genome lengths parquet file</td>
-<td><a href="TOBEIMPLEMENTED">genome_lengths</a></td>
-</tr>
-<tr>
-<td>Gene range table TSV file</td>
-<td><a href="TOBEIMPLEMENTED">gene_range_table</a></td>
-</tr>
-<tr>
-<td>STB file</td>
-<td><a href="TOBEIMPLEMENTED">stb_file</a></td>
-</tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Outputs</th>
-<th>Link</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Profile parquet files</td>
-<td><a href="TOBEIMPLEMENTED">profile_link</a></td>
-</tr>
-<tr>
-<td>Genome Statistics parquet files</td>
-<td><a href="TOBEIMPLEMENTED">genome_stats_link</a></td>
-</tr>
-<tr>
-<td>Gene Statistics parquet files</td>
-<td><a href="TOBEIMPLEMENTED">gene_stats_link</a></td>
-</tr>
-</tbody>
-</table>
-<p>Now we have to make a CSV file containing the sample names and paths to the BAM files:</p>
+<h3 id="append-new-samples-later">Append New Samples Later</h3>
+<p>If you later generate more profiles against the same reference set:</p>
+<pre><code class="language-bash">zipstrain utilities append-matrix-db \
+  --profile-dir out_profile_new \
+  --matrix-db-file matrix_db.h5 \
+  --memory-limit-gb 16
+</code></pre>
+<p>This validates that the new profiles match the stored genome/scaffold contract and appends only new sample rows.</p>
+<h3 id="convert-a-legacy-matrix-duckdb">Convert a Legacy Matrix DuckDB</h3>
+<p>If you already have an old matrix DuckDB from a previous workflow:</p>
+<pre><code class="language-bash">zipstrain utilities matrix-db-to-hdf5 \
+  --matrix-db-file legacy_matrix.duckdb \
+  --output-file matrix_db.h5
+</code></pre>
+<p>This is only needed for older matrix builds. New matrix workflows should start directly from <code>build-matrix-db</code>.</p>
+<h3 id="run-matrix-compare">Run Matrix Compare</h3>
+<p>Run all-vs-all sample comparison from the matrix store:</p>
+<pre><code class="language-bash">zipstrain utilities matrix-compare \
+  --matrix-db-file matrix_db.h5 \
+  --output-file matrix_compare.duckdb \
+  --memory-limit-gb 16 \
+  --loader-executor thread \
+  --writer-executor thread \
+  --backend torch-cpu \
+  --calculate all
+</code></pre>
+<p>What <code>--calculate</code> means here:</p>
+<ul>
+<li><code>ani</code>: genome ANI only</li>
+<li><code>ani+ibs</code>: genome ANI plus IBS</li>
+<li><code>+gene</code> or <code>gene</code>: gene ANI, which also implies ANI</li>
+<li><code>all</code>: <code>ani+ibs</code>, and also <code>gene</code> when the matrix store contains gene annotations</li>
+</ul>
+<p>Backend choices:</p>
+<ul>
+<li><code>numpy</code>: simple CPU path</li>
+<li><code>torch-cpu</code>: torch on CPU</li>
+<li><code>torch-cuda</code>: NVIDIA GPU</li>
+<li><code>torch-mps</code>: Apple Silicon GPU</li>
+<li><code>torch</code>: auto-select device</li>
+</ul>
+<p>Recommended starting points:</p>
+<ul>
+<li>Apple Silicon: <code>--backend torch-mps</code></li>
+<li>NVIDIA GPU: <code>--backend torch-cuda</code></li>
+<li>debugging or CPU-only: <code>--backend torch-cpu</code></li>
+</ul>
+<p>Important operational notes:</p>
+<ul>
+<li>the compare output is a DuckDB database, not parquet</li>
+<li>the compare DB is resumable</li>
+<li>rerunning the same command on the same output file only processes unfinished sample pairs</li>
+<li><code>--memory-limit-gb</code> is the main throughput control for target block size</li>
+<li><code>--position-tile-size</code> is currently a legacy compatibility option and is not used by the current full-genome compare path</li>
+</ul>
+<h3 id="export-matrix-compare-results">Export Matrix Compare Results</h3>
+<p>Export genome-level rows:</p>
+<pre><code class="language-bash">zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file matrix_compare.duckdb \
+  --output-file matrix_compare.parquet
+</code></pre>
+<p>Export gene-level ANI rows:</p>
+<pre><code class="language-bash">zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file matrix_compare.duckdb \
+  --output-file matrix_compare_gene.parquet \
+  --table gene
+</code></pre>
+<p>If the compare DB does not contain gene results, the gene export command raises a clear error.</p>
+<h2 id="understanding-matrix-inputs-and-outputs">Understanding Matrix Inputs and Outputs</h2>
+<h3 id="matrix-store-input">Matrix Store Input</h3>
+<p>The matrix store is:</p>
+<ul>
+<li>built from standard profile parquets</li>
+<li>stored as HDF5</li>
+<li>organized by genome</li>
+<li>reused across many compare runs</li>
+</ul>
+<h3 id="matrix-compare-output">Matrix Compare Output</h3>
+<p>The compare DB contains:</p>
+<ul>
+<li>genome-level results in <code>matrix_compare_results</code></li>
+<li>optional gene-level results in <code>matrix_compare_gene_results</code></li>
+<li>resume metadata for completed sample-pair/genome work</li>
+</ul>
+<p>Genome parquet exports contain name-based columns such as:</p>
+<ul>
+<li><code>sample_1</code></li>
+<li><code>sample_2</code></li>
+<li><code>genome</code></li>
+<li><code>total_positions</code></li>
+<li><code>share_allele_pos</code></li>
+<li><code>genome_pop_ani</code></li>
+<li><code>max_consecutive_length</code> when IBS is requested</li>
+</ul>
+<p>Gene parquet exports contain:</p>
+<ul>
+<li><code>sample_1</code></li>
+<li><code>sample_2</code></li>
+<li><code>genome</code></li>
+<li><code>gene</code></li>
+<li><code>gene_pop_ani</code></li>
+</ul>
+<h2 id="choosing-between-standard-and-matrix-compare">Choosing Between Standard and Matrix Compare</h2>
+<p>Use standard compare when:</p>
+<ul>
+<li>you only need a limited number of pairwise comparisons</li>
+<li>you want direct profile-to-profile comparison without building another store</li>
+<li>your existing workflow is already based on comparison config objects or Nextflow standard compare jobs</li>
+</ul>
+<p>Use matrix compare when:</p>
+<ul>
+<li>you want to compare all samples against all samples repeatedly</li>
+<li>you want resumability at the compare-DB level</li>
+<li>you expect to append new profiles over time</li>
+<li>you want one reusable comparison substrate for ANI, IBS, and gene ANI</li>
+</ul>
+<h2 id="current-limitations-and-practical-notes">Current Limitations and Practical Notes</h2>
+<ul>
+<li>The matrix route is currently a CLI workflow, not a Nextflow mode.</li>
+<li>HDF5 matrix input currently requires a torch backend.</li>
+<li>Gene ANI from matrix compare requires that the matrix store was built with <code>--gene-range-table</code>.</li>
+<li>The matrix route does not replace the standard <code>zipstrain compare</code> workflow everywhere yet; both routes remain supported.</li>
+</ul>
+<h2 id="recommended-starting-point">Recommended Starting Point</h2>
+<p>For a new project:</p>
+<ol>
+<li>generate standard sample profiles</li>
+<li>build one matrix store from those profiles</li>
+<li>run matrix compare into a resumable DuckDB compare DB</li>
+<li>append new samples into the matrix store as the cohort grows</li>
+</ol>
+<p>This gives you:</p>
+<ul>
+<li>reusable comparison input</li>
+<li>resumable output state</li>
+<li>fast repeated cohort comparison runs</li>
+<li>one place to export genome and gene comparison tables</li>
+</ul>
+<h2 id="worked-example-a-standard-workflow-with-the-python-cli">Worked Example A: Standard Workflow with the Python CLI</h2>
+<p>This is the most direct standard ZipStrain workflow when you already have mapped BAM files and want to stay in the CLI.</p>
+<p>If you do not already have <code>reference_genomes.fna</code> and <code>reference_genomes.stb</code>, build them first with <code>zipstrain utilities build-genome-db --tool sylph ...</code> as shown earlier in Step 1.</p>
+<h3 id="when-to-use-this-route">When to use this route</h3>
+<p>Use this when:</p>
+<ul>
+<li>you already have BAM files</li>
+<li>you want profile-parquet outputs directly</li>
+<li>you only need a modest number of comparisons</li>
+<li>you want the standard profile-table compare behavior without building a matrix store</li>
+</ul>
+<h3 id="example-layout">Example layout</h3>
+<pre><code class="language-text">project/
+├── mapped_bams/
+│   ├── sample1.bam
+│   ├── sample2.bam
+│   └── sample3.bam
+├── reference/
+│   ├── reference_genomes.fna
+│   ├── reference_genes.fna
+│   └── reference_genomes.stb
+└── outputs/
+</code></pre>
+<h3 id="1-prepare-profiling-assets-once">1. Prepare profiling assets once</h3>
+<pre><code class="language-bash">zipstrain utilities prepare_profiling \
+  --reference-fasta reference/reference_genomes.fna \
+  --gene-fasta reference/reference_genes.fna \
+  --stb-file reference/reference_genomes.stb \
+  --output-dir outputs/profiling_assets
+</code></pre>
+<h3 id="2-build-the-null-model-once">2. Build the null model once</h3>
+<pre><code class="language-bash">zipstrain utilities build-null-model \
+  --bam-file mapped_bams/sample1.bam \
+  --output-file outputs/null_model.parquet
+</code></pre>
+<h3 id="3-make-the-bam-input-table">3. Make the BAM input table</h3>
+<p><code>bams.csv</code></p>
 <pre><code class="language-csv">sample_name,bamfile
-sample1,/path/to/mapping_output/sample1.bam
-sample2,/path/to/mapping_output/sample2.bam
+sample1,/abs/path/project/mapped_bams/sample1.bam
+sample2,/abs/path/project/mapped_bams/sample2.bam
+sample3,/abs/path/project/mapped_bams/sample3.bam
 </code></pre>
-<p>You can profile the mapped BAM files using ZipStrain with the following command:</p>
-<pre><code class="language-bash">zipstrain profile --input-table &lt;path/to/bam/csv&gt; --stb-file mgnify_mouse_gut_genomes.stb --gene-range-table preprofiles/gene_range_table.tsv --bed-file preprofiles/genomes_bed_file.bed --genome-length-file preprofiles/genome_lengths.parquet --run-dir profiling_output/
+<h3 id="4-generate-profiles">4. Generate profiles</h3>
+<pre><code class="language-bash">zipstrain profile \
+  --input-table bams.csv \
+  --stb-file reference/reference_genomes.stb \
+  --null-model outputs/null_model.parquet \
+  --gene-range-table outputs/profiling_assets/gene_range_table.tsv \
+  --bed-file outputs/profiling_assets/genomes_bed_file.bed \
+  --genome-length-file outputs/profiling_assets/genome_lengths.parquet \
+  --run-dir outputs/profile_run
 </code></pre>
-<p>This will generate profile parquet files, genome statistics parquet files, and gene statistics parquet files for each sample in the <code>profiling_output/</code> directory.</p>
-<p>As an alternative, you can use the Nextflow pipeline to perform the profiling:</p>
-<pre><code class="language-bash">nextflow run zipstrain.nf --mode &quot;profile&quot; --input_table &lt;path/to/bam/csv&gt;  --gene_file mgnify_mouse_gut_genes.fasta --stb mgnify_mouse_gut_genomes.stb  --output_dir profiling_output/ --reference_genome mgnify_mouse_gut_genomes.fa -c conf.config -profile &lt;your/system/specific/profile&gt; -resume
+<p>This gives you one profile parquet per sample plus gene and genome stats tables.</p>
+<h3 id="5-build-the-profile-db-table">5. Build the profile DB table</h3>
+<p>Create <code>profiles.csv</code>:</p>
+<pre><code class="language-csv">sample_name,profile_loc
+sample1,/abs/path/project/outputs/profile_run/sample1_profile.parquet
+sample2,/abs/path/project/outputs/profile_run/sample2_profile.parquet
+sample3,/abs/path/project/outputs/profile_run/sample3_profile.parquet
 </code></pre>
-<h3 id="step-6-compare-the-profiled-samples-at-the-genome-level">Step 6- Compare the profiled samples at the genome level</h3>
-<h3 id="step-7-compare-the-profiled-samples-at-the-gene-level">Step 7- Compare the profiled samples at the gene level</h3>
+<p>Then build the DB:</p>
+<pre><code class="language-bash">zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file outputs/profile_db.parquet
+</code></pre>
+<h3 id="6-build-the-standard-compare-config">6. Build the standard compare config</h3>
+<pre><code class="language-bash">zipstrain utilities build-genome-comparison-config \
+  --profile-db outputs/profile_db.parquet \
+  --gene-db-id tutorial_genes_v1 \
+  --reference-genome-id tutorial_reference_v1 \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file-loc reference/reference_genomes.stb \
+  --output-file outputs/genome_compare_config.json
+</code></pre>
+<h3 id="7-run-the-standard-compare">7. Run the standard compare</h3>
+<pre><code class="language-bash">zipstrain compare genomes \
+  --genome-comparison-object outputs/genome_compare_config.json \
+  --run-dir outputs/standard_compare \
+  --calculate ani+ibs+identical_genes \
+  --ani-method popani \
+  --engine duckdb \
+  --duckdb-threads 8
+</code></pre>
+<h3 id="result">Result</h3>
+<p>This route gives you standard profile-based comparison outputs without building a matrix store. It is the best tutorial example when you want the simplest direct route from profiles to compare results.</p>
+<h2 id="worked-example-b-standard-workflow-with-nextflow">Worked Example B: Standard Workflow with Nextflow</h2>
+<p>This is the best route when you want orchestration, batch execution, resumability at the pipeline level, and easier deployment on clusters.</p>
+<h3 id="when-to-use-this-route_1">When to use this route</h3>
+<p>Use this when:</p>
+<ul>
+<li>you want mapping, profiling, and comparison wrapped in one pipeline framework</li>
+<li>you are running on a cluster or container-based environment</li>
+<li>you want the standard workflow but do not want to script every CLI step yourself</li>
+</ul>
+<h3 id="1-prepare-the-read-input-table">1. Prepare the read input table</h3>
+<p><code>reads.csv</code></p>
+<pre><code class="language-csv">sample_name,reads1,reads2
+sample1,/data/sample1_R1.fastq.gz,/data/sample1_R2.fastq.gz
+sample2,/data/sample2_R1.fastq.gz,/data/sample2_R2.fastq.gz
+sample3,/data/sample3_R1.fastq.gz,/data/sample3_R2.fastq.gz
+</code></pre>
+<h3 id="2-map-reads">2. Map reads</h3>
+<p>If you already have a reference bundle, use it directly:</p>
+<pre><code class="language-bash">nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --reference_genome reference/reference_genomes.fna \
+  --stb reference/reference_genomes.stb \
+  --output_dir outputs/nf_map \
+  -c conf.config \
+  -profile docker \
+  -resume
+</code></pre>
+<p>If you do not already have a prepared reference bundle, use the Sylph-backed route from Step 1 Option B instead and let Nextflow build it first.</p>
+<h3 id="3-generate-profiles">3. Generate profiles</h3>
+<p>Build a BAM table that points at the BAM outputs from the map step, then run:</p>
+<pre><code class="language-bash">nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table bams.csv \
+  --reference_genome reference/reference_genomes.fna \
+  --gene_file reference/reference_genes.fna \
+  --stb reference/reference_genomes.stb \
+  --output_dir outputs/nf_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
+</code></pre>
+<p>This writes profile parquets under <code>outputs/nf_profile/profiles/</code>.</p>
+<h3 id="4-build-the-profile-list-for-compare">4. Build the profile list for compare</h3>
+<p><code>profiles.csv</code></p>
+<pre><code class="language-csv">sample_names,mpileup_files
+sample1,/abs/path/project/outputs/nf_profile/profiles/sample1_profile.parquet
+sample2,/abs/path/project/outputs/nf_profile/profiles/sample2_profile.parquet
+sample3,/abs/path/project/outputs/nf_profile/profiles/sample3_profile.parquet
+</code></pre>
+<h3 id="5-run-genome-comparison-in-nextflow">5. Run genome comparison in Nextflow</h3>
+<pre><code class="language-bash">nextflow run zipstrain.nf \
+  --mode compare_genomes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference/reference_genomes.stb \
+  --compare_genome_scope all \
+  --compare_calculate ani+ibs+identical_genes \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --compare_duckdb_memory_limit 4GB \
+  --output_dir outputs/nf_compare_genomes \
+  -c conf.config \
+  -profile docker \
+  -resume
+</code></pre>
+<h3 id="6-optional-gene-compare">6. Optional gene compare</h3>
+<pre><code class="language-bash">nextflow run zipstrain.nf \
+  --mode compare_genes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference/reference_genomes.stb \
+  --compare_gene_scope all:all \
+  --compare_ani_method popani \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --compare_duckdb_memory_limit 4GB \
+  --output_dir outputs/nf_compare_genes \
+  -c conf.config \
+  -profile docker \
+  -resume
+</code></pre>
+<h3 id="result_1">Result</h3>
+<p>This route keeps you in the standard profile-based world, but uses Nextflow to orchestrate the work instead of calling the underlying CLI tools manually.</p>
+<h2 id="worked-example-c-matrix-workflow-for-repeated-all-vs-all-comparison">Worked Example C: Matrix Workflow for Repeated All-vs-All Comparison</h2>
+<p>This is the best route when you expect to compare many samples repeatedly against the same reference set.</p>
+<h3 id="when-to-use-this-route_2">When to use this route</h3>
+<p>Use this when:</p>
+<ul>
+<li>you already have standard profile parquets</li>
+<li>you want resumable all-vs-all compare runs</li>
+<li>you expect to add new samples over time</li>
+<li>you want genome ANI, IBS, and optional gene ANI from one reusable matrix store</li>
+</ul>
+<h3 id="1-start-from-standard-profiles">1. Start from standard profiles</h3>
+<p>This route assumes you already produced profile parquets using either:</p>
+<ul>
+<li>the Python CLI profile workflow</li>
+<li>the Nextflow profile workflow</li>
+</ul>
+<p>For example:</p>
+<pre><code class="language-text">outputs/profile_run/sample1_profile.parquet
+outputs/profile_run/sample2_profile.parquet
+outputs/profile_run/sample3_profile.parquet
+</code></pre>
+<h3 id="2-build-the-matrix-store">2. Build the matrix store</h3>
+<pre><code class="language-bash">zipstrain utilities build-matrix-db \
+  --profile-dir outputs/profile_run \
+  --output-file outputs/matrix_db.h5 \
+  --gene-range-table outputs/profiling_assets/gene_range_table.tsv \
+  --memory-limit-gb 16
+</code></pre>
+<h3 id="3-run-matrix-compare">3. Run matrix compare</h3>
+<pre><code class="language-bash">zipstrain utilities matrix-compare \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --output-file outputs/matrix_compare.duckdb \
+  --memory-limit-gb 16 \
+  --loader-executor thread \
+  --writer-executor thread \
+  --backend torch-cpu \
+  --calculate all
+</code></pre>
+<p>Typical backend substitutions:</p>
+<ul>
+<li>Apple Silicon: <code>--backend torch-mps</code></li>
+<li>NVIDIA GPU: <code>--backend torch-cuda</code></li>
+<li>CPU only: <code>--backend torch-cpu</code></li>
+</ul>
+<h3 id="4-export-genome-level-results">4. Export genome-level results</h3>
+<pre><code class="language-bash">zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file outputs/matrix_compare.duckdb \
+  --output-file outputs/matrix_compare.parquet
+</code></pre>
+<h3 id="5-export-gene-level-results">5. Export gene-level results</h3>
+<pre><code class="language-bash">zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file outputs/matrix_compare.duckdb \
+  --output-file outputs/matrix_compare_gene.parquet \
+  --table gene
+</code></pre>
+<h3 id="6-append-new-samples-later">6. Append new samples later</h3>
+<p>When more profiles arrive against the same reference set:</p>
+<pre><code class="language-bash">zipstrain utilities append-matrix-db \
+  --profile-dir outputs/new_profile_run \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --memory-limit-gb 16
+</code></pre>
+<p>Then rerun <code>matrix-compare</code> against the same compare DB. Already completed sample pairs remain marked complete, and only unfinished work is processed.</p>
+<h3 id="result_2">Result</h3>
+<p>This route turns standard per-sample profile parquets into a reusable comparison substrate. It is the best example for large or growing cohorts where repeated comparison cost matters more than one-time matrix construction.</p>
+<h2 id="optional-add-a-new-sample-later-and-run-only-the-remaining-pairs">Optional: Add a New Sample Later and Run Only the Remaining Pairs</h2>
+<p>This is the practical “my cohort grew by one sample” scenario.
+The two methods handle it differently.</p>
+<h3 id="standard-method">Standard Method</h3>
+<p>The standard method does not maintain a dedicated resumable compare database in the same way the matrix route does. Instead, you:</p>
+<ol>
+<li>add the new sample profile to the profile DB</li>
+<li>point the new comparison config at the previous comparison table</li>
+<li>regenerate only the remaining pairs</li>
+<li>rerun compare on the updated config</li>
+</ol>
+<h4 id="1-update-the-profile-db-input-table">1. Update the profile DB input table</h4>
+<p>Extend your <code>profiles.csv</code> to include the new sample:</p>
+<pre><code class="language-csv">sample_name,profile_loc
+sample1,/abs/path/project/outputs/profile_run/sample1_profile.parquet
+sample2,/abs/path/project/outputs/profile_run/sample2_profile.parquet
+sample3,/abs/path/project/outputs/profile_run/sample3_profile.parquet
+sample4,/abs/path/project/outputs/profile_run/sample4_profile.parquet
+</code></pre>
+<p>Rebuild the profile DB:</p>
+<pre><code class="language-bash">zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file outputs/profile_db.parquet
+</code></pre>
+<h4 id="2-rebuild-the-standard-compare-config-with-the-current-comparison-table">2. Rebuild the standard compare config with the current comparison table</h4>
+<p>Point <code>--current-comp-table</code> at the existing genome comparison parquet from your previous standard run. The path below is an example placeholder; use the actual parquet produced by your earlier standard compare workflow:</p>
+<pre><code class="language-bash">zipstrain utilities build-genome-comparison-config \
+  --profile-db outputs/profile_db.parquet \
+  --gene-db-id tutorial_genes_v1 \
+  --reference-genome-id tutorial_reference_v1 \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file-loc reference/reference_genomes.stb \
+  --current-comp-table outputs/standard_compare/genome_compare_results.parquet \
+  --output-file outputs/genome_compare_config_updated.json
+</code></pre>
+<h4 id="3-optionally-inspect-the-remaining-pairs">3. Optionally inspect the remaining pairs</h4>
+<pre><code class="language-bash">zipstrain utilities to-complete-table \
+  --genome-comparison-object outputs/genome_compare_config_updated.json \
+  --output-file outputs/remaining_pairs.csv
+</code></pre>
+<p>This gives you the not-yet-completed sample pairs implied by the updated config.</p>
+<h4 id="4-rerun-standard-compare">4. Rerun standard compare</h4>
+<pre><code class="language-bash">zipstrain compare genomes \
+  --genome-comparison-object outputs/genome_compare_config_updated.json \
+  --run-dir outputs/standard_compare_update \
+  --calculate ani+ibs+identical_genes \
+  --ani-method popani \
+  --engine duckdb \
+  --duckdb-threads 8
+</code></pre>
+<p>In other words, the standard route handles incremental updates by carrying forward the previous comparison table into a new config.</p>
+<h3 id="matrix-method">Matrix Method</h3>
+<p>The matrix method is simpler here because resumability is built into the compare DB itself.</p>
+<h4 id="1-append-the-new-sample-into-the-matrix-store">1. Append the new sample into the matrix store</h4>
+<pre><code class="language-bash">zipstrain utilities append-matrix-db \
+  --profile-dir outputs/new_profile_run \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --memory-limit-gb 16
+</code></pre>
+<h4 id="2-rerun-matrix-compare-against-the-same-compare-db">2. Rerun matrix compare against the same compare DB</h4>
+<pre><code class="language-bash">zipstrain utilities matrix-compare \
+  --matrix-db-file outputs/matrix_db.h5 \
+  --output-file outputs/matrix_compare.duckdb \
+  --memory-limit-gb 16 \
+  --loader-executor thread \
+  --writer-executor thread \
+  --backend torch-cpu \
+  --calculate all
+</code></pre>
+<p>Because the compare DB tracks completed sample-pair/genome work, the rerun only processes unfinished work. That is one of the main reasons the matrix route is attractive for growing cohorts.</p>
+<h2 id="further-reading">Further Reading</h2>
+<ul>
+<li><a href="../cli/">CLI Reference</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../NextflowPipeline/">Nextflow Pipeline</a></li>
+<li><a href="../api/">API Reference</a></li>
+</ul>
 
 
 

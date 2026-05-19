@@ -204,9 +204,36 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#what-zipstrain-does" class="md-nav__link">
     <span class="md-ellipsis">
-      Features
+      What ZipStrain Does
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#comparison-routes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparison Routes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Documentation Map
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#highlights" class="md-nav__link">
+    <span class="md-ellipsis">
+      Highlights
     </span>
   </a>
   
@@ -379,9 +406,36 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#what-zipstrain-does" class="md-nav__link">
     <span class="md-ellipsis">
-      Features
+      What ZipStrain Does
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#comparison-routes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparison Routes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Documentation Map
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#highlights" class="md-nav__link">
+    <span class="md-ellipsis">
+      Highlights
     </span>
   </a>
   
@@ -404,28 +458,55 @@
 
 
 <h1 id="welcome-to-zipstrain">Welcome to ZipStrain</h1>
-<p>ZipStrain is a tool designed for efficient and scalable strain-level analysis of metagenomic data. It can profile and compare metagenomics samples at nucleotide resolution, providing insights into the strain composition of microbial communities.</p>
+<p>ZipStrain is a toolkit for strain-level metagenomic profiling and comparison.
+It supports both the standard profile-table comparison workflow and the matrix-store workflow for repeated large all-vs-all comparisons.</p>
 <p><img alt="ZipStrain Logo" src="Zipstrain.svg" /></p>
-<h2 id="features">Features</h2>
+<h2 id="what-zipstrain-does">What ZipStrain Does</h2>
+<p>ZipStrain helps you:</p>
 <ul>
+<li>profile mapped metagenomic samples at nucleotide resolution</li>
+<li>compare samples at the genome level with ANI and IBS</li>
+<li>compare samples at the gene level</li>
+<li>scale to larger cohorts with resumable matrix-store comparisons</li>
+<li>run either from the CLI, the Python API, or the bundled Nextflow pipeline</li>
+</ul>
+<h2 id="comparison-routes">Comparison Routes</h2>
+<p>ZipStrain now supports two comparison styles:</p>
+<ol>
+<li><strong>Standard profile compare</strong></li>
+<li>compares profile parquets directly through table operations</li>
 <li>
-<p><strong>Strain-Level Resolution Profiling and Comparison</strong>: ZipStrain provides detailed insights into the strain composition of microbial communities, enabling researchers to identify and compare strains across different samples.</p>
+<p>best for smaller or one-off runs</p>
 </li>
 <li>
-<p><strong>Scalability</strong>: ZipStrain is built using high-performance libraries. This makes comparing samples fast. It also distributes tasks across multiple processors or nodes, making it suitable for large datasets. Finally, most the workflows are resumable.</p>
+<p><strong>Matrix compare</strong></p>
 </li>
-<li>
-<p><strong>Containerization</strong>: ZipStrain is fully containerized using Docker and Singularity, ensuring consistent environments across different platforms and simplifying deployment.</p>
-</li>
-<li>
-<p><strong>Workflow Management</strong>: ZipStrain utilizes Nextflow for workflow management, allowing for easy customization, reproducibility, and scalability of analyses.</p>
-</li>
-<li>
-<p><strong>Command-Line Interface (CLI)</strong>: ZipStrain offers a user-friendly CLI for easy interaction and execution of tasks.</p>
-</li>
-<li>
-<p><strong>Python API</strong>: ZipStrain provides a Python API for programmatic access, enabling integration into larger bioinformatics pipelines and workflows. The API also allows for downstream analyses and visualizations.</p>
-</li>
+<li>builds a reusable matrix store from profile parquets</li>
+<li>best for repeated many-sample comparisons against the same reference set</li>
+<li>supports resumable compare databases and optional gene ANI</li>
+</ol>
+<p>If you are new to the project, start with the <a href="Tutorial/">Tutorial</a>.
+It now includes worked examples for:</p>
+<ul>
+<li>the standard Python/CLI workflow</li>
+<li>the standard Nextflow workflow</li>
+<li>the matrix-store workflow</li>
+</ul>
+<h2 id="documentation-map">Documentation Map</h2>
+<ul>
+<li><a href="Tutorial/">Tutorial</a>: end-to-end workflow plus worked examples for standard CLI, standard Nextflow, and matrix compare</li>
+<li><a href="cli/">CLI Reference</a>: command-by-command usage</li>
+<li><a href="installation/">Installation</a>: environment setup and optional matrix dependencies</li>
+<li><a href="NextflowPipeline/">Nextflow Pipeline</a>: pipeline execution details</li>
+<li><a href="api/">API Reference</a>: Python modules and programmatic entry points</li>
+</ul>
+<h2 id="highlights">Highlights</h2>
+<ul>
+<li><strong>Strain-level resolution</strong>: profile and compare samples at nucleotide resolution</li>
+<li><strong>Multiple execution routes</strong>: standard profile compare, matrix compare, and Nextflow workflows</li>
+<li><strong>Resumability</strong>: matrix compare writes resumable DuckDB result databases</li>
+<li><strong>Scalability</strong>: supports CPU, CUDA, and Apple Silicon torch backends for matrix compare</li>
+<li><strong>Container support</strong>: Docker and Apptainer/Singularity friendly</li>
 </ul>
 
 
