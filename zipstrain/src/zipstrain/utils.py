@@ -886,6 +886,15 @@ def _scan_pairs_table(table_path: pathlib.Path) -> pl.LazyFrame:
     raise ValueError(f"Unsupported pair table format for {table_path}. Use parquet, csv, or tsv.")
 
 
+def _iter_pair_table_batches(table_path: pathlib.Path, batch_size: int):
+    """Yield normalized pair-table batches in a Polars-version-safe way."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    pair_df = _scan_pairs_table(table_path).collect(engine="streaming")
+    for start in range(0, pair_df.height, batch_size):
+        yield pair_df.slice(start, batch_size)
+
+
 def _empty_genome_compare_frame(calculate: str | tuple[str, ...]) -> pl.DataFrame:
     from zipstrain import compare as cp
 
@@ -1233,11 +1242,7 @@ def chunk_genome_compare(
                         f"rows={total_rows} elapsed={time.perf_counter() - start_time:.2f}s"
                     )
 
-            for raw_batch in _scan_pairs_table(pair_table_path).collect_batches(
-                chunk_size=pair_batch_size,
-                maintain_order=True,
-                engine="streaming",
-            ):
+            for raw_batch in _iter_pair_table_batches(pair_table_path, pair_batch_size):
                 pair_batch = _normalize_pair_batch(raw_batch)
                 for row in pair_batch.iter_rows(named=True):
                     while len(in_flight) >= resolved_workers:
@@ -1313,11 +1318,7 @@ def chunk_genome_compare(
                         )
                     flush_ready_results()
 
-                for raw_batch in _scan_pairs_table(pair_table_path).collect_batches(
-                    chunk_size=pair_batch_size,
-                    maintain_order=True,
-                    engine="streaming",
-                ):
+                for raw_batch in _iter_pair_table_batches(pair_table_path, pair_batch_size):
                     pair_batch = _normalize_pair_batch(raw_batch)
                     for row in pair_batch.iter_rows(named=True):
                         while len(in_flight) >= resolved_workers:

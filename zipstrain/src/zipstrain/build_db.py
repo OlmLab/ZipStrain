@@ -19,7 +19,7 @@ import shutil
 import tempfile
 import time
 from typing import Callable
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
 import zipfile
@@ -485,6 +485,39 @@ def _retry_after_from_rate_limit_error(exc: Exception) -> float | None:
     return _parse_retry_after_seconds(header_value)
 
 
+def _is_transient_download_error(exc: Exception) -> bool:
+    """Return True when a genome download failure is worth retrying.
+
+    We retry only likely transient failures such as rate limiting, server-side
+    HTTP errors, and clear network/timeout problems. Permanent failures such as
+    missing/retired accessions (for example HTTP 404/410) should fail fast.
+    """
+    if isinstance(exc, HTTPError):
+        return exc.code in {408, 425, 429, 500, 502, 503, 504}
+    if isinstance(exc, URLError):
+        return True
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if isinstance(exc, OSError):
+        message = str(exc).lower()
+        transient_markers = (
+            "temporary failure",
+            "temporarily unavailable",
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection refused",
+            "connection aborted",
+            "network is unreachable",
+            "name or service not known",
+            "nodename nor servname provided",
+            "no route to host",
+            "remote end closed connection",
+        )
+        return any(marker in message for marker in transient_markers)
+    return False
+
+
 def _extract_first_fasta_from_zip(zip_path: pathlib.Path, destination_fasta: pathlib.Path) -> pathlib.Path:
     with zipfile.ZipFile(zip_path, "r") as zf:
         candidates = [
@@ -706,24 +739,27 @@ def fetch_missing_genomes(
                 }
             except Exception as exc:
                 last_exc = exc
-                if attempt < max_download_attempts and backoff_base_seconds > 0:
+                if attempt >= max_download_attempts or not _is_transient_download_error(exc):
+                    break
+                if backoff_base_seconds > 0:
                     delay_seconds = backoff_base_seconds * (2 ** (attempt - 1))
                     retry_after_seconds = _retry_after_from_rate_limit_error(exc)
                     if retry_after_seconds is not None:
                         delay_seconds = max(delay_seconds, retry_after_seconds, default_rate_limit_wait_seconds)
                     jitter_seconds = random.uniform(0.0, min(1.0, max(delay_seconds * 0.1, 0.1)))
                     time.sleep(delay_seconds + jitter_seconds)
-                elif attempt < max_download_attempts:
+                else:
                     retry_after_seconds = _retry_after_from_rate_limit_error(exc)
                     if retry_after_seconds is not None:
                         jitter_seconds = random.uniform(0.0, 1.0)
                         time.sleep(max(retry_after_seconds, default_rate_limit_wait_seconds) + jitter_seconds)
 
         failed_url = url if url is not None else row.get("download_url")
+        attempts_used = 0 if last_exc is None else min(max_download_attempts, attempt)
         failed_error = (
-            f"{last_exc} (after {max_download_attempts} attempts)"
+            f"{last_exc} (after {attempts_used} attempts)"
             if last_exc is not None
-            else f"failed after {max_download_attempts} attempts"
+            else f"failed after {attempts_used} attempts"
         )
         return {
             "accession": accession,
@@ -731,7 +767,7 @@ def fetch_missing_genomes(
             "location": None,
             "url": failed_url,
             "error": failed_error,
-            "retry_count": max_download_attempts - 1,
+            "retry_count": max(0, attempts_used - 1),
         }
 
     if pending_rows:

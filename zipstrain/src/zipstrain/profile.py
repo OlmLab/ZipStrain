@@ -354,10 +354,16 @@ async def _profile_chunk_task(
                         "column_4": "end",
                     }).filter(pl.col("scaffold").is_in(scaffolds)),
                 )
-            mpileup.select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]).sink_parquet(
-                output_dir / f"{bam_file.stem}_{chunk_id}.parquet",
-                compression="zstd",
-                engine="streaming",
+            # ``join_asof`` on the gene range table has proven brittle under
+            # streaming parquet sinks with small chunked inputs. Materialize the
+            # annotated chunk once, then write it eagerly.
+            (
+                mpileup.select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"])
+                .collect()
+                .write_parquet(
+                    output_dir / f"{bam_file.stem}_{chunk_id}.parquet",
+                    compression="zstd",
+                )
             )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(

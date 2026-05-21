@@ -33,6 +33,11 @@ jobs:
           cache: "pip"
           cache-dependency-path: zipstrain/pyproject.toml
 
+      - name: Install samtools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y samtools
+
       - name: Install ZipStrain with test dependencies
         working-directory: zipstrain
         run: |
