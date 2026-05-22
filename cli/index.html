@@ -1081,7 +1081,7 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 </tr>
 <tr>
 <td><code>zipstrain utilities generate-genome-pairs</code></td>
-<td>Create all non-redundant classic-profile pairs</td>
+<td>Create all non-redundant standard-profile pairs</td>
 </tr>
 <tr>
 <td><code>zipstrain utilities build-genome-comparison-config</code></td>
@@ -1203,7 +1203,7 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
   --workers 8 \
   --engine polars
 </code></pre>
-<p>This command runs classic genome comparisons directly inside Python for one pair-table chunk.
+<p>This command runs standard genome comparisons directly inside Python for one pair-table chunk.
 It is intended as an experimental utility for benchmarking or ad hoc compare runs, and
 does not change the main workflow commands.</p>
 <p>Accepted pair-table schemas:</p>
@@ -1320,7 +1320,7 @@ does not change the main workflow commands.</p>
 </tr>
 <tr>
 <td><code>zipstrain utilities generate-genome-pairs</code></td>
-<td>Create all non-redundant classic-profile pairs</td>
+<td>Create all non-redundant standard-profile pairs</td>
 </tr>
 <tr>
 <td><code>zipstrain utilities chunk-genome-compare</code></td>
@@ -1402,7 +1402,7 @@ does not change the main workflow commands.</p>
 </code></pre>
 <p>What it does:</p>
 <ul>
-<li>scans a directory of classic ZipStrain profile parquets</li>
+<li>scans a directory of standard ZipStrain profile parquets</li>
 <li>builds one matrix store directly from those profiles</li>
 <li>stores each genome as one sample-major dense dataset with shape <code>samples x positions x 4</code></li>
 <li>positions with total coverage below <code>5</code> are zeroed during matrix build</li>
@@ -1436,7 +1436,7 @@ does not change the main workflow commands.</p>
 </code></pre>
 <p>What it does:</p>
 <ul>
-<li>scans a directory of new classic ZipStrain profile parquets</li>
+<li>scans a directory of new standard ZipStrain profile parquets</li>
 <li>validates that they match the existing matrix-store contract</li>
 <li>appends new sample rows and whole-genome matrices into the existing matrix store</li>
 </ul>

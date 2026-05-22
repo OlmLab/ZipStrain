@@ -1956,9 +1956,12 @@ sample2,/data/sample2_R1.fastq.gz,/data/sample2_R2.fastq.gz
 </ul>
 <h2 id="step-3-build-the-null-model">Step 3: Build the Null Model</h2>
 <p>ZipStrain uses a null model for sequencing-error adjustment during profiling.
-Build it once from any representative BAM file:</p>
+It is parameter-based rather than BAM-specific, so you usually build it once per
+sequencing/error-rate setting:</p>
 <pre><code class="language-bash">zipstrain utilities build-null-model \
-  --bam-file /path/to/example.bam \
+  --error-rate 0.001 \
+  --max-total-reads 10000 \
+  --p-threshold 0.05 \
   --output-file null_model.parquet
 </code></pre>
 <h2 id="step-4-generate-profiles">Step 4: Generate Profiles</h2>
@@ -2143,7 +2146,6 @@ sample3,/path/to/sample3.bam
 <li>the compare DB is resumable</li>
 <li>rerunning the same command on the same output file only processes unfinished sample pairs</li>
 <li><code>--memory-limit-gb</code> is the main throughput control for target block size</li>
-<li><code>--position-tile-size</code> is currently a legacy compatibility option and is not used by the current full-genome compare path</li>
 </ul>
 <h3 id="export-matrix-compare-results">Export Matrix Compare Results</h3>
 <p>Export genome-level rows:</p>
@@ -2260,7 +2262,9 @@ sample3,/path/to/sample3.bam
 </code></pre>
 <h3 id="2-build-the-null-model-once">2. Build the null model once</h3>
 <pre><code class="language-bash">zipstrain utilities build-null-model \
-  --bam-file mapped_bams/sample1.bam \
+  --error-rate 0.001 \
+  --max-total-reads 10000 \
+  --p-threshold 0.05 \
   --output-file outputs/null_model.parquet
 </code></pre>
 <h3 id="3-make-the-bam-input-table">3. Make the BAM input table</h3>
