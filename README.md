@@ -23,7 +23,7 @@
   </tr>
 </table>
 
-Developed by Parsa Ghadermazi and the [Olm Lab](https://www.olmlab.org/), University of Colorado Boulder.
+Developed by Parsa Ghadermazi and the [Olm Lab](https://www.colorado.edu/lab/olm/), University of Colorado Boulder.
 
 ## Overview
   
