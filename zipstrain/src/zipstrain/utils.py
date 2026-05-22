@@ -1377,19 +1377,6 @@ def chunk_genome_compare(
     )
     return summary
 
-def check_samtools():
-    try:
-        result = subprocess.run(
-            ["samtools", "--version"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return True
-    except:
-        print("Samtools is not installed or not found in PATH. Please install samtools to use all of the ZipStrain's functionalities.")
-        return False
-
 def split_lf_to_chunks(lf:pl.LazyFrame,num_chunks:int)->list[pl.LazyFrame]:
     """
     Split a Polars LazyFrame into smaller chunks.

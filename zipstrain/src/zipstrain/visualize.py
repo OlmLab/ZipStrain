@@ -3,15 +3,189 @@
 This module provides statistical analysis and visualization functions for profiling and compare operations.
 """
 
+from dataclasses import dataclass
 import polars as pl
 import plotly.graph_objects as go
+import plotly.express as px
 import seaborn as sns
 import numpy as np
 from itertools import chain, combinations
 from collections import defaultdict
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib import colormaps
+from matplotlib.lines import Line2D
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
+from scipy.spatial.distance import squareform
 
+
+@dataclass(frozen=True)
+class _SimilarityMatrixBundle:
+    """Prepared similarity matrix and clustering artefacts for one genome scope."""
+
+    clustermap_data: pl.DataFrame
+    null_fraction: pl.DataFrame
+    samples: list[str]
+    similarity_matrix: np.ndarray
+    distance_matrix: np.ndarray
+    linkage_matrix: np.ndarray
+
+
+def _silhouette_score_precomputed(distance_matrix: np.ndarray, labels: np.ndarray) -> float:
+    """Compute an average silhouette score from a precomputed distance matrix."""
+    unique_labels = np.unique(labels)
+    sample_count = distance_matrix.shape[0]
+    if sample_count < 2 or len(unique_labels) < 2 or len(unique_labels) >= sample_count:
+        return float("nan")
+
+    scores: list[float] = []
+    for idx in range(sample_count):
+        same_cluster = labels == labels[idx]
+        same_cluster[idx] = False
+        if np.any(same_cluster):
+            a_i = float(distance_matrix[idx, same_cluster].mean())
+        else:
+            scores.append(0.0)
+            continue
+
+        b_i = min(
+            float(distance_matrix[idx, labels == other_label].mean())
+            for other_label in unique_labels
+            if other_label != labels[idx]
+        )
+        denom = max(a_i, b_i)
+        scores.append(0.0 if denom == 0 else (b_i - a_i) / denom)
+    return float(np.mean(scores))
+
+
+def _prepare_similarity_matrix(
+    comps_lf: pl.LazyFrame,
+    *,
+    genome: str | None = None,
+    min_comp_len: int = 10000,
+    impute_method: float = 97.0,
+    max_null_samples: int = 500,
+) -> _SimilarityMatrixBundle:
+    """Build a square ANI similarity matrix and clustering inputs."""
+    schema_names = set(comps_lf.collect_schema().names())
+    if genome is not None and "genome" not in schema_names:
+        raise ValueError("A genome was requested, but the comparison table has no 'genome' column.")
+    if genome is None and "genome" in schema_names:
+        genome_count = (
+            comps_lf.select(pl.col("genome"))
+            .unique()
+            .collect(engine="streaming")
+            .height
+        )
+        if genome_count > 1:
+            raise ValueError("Multiple genomes are present. Pass `genome=...` or pre-filter to one genome.")
+
+    if not isinstance(impute_method, (int, float)):
+        raise NotImplementedError("Only numeric ANI imputation is currently supported.")
+
+    filters = [pl.col("total_positions") > min_comp_len]
+    if genome is not None:
+        filters.append(pl.col("genome") == genome)
+    filtered = (
+        comps_lf.filter(pl.all_horizontal(*filters))
+        .select("sample_1", "sample_2", "genome_pop_ani")
+        .group_by(["sample_1", "sample_2"])
+        .agg(pl.col("genome_pop_ani").mean().alias("genome_pop_ani"))
+    )
+
+    filtered_opposite = filtered.select(
+        pl.col("sample_2").alias("sample_1"),
+        pl.col("sample_1").alias("sample_2"),
+        pl.col("genome_pop_ani"),
+    )
+    filtered_df = pl.concat([filtered, filtered_opposite]).collect(engine="streaming")
+    sample_names = sorted(set(filtered_df.get_column("sample_1").to_list()) | set(filtered_df.get_column("sample_2").to_list()))
+    if len(sample_names) < 2:
+        raise ValueError("At least two samples are required to build a similarity matrix.")
+
+    self_similarity = pl.DataFrame(
+        {
+            "sample_1": sample_names,
+            "sample_2": sample_names,
+            "genome_pop_ani": [100.0] * len(sample_names),
+        }
+    )
+    matrix_source = pl.concat([filtered_df, self_similarity], how="vertical")
+    clustermap_data = matrix_source.pivot(
+        index="sample_1",
+        on="sample_2",
+        values="genome_pop_ani",
+    ).select(["sample_1"] + sample_names)
+
+    exclude_samples = (
+        clustermap_data.null_count()
+        .transpose(include_header=True, header_name="column", column_names=["null_count"])
+        .filter(pl.col("null_count") > max_null_samples)
+        .get_column("column")
+        .to_list()
+    )
+    clustermap_data = clustermap_data.filter(~pl.col("sample_1").is_in(exclude_samples))
+    clustermap_data = clustermap_data.select(
+        [column for column in clustermap_data.columns if column not in exclude_samples]
+    )
+
+    comparable_column_count = max(len(clustermap_data.columns) - 1, 1)
+    null_fraction = clustermap_data.select(
+        pl.col("sample_1"),
+        (
+            pl.sum_horizontal(pl.exclude("sample_1").is_null()) / comparable_column_count
+        ).alias("null_fraction"),
+    )
+
+    clustermap_data = clustermap_data.fill_null(float(impute_method))
+    samples = clustermap_data.get_column("sample_1").to_list()
+    similarity_matrix = clustermap_data.select(pl.exclude("sample_1")).to_numpy()
+    distance_matrix = 1 - (similarity_matrix / 100.0)
+    np.fill_diagonal(distance_matrix, 0.0)
+    linkage_matrix = linkage(squareform(distance_matrix, checks=False), method="average")
+    return _SimilarityMatrixBundle(
+        clustermap_data=clustermap_data,
+        null_fraction=null_fraction,
+        samples=samples,
+        similarity_matrix=similarity_matrix,
+        distance_matrix=distance_matrix,
+        linkage_matrix=linkage_matrix,
+    )
+
+
+def _resolve_population_mapping(
+    sample_to_population: pl.LazyFrame,
+    samples: list[str],
+) -> pl.DataFrame:
+    """Return a sample/population frame aligned to a provided sample order."""
+    return (
+        pl.DataFrame({"sample_1": samples})
+        .join(
+            sample_to_population.collect(engine="streaming"),
+            left_on="sample_1",
+            right_on="sample",
+            how="left",
+        )
+        .with_columns(pl.col("population").fill_null("Not Assigned"))
+        .select("sample_1", "population")
+    )
+
+
+def _resolve_population_colors(
+    sample_to_population: pl.DataFrame,
+    *,
+    color_map: dict | None = None,
+) -> tuple[dict, list]:
+    """Build a stable population -> color mapping and row colors."""
+    if color_map is None:
+        unique_pops = sample_to_population.get_column("population").unique().sort().to_list()
+        palette = colormaps["tab20b"]
+        divisor = max(len(unique_pops), 1)
+        color_map = {population: palette(idx / divisor) for idx, population in enumerate(unique_pops)}
+    row_colors = [color_map.get(population, "black") for population in sample_to_population["population"]]
+    return color_map, row_colors
 
 
 def get_cdf(data, num_bins=10000):
@@ -482,105 +656,223 @@ def plot_identical_frac_vs_popani(df:pl.DataFrame,
     )
     return fig
 
-def plot_clustermap(
-    comps_lf:pl.LazyFrame,
-    genome:str,
-    sample_to_population:pl.LazyFrame,
-    min_comp_len:int=10000,
-    impute_method:str|float=97.0,
-    max_null_samples:int=200,
-    color_map:dict|None=None,
+def get_silhouette_plot(
+    comps_lf: pl.LazyFrame,
+    genome: str,
+    min_comp_len: int = 100000,
+    impute_method: float = 97.0,
+    max_null_samples: int = 500,
 ):
-    """
-    Plot a clustermap for the given genome and its associated samples.
-    Args:
-        comps_lf (pl.LazyFrame): LazyFrame containing the comparison data.
-        genome (str): The genome to plot.
-        sample_to_population (pl.LazyFrame): LazyFrame containing the sample to population mapping.
-    Returns:
-        go.Figure: Plotly figure containing the clustermap.
-    """
-    # Filter the comparison data for the specific genome
-    comps_lf_filtered = comps_lf.filter(
-        (pl.col("genome") == genome) & (pl.col("total_positions") > min_comp_len)
-    ).select(
-        pl.col("sample_1"),
-        pl.col("sample_2"),
-        pl.col("genome_pop_ani"),
+    """Plot silhouette score as a function of ANI threshold for one genome."""
+    bundle = _prepare_similarity_matrix(
+        comps_lf,
+        genome=genome,
+        min_comp_len=min_comp_len,
+        impute_method=impute_method,
+        max_null_samples=max_null_samples,
     )
-    comps_lf_filtered_oposite = comps_lf_filtered.select(
-        pl.col("sample_2").alias("sample_1"),
-        pl.col("sample_1").alias("sample_2"),
-        pl.col("genome_pop_ani"),
-    )
-    # Combine the filtered data with its opposite pairs
-    comps_lf_filtered = pl.concat([comps_lf_filtered, comps_lf_filtered_oposite])
-    # Make a synthetic table for similarity of samples with themselves of all samples in sample_1 and sample_2 but each sample exists only once
-    self_similarity =(
-    pl.concat([
-        comps_lf_filtered.select(pl.col("sample_1").alias("sample_1")),
-        comps_lf_filtered.select(pl.col("sample_2").alias("sample_1"))
-    ])
-    .unique()
-    .sort("sample_1").with_columns(
-        pl.col("sample_1").alias("sample_2"),
-        pl.lit(100.0).alias("genome_pop_ani"),
-    )
-    )
-    
-    # Combine the self similarity with the filtered data
-    comps_lf_filtered = pl.concat([self_similarity, comps_lf_filtered]).collect(engine="streaming")
-    # Pivot the data for the clustermap
-    clustermap_data = comps_lf_filtered.pivot(
-        index="sample_1",
-        columns="sample_2",
-        values="genome_pop_ani"
-    )
-    # We want to make this a similarity matrix, so we need to frop null values, have sample_1 and sample_2 as index and columns as we
-    # Create the clustermap
-    exclude_samples=clustermap_data.null_count().transpose(include_header=True, header_name="column", column_names=["null_count"]).filter(pl.col("null_count")>max_null_samples)["column"].to_list()
-    # Only include rows and cols not in exclude_samples
-    clustermap_data = clustermap_data.filter(~pl.col("sample_1").is_in(exclude_samples))
-    clustermap_data = clustermap_data.select(*[col for col in clustermap_data.columns if col not in exclude_samples])
-    if isinstance(impute_method, str):
-        pass # To be implemented later
-    elif isinstance(impute_method, (int, float)):
-        clustermap_data = clustermap_data.fill_null(impute_method)
-    sample_to_population = clustermap_data.select(pl.col("sample_1")).join(
-        sample_to_population.collect(engine="streaming"),
-        left_on="sample_1",
-        right_on="sample",
-        how="left")
-    sample_to_population_dict = dict(zip(sample_to_population["sample_1"], sample_to_population["population"]))
-    if color_map is None:
+    distances = np.linspace(0.01, 0.0, 500)
+    scores: list[float] = []
+    for distance_threshold in distances:
+        labels = fcluster(bundle.linkage_matrix, t=distance_threshold, criterion="distance")
+        scores.append(_silhouette_score_precomputed(bundle.distance_matrix, labels))
 
-        num_categories = sample_to_population["population"].n_unique()
-        groups= sample_to_population["population"].unique().sort().to_list()
-        qualitative_palette = sns.color_palette("hls", num_categories)
-        row_colors = [qualitative_palette[groups.index(sample_to_population_dict[sample])] for sample in clustermap_data["sample_1"]]
-        col_colors = [qualitative_palette[groups.index(sample_to_population_dict[sample])] for sample in clustermap_data.columns if sample != "sample_1"]
-    else:
-        groups= list(color_map.keys())
-        qualitative_palette= list(color_map.values())
-        row_colors = [color_map[sample_to_population_dict[sample]] for sample in clustermap_data["sample_1"]]
-        col_colors = [color_map[sample_to_population_dict[sample]] for sample in clustermap_data.columns if sample != "sample_1"]
-    fig = sns.clustermap(
-        clustermap_data.to_pandas().set_index("sample_1"),
+    ani_thresholds = 100 * (1 - distances)
+    fig = px.line(
+        x=ani_thresholds,
+        y=scores,
+        labels={"x": "ANI Threshold (%)", "y": "Silhouette Score"},
+        template="plotly_white",
+    )
+    fig.update_xaxes(range=[99, 100], autorange="reversed")
+    fig.update_layout(title={"text": "Silhouette Score vs ANI Threshold", "x": 0.5})
+    return fig
+
+
+def get_cluster_assignments(
+    comps_lf: pl.LazyFrame,
+    min_comp_len: int = 10000,
+    impute_method: float = 97.0,
+    max_null_samples: int = 500,
+    clonal_cluster_threshold: float = 99.93,
+    strain_cluster_threshold: float = 99.8,
+):
+    """Get clonal and strain-level cluster assignments from a genome-scoped comparison table."""
+    bundle = _prepare_similarity_matrix(
+        comps_lf,
+        genome=None,
+        min_comp_len=min_comp_len,
+        impute_method=impute_method,
+        max_null_samples=max_null_samples,
+    )
+    clonal_clusters = fcluster(
+        bundle.linkage_matrix,
+        t=1 - clonal_cluster_threshold / 100,
+        criterion="distance",
+    )
+    strain_clusters = fcluster(
+        bundle.linkage_matrix,
+        t=1 - strain_cluster_threshold / 100,
+        criterion="distance",
+    )
+    return pl.DataFrame(
+        {
+            "sample": bundle.samples,
+            "clonal_cluster": clonal_clusters,
+            "strain_cluster": strain_clusters,
+        }
+    )
+
+
+def plot_dendo(
+    comps_lf: pl.LazyFrame,
+    genome: str,
+    sample_to_population: pl.LazyFrame,
+    min_comp_len: int = 10000,
+    impute_method: float = 97.0,
+    max_null_samples: int = 500,
+    color_map: dict | None = None,
+    inches_per_sample: float = 0.15,
+    font_size: int = 8,
+    color_threshold: float = 0.03,
+    clonal_cluster_threshold: float = 99.93,
+    strain_cluster_threshold: float = 99.8,
+    title: str | None = None,
+    include_fraction_null: bool = False,
+):
+    """Plot a left-oriented dendrogram for one genome with optional null-fraction bars."""
+    bundle = _prepare_similarity_matrix(
+        comps_lf,
+        genome=genome,
+        min_comp_len=min_comp_len,
+        impute_method=impute_method,
+        max_null_samples=max_null_samples,
+    )
+    sample_population = _resolve_population_mapping(sample_to_population, bundle.samples)
+    sample_population_dict = dict(zip(sample_population["sample_1"], sample_population["population"]))
+    color_map, _ = _resolve_population_colors(sample_population, color_map=color_map)
+
+    fig_height = max(20, len(bundle.samples) * inches_per_sample)
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+    dendro = dendrogram(
+        bundle.linkage_matrix,
+        ax=ax,
+        labels=[f"{sample}_{sample_population_dict.get(sample, 'Not Assigned')}" for sample in bundle.samples],
+        orientation="left",
+        color_threshold=color_threshold,
+        above_threshold_color="gray",
+        leaf_font_size=font_size,
+        distance_sort="descending",
+    )
+
+    ordered_samples = [bundle.samples[idx] for idx in dendro["leaves"]]
+    tick_colors = [color_map.get(sample_population_dict.get(sample, "Not Assigned"), "black") for sample in ordered_samples]
+    for tick_label, color in zip(ax.get_yticklabels(), tick_colors):
+        tick_label.set_color(color)
+
+    ax.axvline(1 - clonal_cluster_threshold / 100, color="red", linestyle="--", linewidth=1)
+    ax.axvline(1 - strain_cluster_threshold / 100, color="blue", linestyle="--", linewidth=1)
+    legend_handles = [
+        Line2D([0], [0], marker="o", color="w", label=population, markerfacecolor=color, markersize=8)
+        for population, color in color_map.items()
+    ]
+    line_legend_handles = [
+        Line2D([0], [0], color="red", linestyle="--", label="Clonal cluster threshold"),
+        Line2D([0], [0], color="blue", linestyle="--", label="Strain cluster threshold"),
+    ]
+    ax.legend(
+        handles=legend_handles + line_legend_handles,
+        title="Populations",
+        loc="upper left",
+        bbox_to_anchor=(0.1, 1),
+        frameon=False,
+        fontsize=font_size,
+        title_fontsize=font_size + 1,
+    )
+
+    ax.set_title(title or genome, fontsize=14, pad=20)
+    ax.set_xlabel("Pop-ANI", fontsize=12)
+    current_ticks = ax.get_xticks()
+    ani_ticks = (1 - current_ticks) * 100
+    ax.set_xticks(current_ticks)
+    ax.set_xticklabels([f"{tick:.2f}" for tick in ani_ticks])
+    ax.set_ylabel("Samples", fontsize=12)
+    ax.invert_yaxis()
+    fig.tight_layout()
+
+    if include_fraction_null:
+        leaf_positions = np.array([tick.get_position()[1] for tick in ax.get_yticklabels()])
+        bar_values = (
+            pl.DataFrame({"sample_1": ordered_samples}).join(
+                bundle.null_fraction,
+                on="sample_1",
+                how="left",
+            )
+            .get_column("null_fraction")
+            .fill_null(0.0)
+            .to_list()
+        )
+        divider = make_axes_locatable(ax)
+        ax_bar = divider.append_axes("right", size="30%", pad=2.5)
+        bar_height = (np.diff(leaf_positions).mean() * 0.8) if len(leaf_positions) > 1 else 8.0
+        ax_bar.barh(leaf_positions, bar_values, height=bar_height)
+        ax_bar.set_ylim(ax.get_ylim())
+        ax_bar.set_yticks([])
+        ax_bar.set_xlim(0, 1)
+        ax_bar.set_xlabel("Null fraction", fontsize=font_size)
+        fig.tight_layout()
+
+    return fig
+
+
+def get_clustermap(
+    comps_lf: pl.LazyFrame,
+    genome: str,
+    sample_to_population: pl.LazyFrame,
+    min_comp_len: int = 10000,
+    impute_method: float = 97.0,
+    max_null_samples: int = 500,
+    color_map: dict | None = None,
+):
+    """Return a seaborn clustermap for one genome."""
+    bundle = _prepare_similarity_matrix(
+        comps_lf,
+        genome=genome,
+        min_comp_len=min_comp_len,
+        impute_method=impute_method,
+        max_null_samples=max_null_samples,
+    )
+    sample_population = _resolve_population_mapping(sample_to_population, bundle.samples)
+    color_map, row_colors = _resolve_population_colors(sample_population, color_map=color_map)
+    groups = sample_population.get_column("population").unique().sort().to_list()
+    qualitative_palette = [color_map[group] for group in groups]
+
+    grid = sns.clustermap(
+        bundle.clustermap_data.to_pandas().set_index("sample_1"),
         figsize=(30, 30),
-        xticklabels=True, 
+        row_linkage=bundle.linkage_matrix,
+        col_linkage=bundle.linkage_matrix,
+        xticklabels=True,
         yticklabels=True,
         row_colors=row_colors,
-        col_colors=col_colors
+        col_colors=row_colors,
     )
-    fig.ax_heatmap.set_xticklabels(fig.ax_heatmap.get_xmajorticklabels(), fontsize=0.1)
-    fig.ax_heatmap.set_yticklabels(fig.ax_heatmap.get_ymajorticklabels(), fontsize=0.1)
-    legend_handles = [mpatches.Patch(color=color, label=label)
-                  for label, color in zip(groups, qualitative_palette)]
-    fig.ax_heatmap.legend(handles=legend_handles,
-                          title='Population',
-                        title_fontsize=16,   # bigger title
-                        fontsize=14,         # bigger labels
-                        handlelength=2.5,    # wider color boxes
-                        handleheight=2,
-                    bbox_to_anchor=(-0.15, 1), loc="lower left")
-    return fig
+    grid.ax_heatmap.set_xticklabels(grid.ax_heatmap.get_xmajorticklabels(), fontsize=0.1)
+    grid.ax_heatmap.set_yticklabels(grid.ax_heatmap.get_ymajorticklabels(), fontsize=0.1)
+    legend_handles = [
+        mpatches.Patch(color=color, label=label)
+        for label, color in zip(groups, qualitative_palette)
+    ]
+    grid.ax_heatmap.legend(
+        handles=legend_handles,
+        title="Population",
+        title_fontsize=16,
+        fontsize=14,
+        handlelength=2.5,
+        handleheight=2,
+        bbox_to_anchor=(-0.15, 1),
+        loc="lower left",
+    )
+    return grid
+
+

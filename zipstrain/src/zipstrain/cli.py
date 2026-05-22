@@ -12,6 +12,7 @@ import zipstrain.task_manager as tm
 import zipstrain.database as db
 import zipstrain.build_db as bdb
 import zipstrain.matrix_pairs as mp
+import zipstrain.healthcheck as hc
 import polars as pl
 import pathlib
 import sys
@@ -1677,12 +1678,8 @@ def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_
         
 @cli.command("test")
 def test():
-    """Run basic tests to ensure ZipStrain is setup correctly."""
-    ### Check samtools installation
-    if all([ut.check_samtools()]):
-        click.echo("ZipStrain setup looks good!")
-    else:
-        click.echo("There are issues with the ZipStrain setup. Please check the above messages.")
+    """Run a lightweight ZipStrain health check."""
+    hc.render_health_report(hc.collect_health_report(), console=Console())
 
 if __name__ == "__main__":
     cli()
