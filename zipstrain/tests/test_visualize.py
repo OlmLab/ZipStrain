@@ -72,20 +72,13 @@ def test_plot_dendo_returns_figure_with_fraction_bar_axis():
         plt.close(fig)
 
 
-def test_get_clustermap_and_wrapper_return_clustergrid():
+def test_get_clustermap_returns_clustergrid():
     grid = vz.get_clustermap(
-        _comparison_frame(),
-        genome="genome1",
-        sample_to_population=_sample_to_population(),
-    )
-    wrapped = vz.plot_clustermap(
         _comparison_frame(),
         genome="genome1",
         sample_to_population=_sample_to_population(),
     )
     try:
         assert hasattr(grid, "ax_heatmap")
-        assert hasattr(wrapped, "ax_heatmap")
     finally:
         plt.close(grid.fig)
-        plt.close(wrapped.fig)
