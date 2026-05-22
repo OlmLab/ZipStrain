@@ -12,10 +12,10 @@ from zipstrain import visualize as vz
 def _comparison_frame() -> pl.LazyFrame:
     rows = [
         {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_b", "genome_pop_ani": 99.99, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_c", "genome_pop_ani": 99.20, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_d", "genome_pop_ani": 99.18, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_c", "genome_pop_ani": 99.19, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_d", "genome_pop_ani": 99.17, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_c", "genome_pop_ani": 97.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_d", "genome_pop_ani": 97.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_c", "genome_pop_ani": 97.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_d", "genome_pop_ani": 97.0, "total_positions": 20000},
         {"genome": "genome1", "sample_1": "sample_c", "sample_2": "sample_d", "genome_pop_ani": 99.98, "total_positions": 20000},
     ]
     return pl.DataFrame(rows).lazy()
@@ -47,11 +47,22 @@ def test_get_silhouette_plot_returns_dense_trace():
 
 
 def test_get_cluster_assignments_splits_two_clusters():
-    cluster_df = vz.get_cluster_assignments(_comparison_frame())
+    cluster_df = vz.get_cluster_assignments(
+        _comparison_frame(),
+        clonal_cluster_threshold=99.8,
+        strain_cluster_threshold=99.8,
+    )
+    cluster_map = {
+        row["sample"]: (row["clonal_cluster"], row["strain_cluster"])
+        for row in cluster_df.iter_rows(named=True)
+    }
 
     assert cluster_df.columns == ["sample", "clonal_cluster", "strain_cluster"]
     assert cluster_df.get_column("clonal_cluster").n_unique() == 2
     assert cluster_df.get_column("strain_cluster").n_unique() == 2
+    assert cluster_map["sample_a"] == cluster_map["sample_b"]
+    assert cluster_map["sample_c"] == cluster_map["sample_d"]
+    assert cluster_map["sample_a"] != cluster_map["sample_c"]
 
 
 def test_get_cluster_assignments_requires_one_genome_scope():

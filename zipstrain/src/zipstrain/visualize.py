@@ -117,7 +117,7 @@ def _prepare_similarity_matrix(
         index="sample_1",
         on="sample_2",
         values="genome_pop_ani",
-    ).select(["sample_1"] + sample_names)
+    ).select(["sample_1"] + sample_names).sort("sample_1")
 
     exclude_samples = (
         clustermap_data.null_count()
@@ -874,5 +874,4 @@ def get_clustermap(
         loc="lower left",
     )
     return grid
-
 
