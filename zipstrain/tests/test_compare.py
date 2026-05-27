@@ -391,6 +391,51 @@ def test_shared_loci_polars_sets_sorted_only_when_both_inputs_are_marked(tmp_pat
     assert calls == []
 
 
+def test_compare_genomes_polars_matches_between_sorted_marked_and_unsorted_unmarked(profile_1, profile_2, tmp_path):
+    sorted_left = tmp_path / "sorted_left.parquet"
+    sorted_right = tmp_path / "sorted_right.parquet"
+    unsorted_left = tmp_path / "unsorted_left.parquet"
+    unsorted_right = tmp_path / "unsorted_right.parquet"
+    metadata = {
+        compare.PROFILE_SORTED_METADATA_KEY: compare.PROFILE_SORTED_METADATA_VALUE,
+    }
+
+    profile_1_df = profile_1.collect().sort(["chrom", "pos"])
+    profile_2_df = profile_2.collect().sort(["chrom", "pos"])
+    profile_1_df.lazy().sink_parquet(sorted_left, metadata=metadata)
+    profile_2_df.lazy().sink_parquet(sorted_right, metadata=metadata)
+
+    profile_1_df.reverse().write_parquet(unsorted_left)
+    profile_2_df.reverse().write_parquet(unsorted_right)
+
+    sorted_result = (
+        compare.compare_genomes(
+            mpile_contig_1=sorted_left,
+            mpile_contig_2=sorted_right,
+            min_cov=5,
+            min_gene_compare_len=3,
+            engine="polars",
+            calculate="all",
+        )
+        .collect()
+        .sort("genome")
+    )
+    unsorted_result = (
+        compare.compare_genomes(
+            mpile_contig_1=unsorted_left,
+            mpile_contig_2=unsorted_right,
+            min_cov=5,
+            min_gene_compare_len=3,
+            engine="polars",
+            calculate="all",
+        )
+        .collect()
+        .sort("genome")
+    )
+
+    assert unsorted_result.equals(sorted_result)
+
+
 def test_duckdb_compare_genomes_to_parquet_ani_only(profile_1, profile_2, stb, tmp_path):
     p1 = tmp_path / "p1.parquet"
     p2 = tmp_path / "p2.parquet"
