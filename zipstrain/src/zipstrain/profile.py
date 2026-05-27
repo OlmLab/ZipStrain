@@ -12,6 +12,10 @@ import asyncio
 import os
 import duckdb
 
+
+PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
+PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
+
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
     Extract gene locations from a FASTA assuming it is from prodigal yield gene info.
@@ -169,6 +173,56 @@ def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->
 def _duckdb_quote_sql_string(value: str) -> str:
     """Quote a string literal for embedding in DuckDB SQL."""
     return value.replace("'", "''")
+
+
+def _write_sorted_profile_with_metadata(
+    profile_lf: pl.LazyFrame,
+    output_file: pathlib.Path,
+    tmp_dir: pathlib.Path,
+) -> None:
+    """Write the final profile parquet sorted by coordinate and tagged in metadata."""
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    unsorted_path = tmp_dir / f"{output_file.stem}.unsorted.parquet"
+    sorted_path = tmp_dir / f"{output_file.stem}.sorted.parquet"
+    unsorted_path.unlink(missing_ok=True)
+    sorted_path.unlink(missing_ok=True)
+
+    profile_lf.sink_parquet(
+        unsorted_path,
+        compression="zstd",
+        engine="streaming",
+    )
+
+    conn = duckdb.connect()
+    try:
+        in_sql = _duckdb_quote_sql_string(str(unsorted_path))
+        out_sql = _duckdb_quote_sql_string(str(sorted_path))
+        conn.execute(
+            f"""
+            COPY (
+              SELECT
+                chrom,
+                genome,
+                gene,
+                pos,
+                A,
+                C,
+                G,
+                T
+              FROM read_parquet('{in_sql}')
+              ORDER BY chrom, pos
+            ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """
+        )
+    finally:
+        conn.close()
+
+    pl.scan_parquet(sorted_path).sink_parquet(
+        output_file,
+        compression="zstd",
+        engine="streaming",
+        metadata={PROFILE_SORTED_METADATA_KEY: PROFILE_SORTED_METADATA_VALUE},
+    )
 
 
 def _annotate_mpileup_chunk_with_duckdb(
@@ -477,7 +531,11 @@ async def profile_bam_in_chunks(
             read_loc_pfs.append(pl.scan_parquet(read_loc_pf).lazy())
     if mpile_container:
         mpileup_df = pl.concat(mpile_container)
-        mpileup_df.sink_parquet(output_dir/f"{bam_file.stem}_profile.parquet", compression='zstd', engine='streaming')
+        _write_sorted_profile_with_metadata(
+            profile_lf=mpileup_df,
+            output_file=output_dir / f"{bam_file.stem}_profile.parquet",
+            tmp_dir=output_dir / "tmp",
+        )
         if gene_range_table_path is None:
             empty_gene_stats_table().sink_parquet(
                 output_dir/f"{bam_file.stem}_gene_stats.parquet",

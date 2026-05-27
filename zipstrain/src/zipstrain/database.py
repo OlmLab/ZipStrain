@@ -218,7 +218,7 @@ class GenomeComparisonConfig(BaseModel):
         scope (str): The scope of the comparison- 'all' if all covered positions are desired. Otherwise, a bunch of genome names separated by commas.
         min_cov (int): Minimum coverage a base on the reference fasta that must have in order to be compared.
         min_gene_compare_len (int): Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations
-        stb_file_loc (str): The location of the scaffold to bin file.
+        stb_file_loc (str | None): Optional location of the scaffold to bin file.
     """
     model_config = ConfigDict(extra="forbid")
     gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
@@ -226,7 +226,7 @@ class GenomeComparisonConfig(BaseModel):
     scope: str =Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
     min_cov: int =Field(description="Minimum coverage a base on the reference fasta that must have in order to be compared.")
     min_gene_compare_len: int=Field(description="Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
-    stb_file_loc:str=Field(description="The location of the scaffold to bin file.")
+    stb_file_loc:str | None = Field(default=None, description="Optional location of the scaffold to bin file.")
 
     def is_compatible(self, other: GenomeComparisonConfig) -> bool:
         """
@@ -304,7 +304,7 @@ class GeneComparisonConfig(BaseModel):
         scope (str): The scope of the comparison in format "GENOME:GENE" (e.g., "all:gene1" compares gene1 across all genomes, "genome1:gene1" compares gene1 only in genome1 across samples).
         gene_db_id (str): An ID given to the gene fasta file used for profiling.
         reference_genome_id (str): An ID given to the reference fasta file used for profiling.
-        stb_file_loc (str): Location of the scaffold-to-genome mapping file.
+        stb_file_loc (str | None): Optional location of the scaffold-to-genome mapping file.
         min_cov (int): Minimum coverage threshold for considering a position.
         min_gene_compare_len (int): Minimum gene length required for comparison.
     """
@@ -312,7 +312,7 @@ class GeneComparisonConfig(BaseModel):
     gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
     reference_genome_id:str= Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
     scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
-    stb_file_loc: str = Field(description="Location of the scaffold-to-genome mapping file")
+    stb_file_loc: str | None = Field(default=None, description="Optional location of the scaffold-to-genome mapping file")
     min_cov: int = Field(default=5, description="Minimum coverage threshold")
     min_gene_compare_len: int = Field(default=100, description="Minimum gene length for comparison")
     

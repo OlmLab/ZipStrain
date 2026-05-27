@@ -4,7 +4,7 @@ This page reflects the current `zipstrain.nf` workflow in this repository.
 
 Important scope note:
 
-- the classic profile-based compare workflows are available in Nextflow
+- the standard profile-based compare workflows are available in Nextflow
 - the newer matrix-store workflow is currently CLI-driven and is documented in [Tutorial](./Tutorial.md) and [CLI](./cli.md)
 - if you want a worked standard example, the [Tutorial](./Tutorial.md) now includes both a Python/CLI route and a Nextflow route
 

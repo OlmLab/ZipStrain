@@ -441,7 +441,7 @@ def test_profile_add_profile_1_2_to_empty_database(profile_1_2_database):
 
 def test_genome_compare_config_faulty()->None:
     """tests the response of GenomeComparisonConfig to wrong inputs"""
-    with pytest.raises(ValidationError, match="2 validation errors for GenomeComparisonConfig"):
+    with pytest.raises(ValidationError, match="1 validation error for GenomeComparisonConfig"):
         database.GenomeComparisonConfig(
             reference_id="blah",
             min_cov="5das", # This should be an int
@@ -819,7 +819,7 @@ def test_genome_comparison_database_to_complete_input_table(profile_1_2_3_databa
 
 def test_gene_compare_config_faulty()->None:
     """tests the response of GeneComparisonConfig to wrong inputs"""
-    with pytest.raises(ValidationError, match="2 validation errors for GeneComparisonConfig"):
+    with pytest.raises(ValidationError, match="1 validation error for GeneComparisonConfig"):
         database.GeneComparisonConfig(
             gene_db_id="gene_ref_1",
             reference_genome_id="ref_1",

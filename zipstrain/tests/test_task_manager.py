@@ -396,6 +396,7 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
     assert len(tasks) == 2
     assert tasks[0].inputs["mpile_1_file"].get_value() == str(profile_1.absolute())
     assert tasks[0].inputs["mpile_2_file"].get_value() == str(profile_2.absolute())
+    assert tasks[0].inputs["stb-file-arg"].get_value() == f"--stb-file {stb_file.absolute()}"
     assert tasks[0].inputs["ani-method-arg"].get_value() == "--ani-method popani"
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == ""
@@ -458,11 +459,50 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani"
 
 
+def test_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path):
+    profile_1 = tmp_path / "sample_1.parquet"
+    profile_2 = tmp_path / "sample_2.parquet"
+    profile_1.write_text("dummy")
+    profile_2.write_text("dummy")
+
+    data = pl.DataFrame(
+        {
+            "sample_name_1": ["s1"],
+            "sample_name_2": ["s2"],
+            "profile_location_1": [str(profile_1)],
+            "profile_location_2": [str(profile_2)],
+        }
+    ).lazy()
+    config = database.GenomeComparisonConfig(
+        gene_db_id="gene_ref",
+        reference_id="ref",
+        scope="all",
+        min_cov=5,
+        min_gene_compare_len=100,
+        stb_file_loc=None,
+    )
+    generator = task_manager.CompareTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        comp_config=config,
+    )
+
+    async def _collect():
+        out = []
+        async for chunk in generator.generate_tasks():
+            out.extend(chunk)
+        return out
+
+    tasks = asyncio.run(_collect())
+    assert len(tasks) == 1
+    assert tasks[0].inputs["stb-file-arg"].get_value() == ""
+
+
 def test_fast_compare_batch_cleanup_is_idempotent(tmp_path):
     profile_1 = tmp_path / "sample_1.parquet"
     profile_2 = tmp_path / "sample_2.parquet"
-    stb_file = tmp_path / "stb.tsv"
-    for path in (profile_1, profile_2, stb_file):
+    for path in (profile_1, profile_2):
         path.write_text("dummy")
 
     task = task_manager.FastCompareTask(
@@ -470,7 +510,7 @@ def test_fast_compare_batch_cleanup_is_idempotent(tmp_path):
         inputs={
             "mpile_1_file": task_manager.FileInput(profile_1),
             "mpile_2_file": task_manager.FileInput(profile_2),
-            "stb_file": task_manager.FileInput(stb_file),
+            "stb-file-arg": task_manager.StringInput(""),
             "min_cov": task_manager.IntInput(5),
             "min-gene-compare-len": task_manager.IntInput(100),
             "ani-method-arg": task_manager.StringInput("--ani-method popani"),
@@ -532,14 +572,57 @@ def test_gene_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_pat
 
     tasks = asyncio.run(_collect())
     assert len(tasks) == 1
+    assert tasks[0].inputs["stb-file-arg"].get_value() == f"--stb-file {stb_file.absolute()}"
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == "--duckdb-memory-limit 3GB"
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == "--duckdb-threads 4"
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine duckdb"
 
 
+def test_gene_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path):
+    profile_1 = tmp_path / "sample_1.parquet"
+    profile_2 = tmp_path / "sample_2.parquet"
+    profile_1.write_text("dummy")
+    profile_2.write_text("dummy")
+
+    data = pl.DataFrame(
+        {
+            "sample_name_1": ["s1"],
+            "sample_name_2": ["s2"],
+            "profile_location_1": [str(profile_1)],
+            "profile_location_2": [str(profile_2)],
+        }
+    ).lazy()
+    config = database.GeneComparisonConfig(
+        gene_db_id="gene_ref",
+        reference_genome_id="ref",
+        scope="all:all",
+        min_cov=5,
+        min_gene_compare_len=100,
+        stb_file_loc=None,
+    )
+    generator = task_manager.GeneCompareTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        comp_config=config,
+    )
+
+    async def _collect():
+        out = []
+        async for chunk in generator.generate_tasks():
+            out.extend(chunk)
+        return out
+
+    tasks = asyncio.run(_collect())
+    assert len(tasks) == 1
+    assert tasks[0].inputs["stb-file-arg"].get_value() == ""
+
+
 def test_fast_compare_templates_call_utilities_single_compare():
     assert "zipstrain utilities single_compare_genome" in task_manager.FastCompareTask.TEMPLATE_CMD
     assert "zipstrain utilities single_compare_gene" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
+    assert "<stb-file-arg>" in task_manager.FastCompareTask.TEMPLATE_CMD
+    assert "<stb-file-arg>" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
 
 
 def test_slurm_config_validation_and_args():

@@ -11,6 +11,10 @@ import polars as pl
 import duckdb
 
 
+PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
+PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
+
+
 GENOME_COMPARISON_CALCULATIONS = ("ani", "ibs", "identical_genes")
 GENOME_COMPARISON_DEFAULT_CALCULATIONS = GENOME_COMPARISON_CALCULATIONS
 GENOME_COMPARISON_CALCULATION_ALIASES = {
@@ -253,7 +257,7 @@ def _duckdb_shared_query(
       p1.genome
     FROM p1f p1
     INNER JOIN p2f p2
-      ON p1.genome = p2.genome AND p1.chrom = p2.chrom AND p1.pos = p2.pos
+      ON p1.chrom = p2.chrom AND p1.pos = p2.pos
     """
 
 
@@ -266,14 +270,11 @@ def _duckdb_build_query_with_ctes(ctes: list[str], final_select: str) -> str:
     return "WITH\n" + ",\n".join(ctes) + "\n" + final_select
 
 
-def _join_all_requested_genomes(
+def _join_stb_requested_genomes(
     genome_comp: pl.LazyFrame,
-    stb_file: Optional[Union[str, Path]],
+    stb_file: Union[str, Path],
     genome_scope: str,
 ) -> pl.LazyFrame:
-    if stb_file is None:
-        return genome_comp
-
     genomes_utf8 = (
         pl.scan_csv(stb_file, separator="\t", has_header=False)
         .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
@@ -491,6 +492,16 @@ def _profile_scope_predicate(genome_scope: str = "all", gene_scope: str = "all")
     return expr
 
 
+def _profile_is_coordinate_sorted(source: Union[str, Path, pl.LazyFrame]) -> bool:
+    if not isinstance(source, (str, Path)):
+        return False
+    try:
+        metadata = pl.read_parquet_metadata(source)
+    except Exception:
+        return False
+    return metadata.get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE
+
+
 def _filter_profiles_polars(
     mpile1: Union[str, Path, pl.LazyFrame],
     mpile2: Union[str, Path, pl.LazyFrame],
@@ -521,10 +532,13 @@ def _shared_loci_polars(
         genome_scope=genome_scope,
         gene_scope=gene_scope,
     )
+    if _profile_is_coordinate_sorted(mpile1) and _profile_is_coordinate_sorted(mpile2):
+        p1 = p1.set_sorted(["chrom", "pos"])
+        p2 = p2.set_sorted(["chrom", "pos"])
     return (
         p1.join(
             p2,
-            on=["genome", "chrom", "pos"],
+            on=["chrom", "pos"],
             how="inner",
             suffix="_2",
         )
@@ -588,6 +602,31 @@ def duckdb_prefilter_by_scope(
         con.close()
 
 
+def polars_prefilter_by_scope(
+    mpile1: Union[str, Path, pl.LazyFrame],
+    mpile2: Union[str, Path, pl.LazyFrame],
+    genome_scope: str = "all",
+    gene_scope: str = "all",
+) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+    """Scope-filter both profiles in Polars and return in-memory LazyFrames."""
+    scope_requested = genome_scope != "all" or gene_scope != "all"
+    if not scope_requested:
+        return _as_lazy_profile(mpile1), _as_lazy_profile(mpile2)
+
+    def _filter_one(source: Union[str, Path, pl.LazyFrame]) -> pl.LazyFrame:
+        lf = _as_lazy_profile(source)
+        filters: list[pl.Expr] = []
+        if genome_scope != "all":
+            filters.append(pl.col("genome") == genome_scope)
+        if gene_scope != "all":
+            filters.append(pl.col("gene") == gene_scope)
+        if filters:
+            lf = lf.filter(pl.all_horizontal(*filters))
+        return lf.collect(engine="streaming").lazy()
+
+    return _filter_one(mpile1), _filter_one(mpile2)
+
+
 def duckdb_filter_join(
     mpile1: Union[str, Path, pl.LazyFrame],
     mpile2: Union[str, Path, pl.LazyFrame],
@@ -634,7 +673,7 @@ def duckdb_compare_genomes_to_parquet(
     mpile1: Union[str, Path, pl.LazyFrame],
     mpile2: Union[str, Path, pl.LazyFrame],
     output_file: Union[str, Path],
-    stb_file: Union[str, Path],
+    stb_file: Optional[Union[str, Path]],
     sample_1_name: str,
     sample_2_name: str,
     min_cov: int = 5,
@@ -782,37 +821,6 @@ def duckdb_compare_genes_to_parquet(
     finally:
         con.close()
 
-
-
-def get_shared_locs(mpile_contig_1:pl.LazyFrame, mpile_contig_2:pl.LazyFrame,ani_method:str="popani") -> pl.LazyFrame:
-    """
-    Returns a lazyframe with ATCG information for shared scaffolds and positions between two mpileup files.
-
-    Args:
-        mpile_contig_1 (pl.LazyFrame): The first mpileup LazyFrame.
-        mpile_contig_2 (pl.LazyFrame): The second mpileup LazyFrame.
-        ani_method (str): The ANI calculation method to use. Default is "popani".
-    
-    Returns:
-        pl.LazyFrame: Merged LazyFrame containing shared scaffolds and positions with ATCG information.
-    """
-    ani_expr=getattr(PolarsANIExpressions(), ani_method)()
-
-    mpile_contig= mpile_contig_1.join(
-        mpile_contig_2,
-        on=["chrom", "pos"],
-        how="inner",
-        suffix="_2"  # To distinguish lf2 columns
-    ).with_columns(
-        ani_expr.alias("surr")
-    ).select(
-        pl.col("surr"),
-        scaffold=pl.col("chrom"),
-        pos=pl.col("pos"),
-        gene=pl.col("gene")
-    )
-    return mpile_contig
-
 def add_contiguity_info(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     """ Adds group id information to the lazy frame. If on the same scaffold and not popANI, then they are in the same group.
     
@@ -856,7 +864,8 @@ def add_genome_info(mpile_contig:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame) 
 def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     """
     Calculates the population ANI (Average Nucleotide Identity) for the given mpileup LazyFrame.
-    NOTE: Remember that this function should be applied to the merged mpileup using get_shared_locs.
+    NOTE: Remember that this function should be applied to the merged mpileup using `_shared_loci_polars`
+    or the equivalent shared-loci helper for the active engine.
 
     Args:
         mpile_contig (pl.LazyFrame): The input LazyFrame containing mpileup data.
@@ -966,12 +975,11 @@ def compare_genomes_polars(
         genome_comp = shared.select("genome").unique()
 
     if stb_file is not None:
-        genomes_utf8 = (
-            pl.scan_csv(stb_file, separator="\t", has_header=False)
-            .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
-            .unique()
+        genome_comp = _join_stb_requested_genomes(
+            genome_comp=genome_comp,
+            stb_file=stb_file,
+            genome_scope=genome_scope,
         )
-        genome_comp = genomes_utf8.join(genome_comp, on="genome", how="left")
 
     casts: list[pl.Expr] = []
     if "ani" in calculations:

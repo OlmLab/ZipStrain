@@ -260,6 +260,11 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
     assert prof.schema["gene"] == pl.Utf8
+    assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()
+    assert (
+        pl.read_parquet_metadata(profile_file)[profile.PROFILE_SORTED_METADATA_KEY]
+        == profile.PROFILE_SORTED_METADATA_VALUE
+    )
 
     gene_stats = pl.read_parquet(gene_stats_file)
     g1 = gene_stats.filter((pl.col("genome") == "genome1") & (pl.col("gene") == "geneA")).to_dicts()[0]
@@ -303,6 +308,10 @@ def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monk
 
     prof = pl.read_parquet(profile_file)
     assert set(prof["gene"].unique().to_list()) == {"NA"}
+    assert (
+        pl.read_parquet_metadata(profile_file)[profile.PROFILE_SORTED_METADATA_KEY]
+        == profile.PROFILE_SORTED_METADATA_VALUE
+    )
 
     gene_stats = pl.read_parquet(gene_stats_file)
     assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage"]
@@ -377,4 +386,3 @@ def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monk
     assert result.exit_code == 0, result.output
     prof = pl.read_parquet(out_dir / "sample_profile.parquet")
     assert set(prof["gene"].unique().to_list()) == {"NA"}
-

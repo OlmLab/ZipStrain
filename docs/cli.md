@@ -129,7 +129,7 @@ Outputs include:
 | `zipstrain utilities single_compare_genome` | Compare one pair at genome level |
 | `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
 | `zipstrain utilities single_compare_gene` | Compare one pair at gene level |
-| `zipstrain utilities generate-genome-pairs` | Create all non-redundant classic-profile pairs |
+| `zipstrain utilities generate-genome-pairs` | Create all non-redundant standard-profile pairs |
 | `zipstrain utilities build-genome-comparison-config` | Build genome comparison config |
 | `zipstrain utilities build-gene-comparison-config` | Build gene comparison config |
 | `zipstrain utilities to-complete-table` | Emit not-yet-completed pair table |
@@ -258,7 +258,7 @@ zipstrain utilities chunk-genome-compare \
   --engine polars
 ```
 
-This command runs classic genome comparisons directly inside Python for one pair-table chunk.
+This command runs standard genome comparisons directly inside Python for one pair-table chunk.
 It is intended as an experimental utility for benchmarking or ad hoc compare runs, and
 does not change the main workflow commands.
 
@@ -356,7 +356,7 @@ zipstrain utilities to-complete-table \
 | `zipstrain utilities process_mpileup` | Convert mpileup stream to parquet |
 | `zipstrain utilities make_bed` | Build bed chunks from fasta |
 | `zipstrain utilities get_genome_lengths` | Genome lengths from STB + BED |
-| `zipstrain utilities generate-genome-pairs` | Create all non-redundant classic-profile pairs |
+| `zipstrain utilities generate-genome-pairs` | Create all non-redundant standard-profile pairs |
 | `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
 | `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
@@ -400,7 +400,7 @@ zipstrain utilities build-matrix-db \
 
 What it does:
 
-- scans a directory of classic ZipStrain profile parquets
+- scans a directory of standard ZipStrain profile parquets
 - builds one matrix store directly from those profiles
 - stores each genome as one sample-major dense dataset with shape `samples x positions x 4`
 - positions with total coverage below `5` are zeroed during matrix build
@@ -437,7 +437,7 @@ zipstrain utilities append-matrix-db \
 
 What it does:
 
-- scans a directory of new classic ZipStrain profile parquets
+- scans a directory of new standard ZipStrain profile parquets
 - validates that they match the existing matrix-store contract
 - appends new sample rows and whole-genome matrices into the existing matrix store
 

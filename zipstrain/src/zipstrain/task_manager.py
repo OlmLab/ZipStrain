@@ -629,10 +629,15 @@ class CompareTaskGenerator(TaskGenerator):
                 ani_method_arg = f"--ani-method {self.ani_method}"
                 calculate_arg = f"--calculate {self.calculate}"
                 compare_engine_arg = f"--engine {self.compare_engine}"
+                stb_file_arg = (
+                    f"--stb-file {pathlib.Path(self.comp_config.stb_file_loc).absolute()}"
+                    if self.comp_config.stb_file_loc
+                    else ""
+                )
                 inputs = {
                 "mpile_1_file": FileInput(row["profile_location_1"]),
                 "mpile_2_file": FileInput(row["profile_location_2"]),
-                "stb_file": FileInput(self.comp_config.stb_file_loc),
+                "stb-file-arg": StringInput(stb_file_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "ani-method-arg": StringInput(ani_method_arg),
@@ -1660,7 +1665,7 @@ class FastCompareTask(Task):
     TEMPLATE_CMD="""
     zipstrain utilities single_compare_genome --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
-    --stb-file <stb_file> \
+    <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
     <ani-method-arg> \
@@ -1865,7 +1870,7 @@ class FastGeneCompareTask(Task):
     TEMPLATE_CMD="""
     zipstrain utilities single_compare_gene --mpileup-contig-1 <mpile_1_file> \
     --mpileup-contig-2 <mpile_2_file> \
-    --stb-file <stb_file> \
+    <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
     <duckdb-memory-limit-arg> \
@@ -1933,10 +1938,15 @@ class GeneCompareTaskGenerator(TaskGenerator):
                     else ""
                 )
                 compare_engine_arg = f"--engine {self.compare_engine}"
+                stb_file_arg = (
+                    f"--stb-file {pathlib.Path(self.comp_config.stb_file_loc).absolute()}"
+                    if self.comp_config.stb_file_loc
+                    else ""
+                )
                 inputs = {
                 "mpile_1_file": FileInput(row["profile_location_1"]),
                 "mpile_2_file": FileInput(row["profile_location_2"]),
-                "stb_file": FileInput(self.comp_config.stb_file_loc),
+                "stb-file-arg": StringInput(stb_file_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),

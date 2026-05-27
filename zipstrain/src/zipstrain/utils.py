@@ -1091,7 +1091,7 @@ def merge_stat_tables(
 def _run_genome_compare_pair(
     row: dict[str, str],
     *,
-    stb_file: str | pathlib.Path,
+    stb_file: str | pathlib.Path | None,
     min_cov: int,
     min_gene_compare_len: int,
     genome_scope: str,
@@ -1114,13 +1114,10 @@ def _run_genome_compare_pair(
     profile_1_for_compare = profile_1
     profile_2_for_compare = profile_2
     if engine == "polars" and genome_scope != "all":
-        profile_1_for_compare, profile_2_for_compare = cp.duckdb_prefilter_by_scope(
+        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
             mpile1=profile_1,
             mpile2=profile_2,
             genome_scope=genome_scope,
-            memory_limit=duckdb_memory_limit,
-            temp_directory=duckdb_temp_directory,
-            threads=duckdb_threads,
         )
 
     frame = (
@@ -1151,7 +1148,7 @@ def _run_genome_compare_pair(
 def chunk_genome_compare(
     pair_table: str | pathlib.Path,
     output_file: str | pathlib.Path,
-    stb_file: str | pathlib.Path,
+    stb_file: str | pathlib.Path | None,
     workers: int | None = None,
     min_cov: int = 5,
     min_gene_compare_len: int = 100,

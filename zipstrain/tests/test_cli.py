@@ -279,6 +279,127 @@ def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFram
     assert (tmp_path / "scoped_gene_duckdb.parquet").exists()
 
 
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path, engine):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    output_path = tmp_path / f"gene_no_stb_{engine}.parquet"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_gene",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--engine",
+            engine,
+            "--scope",
+            "genome1:gene1",
+            "--output-file",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert output_path.exists()
+
+
+def test_single_compare_genome_polars_scope_uses_polars_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    calls = {"polars": 0}
+    original_polars_prefilter = cp.polars_prefilter_by_scope
+
+    def _should_not_use_duckdb(*args, **kwargs):
+        raise AssertionError("duckdb_prefilter_by_scope should not be called for --engine polars")
+
+    def _polars_prefilter(*args, **kwargs):
+        calls["polars"] += 1
+        return original_polars_prefilter(*args, **kwargs)
+
+    monkeypatch.setattr(cli.cp, "duckdb_prefilter_by_scope", _should_not_use_duckdb)
+    monkeypatch.setattr(cli.cp, "polars_prefilter_by_scope", _polars_prefilter)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            "polars",
+            "--genome",
+            "genome1",
+            "--output-file",
+            str(tmp_path / "scoped_polars.parquet"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert calls["polars"] == 1
+
+
+def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+    profile_1_dir = tmp_path / "profile_1.parquet"
+    profile_2_dir = tmp_path / "profile_2.parquet"
+    stb_path = tmp_path / "stb.tsv"
+    profile_1.sink_parquet(profile_1_dir)
+    profile_2.sink_parquet(profile_2_dir)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    calls = {"polars": 0}
+    original_polars_prefilter = cp.polars_prefilter_by_scope
+
+    def _should_not_use_duckdb(*args, **kwargs):
+        raise AssertionError("duckdb_prefilter_by_scope should not be called for --engine polars")
+
+    def _polars_prefilter(*args, **kwargs):
+        calls["polars"] += 1
+        return original_polars_prefilter(*args, **kwargs)
+
+    monkeypatch.setattr(cli.cp, "duckdb_prefilter_by_scope", _should_not_use_duckdb)
+    monkeypatch.setattr(cli.cp, "polars_prefilter_by_scope", _polars_prefilter)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_gene",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_2_dir),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            "polars",
+            "--scope",
+            "genome1:gene1",
+            "--output-file",
+            str(tmp_path / "scoped_gene_polars.parquet"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert calls["polars"] == 1
+
+
 def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
@@ -309,6 +430,64 @@ def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.L
     assert result.exit_code == 0
     out = pl.read_parquet(out_path)
     assert set(out.columns) == {"genome", "max_consecutive_length", "sample_1", "sample_2"}
+
+
+def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_polars(profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
+    profile_1_dir = tmp_path / "profile_2.parquet"
+    profile_3_dir = tmp_path / "profile_3.parquet"
+    out_path = tmp_path / "no_stb_polars.parquet"
+    profile_2.sink_parquet(profile_1_dir)
+    profile_3.sink_parquet(profile_3_dir)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_3_dir),
+            "--engine",
+            "polars",
+            "--output-file",
+            str(out_path),
+        ],
+    )
+    assert result.exit_code == 0
+    out = pl.read_parquet(out_path).sort("genome")
+    assert out.get_column("genome").to_list() == ["genome2"]
+    assert out.get_column("total_positions").to_list() == [22]
+
+
+def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_duckdb(profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
+    profile_1_dir = tmp_path / "profile_2.parquet"
+    profile_3_dir = tmp_path / "profile_3.parquet"
+    out_path = tmp_path / "no_stb_duckdb.parquet"
+    profile_2.sink_parquet(profile_1_dir)
+    profile_3.sink_parquet(profile_3_dir)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_dir),
+            "--mpileup-contig-2",
+            str(profile_3_dir),
+            "--engine",
+            "duckdb",
+            "--output-file",
+            str(out_path),
+        ],
+    )
+    assert result.exit_code == 0
+    out = pl.read_parquet(out_path).sort("genome")
+    assert out.get_column("genome").to_list() == ["genome2"]
+    assert out.get_column("total_positions").to_list() == [22]
 
 
 def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
@@ -424,6 +603,82 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
         )
     expected = pl.concat(expected_frames, how="vertical_relaxed").sort(["sample_1", "sample_2", "genome"])
     assert actual.equals(expected)
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path, engine):
+    profile_1_path = tmp_path / "profile_1.parquet"
+    profile_2_path = tmp_path / "profile_2.parquet"
+    profile_3_path = tmp_path / "profile_3.parquet"
+    output_file = tmp_path / f"chunk_compare_no_stb_{engine}.parquet"
+
+    profile_1.sink_parquet(profile_1_path)
+    profile_2.sink_parquet(profile_2_path)
+    profile_3.sink_parquet(profile_3_path)
+
+    pair_table = pl.DataFrame(
+        {
+            "sample_name_1": ["profile_1", "profile_1"],
+            "sample_name_2": ["profile_2", "profile_3"],
+            "profile_location_1": [str(profile_1_path), str(profile_1_path)],
+            "profile_location_2": [str(profile_2_path), str(profile_3_path)],
+        }
+    )
+    pair_table_path = tmp_path / "pairs_no_stb.parquet"
+    pair_table.write_parquet(pair_table_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "chunk-genome-compare",
+            "--pair-table",
+            str(pair_table_path),
+            "--output-file",
+            str(output_file),
+            "--workers",
+            "1",
+            "--calculate",
+            "ani",
+            "--engine",
+            engine,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])
+
+    expected_frames = []
+    for sample_1, sample_2, left, right in [
+        ("profile_1", "profile_2", profile_1_path, profile_2_path),
+        ("profile_1", "profile_3", profile_1_path, profile_3_path),
+    ]:
+        expected_frames.append(
+            cp.compare_genomes(
+                mpile_contig_1=left,
+                mpile_contig_2=right,
+                min_cov=5,
+                min_gene_compare_len=100,
+                genome_scope="all",
+                ani_method="popani",
+                engine=engine,
+                stb_file=None,
+                calculate="ani",
+            )
+            .with_columns(
+                sample_1=pl.lit(sample_1),
+                sample_2=pl.lit(sample_2),
+            )
+            .select(["genome", "total_positions", "share_allele_pos", "genome_pop_ani", "sample_1", "sample_2"])
+            .collect(engine="streaming")
+        )
+    expected = pl.concat(expected_frames, how="vertical_relaxed").sort(["sample_1", "sample_2", "genome"])
+    assert actual.equals(expected)
+    assert actual.filter(
+        (pl.col("sample_1") == "profile_1")
+        & (pl.col("sample_2") == "profile_3")
+    ).height == 0
 
 
 def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
@@ -945,6 +1200,34 @@ def test_cli_build_genome_comparison_config_with_current_comp_table(tmp_path):
     assert loaded.config.stb_file_loc == str(stb_file)
 
 
+def test_cli_build_genome_comparison_config_without_stb_file(tmp_path):
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    output_json = tmp_path / "genome_compare_config_no_stb.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-genome-comparison-config",
+            "--profile-db",
+            str(profile_db),
+            "--gene-db-id",
+            "gene_ref_1",
+            "--reference-genome-id",
+            "ref_1",
+            "--scope",
+            "genome1",
+            "--output-file",
+            str(output_json),
+        ],
+    )
+
+    assert result.exit_code == 0
+    loaded = db.GenomeComparisonDatabase.load_obj(output_json)
+    assert loaded.config.stb_file_loc is None
+
+
 def test_cli_build_gene_comparison_config_with_current_comp_table(tmp_path):
     profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
     current_compare = tmp_path / "current_gene_compare.parquet"
@@ -989,6 +1272,34 @@ def test_cli_build_gene_comparison_config_with_current_comp_table(tmp_path):
     assert loaded.config.min_cov == 6
     assert loaded.config.min_gene_compare_len == 125
     assert loaded.config.stb_file_loc == str(stb_file)
+
+
+def test_cli_build_gene_comparison_config_without_stb_file(tmp_path):
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    output_json = tmp_path / "gene_compare_config_no_stb.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-gene-comparison-config",
+            "--profile-db",
+            str(profile_db),
+            "--gene-db-id",
+            "gene_ref_1",
+            "--reference-genome-id",
+            "ref_1",
+            "--scope",
+            "genome1:gene1",
+            "--output-file",
+            str(output_json),
+        ],
+    )
+
+    assert result.exit_code == 0
+    loaded = db.GeneComparisonDatabase.load_obj(output_json)
+    assert loaded.config.stb_file_loc is None
 
 
 def test_cli_to_complete_table_uses_current_comparison_state(tmp_path):

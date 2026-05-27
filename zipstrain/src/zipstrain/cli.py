@@ -325,7 +325,7 @@ def generate_genome_pairs(profile_dir, output_file, write_batch_size):
 
 @utilities.command("chunk-genome-compare")
 @click.option('--pair-table', '-p', required=True, help="Pair table parquet/csv/tsv with profile locations.")
-@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
 @click.option('--output-file', '-o', required=True, help="Path to save the merged genome comparison parquet.")
 @click.option('--workers', '-w', type=int, default=None, help="Parallel workers inside this compare chunk. Defaults to CPU count capped by pair count.")
 @click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage to consider a position.")
@@ -1000,7 +1000,7 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retri
 @click.option('--scope', '-s', default="all", help="Genome scope for comparison.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
-@click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--stb-file-loc', '-t', default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in downstream compare outputs; otherwise only genomes with comparable loci are reported.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
 def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, current_comp_table, output_file):
@@ -1014,7 +1014,7 @@ def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, 
     scope (str): Genome scope for comparison.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    stb_file_loc (str): Path to the scaffold-to-genome mapping file.
+    stb_file_loc (str | None): Optional path to the scaffold-to-genome mapping file.
     current_comp_table (str): Path to the current comparison table in Parquet format.
     output_file (str): Path to save the output configuration JSON file.
     """
@@ -1042,7 +1042,7 @@ def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, 
 @click.option('--scope', '-s', default="all:all", help="Genome scope for comparison.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
-@click.option('--stb-file-loc', '-t', required=True, help="Path to the scaffold-to-genome mapping file.")
+@click.option('--stb-file-loc', '-t', default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in downstream compare outputs; otherwise only genomes with comparable loci are reported.")
 @click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
 def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, current_comp_table, output_file):
@@ -1056,7 +1056,7 @@ def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, sc
     scope (str): Genome scope for comparison.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    stb_file_loc (str): Path to the scaffold-to-genome mapping file.
+    stb_file_loc (str | None): Optional path to the scaffold-to-genome mapping file.
     current_comp_table (str): Path to the current comparison table in Parquet format.
     output_file (str): Path to save the output configuration JSON file.
     """
@@ -1201,7 +1201,7 @@ def compare():
 @utilities.command("single_compare_genome")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
 @click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
-@click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
+@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
@@ -1223,7 +1223,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     output_file (str): Path to save the parquet file.
     genome (str): If provided, do the comparison only for the specified genome.
-    stb_file (str): Path to the scaffold to genome mapping file.
+    stb_file (str): Optional path to the scaffold to genome mapping file.
     """
     mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
     mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
@@ -1235,13 +1235,10 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
     mpile_1_for_compare = mpileup_contig_1
     mpile_2_for_compare = mpileup_contig_2
     if engine == "polars" and genome != "all":
-        mpile_1_for_compare, mpile_2_for_compare = cp.duckdb_prefilter_by_scope(
+        mpile_1_for_compare, mpile_2_for_compare = cp.polars_prefilter_by_scope(
             mpile1=mpileup_contig_1,
             mpile2=mpileup_contig_2,
             genome_scope=genome,
-            memory_limit=duckdb_memory_limit,
-            temp_directory=duckdb_temp_directory,
-            threads=duckdb_threads,
         )
 
     if engine == "duckdb":
@@ -1285,7 +1282,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
 @utilities.command("single_compare_gene")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
 @click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
-@click.option('--stb-file', '-s', required=True, help="Path to the scaffold to genome mapping file.")
+@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. Currently unused for gene compare, and accepted for workflow consistency.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
@@ -1302,7 +1299,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     Args:
     mpileup_contig_1 (str): Path to the first mpileup file.
     mpileup_contig_2 (str): Path to the second mpileup file.
-    stb_file (str): Path to the scaffold to genome mapping file.
+    stb_file (str | None): Optional path to the scaffold to genome mapping file.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     output_file (str): Path to save the parquet file.
@@ -1323,14 +1320,11 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     mpile_1_for_compare = mpileup_contig_1
     mpile_2_for_compare = mpileup_contig_2
     if engine == "polars" and (genome_scope != "all" or gene_scope != "all"):
-        mpile_1_for_compare, mpile_2_for_compare = cp.duckdb_prefilter_by_scope(
+        mpile_1_for_compare, mpile_2_for_compare = cp.polars_prefilter_by_scope(
             mpile1=mpileup_contig_1,
             mpile2=mpileup_contig_2,
             genome_scope=genome_scope,
             gene_scope=gene_scope,
-            memory_limit=duckdb_memory_limit,
-            temp_directory=duckdb_temp_directory,
-            threads=duckdb_threads,
         )
 
     if engine == "duckdb":

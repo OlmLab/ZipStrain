@@ -1,6 +1,6 @@
 [project]
 name = "zipstrain"
-version = "0.9.18"
+version = "0.9.19"
 description = ""
 authors = [
     {name = "ParsaGhadermazi",email = "54489047+ParsaGhadermazi@users.noreply.github.com"}
@@ -8,7 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "polars (>=1.34.0,<2.0.0)",
+    "polars (>=1.34.0)",
     "plotly (>=6.3.1,<7.0.0)",
     "seaborn (>=0.13.2,<0.14.0)",
     "numpy (>=2.3.4,<3.0.0)",

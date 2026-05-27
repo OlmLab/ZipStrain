@@ -205,11 +205,14 @@ Notes:
 ## Step 3: Build the Null Model
 
 ZipStrain uses a null model for sequencing-error adjustment during profiling.
-Build it once from any representative BAM file:
+It is parameter-based rather than BAM-specific, so you usually build it once per
+sequencing/error-rate setting:
 
 ```bash
 zipstrain utilities build-null-model \
-  --bam-file /path/to/example.bam \
+  --error-rate 0.001 \
+  --max-total-reads 10000 \
+  --p-threshold 0.05 \
   --output-file null_model.parquet
 ```
 
@@ -445,7 +448,6 @@ Important operational notes:
 - the compare DB is resumable
 - rerunning the same command on the same output file only processes unfinished sample pairs
 - `--memory-limit-gb` is the main throughput control for target block size
-- `--position-tile-size` is currently a legacy compatibility option and is not used by the current full-genome compare path
 
 ### Export Matrix Compare Results
 
@@ -587,7 +589,9 @@ zipstrain utilities prepare_profiling \
 
 ```bash
 zipstrain utilities build-null-model \
-  --bam-file mapped_bams/sample1.bam \
+  --error-rate 0.001 \
+  --max-total-reads 10000 \
+  --p-threshold 0.05 \
   --output-file outputs/null_model.parquet
 ```
 

@@ -190,6 +190,7 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_ge
 def test_con_ani_expression():
     profile_1=pl.DataFrame({
         "chrom": ["chr1"]*3,
+        "genome": ["genome1"]*3,
         "pos":[0,1,2],
         "gene": ["gene1","gene1","gene1"],
         "A": [10,0,5],
@@ -199,6 +200,7 @@ def test_con_ani_expression():
     }).lazy()
     profile_2=pl.DataFrame({
         "chrom": ["chr1"]*3,
+        "genome": ["genome1"]*3,
         "pos":[0,1,2],
         "gene": ["gene1","gene1","gene1"],
         "A": [5,0,5],
@@ -208,6 +210,7 @@ def test_con_ani_expression():
     }).lazy()
     profile_3=pl.DataFrame({
         "chrom": ["chr1"]*3,
+        "genome": ["genome1"]*3,
         "pos":[0,1,2],
         "gene": ["gene1","gene1","gene1"],
         "A": [0,0,0],
@@ -216,13 +219,14 @@ def test_con_ani_expression():
         "G": [0,0,10],
     }).lazy()
 
-    assert compare.get_shared_locs(profile_1, profile_2, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==3
-    assert compare.get_shared_locs(profile_3, profile_2, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==2
+    assert compare._shared_loci_polars(profile_1, profile_2, min_cov=1, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==3
+    assert compare._shared_loci_polars(profile_3, profile_2, min_cov=1, ani_method="conani").select(pl.col("surr")).sum().collect()[0,0]==2
 
 @pytest.mark.parametrize("threshold1,threshold2", [(0.1,0.8),(0.2,0.9),(0.3,0.95),(0.4,0.99),(0.1,0.2),(0.5,0.6),(0.7,0.8),(0,1)])
 def test_cos_ani_expression(threshold1,threshold2):
     profile_1=pl.DataFrame({
         "chrom": ["chr1"]*3,
+        "genome": ["genome1"]*3,
         "pos":[0,1,2],
         "gene": ["gene1","gene1","gene1"],
         "A": [10,0,5],
@@ -232,6 +236,7 @@ def test_cos_ani_expression(threshold1,threshold2):
     }).lazy()
     profile_2=pl.DataFrame({
         "chrom": ["chr1"]*3,
+        "genome": ["genome1"]*3,
         "pos":[0,1,2],
         "gene": ["gene1","gene1","gene1"],
         "A": [5,0,5],
@@ -241,6 +246,7 @@ def test_cos_ani_expression(threshold1,threshold2):
     }).lazy()
     profile_3=pl.DataFrame({
         "chrom": ["chr1"]*3,
+        "genome": ["genome1"]*3,
         "pos":[0,1,2],
         "gene": ["gene1","gene1","gene1"],
         "A": [0,0,0],
@@ -249,7 +255,7 @@ def test_cos_ani_expression(threshold1,threshold2):
         "G": [0,0,10],
     }).lazy()
 
-    assert compare.get_shared_locs(profile_1, profile_2, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare.get_shared_locs(profile_3, profile_2, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
+    assert compare._shared_loci_polars(profile_1, profile_2, min_cov=1, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare._shared_loci_polars(profile_3, profile_2, min_cov=1, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
 
 
 def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
@@ -293,6 +299,96 @@ def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
     }
     assert set(out["sample_1"].to_list()) == {"s1"}
     assert set(out["sample_2"].to_list()) == {"s2"}
+
+
+def test_polars_prefilter_by_scope_filters_genome_and_gene(profile_1):
+    p1, p2 = compare.polars_prefilter_by_scope(
+        profile_1,
+        profile_1,
+        genome_scope="genome1",
+        gene_scope="gene2",
+    )
+    out1 = p1.collect()
+    out2 = p2.collect()
+
+    assert out1.height > 0
+    assert out2.height > 0
+    assert out1.get_column("genome").unique().to_list() == ["genome1"]
+    assert out2.get_column("genome").unique().to_list() == ["genome1"]
+    assert out1.get_column("gene").unique().to_list() == ["gene2"]
+    assert out2.get_column("gene").unique().to_list() == ["gene2"]
+
+
+def test_profile_is_coordinate_sorted_uses_parquet_metadata(tmp_path):
+    profile_df = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1"],
+            "genome": ["genome1", "genome1"],
+            "pos": [1, 2],
+            "gene": ["gene1", "gene1"],
+            "A": [5, 0],
+            "T": [0, 5],
+            "C": [0, 0],
+            "G": [0, 0],
+        }
+    )
+    sorted_path = tmp_path / "sorted_profile.parquet"
+    legacy_path = tmp_path / "legacy_profile.parquet"
+
+    profile_df.lazy().sink_parquet(
+        sorted_path,
+        metadata={
+            compare.PROFILE_SORTED_METADATA_KEY: compare.PROFILE_SORTED_METADATA_VALUE,
+        },
+    )
+    profile_df.write_parquet(legacy_path)
+
+    assert compare._profile_is_coordinate_sorted(sorted_path) is True
+    assert compare._profile_is_coordinate_sorted(legacy_path) is False
+    assert compare._profile_is_coordinate_sorted(profile_df.lazy()) is False
+
+
+def test_shared_loci_polars_sets_sorted_only_when_both_inputs_are_marked(tmp_path, monkeypatch):
+    profile_df = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1"],
+            "genome": ["genome1", "genome1"],
+            "pos": [1, 2],
+            "gene": ["gene1", "gene1"],
+            "A": [5, 0],
+            "T": [0, 5],
+            "C": [0, 0],
+            "G": [0, 0],
+        }
+    )
+    sorted_1 = tmp_path / "sorted_1.parquet"
+    sorted_2 = tmp_path / "sorted_2.parquet"
+    unmarked = tmp_path / "unmarked.parquet"
+    metadata = {
+        compare.PROFILE_SORTED_METADATA_KEY: compare.PROFILE_SORTED_METADATA_VALUE,
+    }
+    profile_df.lazy().sink_parquet(sorted_1, metadata=metadata)
+    profile_df.lazy().sink_parquet(sorted_2, metadata=metadata)
+    profile_df.write_parquet(unmarked)
+
+    original_set_sorted = pl.LazyFrame.set_sorted
+    calls: list[tuple[str, ...]] = []
+
+    def _wrapped_set_sorted(self, by, *args, **kwargs):
+        if isinstance(by, str):
+            calls.append((by,))
+        else:
+            calls.append(tuple(by))
+        return original_set_sorted(self, by, *args, **kwargs)
+
+    monkeypatch.setattr(pl.LazyFrame, "set_sorted", _wrapped_set_sorted)
+
+    compare._shared_loci_polars(sorted_1, sorted_2, min_cov=1).collect()
+    assert calls == [("chrom", "pos"), ("chrom", "pos")]
+
+    calls.clear()
+    compare._shared_loci_polars(sorted_1, unmarked, min_cov=1).collect()
+    assert calls == []
 
 
 def test_duckdb_compare_genomes_to_parquet_ani_only(profile_1, profile_2, stb, tmp_path):
