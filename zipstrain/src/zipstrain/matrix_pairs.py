@@ -28,6 +28,7 @@ MATRIX_BUILD_MIN_COV = 5
 FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 CURRENT_MATRIX_DB_LAYOUT = "per_sample_per_genome_dense_matrix"
 CURRENT_MATRIX_HDF5_LAYOUT = "per_genome_sample_major_dense_matrix_hdf5"
+CURRENT_MATRIX_HDF5_SPARSE_LAYOUT = "per_genome_sample_major_sparse_indices_matrix_hdf5"
 MATRIX_HDF5_FILE_VERSION = "1"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
@@ -466,6 +467,88 @@ def _matrix_hdf5_chunk_sample_count(
     return max(1, min(sample_count, int(target_batch_bytes // per_sample_bytes) or 1))
 
 
+def _matrix_hdf5_layout_is_sparse(layout: str) -> bool:
+    return str(layout) == CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+
+
+def _matrix_hdf5_supported_layouts() -> tuple[str, ...]:
+    return (CURRENT_MATRIX_HDF5_LAYOUT, CURRENT_MATRIX_HDF5_SPARSE_LAYOUT)
+
+
+def _matrix_hdf5_sparse_indices_chunk_length(matrix_length: int) -> int:
+    return max(1024, min(max(matrix_length * 4, 1), 1_048_576))
+
+
+def _dense_matrix_to_sparse_flat_indices(matrix: np.ndarray) -> np.ndarray:
+    return np.flatnonzero(matrix.reshape(-1)).astype(np.int64, copy=False)
+
+
+def _create_sparse_hdf5_genome_store(
+    matrices_group,
+    *,
+    genome_idx: int,
+    sample_count: int,
+    matrix_length: int,
+):
+    group = matrices_group.create_group(str(genome_idx))
+    group.create_dataset(
+        "indptr",
+        shape=(sample_count + 1,),
+        dtype=np.int64,
+        chunks=(_matrix_hdf5_sample_axis_chunk_length(sample_count + 1),),
+        maxshape=(None,),
+        fillvalue=0,
+    )
+    group.create_dataset(
+        "indices",
+        shape=(0,),
+        dtype=np.int64,
+        chunks=(_matrix_hdf5_sparse_indices_chunk_length(matrix_length),),
+        maxshape=(None,),
+        fillvalue=0,
+    )
+    return group
+
+
+def _append_sparse_hdf5_matrix_row(
+    *,
+    indptr_dataset,
+    indices_dataset,
+    sample_row: int,
+    flat_indices: np.ndarray,
+    current_nnz: int,
+) -> int:
+    flat_indices = np.asarray(flat_indices, dtype=np.int64)
+    next_nnz = current_nnz + int(flat_indices.size)
+    if flat_indices.size > 0:
+        indices_dataset.resize((next_nnz,))
+        indices_dataset[current_nnz:next_nnz] = flat_indices
+    indptr_dataset[int(sample_row) + 1] = next_nnz
+    return next_nnz
+
+
+def _load_dense_rows_from_sparse_hdf5(
+    *,
+    indptr_dataset,
+    indices_dataset,
+    sample_rows: np.ndarray,
+    matrix_length: int,
+    numpy_dtype,
+) -> np.ndarray:
+    sample_rows = np.asarray(sample_rows, dtype=np.int64)
+    flat_width = int(matrix_length) * 4
+    dense = np.zeros((len(sample_rows), flat_width), dtype=numpy_dtype)
+    for out_idx, sample_row in enumerate(sample_rows.tolist()):
+        start = int(indptr_dataset[int(sample_row)])
+        stop = int(indptr_dataset[int(sample_row) + 1])
+        if stop <= start:
+            continue
+        row_indices = np.asarray(indices_dataset[start:stop], dtype=np.int64)
+        if row_indices.size > 0:
+            dense[out_idx, row_indices] = 1
+    return dense.reshape(len(sample_rows), int(matrix_length), 4)
+
+
 def _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file: Path) -> bool:
     h5py_module = _import_h5py()
     with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
@@ -479,9 +562,18 @@ def _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file: Path) -> bool:
             if sample_name_ds.maxshape[0] is not None:
                 return False
             matrices_group = h5_file["matrices"]
-            for dataset in matrices_group.values():
-                if dataset.maxshape is None or dataset.maxshape[0] is not None:
-                    return False
+            layout = str(h5_file["metadata"].attrs.get("layout", CURRENT_MATRIX_HDF5_LAYOUT))
+            for node in matrices_group.values():
+                if _matrix_hdf5_layout_is_sparse(layout):
+                    indptr_ds = node["indptr"]
+                    indices_ds = node["indices"]
+                    if indptr_ds.maxshape is None or indptr_ds.maxshape[0] is not None:
+                        return False
+                    if indices_ds.maxshape is None or indices_ds.maxshape[0] is not None:
+                        return False
+                else:
+                    if node.maxshape is None or node.maxshape[0] is not None:
+                        return False
         except Exception:
             return False
     return True
@@ -1483,9 +1575,9 @@ def _validate_matrix_db_appendable(metadata: dict[str, str]) -> tuple[str, str]:
     return count_dtype, genome_scope
 
 
-def _validate_matrix_hdf5_appendable(metadata: dict[str, str]) -> tuple[str, str]:
+def _validate_matrix_hdf5_appendable(metadata: dict[str, str]) -> tuple[str, str, str]:
     layout = metadata.get("layout", "")
-    if layout != CURRENT_MATRIX_HDF5_LAYOUT:
+    if layout not in _matrix_hdf5_supported_layouts():
         raise ValueError(
             "Matrix store layout is not append-compatible with this builder. "
             "Rebuild the matrix store with the current builder."
@@ -1508,7 +1600,7 @@ def _validate_matrix_hdf5_appendable(metadata: dict[str, str]) -> tuple[str, str
             f"Matrix store count dtype '{count_dtype}' is not supported for append."
         )
     genome_scope = metadata.get("genome_scope", "all")
-    return count_dtype, genome_scope
+    return count_dtype, genome_scope, str(layout)
 
 
 def _open_matrix_build_connection(
@@ -1640,6 +1732,7 @@ def build_matrix_db(
     commit_batch_gb: Optional[float] = None,
     bed_file: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
+    sparse: bool = False,
 ) -> MatrixDbSummary:
     summary = build_matrix_hdf5(
         profile_dir=profile_dir,
@@ -1649,6 +1742,7 @@ def build_matrix_db(
         memory_limit_gb=memory_limit_gb,
         bed_file=bed_file,
         progress_callback=progress_callback,
+        sparse=sparse,
         export_batch_mb=max(
             MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
             (commit_batch_gb or 0.0) * 1024.0,
@@ -1676,11 +1770,12 @@ def build_matrix_hdf5(
     gene_range_table: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    sparse: bool = False,
 ) -> MatrixHdf5Summary:
     """Build the current HDF5-backed matrix store from classic profile parquets.
 
-    The resulting matrix store keeps one dense whole-genome dataset per genome
-    and is intended for repeated, resumable matrix comparisons.
+    The resulting matrix store keeps one whole-genome matrix per genome and is
+    intended for repeated, resumable matrix comparisons.
     """
     if count_dtype not in COUNT_DTYPES:
         raise ValueError(f"Unsupported count dtype '{count_dtype}'. Choose one of {', '.join(COUNT_DTYPES)}.")
@@ -1746,7 +1841,7 @@ def build_matrix_hdf5(
             "profile_format": "classic_zipstrain_profile_parquet",
             "genome_scope": genome_scope or "all",
             "count_dtype": count_dtype,
-            "layout": CURRENT_MATRIX_HDF5_LAYOUT,
+            "layout": CURRENT_MATRIX_HDF5_SPARSE_LAYOUT if sparse else CURRENT_MATRIX_HDF5_LAYOUT,
             "matrix_value_semantics": FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS,
             "coverage_filter_min_cov": str(MATRIX_BUILD_MIN_COV),
             "memory_limit_gb": str(memory_limit_gb),
@@ -1875,6 +1970,7 @@ def build_matrix_hdf5(
 
             matrices_group = h5_file.create_group("matrices")
             matrix_datasets: dict[int, object] = {}
+            sparse_states: dict[int, tuple[object, object, int]] = {}
             for spec in genomes:
                 estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
                 if estimated_python_peak > memory_limit_bytes:
@@ -1883,20 +1979,30 @@ def build_matrix_hdf5(
                         f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory, "
                         f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
                     )
-                chunk_samples = _matrix_hdf5_chunk_sample_count(
-                    sample_count=len(sample_rows),
-                    matrix_length=spec.matrix_length,
-                    dtype_name=count_dtype,
-                    target_batch_mb=export_batch_mb,
-                )
-                matrix_datasets[spec.genome_idx] = matrices_group.create_dataset(
-                    str(spec.genome_idx),
-                    shape=(len(sample_rows), spec.matrix_length, 4),
-                    dtype=COUNT_DTYPES[count_dtype],
-                    chunks=(chunk_samples, spec.matrix_length, 4),
-                    maxshape=(None, spec.matrix_length, 4),
-                    fillvalue=0,
-                )
+                if sparse:
+                    matrix_group = _create_sparse_hdf5_genome_store(
+                        matrices_group,
+                        genome_idx=spec.genome_idx,
+                        sample_count=len(sample_rows),
+                        matrix_length=spec.matrix_length,
+                    )
+                    matrix_datasets[spec.genome_idx] = matrix_group
+                    sparse_states[spec.genome_idx] = (matrix_group["indptr"], matrix_group["indices"], 0)
+                else:
+                    chunk_samples = _matrix_hdf5_chunk_sample_count(
+                        sample_count=len(sample_rows),
+                        matrix_length=spec.matrix_length,
+                        dtype_name=count_dtype,
+                        target_batch_mb=export_batch_mb,
+                    )
+                    matrix_datasets[spec.genome_idx] = matrices_group.create_dataset(
+                        str(spec.genome_idx),
+                        shape=(len(sample_rows), spec.matrix_length, 4),
+                        dtype=COUNT_DTYPES[count_dtype],
+                        chunks=(chunk_samples, spec.matrix_length, 4),
+                        maxshape=(None, spec.matrix_length, 4),
+                        fillvalue=0,
+                    )
 
             for sample_idx, sample_name, _profile_path_str, profile_path in sample_rows:
                 for genome_spec in genomes:
@@ -1919,7 +2025,18 @@ def build_matrix_hdf5(
                         count_dtype=count_dtype,
                         min_cov=MATRIX_BUILD_MIN_COV,
                     )
-                    matrix_datasets[genome_spec.genome_idx][sample_idx, :, :] = matrix
+                    if sparse:
+                        indptr_ds, indices_ds, current_nnz = sparse_states[genome_spec.genome_idx]
+                        current_nnz = _append_sparse_hdf5_matrix_row(
+                            indptr_dataset=indptr_ds,
+                            indices_dataset=indices_ds,
+                            sample_row=sample_idx,
+                            flat_indices=_dense_matrix_to_sparse_flat_indices(matrix),
+                            current_nnz=current_nnz,
+                        )
+                        sparse_states[genome_spec.genome_idx] = (indptr_ds, indices_ds, current_nnz)
+                    else:
+                        matrix_datasets[genome_spec.genome_idx][sample_idx, :, :] = matrix
                     stored_rows += 1
                     completed_work += 1
                     if progress_callback is not None:
@@ -1975,6 +2092,7 @@ def _append_matrix_hdf5_in_place(
     existing_samples: list[tuple[int, str]],
     appended_samples: list[tuple[int, str, str, Path]],
     count_dtype: str,
+    layout: str,
     genome_scope: str,
     memory_limit_gb: float,
     memory_limit_bytes: int,
@@ -2018,6 +2136,7 @@ def _append_matrix_hdf5_in_place(
             dtype=object,
         )
 
+        sparse_states: dict[int, tuple[object, object, int]] = {}
         for spec in genomes:
             estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
             if estimated_python_peak > memory_limit_bytes:
@@ -2026,8 +2145,19 @@ def _append_matrix_hdf5_in_place(
                     f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory, "
                     f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
                 )
-            dataset = h5_file[_hdf5_matrix_dataset_path(spec.genome_idx)]
-            dataset.resize((total_sample_count, spec.matrix_length, 4))
+            node = h5_file[_hdf5_matrix_dataset_path(spec.genome_idx)]
+            if _matrix_hdf5_layout_is_sparse(layout):
+                indptr_ds = node["indptr"]
+                indices_ds = node["indices"]
+                indptr_ds.resize((total_sample_count + 1,))
+                sparse_states[spec.genome_idx] = (
+                    indptr_ds,
+                    indices_ds,
+                    int(indptr_ds[existing_sample_count]),
+                )
+            else:
+                dataset = node
+                dataset.resize((total_sample_count, spec.matrix_length, 4))
             for appended_offset, (_sample_idx, sample_name, _profile_path_str, profile_path) in enumerate(appended_samples):
                 if progress_callback is not None:
                     progress_callback(
@@ -2048,7 +2178,18 @@ def _append_matrix_hdf5_in_place(
                     count_dtype=count_dtype,
                     min_cov=MATRIX_BUILD_MIN_COV,
                 )
-                dataset[existing_sample_count + appended_offset, :, :] = matrix
+                if _matrix_hdf5_layout_is_sparse(layout):
+                    indptr_ds, indices_ds, current_nnz = sparse_states[spec.genome_idx]
+                    current_nnz = _append_sparse_hdf5_matrix_row(
+                        indptr_dataset=indptr_ds,
+                        indices_dataset=indices_ds,
+                        sample_row=existing_sample_count + appended_offset,
+                        flat_indices=_dense_matrix_to_sparse_flat_indices(matrix),
+                        current_nnz=current_nnz,
+                    )
+                    sparse_states[spec.genome_idx] = (indptr_ds, indices_ds, current_nnz)
+                else:
+                    dataset[existing_sample_count + appended_offset, :, :] = matrix
                 stored_rows += 1
                 completed_work += 1
                 if progress_callback is not None:
@@ -2099,6 +2240,7 @@ def _append_matrix_hdf5_via_rewrite(
     existing_samples: list[tuple[int, str]],
     appended_samples: list[tuple[int, str, str, Path]],
     count_dtype: str,
+    layout: str,
     genome_scope: str,
     memory_limit_gb: float,
     memory_limit_bytes: int,
@@ -2247,29 +2389,51 @@ def _append_matrix_hdf5_via_rewrite(
                         f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory, "
                         f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
                     )
-                src_dataset = src_h5[_hdf5_matrix_dataset_path(spec.genome_idx)]
-                src_chunk_samples = (
-                    int(src_dataset.chunks[0])
-                    if src_dataset.chunks is not None and len(src_dataset.chunks) > 0
-                    else _matrix_hdf5_chunk_sample_count(
+                src_node = src_h5[_hdf5_matrix_dataset_path(spec.genome_idx)]
+                if _matrix_hdf5_layout_is_sparse(layout):
+                    dst_group = _create_sparse_hdf5_genome_store(
+                        matrices_group,
+                        genome_idx=spec.genome_idx,
                         sample_count=total_sample_count,
                         matrix_length=spec.matrix_length,
-                        dtype_name=count_dtype,
-                        target_batch_mb=export_batch_mb,
                     )
-                )
-                chunk_samples = max(1, min(total_sample_count, src_chunk_samples))
-                dst_dataset = matrices_group.create_dataset(
-                    str(spec.genome_idx),
-                    shape=(total_sample_count, spec.matrix_length, 4),
-                    dtype=COUNT_DTYPES[count_dtype],
-                    chunks=(chunk_samples, spec.matrix_length, 4),
-                    maxshape=(None, spec.matrix_length, 4),
-                    fillvalue=0,
-                )
-                for batch_start in range(0, existing_sample_count, chunk_samples):
-                    batch_stop = min(existing_sample_count, batch_start + chunk_samples)
-                    dst_dataset[batch_start:batch_stop, :, :] = src_dataset[batch_start:batch_stop, :, :]
+                    src_indptr = src_node["indptr"]
+                    src_indices = src_node["indices"]
+                    dst_indptr = dst_group["indptr"]
+                    dst_indices = dst_group["indices"]
+                    existing_indices_len = int(src_indices.shape[0])
+                    if existing_indices_len > 0:
+                        dst_indices.resize((existing_indices_len,))
+                        dst_indices[:] = np.asarray(src_indices[...], dtype=np.int64)
+                    dst_indptr[: existing_sample_count + 1] = np.asarray(
+                        src_indptr[: existing_sample_count + 1],
+                        dtype=np.int64,
+                    )
+                    current_nnz = int(dst_indptr[existing_sample_count])
+                else:
+                    src_dataset = src_node
+                    src_chunk_samples = (
+                        int(src_dataset.chunks[0])
+                        if src_dataset.chunks is not None and len(src_dataset.chunks) > 0
+                        else _matrix_hdf5_chunk_sample_count(
+                            sample_count=total_sample_count,
+                            matrix_length=spec.matrix_length,
+                            dtype_name=count_dtype,
+                            target_batch_mb=export_batch_mb,
+                        )
+                    )
+                    chunk_samples = max(1, min(total_sample_count, src_chunk_samples))
+                    dst_dataset = matrices_group.create_dataset(
+                        str(spec.genome_idx),
+                        shape=(total_sample_count, spec.matrix_length, 4),
+                        dtype=COUNT_DTYPES[count_dtype],
+                        chunks=(chunk_samples, spec.matrix_length, 4),
+                        maxshape=(None, spec.matrix_length, 4),
+                        fillvalue=0,
+                    )
+                    for batch_start in range(0, existing_sample_count, chunk_samples):
+                        batch_stop = min(existing_sample_count, batch_start + chunk_samples)
+                        dst_dataset[batch_start:batch_stop, :, :] = src_dataset[batch_start:batch_stop, :, :]
 
                 for appended_offset, (_sample_idx, sample_name, _profile_path_str, profile_path) in enumerate(appended_samples):
                     if progress_callback is not None:
@@ -2291,7 +2455,16 @@ def _append_matrix_hdf5_via_rewrite(
                         count_dtype=count_dtype,
                         min_cov=MATRIX_BUILD_MIN_COV,
                     )
-                    dst_dataset[existing_sample_count + appended_offset, :, :] = matrix
+                    if _matrix_hdf5_layout_is_sparse(layout):
+                        current_nnz = _append_sparse_hdf5_matrix_row(
+                            indptr_dataset=dst_indptr,
+                            indices_dataset=dst_indices,
+                            sample_row=existing_sample_count + appended_offset,
+                            flat_indices=_dense_matrix_to_sparse_flat_indices(matrix),
+                            current_nnz=current_nnz,
+                        )
+                    else:
+                        dst_dataset[existing_sample_count + appended_offset, :, :] = matrix
                     stored_rows += 1
                     completed_work += 1
                     if progress_callback is not None:
@@ -2360,7 +2533,7 @@ def append_matrix_hdf5(
         )
 
     metadata = _load_matrix_hdf5_metadata(matrix_hdf5_file)
-    count_dtype, genome_scope = _validate_matrix_hdf5_appendable(metadata)
+    count_dtype, genome_scope, layout = _validate_matrix_hdf5_appendable(metadata)
     genomes = _load_matrix_hdf5_genomes(matrix_hdf5_file)
     genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_hdf5_file)
     existing_samples = _load_matrix_hdf5_samples(matrix_hdf5_file)
@@ -2395,6 +2568,7 @@ def append_matrix_hdf5(
             existing_samples=existing_samples,
             appended_samples=appended_samples,
             count_dtype=count_dtype,
+            layout=layout,
             genome_scope=genome_scope,
             memory_limit_gb=memory_limit_gb,
             memory_limit_bytes=memory_limit_bytes,
@@ -2408,6 +2582,7 @@ def append_matrix_hdf5(
         existing_samples=existing_samples,
         appended_samples=appended_samples,
         count_dtype=count_dtype,
+        layout=layout,
         genome_scope=genome_scope,
         memory_limit_gb=memory_limit_gb,
         memory_limit_bytes=memory_limit_bytes,
@@ -2681,6 +2856,7 @@ def export_matrix_db_hdf5(
     output_file: Path,
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    sparse: bool = False,
 ) -> Path:
     """Convert a legacy DuckDB matrix database into the current HDF5 store."""
     matrix_db_file = matrix_db_file.resolve()
@@ -2706,7 +2882,7 @@ def export_matrix_db_hdf5(
         row_pos_by_sample_idx = {sample_idx: pos for pos, (sample_idx, _sample_name) in enumerate(samples)}
         converted_metadata = {str(key): str(value) for key, value in metadata.items()}
         converted_metadata["source_layout"] = str(metadata.get("layout", ""))
-        converted_metadata["layout"] = CURRENT_MATRIX_HDF5_LAYOUT
+        converted_metadata["layout"] = CURRENT_MATRIX_HDF5_SPARSE_LAYOUT if sparse else CURRENT_MATRIX_HDF5_LAYOUT
         converted_metadata["input_format"] = "hdf5"
         converted_metadata["has_gene_ranges"] = "0"
         tmp_output = output_file.with_suffix(output_file.suffix + ".tmp")
@@ -2824,14 +3000,25 @@ def export_matrix_db_hdf5(
                     dtype_name=dtype_name,
                     target_batch_mb=export_batch_mb,
                 )
-                matrix_dataset = matrices_group.create_dataset(
-                    str(spec.genome_idx),
-                    shape=(sample_count, spec.matrix_length, 4),
-                    dtype=np_dtype,
-                    chunks=(chunk_samples, spec.matrix_length, 4),
-                    maxshape=(None, spec.matrix_length, 4),
-                    fillvalue=0,
-                )
+                if sparse:
+                    matrix_group = _create_sparse_hdf5_genome_store(
+                        matrices_group,
+                        genome_idx=spec.genome_idx,
+                        sample_count=sample_count,
+                        matrix_length=spec.matrix_length,
+                    )
+                    indptr_ds = matrix_group["indptr"]
+                    indices_ds = matrix_group["indices"]
+                    current_nnz = 0
+                else:
+                    matrix_dataset = matrices_group.create_dataset(
+                        str(spec.genome_idx),
+                        shape=(sample_count, spec.matrix_length, 4),
+                        dtype=np_dtype,
+                        chunks=(chunk_samples, spec.matrix_length, 4),
+                        maxshape=(None, spec.matrix_length, 4),
+                        fillvalue=0,
+                    )
                 ordered_sample_ids = [sample_idx for sample_idx, _sample_name in samples]
                 for batch_start in range(0, sample_count, chunk_samples):
                     batch_sample_ids = ordered_sample_ids[batch_start:batch_start + chunk_samples]
@@ -2872,11 +3059,22 @@ def export_matrix_db_hdf5(
                                 f"Stored genome matrix dtype mismatch for genome_idx={spec.genome_idx}, sample_idx={sample_idx}: "
                                 f"expected {dtype_name}, found {stored_dtype}"
                             )
-                        matrix_dataset[row_pos_by_sample_idx[int(sample_idx)], :, :] = _unpack_matrix(
+                        matrix = _unpack_matrix(
                             memoryview(matrix_blob),
                             dtype_name,
                             (rows_int, cols_int),
                         )
+                        row_pos = row_pos_by_sample_idx[int(sample_idx)]
+                        if sparse:
+                            current_nnz = _append_sparse_hdf5_matrix_row(
+                                indptr_dataset=indptr_ds,
+                                indices_dataset=indices_ds,
+                                sample_row=row_pos,
+                                flat_indices=_dense_matrix_to_sparse_flat_indices(matrix),
+                                current_nnz=current_nnz,
+                            )
+                        else:
+                            matrix_dataset[row_pos, :, :] = matrix
                         completed_work += 1
                         stored_rows += 1
                         if progress_callback is not None:
@@ -3282,16 +3480,21 @@ class _Hdf5GenomeMatrixTorchDataset:
         self,
         matrix_hdf5_file: Path,
         genome_idx: int,
+        matrix_length: int,
         dtype_name: str,
         matrix_value_semantics: str,
         torch_module=None,
     ) -> None:
         self.matrix_hdf5_file = str(matrix_hdf5_file)
         self.genome_idx = int(genome_idx)
+        self.matrix_length = int(matrix_length)
         self._h5_file = None
         self._matrix_dataset = None
+        self._matrix_sparse_indptr = None
+        self._matrix_sparse_indices = None
         self.torch_module = torch_module or importlib.import_module("torch")
         self.h5py_module = _import_h5py()
+        self.numpy_dtype = COUNT_DTYPES[dtype_name]
         self.host_dtype = _torch_host_matrix_dtype(
             torch_module=self.torch_module,
             dtype_name=dtype_name,
@@ -3299,35 +3502,54 @@ class _Hdf5GenomeMatrixTorchDataset:
         )
 
     def _ensure_open(self) -> None:
-        if self._matrix_dataset is not None:
+        if self._h5_file is not None:
             return
         self._h5_file = self.h5py_module.File(self.matrix_hdf5_file, "r")
-        self._matrix_dataset = self._h5_file[_hdf5_matrix_dataset_path(self.genome_idx)]
+        node = self._h5_file[_hdf5_matrix_dataset_path(self.genome_idx)]
+        if hasattr(node, "shape"):
+            self._matrix_dataset = node
+        else:
+            self._matrix_sparse_indptr = node["indptr"]
+            self._matrix_sparse_indices = node["indices"]
+
+    def _load_batch_numpy(self, sample_rows: np.ndarray) -> np.ndarray:
+        self._ensure_open()
+        if self._matrix_dataset is not None:
+            return np.asarray(self._matrix_dataset[sample_rows.tolist(), :, :])
+        return _load_dense_rows_from_sparse_hdf5(
+            indptr_dataset=self._matrix_sparse_indptr,
+            indices_dataset=self._matrix_sparse_indices,
+            sample_rows=sample_rows,
+            matrix_length=self.matrix_length,
+            numpy_dtype=self.numpy_dtype,
+        )
 
     def close(self) -> None:
         if self._h5_file is not None:
             self._h5_file.close()
         self._h5_file = None
         self._matrix_dataset = None
+        self._matrix_sparse_indptr = None
+        self._matrix_sparse_indices = None
 
     def __del__(self) -> None:
         self.close()
 
     def __len__(self) -> int:
         self._ensure_open()
-        return int(self._matrix_dataset.shape[0])
+        if self._matrix_dataset is not None:
+            return int(self._matrix_dataset.shape[0])
+        return int(self._matrix_sparse_indptr.shape[0] - 1)
 
     def __getitem__(self, sample_row: int):
-        self._ensure_open()
-        matrix_np = np.asarray(self._matrix_dataset[int(sample_row), :, :])
+        matrix_np = self._load_batch_numpy(np.asarray([int(sample_row)], dtype=np.int64))[0]
         matrix_tensor = self.torch_module.from_numpy(matrix_np)
         if matrix_tensor.dtype != self.host_dtype:
             matrix_tensor = matrix_tensor.to(dtype=self.host_dtype)
         return matrix_tensor
 
     def load_range(self, start: int, stop: int):
-        self._ensure_open()
-        batch_np = np.asarray(self._matrix_dataset[int(start):int(stop), :, :])
+        batch_np = self._load_batch_numpy(np.arange(int(start), int(stop), dtype=np.int64))
         batch_tensor = self.torch_module.from_numpy(batch_np)
         if batch_tensor.dtype != self.host_dtype:
             batch_tensor = batch_tensor.to(dtype=self.host_dtype)
@@ -3339,37 +3561,58 @@ class _Hdf5GenomeMatrixNumpyDataset:
         self,
         matrix_hdf5_file: Path,
         genome_idx: int,
+        matrix_length: int,
         dtype_name: str,
     ) -> None:
         self.matrix_hdf5_file = str(matrix_hdf5_file)
         self.genome_idx = int(genome_idx)
+        self.matrix_length = int(matrix_length)
         self.h5py_module = _import_h5py()
         self.numpy_dtype = COUNT_DTYPES[dtype_name]
         self._h5_file = None
         self._matrix_dataset = None
+        self._matrix_sparse_indptr = None
+        self._matrix_sparse_indices = None
 
     def _ensure_open(self) -> None:
-        if self._matrix_dataset is not None:
+        if self._h5_file is not None:
             return
         self._h5_file = self.h5py_module.File(self.matrix_hdf5_file, "r")
-        self._matrix_dataset = self._h5_file[_hdf5_matrix_dataset_path(self.genome_idx)]
+        node = self._h5_file[_hdf5_matrix_dataset_path(self.genome_idx)]
+        if hasattr(node, "shape"):
+            self._matrix_dataset = node
+        else:
+            self._matrix_sparse_indptr = node["indptr"]
+            self._matrix_sparse_indices = node["indices"]
+
+    def _load_batch_numpy(self, sample_rows: np.ndarray) -> np.ndarray:
+        self._ensure_open()
+        if self._matrix_dataset is not None:
+            return np.asarray(self._matrix_dataset[sample_rows.tolist(), :, :], dtype=self.numpy_dtype)
+        return _load_dense_rows_from_sparse_hdf5(
+            indptr_dataset=self._matrix_sparse_indptr,
+            indices_dataset=self._matrix_sparse_indices,
+            sample_rows=sample_rows,
+            matrix_length=self.matrix_length,
+            numpy_dtype=self.numpy_dtype,
+        )
 
     def close(self) -> None:
         if self._h5_file is not None:
             self._h5_file.close()
         self._h5_file = None
         self._matrix_dataset = None
+        self._matrix_sparse_indptr = None
+        self._matrix_sparse_indices = None
 
     def __del__(self) -> None:
         self.close()
 
     def get_row(self, sample_row: int) -> np.ndarray:
-        self._ensure_open()
-        return np.asarray(self._matrix_dataset[int(sample_row), :, :], dtype=self.numpy_dtype)
+        return self._load_batch_numpy(np.asarray([int(sample_row)], dtype=np.int64))[0]
 
     def load_indices(self, sample_rows: np.ndarray) -> np.ndarray:
-        self._ensure_open()
-        batch_np = np.asarray(self._matrix_dataset[sample_rows.tolist(), :, :], dtype=self.numpy_dtype)
+        batch_np = self._load_batch_numpy(sample_rows)
         return np.transpose(batch_np, (1, 2, 0))
 
 
@@ -3391,6 +3634,7 @@ def _load_target_queue_block_for_hdf5_torch(
     dataset = _Hdf5GenomeMatrixTorchDataset(
         matrix_hdf5_file=matrix_hdf5_file,
         genome_idx=genome_idx,
+        matrix_length=matrix_length,
         dtype_name=dtype_name,
         matrix_value_semantics=matrix_value_semantics,
         torch_module=torch_module,
@@ -3420,6 +3664,7 @@ def _load_anchor_queue_batch_for_hdf5_torch(
     dataset = _Hdf5GenomeMatrixTorchDataset(
         matrix_hdf5_file=matrix_hdf5_file,
         genome_idx=genome_idx,
+        matrix_length=matrix_length,
         dtype_name=dtype_name,
         matrix_value_semantics=matrix_value_semantics,
         torch_module=torch_module,
@@ -4320,6 +4565,7 @@ def matrix_compare(
                 dataset = _Hdf5GenomeMatrixNumpyDataset(
                     matrix_hdf5_file=matrix_db_file,
                     genome_idx=spec.genome_idx,
+                    matrix_length=spec.matrix_length,
                     dtype_name=dtype_name,
                 )
                 try:

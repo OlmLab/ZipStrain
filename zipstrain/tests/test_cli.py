@@ -154,6 +154,45 @@ def test_cli_version_flag():
     assert "zipstrain" in result.output.lower()
     assert _project_version() in result.output
 
+
+def test_sort_profile_cli_sorts_in_place_and_adds_metadata(tmp_path: Path):
+    profile_path = tmp_path / "old_profile.parquet"
+    tmp_work_dir = tmp_path / "sort_tmp"
+    pl.DataFrame(
+        {
+            "chrom": ["chr2", "chr1", "chr1"],
+            "genome": ["genome2", "genome1", "genome1"],
+            "pos": [5, 2, 1],
+            "gene": ["gene2", "gene1", "gene1"],
+            "A": [0, 5, 4],
+            "T": [1, 0, 0],
+            "C": [0, 0, 0],
+            "G": [0, 0, 0],
+        }
+    ).write_parquet(profile_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "sort-profile",
+            "--input-profile",
+            str(profile_path),
+            "--tmp-dir",
+            str(tmp_work_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    sorted_profile = pl.read_parquet(profile_path)
+    assert sorted_profile.to_dicts() == sorted_profile.sort(["chrom", "pos"]).to_dicts()
+    assert (
+        pl.read_parquet_metadata(profile_path)[cli.pf.PROFILE_SORTED_METADATA_KEY]
+        == cli.pf.PROFILE_SORTED_METADATA_VALUE
+    )
+    assert list(tmp_work_dir.iterdir()) == []
+
 def test_cli_profile_compare(profile_1:pl.LazyFrame,
                              profile_2:pl.LazyFrame,
                              profile_3:pl.LazyFrame,

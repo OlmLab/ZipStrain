@@ -200,6 +200,22 @@ def adjust_sequence_errors(profile_parquet, null_model, output_file):
         raise click.UsageError(str(exc)) from exc
 
 
+@utilities.command("sort-profile")
+@click.option('--input-profile', '-i', required=True, help="Classic profile parquet to sort in place and mark as sorted.")
+@click.option('--tmp-dir', required=False, default=None, help="Temporary working directory used while rewriting the profile.")
+def sort_profile(input_profile, tmp_dir):
+    """
+    Sort a classic profile parquet in place and attach the sortedness metadata marker.
+    """
+    try:
+        pf.sort_profile_parquet_in_place(
+            profile_parquet=pathlib.Path(input_profile),
+            tmp_dir=pathlib.Path(tmp_dir) if tmp_dir is not None else None,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
 @utilities.command("process_mpileup")
 @click.option('--batch-size', '-s', default=10000, help="Buffer size for processing stdin from samtools.")
 @click.option('--output-file', '-o', required=True, help="Location to save the output Parquet file.")
@@ -438,11 +454,17 @@ def build_profile_db(profile_db_csv, output_file):
     show_default=True,
     help="Approximate matrix-store sample-axis chunk target size, in MiB.",
 )
-def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table, count_dtype, memory_limit_gb, export_batch_mb):
+@click.option(
+    '--sparse',
+    is_flag=True,
+    default=False,
+    help="Store genome matrices sparsely in HDF5. Compare currently materializes them back to dense on load.",
+)
+def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table, count_dtype, memory_limit_gb, export_batch_mb, sparse):
     """
     Build a matrix store directly from classic profile parquets.
 
-    Each genome is stored as one sample-major dense dataset with shape
+    Each genome is stored as one sample-major matrix with shape
     samples x positions x 4, while preserving the same whole-genome axis and
     separator-row rules used by matrix compare.
     """
@@ -488,6 +510,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table
                 count_dtype=count_dtype,
                 memory_limit_gb=memory_limit_gb,
                 export_batch_mb=export_batch_mb,
+                sparse=sparse,
                 progress_callback=_progress_callback,
             )
     else:
@@ -504,6 +527,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table
             count_dtype=count_dtype,
             memory_limit_gb=memory_limit_gb,
             export_batch_mb=export_batch_mb,
+            sparse=sparse,
             progress_callback=progress_logger,
         )
     click.echo(
@@ -740,7 +764,13 @@ def matrix_compare(
     show_default=True,
     help="Approximate target batch size, in MiB, for streaming sample matrices from DuckDB into HDF5.",
 )
-def matrix_db_to_hdf5(matrix_db_file, output_file, export_batch_mb):
+@click.option(
+    '--sparse',
+    is_flag=True,
+    default=False,
+    help="Store genome matrices sparsely in HDF5. Compare currently materializes them back to dense on load.",
+)
+def matrix_db_to_hdf5(matrix_db_file, output_file, export_batch_mb, sparse):
     """
     Convert a legacy DuckDB matrix database into the current matrix-store format.
     """
@@ -788,6 +818,7 @@ def matrix_db_to_hdf5(matrix_db_file, output_file, export_batch_mb):
                 output_file=output_path,
                 progress_callback=_progress_callback,
                 export_batch_mb=export_batch_mb,
+                sparse=sparse,
             )
     else:
         progress_logger = _ThrottledMatrixLogger(
@@ -799,6 +830,7 @@ def matrix_db_to_hdf5(matrix_db_file, output_file, export_batch_mb):
             output_file=output_path,
             progress_callback=progress_logger,
             export_batch_mb=export_batch_mb,
+            sparse=sparse,
         )
     click.echo(f"wrote={written}")
 

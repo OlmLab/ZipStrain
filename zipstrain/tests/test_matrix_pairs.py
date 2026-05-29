@@ -223,11 +223,22 @@ def _load_matrix_hdf5_store(matrix_hdf5: Path):
     samples = mp._load_matrix_hdf5_samples(matrix_hdf5)
     genomes = mp._load_matrix_hdf5_genomes(matrix_hdf5)
     scaffolds = mp._load_matrix_hdf5_genome_scaffolds(matrix_hdf5)
+    sample_rows = np.arange(len(samples), dtype=np.int64)
+    matrix_lengths = {str(spec.genome_idx): spec.matrix_length for spec in genomes}
+    numpy_dtype = mp.COUNT_DTYPES[metadata["count_dtype"]]
     with h5py.File(str(matrix_hdf5), "r") as h5_file:
-        matrices = {
-            genome_key: np.asarray(dataset[...])
-            for genome_key, dataset in h5_file["matrices"].items()
-        }
+        matrices = {}
+        for genome_key, node in h5_file["matrices"].items():
+            if hasattr(node, "shape"):
+                matrices[genome_key] = np.asarray(node[...])
+            else:
+                matrices[genome_key] = mp._load_dense_rows_from_sparse_hdf5(
+                    indptr_dataset=node["indptr"],
+                    indices_dataset=node["indices"],
+                    sample_rows=sample_rows,
+                    matrix_length=matrix_lengths[genome_key],
+                    numpy_dtype=numpy_dtype,
+                )
     genes = mp._load_matrix_hdf5_gene_ranges(matrix_hdf5)
     return metadata, samples, genomes, scaffolds, matrices, genes
 
@@ -407,6 +418,30 @@ def test_export_matrix_db_hdf5_roundtrip(tmp_path):
         assert h5_file["matrices"]["0"].maxshape == (None, 3, 4)
 
 
+def test_export_matrix_db_hdf5_sparse_roundtrip(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    matrix_db = tmp_path / "matrix.duckdb"
+    matrix_hdf5 = tmp_path / "matrix_sparse.h5"
+    _write_legacy_matrix_db(matrix_db)
+
+    exported = mp.export_matrix_db_hdf5(
+        matrix_db_file=matrix_db,
+        output_file=matrix_hdf5,
+        sparse=True,
+    )
+
+    assert exported == matrix_hdf5
+    metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+    assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
+    assert [spec.genome for spec in genomes] == ["genome1", "genome2"]
+    assert [spec.chrom for spec in scaffolds] == ["chr1", "chr2"]
+    assert matrices["0"][0].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
+
+    with h5py.File(str(matrix_hdf5), "r") as h5_file:
+        assert isinstance(h5_file["matrices"]["0"], h5py.Group)
+
+
 def test_build_matrix_hdf5(tmp_path):
     h5py = pytest.importorskip("h5py")
     profile_dir = tmp_path / "profiles"
@@ -458,6 +493,33 @@ def test_build_matrix_hdf5(tmp_path):
     assert genome2[0].tolist() == [[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
     assert genome2[1].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
     assert genome2[2].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+
+
+def test_build_matrix_hdf5_sparse(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    profile_dir = tmp_path / "profiles"
+    matrix_hdf5 = tmp_path / "matrix_sparse.h5"
+    _write_profiles(profile_dir)
+
+    summary = mp.build_matrix_hdf5(
+        profile_dir=profile_dir,
+        output_file=matrix_hdf5,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+        sparse=True,
+    )
+
+    assert summary.sample_count == 3
+    metadata, _samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+    assert matrices["0"][0].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
+    assert matrices["1"][2].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+
+    with h5py.File(str(matrix_hdf5), "r") as h5_file:
+        matrix_node = h5_file["matrices"]["0"]
+        assert isinstance(matrix_node, h5py.Group)
+        assert matrix_node["indptr"].maxshape == (None,)
+        assert matrix_node["indices"].maxshape == (None,)
 
 
 def test_build_matrix_hdf5_with_gene_ranges(tmp_path):
@@ -1150,6 +1212,39 @@ def test_append_matrix_hdf5_success(tmp_path):
     assert matrices["1"].shape[0] == 3
 
 
+def test_append_matrix_hdf5_sparse_success(tmp_path):
+    pytest.importorskip("h5py")
+    initial_profile_dir = tmp_path / "profiles_initial"
+    append_profile_dir = tmp_path / "profiles_append"
+    matrix_hdf5 = tmp_path / "matrix_sparse.h5"
+
+    _write_profiles(initial_profile_dir)
+    append_profile_dir.mkdir(parents=True, exist_ok=True)
+    pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
+    (initial_profile_dir / "sample_c.parquet").unlink()
+
+    initial_summary = mp.build_matrix_hdf5(
+        profile_dir=initial_profile_dir,
+        output_file=matrix_hdf5,
+        memory_limit_gb=1.0,
+        sparse=True,
+    )
+    assert initial_summary.sample_count == 2
+
+    append_summary = mp.append_matrix_hdf5(
+        profile_dir=append_profile_dir,
+        matrix_hdf5_file=matrix_hdf5,
+        memory_limit_gb=1.0,
+    )
+
+    assert append_summary.appended_sample_count == 1
+    metadata, samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+    assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
+    assert matrices["0"].shape[0] == 3
+    assert matrices["1"].shape[0] == 3
+
+
 def test_append_matrix_hdf5_uses_in_place_path_for_resizable_store(tmp_path, monkeypatch):
     pytest.importorskip("h5py")
     initial_profile_dir = tmp_path / "profiles_initial"
@@ -1501,6 +1596,61 @@ def test_cli_matrix_build_and_compare(tmp_path):
     )
     assert missing_gene_export.exit_code != 0
     assert "does not contain any gene comparison rows" in missing_gene_export.output
+
+
+def test_cli_matrix_build_sparse_and_compare(tmp_path):
+    pytest.importorskip("h5py")
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    matrix_db = tmp_path / "matrix_sparse.h5"
+    output_file = tmp_path / "matrix_compare_sparse.duckdb"
+    _write_profiles(profile_dir)
+
+    runner = CliRunner()
+    build_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-matrix-db",
+            "--profile-dir",
+            str(profile_dir),
+            "--output-file",
+            str(matrix_db),
+            "--memory-limit-gb",
+            "1",
+            "--sparse",
+        ],
+    )
+    assert build_result.exit_code == 0
+
+    metadata = mp._load_matrix_hdf5_metadata(matrix_db)
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+
+    compare_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "matrix-compare",
+            "--matrix-db-file",
+            str(matrix_db),
+            "--output-file",
+            str(output_file),
+            "--memory-limit-gb",
+            "1",
+            "--target-queue-size",
+            "1",
+            "--loader-executor",
+            "thread",
+            "--writer-executor",
+            "thread",
+            "--backend",
+            "torch-cpu",
+            "--calculate",
+            "ani",
+        ],
+    )
+    assert compare_result.exit_code == 0
+    assert output_file.exists()
 
 
 def test_cli_matrix_compare_export_gene_table(tmp_path):

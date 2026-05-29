@@ -94,7 +94,7 @@ def test_get_strain_hetrogeneity(profile_1, stb, min_cov, freq_threshold):
                                                         if sum(list(zip(*genome2_freq))[pos]) >= min_cov)
 
 
-def test_duckdb_chunk_annotation_matches_polars(tmp_path: Path):
+def test_duckdb_chunk_annotation_matches_polars_for_unsorted_chunk(tmp_path: Path):
     adjusted = pl.DataFrame(
         {
             "chrom": ["chr1", "chr1", "chr1", "chr2", "chr2"],
@@ -107,7 +107,7 @@ def test_duckdb_chunk_annotation_matches_polars(tmp_path: Path):
     )
     adjusted_pf = tmp_path / "adj.parquet"
     out_pf = tmp_path / "ann.parquet"
-    adjusted.write_parquet(adjusted_pf)
+    adjusted.sort(["chrom", "pos"], descending=[True, True]).write_parquet(adjusted_pf)
 
     stb_lf = pl.DataFrame(
         {

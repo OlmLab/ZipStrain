@@ -11,6 +11,7 @@ from zipstrain import utils
 import asyncio
 import os
 import duckdb
+import tempfile
 
 
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
@@ -183,9 +184,7 @@ def _write_sorted_profile_with_metadata(
     """Write the final profile parquet sorted by coordinate and tagged in metadata."""
     tmp_dir.mkdir(parents=True, exist_ok=True)
     unsorted_path = tmp_dir / f"{output_file.stem}.unsorted.parquet"
-    sorted_path = tmp_dir / f"{output_file.stem}.sorted.parquet"
     unsorted_path.unlink(missing_ok=True)
-    sorted_path.unlink(missing_ok=True)
 
     profile_lf.sink_parquet(
         unsorted_path,
@@ -193,9 +192,26 @@ def _write_sorted_profile_with_metadata(
         engine="streaming",
     )
 
+    _sort_existing_profile_parquet(
+        input_file=unsorted_path,
+        output_file=output_file,
+        tmp_dir=tmp_dir,
+    )
+
+
+def _sort_existing_profile_parquet(
+    input_file: pathlib.Path,
+    output_file: pathlib.Path,
+    tmp_dir: pathlib.Path,
+) -> None:
+    """Sort an existing classic profile parquet and attach sortedness metadata."""
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    sorted_path = tmp_dir / f"{output_file.stem}.sorted.parquet"
+    sorted_path.unlink(missing_ok=True)
+
     conn = duckdb.connect()
     try:
-        in_sql = _duckdb_quote_sql_string(str(unsorted_path))
+        in_sql = _duckdb_quote_sql_string(str(input_file))
         out_sql = _duckdb_quote_sql_string(str(sorted_path))
         conn.execute(
             f"""
@@ -225,13 +241,55 @@ def _write_sorted_profile_with_metadata(
     )
 
 
+def sort_profile_parquet_in_place(
+    profile_parquet: pathlib.Path,
+    tmp_dir: Optional[pathlib.Path] = None,
+) -> None:
+    """Sort a classic profile parquet in place and attach sortedness metadata."""
+    profile_path = pathlib.Path(profile_parquet).expanduser().resolve()
+    if not profile_path.exists():
+        raise ValueError(f"Profile parquet does not exist: {profile_path}")
+
+    tmp_root = (
+        pathlib.Path(tmp_dir).expanduser().resolve()
+        if tmp_dir is not None
+        else profile_path.parent
+    )
+    tmp_root.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix=f"{profile_path.stem}.sort.", dir=tmp_root) as work_dir_str:
+        work_dir = pathlib.Path(work_dir_str)
+        rewritten_path = work_dir / profile_path.name
+        _sort_existing_profile_parquet(
+            input_file=profile_path,
+            output_file=rewritten_path,
+            tmp_dir=work_dir,
+        )
+        metadata = pl.read_parquet_metadata(rewritten_path)
+        if metadata.get(PROFILE_SORTED_METADATA_KEY) != PROFILE_SORTED_METADATA_VALUE:
+            raise RuntimeError("Failed to attach sortedness metadata to rewritten profile parquet.")
+        os.replace(rewritten_path, profile_path)
+
+
+def _profile_parquet_is_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
+    try:
+        metadata = pl.read_parquet_metadata(profile_parquet)
+    except Exception:
+        return False
+    return metadata.get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE
+
+
 def _annotate_mpileup_chunk_with_duckdb(
     adjusted_mpileup_parquet: pathlib.Path,
     output_parquet: pathlib.Path,
     scaffold_to_genome: pl.LazyFrame,
     gene_range: pl.LazyFrame,
+    mpileup_sorted: Optional[bool] = None,
+    gene_range_sorted: bool = False,
 ) -> None:
     """Annotate one adjusted mpileup chunk with genome+gene in DuckDB."""
+    if mpileup_sorted is None:
+        mpileup_sorted = _profile_parquet_is_coordinate_sorted(adjusted_mpileup_parquet)
     conn = duckdb.connect()
     try:
         conn.register(
@@ -244,6 +302,8 @@ def _annotate_mpileup_chunk_with_duckdb(
         )
         in_sql = _duckdb_quote_sql_string(str(adjusted_mpileup_parquet))
         out_sql = _duckdb_quote_sql_string(str(output_parquet))
+        mpileup_order_sql = "" if mpileup_sorted else "ORDER BY chrom, pos"
+        gene_range_order_sql = "" if gene_range_sorted else "ORDER BY scaffold, start"
         conn.execute(
             f"""
             COPY (
@@ -256,6 +316,7 @@ def _annotate_mpileup_chunk_with_duckdb(
                   CAST(G AS INTEGER) AS G,
                   CAST(T AS INTEGER) AS T
                 FROM read_parquet('{in_sql}')
+                {mpileup_order_sql}
               ),
               stb AS (
                 SELECT
@@ -270,7 +331,7 @@ def _annotate_mpileup_chunk_with_duckdb(
                   CAST(start AS INTEGER) AS start,
                   CAST("end" AS INTEGER) AS "end"
                 FROM gene_src
-                ORDER BY scaffold, start
+                {gene_range_order_sql}
               ),
               mp_with_genome AS (
                 SELECT
@@ -312,6 +373,7 @@ def _annotate_mpileup_chunk_with_duckdb(
                 G,
                 T
               FROM annotated
+              ORDER BY chrom, pos
             ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION ZSTD)
             """
         )
@@ -381,43 +443,39 @@ async def _profile_chunk_task(
     if proc.returncode != 0:
         raise Exception(f"Command failed with error: {stderr.decode().strip()}")
     else:
-        mpileup=pl.scan_parquet(output_dir/f"{bam_file.stem}_{chunk_id}_pre.parquet")
+        pre_parquet = output_dir / f"{bam_file.stem}_{chunk_id}_pre.parquet"
+        adjusted_parquet = output_dir / f"{bam_file.stem}_{chunk_id}_adjusted.parquet"
+        final_parquet = output_dir / f"{bam_file.stem}_{chunk_id}.parquet"
+        mpileup=pl.scan_parquet(pre_parquet)
         scaffolds=pl.scan_csv(bed_file,has_header=False,separator="\t").select("column_1").unique().collect().to_series().to_list()
-        if pathlib.Path(output_dir/f"{bam_file.stem}_{chunk_id}_pre.parquet").exists():
-            mpileup=adjust_for_sequence_errors(
+        if pre_parquet.exists():
+            adjusted_mpileup = adjust_for_sequence_errors(
                 mpile_frame=mpileup,
                 null_model=null_model
-            )
-            mpileup = add_genome_info_to_mpileup(
-                mpileup_df=mpileup.select(["chrom", "pos", "A", "C", "G", "T"]),
-                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold", "genome"]),
+            ).select(["chrom", "pos", "A", "C", "G", "T"])
+            adjusted_mpileup.sink_parquet(
+                adjusted_parquet,
+                compression="zstd",
+                engine="streaming",
             )
             if gene_range_table is None:
-                mpileup = mpileup.with_columns(pl.lit("NA").alias("gene"))
+                gene_range_lf = empty_gene_range_table()
             else:
-                mpileup = add_gene_info_to_mpileup(
-                    mpileup_df=mpileup,
-                    gene_range=pl.scan_csv(
-                        gene_range_table,
-                        has_header=False,
-                        separator="\t",
-                    ).rename({
-                        "column_1": "gene",
-                        "column_2": "scaffold",
-                        "column_3": "start",
-                        "column_4": "end",
-                    }).filter(pl.col("scaffold").is_in(scaffolds)),
-                )
-            # ``join_asof`` on the gene range table has proven brittle under
-            # streaming parquet sinks with small chunked inputs. Materialize the
-            # annotated chunk once, then write it eagerly.
-            (
-                mpileup.select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"])
-                .collect()
-                .write_parquet(
-                    output_dir / f"{bam_file.stem}_{chunk_id}.parquet",
-                    compression="zstd",
-                )
+                gene_range_lf = pl.scan_csv(
+                    gene_range_table,
+                    has_header=False,
+                    separator="\t",
+                ).rename({
+                    "column_1": "gene",
+                    "column_2": "scaffold",
+                    "column_3": "start",
+                    "column_4": "end",
+                }).filter(pl.col("scaffold").is_in(scaffolds))
+            _annotate_mpileup_chunk_with_duckdb(
+                adjusted_mpileup_parquet=adjusted_parquet,
+                output_parquet=final_parquet,
+                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold", "genome"]),
+                gene_range=gene_range_lf,
             )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(

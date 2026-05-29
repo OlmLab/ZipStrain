@@ -506,13 +506,11 @@ def _filter_profiles_polars(
     mpile1: Union[str, Path, pl.LazyFrame],
     mpile2: Union[str, Path, pl.LazyFrame],
     min_cov: int,
-    genome_scope: str = "all",
-    gene_scope: str = "all",
+
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     cov_expr = (pl.col("A") + pl.col("T") + pl.col("C") + pl.col("G")) >= min_cov
-    scope_expr = _profile_scope_predicate(genome_scope=genome_scope, gene_scope=gene_scope)
-    p1 = _as_lazy_profile(mpile1).filter(cov_expr & scope_expr)
-    p2 = _as_lazy_profile(mpile2).filter(cov_expr & scope_expr)
+    p1 = _as_lazy_profile(mpile1).filter(cov_expr)
+    p2 = _as_lazy_profile(mpile2).filter(cov_expr)
     return p1, p2
 
 
@@ -529,8 +527,6 @@ def _shared_loci_polars(
         mpile1=mpile1,
         mpile2=mpile2,
         min_cov=min_cov,
-        genome_scope=genome_scope,
-        gene_scope=gene_scope,
     )
     if _profile_is_coordinate_sorted(mpile1) and _profile_is_coordinate_sorted(mpile2):
         p1 = p1.set_sorted(["chrom", "pos"])
