@@ -158,7 +158,12 @@ def build_null_model(error_rate, max_total_reads, p_threshold, output_file, mode
     show_default=True,
     help="Number of parquet files to merge per stage. Use -1 for the current single-pass behavior.",
 )
-def merge_parquet(input_dir, output_file, batch_size):
+@click.option(
+    '--allow-mismatch',
+    is_flag=True,
+    help="Allow merge even when ZipStrain comparison metadata differ across input parquet files.",
+)
+def merge_parquet(input_dir, output_file, batch_size, allow_mismatch):
     """
     Merge multiple Parquet files in a directory into a single Parquet file.
 
@@ -175,6 +180,7 @@ def merge_parquet(input_dir, output_file, batch_size):
         input_dir=input_dir,
         output_file=output_file,
         batch_size=batch_size,
+        allow_mismatch=allow_mismatch,
         progress_callback=_emit_progress,
     )
 
@@ -416,14 +422,15 @@ def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output
 @utilities.command("build-profile-db")
 @click.option('--profile-db-csv', '-p', required=True, help="Path to the profile database CSV file.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def build_profile_db(profile_db_csv, output_file):
+@click.option('--allow-mismatch', is_flag=True, help="Skip profile contract metadata validation when building the profile database.")
+def build_profile_db(profile_db_csv, output_file, allow_mismatch):
     """
     Build a profile database from the given CSV file.
 
     Args:
     profile_db_csv (str): Path to the profile database CSV file.
     """
-    profile_db = db.ProfileDatabase.from_csv(pathlib.Path(profile_db_csv))
+    profile_db = db.ProfileDatabase.from_csv(pathlib.Path(profile_db_csv), allow_mismatch=allow_mismatch)
     profile_db.save_as_new_database(pathlib.Path(output_file))
 
 
@@ -431,7 +438,8 @@ def build_profile_db(profile_db_csv, output_file):
 @click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
 @click.option('--output-file', '-o', required=True, help="Output matrix store.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
-@click.option('--bed-file', '-b', default=None, help="Optional BED file to define scaffold extents instead of inferring min/max positions from profiles.")
+@click.option('--bed-file', '-b', required=True, help="BED file defining scaffold extents for the matrix contract.")
+@click.option('--stb-file', '-s', required=True, help="STB file defining scaffold-to-genome mapping for the matrix contract.")
 @click.option('--gene-range-table', default=None, help="Optional headerless TSV of gene, scaffold, start, end to store gene-coordinate ranges for gene ANI.")
 @click.option(
     '--count-dtype',
@@ -460,7 +468,7 @@ def build_profile_db(profile_db_csv, output_file):
     default=False,
     help="Store genome matrices sparsely in HDF5. Compare currently materializes them back to dense on load.",
 )
-def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table, count_dtype, memory_limit_gb, export_batch_mb, sparse):
+def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_range_table, count_dtype, memory_limit_gb, export_batch_mb, sparse):
     """
     Build a matrix store directly from classic profile parquets.
 
@@ -505,7 +513,8 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table
                 profile_dir=pathlib.Path(profile_dir),
                 output_file=pathlib.Path(output_file),
                 genome=genome,
-                bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
+                bed_file=pathlib.Path(bed_file),
+                stb_file=pathlib.Path(stb_file),
                 gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
                 count_dtype=count_dtype,
                 memory_limit_gb=memory_limit_gb,
@@ -522,7 +531,8 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, gene_range_table
             profile_dir=pathlib.Path(profile_dir),
             output_file=pathlib.Path(output_file),
             genome=genome,
-            bed_file=pathlib.Path(bed_file) if bed_file is not None else None,
+            bed_file=pathlib.Path(bed_file),
+            stb_file=pathlib.Path(stb_file),
             gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
             count_dtype=count_dtype,
             memory_limit_gb=memory_limit_gb,
@@ -560,8 +570,10 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
     Append new profiles to an existing matrix store.
 
     The append uses the existing genome/scaffold layout already stored in the
-    matrix store as the contract. New profiles must use the same genomes,
-    scaffolds, and coordinate ranges. Sample names must also be new.
+    matrix store as the contract. Contract-valid genomes are appended or
+    materialized as needed. Genomes outside the stored contract are ignored.
+    Known genomes with incompatible scaffolds or coordinate ranges still fail.
+    Sample names must also be new.
     """
     progress_console = Console(stderr=True)
     use_progress_bar = sys.stderr.isatty()
@@ -620,7 +632,8 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
         f"appended_samples={summary.appended_sample_count} "
         f"total_samples={summary.total_sample_count} "
         f"scaffolds={summary.scaffold_count} "
-        f"stored_rows={summary.stored_rows}"
+        f"stored_rows={summary.stored_rows} "
+        f"ignored_genomes={summary.ignored_genome_count}"
     )
 
 
@@ -1025,103 +1038,28 @@ def build_genome_db(tool, abundance_table, cache_dir, output_dir, download_retri
     Console().print(Panel(report_table, title="Genome DB Build Report", border_style="green"))
 
 
-@utilities.command("build-genome-comparison-config")
-@click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
-@click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
-@click.option('--reference-genome-id', '-r', required=True, help="Reference fasta ID.")
-@click.option('--scope', '-s', default="all", help="Genome scope for comparison.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
-@click.option('--stb-file-loc', '-t', default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in downstream compare outputs; otherwise only genomes with comparable loci are reported.")
-@click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
-def build_genome_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, current_comp_table, output_file):
-    """
-    Build a comparison configuration JSON file from the given parameters.
-
-    Args:
-    profile_db (str): Path to the profile database Parquet file.
-    gene_db_id (str): Gene database ID.
-    reference_genome_id (str): Reference genome ID.
-    scope (str): Genome scope for comparison.
-    min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    stb_file_loc (str | None): Optional path to the scaffold-to-genome mapping file.
-    current_comp_table (str): Path to the current comparison table in Parquet format.
-    output_file (str): Path to save the output configuration JSON file.
-    """
-    conf_obj=db.GenomeComparisonConfig(
-        gene_db_id=gene_db_id,
-        reference_id=reference_genome_id,
-        scope=scope,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        stb_file_loc=stb_file_loc,
-    )
-    profile_db=db.ProfileDatabase(profile_db)
-    comp_obj=db.GenomeComparisonDatabase(
-        profile_db=profile_db,
-        config=conf_obj,
-        comp_db_loc=current_comp_table
-    )
-    comp_obj.dump_obj(pathlib.Path(output_file))
-
-
-@utilities.command("build-gene-comparison-config")
-@click.option('--profile-db', '-p', required=True, help="Path to the profile database Parquet file.")
-@click.option('--gene-db-id', '-g', required=True, help="Gene database ID.")
-@click.option('--reference-genome-id', '-r', required=True, help="Reference fasta ID.")
-@click.option('--scope', '-s', default="all:all", help="Genome scope for comparison.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=200, help="Minimum gene length to consider for comparison.")
-@click.option('--stb-file-loc', '-t', default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in downstream compare outputs; otherwise only genomes with comparable loci are reported.")
-@click.option('--current-comp-table', '-a', default=None, help="Path to the current comparison table in Parquet format.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output configuration JSON file.")
-def build_gene_comparison_config(profile_db, gene_db_id, reference_genome_id, scope, min_cov, min_gene_compare_len, stb_file_loc, current_comp_table, output_file):
-    """
-    Build a gene comparison configuration JSON file from the given parameters.
-
-    Args:
-    profile_db (str): Path to the profile database Parquet file.
-    gene_db_id (str): Gene database ID.
-    reference_genome_id (str): Reference genome ID.
-    scope (str): Genome scope for comparison.
-    min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    stb_file_loc (str | None): Optional path to the scaffold-to-genome mapping file.
-    current_comp_table (str): Path to the current comparison table in Parquet format.
-    output_file (str): Path to save the output configuration JSON file.
-    """
-    conf_obj=db.GeneComparisonConfig(
-        gene_db_id=gene_db_id,
-        reference_genome_id=reference_genome_id,
-        scope=scope,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        stb_file_loc=stb_file_loc,
-    )
-    profile_db_obj=db.ProfileDatabase(profile_db)
-    
-    comp_obj=db.GeneComparisonDatabase(
-        profile_db=profile_db_obj,
-        config=conf_obj,
-        comp_db_loc=current_comp_table
-    )
-    comp_obj.dump_obj(pathlib.Path(output_file))
-
-
 @utilities.command("to-complete-table")
-@click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
+@click.option("--profile-db", "-p", required=True, help="Path to the profile database parquet file.")
+@click.option("--comp-db-file", "-c", required=False, default=None, help="Optional current genome comparison parquet.")
 @click.option("--output-file", "-o", required=True, help="Path to save the completed pairs csv file.")
-def to_complete_table(genome_comparison_object, output_file):
+def to_complete_table(profile_db, comp_db_file, output_file):
     """
-    Generate a table of completed genome comparison pairs and save it to a csv file.
+    Generate the not-yet-completed genome-comparison sample pairs and save them to a csv file.
 
     Parameters:
-    genome_comparison_object (str): Path to the genome comparison object in json format.
-    output_file (str): Path to save the completed pairs Parquet file.
+    profile_db (str): Path to the profile database parquet file.
+    output_file (str): Path to save the remaining-pairs CSV file.
     """
-    genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
+    genome_comp_db=db.GenomeComparisonDatabase(
+        profile_db=db.ProfileDatabase(pathlib.Path(profile_db)),
+        config=db.GenomeComparisonConfig(
+            scope="all",
+            min_cov=5,
+            min_gene_compare_len=100,
+            stb_file_loc=None,
+        ),
+        comp_db_loc=comp_db_file,
+    )
     completed_pairs=genome_comp_db.to_complete_input_table()
     completed_pairs.sink_csv(pathlib.Path(output_file), engine="streaming")
 
@@ -1257,12 +1195,22 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
     genome (str): If provided, do the comparison only for the specified genome.
     stb_file (str): Optional path to the scaffold to genome mapping file.
     """
-    mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
-    mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
+    mpile_contig_1_name = ut.infer_sample_name_from_profile(mpileup_contig_1)
+    mpile_contig_2_name = ut.infer_sample_name_from_profile(mpileup_contig_2)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
     calculations = cp.parse_genome_calculations(calculate)
     output_cols = cp.genome_metric_output_columns(calculations)
+    compare_metadata = ut.build_single_compare_metadata(
+        mpileup_contig_1,
+        mpileup_contig_2,
+        compare_kind="genome",
+        scope=genome,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        engine=engine,
+        uses_stb=stb_file is not None,
+    )
 
     mpile_1_for_compare = mpileup_contig_1
     mpile_2_for_compare = mpileup_contig_2
@@ -1290,6 +1238,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
             temp_directory=duckdb_temp_directory,
             threads=duckdb_threads,
         )
+        ut.rewrite_parquet_with_metadata(output_file, compare_metadata)
         return
 
     comp = cp.compare_genomes(
@@ -1309,7 +1258,7 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         sample_1=pl.lit(mpile_contig_1_name),
         sample_2=pl.lit(mpile_contig_2_name),
     ).select(output_cols + ["sample_1", "sample_2"])
-    comp.sink_parquet(output_file, compression='zstd')
+    comp.sink_parquet(output_file, compression='zstd', metadata=compare_metadata)
 
 @utilities.command("single_compare_gene")
 @click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
@@ -1339,8 +1288,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     ani_method (str): ANI calculation method to use.
     """
 
-    mpile_contig_1_name = pathlib.Path(mpileup_contig_1).name
-    mpile_contig_2_name = pathlib.Path(mpileup_contig_2).name
+    mpile_contig_1_name = ut.infer_sample_name_from_profile(mpileup_contig_1)
+    mpile_contig_2_name = ut.infer_sample_name_from_profile(mpileup_contig_2)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
 
@@ -1348,6 +1297,16 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     if ":" not in scope:
         raise ValueError("scope must be in 'GENOME:GENE' format (e.g., all:all).")
     genome_scope, gene_scope = scope.split(":", 1)
+    compare_metadata = ut.build_single_compare_metadata(
+        mpileup_contig_1,
+        mpileup_contig_2,
+        compare_kind="gene",
+        scope=scope,
+        min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len,
+        engine=engine,
+        uses_stb=stb_file is not None,
+    )
 
     mpile_1_for_compare = mpileup_contig_1
     mpile_2_for_compare = mpileup_contig_2
@@ -1375,6 +1334,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
             temp_directory=duckdb_temp_directory,
             threads=duckdb_threads,
         )
+        ut.rewrite_parquet_with_metadata(output_file, compare_metadata)
         return
 
     gene_comp = cp.compare_genes(
@@ -1401,7 +1361,7 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         "sample_1",
         "sample_2",
     )
-    gene_comp.sink_parquet(output_file, compression='zstd')
+    gene_comp.sink_parquet(output_file, compression='zstd', metadata=compare_metadata)
 
 @utilities.command("prepare_profiling", help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
@@ -1548,7 +1508,12 @@ def profile(input_table, stb_file, null_model, gene_range_table, bed_file, genom
 
 
 @compare.command("genomes")
-@click.option("--genome-comparison-object", "-g", required=True, help="Path to the genome comparison object in json format.")
+@click.option("--profile-db", required=True, help="Path to the profile database parquet file.")
+@click.option("--comp-db-file", required=False, default=None, help="Optional current genome comparison parquet.")
+@click.option("--scope", default="all", show_default=True, help="Genome scope for comparison.")
+@click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
+@click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum gene length to consider for comparison.")
+@click.option("--stb-file", default=None, help="Optional scaffold-to-genome mapping file.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
 @click.option("--poll-interval", "-p", default=1, help="Polling interval in seconds to check the status of batches.")
@@ -1561,12 +1526,12 @@ def profile(input_table, stb_file, null_model, gene_range_table, bed_file, genom
 @click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, engine, calculate, duckdb_memory_limit, duckdb_threads):
+def compare_genomes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, engine, calculate, duckdb_memory_limit, duckdb_threads):
     """
     Run genome comparisons in batches using the specified execution mode and container engine.
 
     Args:
-    genome_comparison_object (str): Path to the genome comparison object in json format.
+    profile_db (str): Path to the profile database parquet file.
     run_dir (str): Directory to save the run data.
     max_concurrent_batches (int): Maximum number of concurrent batches to run.
     poll_interval (int): Polling interval in seconds to check the status of batches.
@@ -1575,7 +1540,16 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
     container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
     task_per_batch (int): Number of tasks to include in each batch.
     """
-    genome_comp_db=db.GenomeComparisonDatabase.load_obj(pathlib.Path(genome_comparison_object))
+    genome_comp_db=db.GenomeComparisonDatabase(
+        profile_db=db.ProfileDatabase(pathlib.Path(profile_db)),
+        config=db.GenomeComparisonConfig(
+            scope=scope,
+            min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
+            stb_file_loc=stb_file,
+        ),
+        comp_db_loc=comp_db_file,
+    )
     run_dir=pathlib.Path(run_dir)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
@@ -1611,37 +1585,13 @@ def compare_genomes(genome_comparison_object, run_dir, max_concurrent_batches, p
     )
 
 
-
-@compare.command("build-comp-database")
-@click.option("--profile-db-dir", "-p", required=True, help="Directory containing profile either in parquet format.")
-@click.option("--config-file", "-c", required=True, help="Path to the  genome comparsion database config file in json format.")
-@click.option("--output-dir", "-o", required=True, help="Directory to genome comparison database object.")
-@click.option("--comp-db-file", "-f", required=False, help="The initial database file. If provided only additional comparisons will be added to this database.")
-def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
-    """
-    Build a genome comparison database from the given profiles and configuration.
-
-    Parameters:
-    profile_db_dir (str): Directory containing profile either in parquet format.
-    config_file (str): Path to the genome comparison database config file in json format.
-    """
-    profile_db_dir=pathlib.Path(profile_db_dir)
-    profile_db=db.ProfileDatabase(
-        db_loc=profile_db_dir,
-    )
-    existing_db_loc=pathlib.Path(comp_db_file) if comp_db_file is not None else None
-    if existing_db_loc is not None and not existing_db_loc.exists():
-        raise FileNotFoundError(f"{existing_db_loc} does not exist.")
-    obj=db.GenomeComparisonDatabase(
-        profile_db=profile_db,
-        config=db.GenomeComparisonConfig.from_json(pathlib.Path(config_file)),
-        comp_db_loc=existing_db_loc,
-    )
-    obj.dump_obj(pathlib.Path(output_dir))
-
-
 @compare.command("genes")
-@click.option("--gene-comparison-object", "-g", required=True, help="Path to the gene comparison object in json format.")
+@click.option("--profile-db", required=True, help="Path to the profile database parquet file.")
+@click.option("--comp-db-file", required=False, default=None, help="Optional current gene comparison parquet.")
+@click.option("--scope", default="all:all", show_default=True, help="Genome-gene scope for comparison.")
+@click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
+@click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum gene length to consider for comparison.")
+@click.option("--stb-file", default=None, help="Optional scaffold-to-genome mapping file.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
 @click.option("--poll-interval", "-p", default=1, help="Polling interval in seconds to check the status of batches.")
@@ -1653,12 +1603,12 @@ def build_comp_database(profile_db_dir, config_file, output_dir, comp_db_file):
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, engine, duckdb_memory_limit, duckdb_threads):
+def compare_genes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, engine, duckdb_memory_limit, duckdb_threads):
     """
     Run gene comparisons in batches using the specified execution mode and container engine.
 
     Args:
-    genome_comparison_object (str): Path to the genome comparison object in json format.
+    profile_db (str): Path to the profile database parquet file.
     run_dir (str): Directory to save the run data.
     max_concurrent_batches (int): Maximum number of concurrent batches to run.
     poll_interval (int): Polling interval in seconds to check the status of batches.
@@ -1668,7 +1618,16 @@ def compare_genes(gene_comparison_object, run_dir, max_concurrent_batches, poll_
     task_per_batch (int): Number of tasks to include in each batch.
     ani_method (str): ANI calculation method to use.
     """
-    genome_comp_db=db.GeneComparisonDatabase.load_obj(pathlib.Path(gene_comparison_object))
+    genome_comp_db=db.GeneComparisonDatabase(
+        profile_db=db.ProfileDatabase(pathlib.Path(profile_db)),
+        config=db.GeneComparisonConfig(
+            scope=scope,
+            min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
+            stb_file_loc=stb_file,
+        ),
+        comp_db_loc=comp_db_file,
+    )
     run_dir=pathlib.Path(run_dir)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")

@@ -58,8 +58,6 @@ def _write_profile_db_for_compare_config_tests(tmp_path: Path) -> tuple[Path, di
         {
             "profile_name": list(profile_paths.keys()),
             "profile_location": [str(path) for path in profile_paths.values()],
-            "reference_db_id": ["ref_1", "ref_1", "ref_1"],
-            "gene_db_id": ["gene_ref_1", "gene_ref_1", "gene_ref_1"],
         }
     ).write_parquet(profile_db)
     return profile_db, profile_paths
@@ -532,9 +530,9 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_duckdb(p
 def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
-    profile_1.sink_parquet(profile_dir / "profile_1.parquet")
-    profile_2.sink_parquet(profile_dir / "profile_2.parquet")
-    profile_3.sink_parquet(profile_dir / "profile_3.parquet")
+    profile_1.sink_parquet(profile_dir / "profile_1_profile.parquet")
+    profile_2.sink_parquet(profile_dir / "profile_2_profile.parquet")
+    profile_3.sink_parquet(profile_dir / "profile_3_profile.parquet")
     pl.DataFrame({"cov": [1]}).write_parquet(profile_dir / "ignore_me.parquet")
 
     runner = CliRunner()
@@ -564,6 +562,156 @@ def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.La
         ("profile_1", "profile_3"),
         ("profile_2", "profile_3"),
     }
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_single_compare_genome_strips_profile_suffix_from_sample_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, engine):
+    profile_1_path = tmp_path / "sample_alpha_profile.parquet"
+    profile_2_path = tmp_path / "sample_beta_profile.parquet"
+    output_path = tmp_path / f"sample_suffix_{engine}.parquet"
+    stb_path = tmp_path / "stb.tsv"
+
+    profile_1.sink_parquet(profile_1_path)
+    profile_2.sink_parquet(profile_2_path)
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_path),
+            "--mpileup-contig-2",
+            str(profile_2_path),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            engine,
+            "--output-file",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    out = pl.read_parquet(output_path)
+    assert set(out.get_column("sample_1").unique().to_list()) == {"sample_alpha"}
+    assert set(out.get_column("sample_2").unique().to_list()) == {"sample_beta"}
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, engine):
+    profile_1_path = tmp_path / f"metadata_left_{engine}.parquet"
+    profile_2_path = tmp_path / f"metadata_right_{engine}.parquet"
+    output_path = tmp_path / f"metadata_compare_{engine}.parquet"
+    stb_path = tmp_path / "stb.tsv"
+
+    profile_1.sink_parquet(
+        profile_1_path,
+        metadata={
+            cli.ut.PROFILE_REFERENCE_HASH_METADATA_KEY: "ref_hash_shared",
+            cli.ut.PROFILE_GENE_HASH_METADATA_KEY: "gene_hash_left",
+            cli.ut.PROFILE_NULL_MODEL_HASH_METADATA_KEY: "null_hash_shared",
+            cli.ut.PROFILE_STB_HASH_METADATA_KEY: "stb_hash_shared",
+        },
+    )
+    profile_2.sink_parquet(
+        profile_2_path,
+        metadata={
+            cli.ut.PROFILE_REFERENCE_HASH_METADATA_KEY: "ref_hash_shared",
+            cli.ut.PROFILE_GENE_HASH_METADATA_KEY: "gene_hash_right",
+            cli.ut.PROFILE_NULL_MODEL_HASH_METADATA_KEY: "null_hash_shared",
+            cli.ut.PROFILE_STB_HASH_METADATA_KEY: "stb_hash_shared",
+        },
+    )
+    stb.sink_csv(stb_path, separator="\t", include_header=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_genome",
+            "--mpileup-contig-1",
+            str(profile_1_path),
+            "--mpileup-contig-2",
+            str(profile_2_path),
+            "--stb-file",
+            str(stb_path),
+            "--engine",
+            engine,
+            "--output-file",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = pl.read_parquet_metadata(output_path)
+    assert metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "genome"
+    assert metadata[cli.ut.COMPARE_SCOPE_METADATA_KEY] == "all"
+    assert metadata[cli.ut.COMPARE_MIN_COV_METADATA_KEY] == "5"
+    assert metadata[cli.ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY] == "100"
+    assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
+    assert metadata[cli.ut.COMPARE_USES_STB_METADATA_KEY] == "1"
+    assert metadata[cli.ut.COMPARE_REFERENCE_HASH_METADATA_KEY] == "ref_hash_shared"
+    assert metadata[cli.ut.COMPARE_GENE_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
+    assert metadata[cli.ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY] == "null_hash_shared"
+    assert metadata[cli.ut.COMPARE_STB_HASH_METADATA_KEY] == "stb_hash_shared"
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path, engine):
+    profile_1_path = tmp_path / f"gene_metadata_left_{engine}.parquet"
+    profile_2_path = tmp_path / f"gene_metadata_right_{engine}.parquet"
+    output_path = tmp_path / f"gene_metadata_compare_{engine}.parquet"
+
+    profile_1.sink_parquet(
+        profile_1_path,
+        metadata={
+            cli.ut.PROFILE_REFERENCE_HASH_METADATA_KEY: "ref_hash_shared",
+            cli.ut.PROFILE_GENE_HASH_METADATA_KEY: "gene_hash_shared",
+            cli.ut.PROFILE_NULL_MODEL_HASH_METADATA_KEY: "null_hash_left",
+        },
+    )
+    profile_2.sink_parquet(
+        profile_2_path,
+        metadata={
+            cli.ut.PROFILE_REFERENCE_HASH_METADATA_KEY: "ref_hash_shared",
+            cli.ut.PROFILE_GENE_HASH_METADATA_KEY: "gene_hash_shared",
+            cli.ut.PROFILE_NULL_MODEL_HASH_METADATA_KEY: "null_hash_right",
+        },
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "single_compare_gene",
+            "--mpileup-contig-1",
+            str(profile_1_path),
+            "--mpileup-contig-2",
+            str(profile_2_path),
+            "--engine",
+            engine,
+            "--scope",
+            "genome1:gene1",
+            "--output-file",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = pl.read_parquet_metadata(output_path)
+    assert metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "gene"
+    assert metadata[cli.ut.COMPARE_SCOPE_METADATA_KEY] == "genome1:gene1"
+    assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
+    assert metadata[cli.ut.COMPARE_USES_STB_METADATA_KEY] == "0"
+    assert metadata[cli.ut.COMPARE_REFERENCE_HASH_METADATA_KEY] == "ref_hash_shared"
+    assert metadata[cli.ut.COMPARE_GENE_HASH_METADATA_KEY] == "gene_hash_shared"
+    assert metadata[cli.ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
+    assert metadata[cli.ut.COMPARE_STB_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
 
 
 @pytest.mark.parametrize("engine", ["polars", "duckdb"])
@@ -721,15 +869,8 @@ def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1
 
 
 def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
-    comp_obj = tmp_path / "genome_comp.json"
-    comp_obj.write_text("{}")
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
     captured = {}
-
-    monkeypatch.setattr(
-        cli.db.GenomeComparisonDatabase,
-        "load_obj",
-        classmethod(lambda cls, path: object()),
-    )
 
     def _fake_lazy_run_compares(**kwargs):
         captured.update(kwargs)
@@ -741,10 +882,12 @@ def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
         [
             "compare",
             "genomes",
-            "--genome-comparison-object",
-            str(comp_obj),
+            "--profile-db",
+            str(profile_db),
             "--run-dir",
             str(tmp_path / "run"),
+            "--scope",
+            "all",
             "--ani-method",
             "conani",
             "--calculate",
@@ -762,15 +905,8 @@ def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
 
 
 def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
-    comp_obj = tmp_path / "gene_comp.json"
-    comp_obj.write_text("{}")
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
     captured = {}
-
-    monkeypatch.setattr(
-        cli.db.GeneComparisonDatabase,
-        "load_obj",
-        classmethod(lambda cls, path: object()),
-    )
 
     def _fake_lazy_run_gene_compares(**kwargs):
         captured.update(kwargs)
@@ -782,10 +918,12 @@ def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
         [
             "compare",
             "genes",
-            "--gene-comparison-object",
-            str(comp_obj),
+            "--profile-db",
+            str(profile_db),
             "--run-dir",
             str(tmp_path / "run"),
+            "--scope",
+            "all:all",
             "--engine",
             "duckdb",
             "--duckdb-threads",
@@ -1169,8 +1307,6 @@ def test_cli_build_profile_db_minimal_columns(tmp_path):
     pl.DataFrame({
         "profile_name": ["sample_1"],
         "profile_location": [str(profile_path)],
-        "reference_db_id": ["ref_1"],
-        "gene_db_id": ["gene_ref_1"],
     }).write_csv(input_csv)
 
     output_db = tmp_path / "profiles.parquet"
@@ -1190,201 +1326,73 @@ def test_cli_build_profile_db_minimal_columns(tmp_path):
     assert output_db.exists()
 
     built_db = pl.read_parquet(output_db)
-    assert set(built_db.columns) == {"profile_name", "profile_location", "reference_db_id", "gene_db_id"}
+    assert set(built_db.columns) == {"profile_name", "profile_location"}
 
 
-def test_cli_build_genome_comparison_config_with_current_comp_table(tmp_path):
-    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
-    current_compare = tmp_path / "current_genome_compare.parquet"
-    output_json = tmp_path / "genome_compare_config.json"
-    stb_file = tmp_path / "reference.stb"
-    _write_genome_compare_table_for_config_tests(current_compare)
-    stb_file.write_text("chr1\tgenome1\n")
+def test_cli_build_profile_db_rejects_metadata_mismatch_without_allow_mismatch(tmp_path):
+    profile_a = tmp_path / "a.parquet"
+    profile_b = tmp_path / "b.parquet"
+    base = pl.DataFrame(
+        {"chrom": ["chr1"], "genome": ["g1"], "pos": [1], "gene": ["NA"], "A": [1], "T": [0], "C": [0], "G": [0]}
+    )
+    base.write_parquet(profile_a, metadata={cli.ut.PROFILE_REFERENCE_HASH_METADATA_KEY: "ref_a"})
+    base.write_parquet(profile_b, metadata={cli.ut.PROFILE_REFERENCE_HASH_METADATA_KEY: "ref_b"})
 
+    input_csv = tmp_path / "profiles_mismatch.csv"
+    pl.DataFrame(
+        {
+            "profile_name": ["a", "b"],
+            "profile_location": [str(profile_a), str(profile_b)],
+        }
+    ).write_csv(input_csv)
+
+    output_db = tmp_path / "profiles_mismatch.parquet"
     runner = CliRunner()
     result = runner.invoke(
         cli.cli,
         [
             "utilities",
-            "build-genome-comparison-config",
-            "--profile-db",
-            str(profile_db),
-            "--gene-db-id",
-            "gene_ref_1",
-            "--reference-genome-id",
-            "ref_1",
-            "--scope",
-            "genome1",
-            "--min-cov",
-            "7",
-            "--min-gene-compare-len",
-            "150",
-            "--stb-file-loc",
-            str(stb_file),
-            "--current-comp-table",
-            str(current_compare),
-            "--output-file",
-            str(output_json),
+            "build-profile-db",
+            "-p",
+            str(input_csv),
+            "-o",
+            str(output_db),
         ],
     )
+    assert result.exit_code != 0
+    assert "Profile contract metadata do not match" in str(result.exception)
 
-    assert result.exit_code == 0
-    loaded = db.GenomeComparisonDatabase.load_obj(output_json)
-    assert loaded.comp_db_loc == current_compare.resolve()
-    assert loaded.config.reference_id == "ref_1"
-    assert loaded.config.gene_db_id == "gene_ref_1"
-    assert loaded.config.scope == "genome1"
-    assert loaded.config.min_cov == 7
-    assert loaded.config.min_gene_compare_len == 150
-    assert loaded.config.stb_file_loc == str(stb_file)
-
-
-def test_cli_build_genome_comparison_config_without_stb_file(tmp_path):
-    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
-    output_json = tmp_path / "genome_compare_config_no_stb.json"
-
-    runner = CliRunner()
-    result = runner.invoke(
+    allow_result = runner.invoke(
         cli.cli,
         [
             "utilities",
-            "build-genome-comparison-config",
-            "--profile-db",
-            str(profile_db),
-            "--gene-db-id",
-            "gene_ref_1",
-            "--reference-genome-id",
-            "ref_1",
-            "--scope",
-            "genome1",
-            "--output-file",
-            str(output_json),
+            "build-profile-db",
+            "-p",
+            str(input_csv),
+            "-o",
+            str(output_db),
+            "--allow-mismatch",
         ],
     )
-
-    assert result.exit_code == 0
-    loaded = db.GenomeComparisonDatabase.load_obj(output_json)
-    assert loaded.config.stb_file_loc is None
-
-
-def test_cli_build_gene_comparison_config_with_current_comp_table(tmp_path):
-    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
-    current_compare = tmp_path / "current_gene_compare.parquet"
-    output_json = tmp_path / "gene_compare_config.json"
-    stb_file = tmp_path / "reference.stb"
-    _write_gene_compare_table_for_config_tests(current_compare)
-    stb_file.write_text("chr1\tgenome1\n")
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "build-gene-comparison-config",
-            "--profile-db",
-            str(profile_db),
-            "--gene-db-id",
-            "gene_ref_1",
-            "--reference-genome-id",
-            "ref_1",
-            "--scope",
-            "genome1:gene1",
-            "--min-cov",
-            "6",
-            "--min-gene-compare-len",
-            "125",
-            "--stb-file-loc",
-            str(stb_file),
-            "--current-comp-table",
-            str(current_compare),
-            "--output-file",
-            str(output_json),
-        ],
-    )
-
-    assert result.exit_code == 0
-    loaded = db.GeneComparisonDatabase.load_obj(output_json)
-    assert loaded.comp_db_loc == current_compare.resolve()
-    assert loaded.config.reference_genome_id == "ref_1"
-    assert loaded.config.gene_db_id == "gene_ref_1"
-    assert loaded.config.scope == "genome1:gene1"
-    assert loaded.config.min_cov == 6
-    assert loaded.config.min_gene_compare_len == 125
-    assert loaded.config.stb_file_loc == str(stb_file)
-
-
-def test_cli_build_gene_comparison_config_without_stb_file(tmp_path):
-    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
-    output_json = tmp_path / "gene_compare_config_no_stb.json"
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "build-gene-comparison-config",
-            "--profile-db",
-            str(profile_db),
-            "--gene-db-id",
-            "gene_ref_1",
-            "--reference-genome-id",
-            "ref_1",
-            "--scope",
-            "genome1:gene1",
-            "--output-file",
-            str(output_json),
-        ],
-    )
-
-    assert result.exit_code == 0
-    loaded = db.GeneComparisonDatabase.load_obj(output_json)
-    assert loaded.config.stb_file_loc is None
+    assert allow_result.exit_code == 0
 
 
 def test_cli_to_complete_table_uses_current_comparison_state(tmp_path):
     profile_db, profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
     current_compare = tmp_path / "current_genome_compare.parquet"
-    config_json = tmp_path / "genome_compare_config.json"
     output_csv = tmp_path / "remaining_pairs.csv"
-    stb_file = tmp_path / "reference.stb"
     _write_genome_compare_table_for_config_tests(current_compare)
-    stb_file.write_text("chr1\tgenome1\n")
 
     runner = CliRunner()
-    build_result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "build-genome-comparison-config",
-            "--profile-db",
-            str(profile_db),
-            "--gene-db-id",
-            "gene_ref_1",
-            "--reference-genome-id",
-            "ref_1",
-            "--scope",
-            "all",
-            "--min-cov",
-            "5",
-            "--min-gene-compare-len",
-            "100",
-            "--stb-file-loc",
-            str(stb_file),
-            "--current-comp-table",
-            str(current_compare),
-            "--output-file",
-            str(config_json),
-        ],
-    )
-    assert build_result.exit_code == 0
-
     complete_result = runner.invoke(
         cli.cli,
         [
             "utilities",
             "to-complete-table",
-            "--genome-comparison-object",
-            str(config_json),
+            "--profile-db",
+            str(profile_db),
+            "--comp-db-file",
+            str(current_compare),
             "--output-file",
             str(output_csv),
         ],
@@ -1433,6 +1441,94 @@ def test_cli_merge_parquet_batched_mode(tmp_path):
     merged = pl.read_parquet(output_file).sort("part")
     assert merged.shape == (5, 2)
     assert "batch 1/3 start" in result.output
+
+
+def test_cli_merge_parquet_rejects_compare_metadata_mismatch(tmp_path):
+    input_dir = tmp_path / "parts"
+    input_dir.mkdir()
+    common_metadata = {
+        cli.ut.COMPARE_KIND_METADATA_KEY: "genome",
+        cli.ut.COMPARE_MIN_COV_METADATA_KEY: "5",
+    }
+    pl.DataFrame({"part": [0]}).write_parquet(
+        input_dir / "part_a.parquet",
+        metadata={
+            **common_metadata,
+            cli.ut.COMPARE_SCOPE_METADATA_KEY: "all",
+        },
+    )
+    pl.DataFrame({"part": [1]}).write_parquet(
+        input_dir / "part_b.parquet",
+        metadata={
+            **common_metadata,
+            cli.ut.COMPARE_SCOPE_METADATA_KEY: "genome1",
+        },
+    )
+
+    output_file = tmp_path / "merged.parquet"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "merge_parquet",
+            "--input-dir",
+            str(input_dir),
+            "--output-file",
+            str(output_file),
+            "--batch-size",
+            "1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Parquet metadata mismatch across inputs" in str(result.exception)
+
+
+def test_cli_merge_parquet_allow_mismatch_rewrites_compare_metadata_to_na(tmp_path):
+    input_dir = tmp_path / "parts"
+    input_dir.mkdir()
+    common_metadata = {
+        cli.ut.COMPARE_KIND_METADATA_KEY: "genome",
+        cli.ut.COMPARE_MIN_COV_METADATA_KEY: "5",
+    }
+    pl.DataFrame({"part": [0]}).write_parquet(
+        input_dir / "part_a.parquet",
+        metadata={
+            **common_metadata,
+            cli.ut.COMPARE_SCOPE_METADATA_KEY: "all",
+        },
+    )
+    pl.DataFrame({"part": [1]}).write_parquet(
+        input_dir / "part_b.parquet",
+        metadata={
+            **common_metadata,
+            cli.ut.COMPARE_SCOPE_METADATA_KEY: "genome1",
+        },
+    )
+
+    output_file = tmp_path / "merged.parquet"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "merge_parquet",
+            "--input-dir",
+            str(input_dir),
+            "--output-file",
+            str(output_file),
+            "--batch-size",
+            "1",
+            "--allow-mismatch",
+        ],
+    )
+
+    assert result.exit_code == 0
+    metadata = pl.read_parquet_metadata(output_file)
+    assert metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "genome"
+    assert metadata[cli.ut.COMPARE_MIN_COV_METADATA_KEY] == "5"
+    assert metadata[cli.ut.COMPARE_SCOPE_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
 
 
 def test_cli_adjust_sequence_errors(tmp_path):

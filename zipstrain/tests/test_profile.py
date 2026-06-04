@@ -148,6 +148,72 @@ def test_duckdb_chunk_annotation_matches_polars_for_unsorted_chunk(tmp_path: Pat
     assert got.to_dicts() == expected.to_dicts()
 
 
+def test_write_sorted_profile_with_metadata_skips_sort_for_sorted_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    output_file = tmp_path / "sorted_profile.parquet"
+    candidate = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr2"],
+            "genome": ["genome1", "genome1", "genome2"],
+            "gene": ["geneA", "geneA", "geneB"],
+            "pos": [1, 2, 1],
+            "A": [1, 0, 0],
+            "C": [0, 2, 0],
+            "G": [0, 0, 3],
+            "T": [0, 0, 0],
+        }
+    ).lazy()
+
+    def _unexpected_sort(*args, **kwargs):
+        raise AssertionError("sorted input should not need fallback sorting")
+
+    monkeypatch.setattr(profile, "_sort_existing_profile_parquet", _unexpected_sort)
+
+    profile._write_sorted_profile_with_metadata(
+        profile_lf=candidate,
+        output_file=output_file,
+        tmp_dir=tmp_path,
+    )
+
+    got = pl.read_parquet(output_file)
+    assert got.to_dicts() == got.sort(["chrom", "pos"]).to_dicts()
+    assert (
+        pl.read_parquet_metadata(output_file)[profile.PROFILE_SORTED_METADATA_KEY]
+        == profile.PROFILE_SORTED_METADATA_VALUE
+    )
+
+
+def test_write_sorted_profile_with_metadata_falls_back_to_sort_for_unsorted_input(tmp_path: Path):
+    output_file = tmp_path / "unsorted_profile.parquet"
+    candidate = pl.DataFrame(
+        {
+            "chrom": ["chr2", "chr1", "chr1"],
+            "genome": ["genome2", "genome1", "genome1"],
+            "gene": ["geneB", "geneA", "geneA"],
+            "pos": [1, 2, 1],
+            "A": [0, 0, 1],
+            "C": [0, 2, 0],
+            "G": [3, 0, 0],
+            "T": [0, 0, 0],
+        }
+    ).lazy()
+
+    profile._write_sorted_profile_with_metadata(
+        profile_lf=candidate,
+        output_file=output_file,
+        tmp_dir=tmp_path,
+    )
+
+    got = pl.read_parquet(output_file)
+    assert got.to_dicts() == got.sort(["chrom", "pos"]).to_dicts()
+    assert (
+        pl.read_parquet_metadata(output_file)[profile.PROFILE_SORTED_METADATA_KEY]
+        == profile.PROFILE_SORTED_METADATA_VALUE
+    )
+
+
 def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, pl.LazyFrame]:
     bam_file = tmp_path / "sample.bam"
     bam_file.write_text("")
@@ -172,11 +238,41 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
 
 
 def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeStream:
+        def __init__(self, *, lines: list[bytes] | None = None, blob: bytes = b""):
+            self._lines = list(lines or [])
+            self._line_index = 0
+            self._blob = blob
+
+        async def readline(self):
+            if self._line_index >= len(self._lines):
+                return b""
+            line = self._lines[self._line_index]
+            self._line_index += 1
+            return line
+
+        async def read(self):
+            if self._lines:
+                if self._line_index >= len(self._lines):
+                    return b""
+                remaining = b"".join(self._lines[self._line_index :])
+                self._line_index = len(self._lines)
+                return remaining
+            blob = self._blob
+            self._blob = b""
+            return blob
+
     class _FakeProc:
-        returncode = 0
+        def __init__(self, *, stdout_lines: list[bytes] | None = None, stderr: bytes = b"", returncode: int = 0):
+            self.returncode = returncode
+            self.stdout = _FakeStream(lines=stdout_lines)
+            self.stderr = _FakeStream(blob=stderr)
 
         async def communicate(self):
-            return b"", b""
+            return await self.stdout.read(), await self.stderr.read()
+
+        async def wait(self):
+            return self.returncode
 
     def _read_scaffolds_from_bed(bed_path: Path) -> list[str]:
         return [line.strip().split("\t")[0] for line in bed_path.read_text().splitlines() if line.strip()]
@@ -203,21 +299,25 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
             {"chrom": scaffold, "pos": 3},
         ]
 
-    async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None):
-        out_match = re.search(r"--output-file\s+([^\s]+)", command)
-        assert out_match is not None, command
-        output_file = Path(cwd) / out_match.group(1)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
+    def _fake_mpileup_line(row: dict) -> bytes:
+        bases = ("A" * row["A"]) + ("C" * row["C"]) + ("G" * row["G"]) + ("T" * row["T"])
+        depth = len(bases)
+        return f"{row['chrom']}\t{row['pos']}\tN\t{depth}\t{bases}\t*\n".encode()
 
-        if "process_mpileup" in command:
+    async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None):
+        if command.startswith("samtools mpileup"):
             bed_match = re.search(r"-l\s+([^\s]+)", command)
             assert bed_match is not None, command
             scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
-            rows = []
+            lines = []
             for scaffold in scaffolds:
-                rows.extend(_fake_mpileup_rows(scaffold))
-            pl.DataFrame(rows).write_parquet(output_file)
-        elif "process-read-locs" in command:
+                lines.extend(_fake_mpileup_line(row) for row in _fake_mpileup_rows(scaffold))
+            return _FakeProc(stdout_lines=lines)
+        if "process-read-locs" in command:
+            out_match = re.search(r"--output-file\s+([^\s]+)", command)
+            assert out_match is not None, command
+            output_file = Path(cwd) / out_match.group(1)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
             bed_match = re.search(r"-L\s+([^\s]+)", command)
             assert bed_match is not None, command
             scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
@@ -225,9 +325,8 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
             for scaffold in scaffolds:
                 rows.extend(_fake_read_loc_rows(scaffold))
             pl.DataFrame(rows).write_parquet(output_file)
-        else:
-            raise AssertionError(f"Unexpected command in fake subprocess: {command}")
-        return _FakeProc()
+            return _FakeProc()
+        raise AssertionError(f"Unexpected command in fake subprocess: {command}")
 
     monkeypatch.setattr(profile.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
 

@@ -44,13 +44,171 @@ GENOME_COMPARE_OUTPUT_DTYPES = {
     "sample_2": pl.Utf8,
 }
 
+PROFILE_REFERENCE_HASH_METADATA_KEY = "zipstrain_reference_hash"
+PROFILE_GENE_HASH_METADATA_KEY = "zipstrain_gene_hash"
+PROFILE_NULL_MODEL_HASH_METADATA_KEY = "zipstrain_null_model_hash"
+PROFILE_STB_HASH_METADATA_KEY = "zipstrain_stb_hash"
 
-def _merge_parquet_chunk(parquet_files: list[pathlib.Path], output_file: pathlib.Path) -> None:
+COMPARE_KIND_METADATA_KEY = "zipstrain_compare_kind"
+COMPARE_SCOPE_METADATA_KEY = "zipstrain_compare_scope"
+COMPARE_MIN_COV_METADATA_KEY = "zipstrain_compare_min_cov"
+COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY = "zipstrain_compare_min_gene_compare_len"
+COMPARE_ENGINE_METADATA_KEY = "zipstrain_compare_engine"
+COMPARE_USES_STB_METADATA_KEY = "zipstrain_compare_uses_stb"
+COMPARE_REFERENCE_HASH_METADATA_KEY = "zipstrain_compare_reference_hash"
+COMPARE_GENE_HASH_METADATA_KEY = "zipstrain_compare_gene_hash"
+COMPARE_NULL_MODEL_HASH_METADATA_KEY = "zipstrain_compare_null_model_hash"
+COMPARE_STB_HASH_METADATA_KEY = "zipstrain_compare_stb_hash"
+COMPARE_METADATA_PREFIX = "zipstrain_compare_"
+COMPARE_METADATA_MISSING_VALUE = "NA"
+
+PROFILE_CONTRACT_METADATA_KEYS = {
+    "reference_hash": PROFILE_REFERENCE_HASH_METADATA_KEY,
+    "gene_hash": PROFILE_GENE_HASH_METADATA_KEY,
+    "null_model_hash": PROFILE_NULL_MODEL_HASH_METADATA_KEY,
+    "stb_hash": PROFILE_STB_HASH_METADATA_KEY,
+}
+
+
+def _read_custom_parquet_metadata(parquet_file: str | pathlib.Path) -> dict[str, str]:
+    try:
+        return {
+            key: value
+            for key, value in pl.read_parquet_metadata(parquet_file).items()
+            if not key.startswith("ARROW:")
+        }
+    except Exception:
+        return {}
+
+
+def _merge_compare_metadata(
+    parquet_files: list[pathlib.Path],
+    *,
+    allow_mismatch: bool,
+) -> dict[str, str]:
+    metadata_by_file = [_read_custom_parquet_metadata(path) for path in parquet_files]
+    compare_keys = sorted(
+        {
+            key
+            for metadata in metadata_by_file
+            for key in metadata
+            if key.startswith(COMPARE_METADATA_PREFIX)
+        }
+    )
+    if not compare_keys:
+        return {}
+
+    merged: dict[str, str] = {}
+    mismatches: list[str] = []
+    for key in compare_keys:
+        values = [metadata.get(key) for metadata in metadata_by_file]
+        first = values[0]
+        if first is not None and all(value == first for value in values):
+            merged[key] = first
+            continue
+        mismatches.append(f"{key}={values}")
+        merged[key] = COMPARE_METADATA_MISSING_VALUE
+
+    if mismatches and not allow_mismatch:
+        mismatch_preview = "; ".join(mismatches[:5])
+        raise ValueError(
+            "Parquet metadata mismatch across inputs. "
+            f"Use allow_mismatch=True to merge anyway. Details: {mismatch_preview}"
+        )
+    return merged
+
+
+def _merge_parquet_chunk(
+    parquet_files: list[pathlib.Path],
+    output_file: pathlib.Path,
+    *,
+    allow_mismatch: bool,
+) -> None:
     """Merge a bounded list of parquet files into one parquet file."""
+    merged_metadata = _merge_compare_metadata(parquet_files, allow_mismatch=allow_mismatch)
+    sink_kwargs = {"compression": "zstd"}
+    if merged_metadata:
+        sink_kwargs["metadata"] = merged_metadata
     pl.concat([pl.scan_parquet(path) for path in parquet_files]).sink_parquet(
         output_file,
-        compression="zstd",
+        **sink_kwargs,
     )
+
+
+def read_profile_contract_metadata(profile_parquet: str | pathlib.Path) -> dict[str, str]:
+    """Read the ZipStrain contract metadata from a classic profile parquet."""
+    try:
+        raw_metadata = pl.read_parquet_metadata(profile_parquet)
+    except Exception:
+        return {}
+
+    contract_metadata: dict[str, str] = {}
+    for logical_name, parquet_key in PROFILE_CONTRACT_METADATA_KEYS.items():
+        value = raw_metadata.get(parquet_key)
+        if value not in (None, ""):
+            contract_metadata[logical_name] = value
+    return contract_metadata
+
+
+def _shared_metadata_value(
+    left_metadata: dict[str, str],
+    right_metadata: dict[str, str],
+    logical_name: str,
+) -> str:
+    left_value = left_metadata.get(logical_name)
+    right_value = right_metadata.get(logical_name)
+    if left_value and right_value and left_value == right_value:
+        return left_value
+    return COMPARE_METADATA_MISSING_VALUE
+
+
+def build_single_compare_metadata(
+    profile_1: str | pathlib.Path,
+    profile_2: str | pathlib.Path,
+    *,
+    compare_kind: str,
+    scope: str,
+    min_cov: int,
+    min_gene_compare_len: int,
+    engine: str,
+    uses_stb: bool,
+) -> dict[str, str]:
+    """Build mismatch-tolerant metadata for a single compare parquet."""
+    left_metadata = read_profile_contract_metadata(profile_1)
+    right_metadata = read_profile_contract_metadata(profile_2)
+    return {
+        COMPARE_KIND_METADATA_KEY: compare_kind,
+        COMPARE_SCOPE_METADATA_KEY: scope,
+        COMPARE_MIN_COV_METADATA_KEY: str(min_cov),
+        COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
+        COMPARE_ENGINE_METADATA_KEY: engine,
+        COMPARE_USES_STB_METADATA_KEY: "1" if uses_stb else "0",
+        COMPARE_REFERENCE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "reference_hash"),
+        COMPARE_GENE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "gene_hash"),
+        COMPARE_NULL_MODEL_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "null_model_hash"),
+        COMPARE_STB_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "stb_hash"),
+    }
+
+
+def rewrite_parquet_with_metadata(
+    parquet_file: str | pathlib.Path,
+    metadata: dict[str, str],
+    *,
+    compression: str = "zstd",
+) -> pathlib.Path:
+    """Rewrite a parquet file in-place so it carries the provided custom metadata."""
+    parquet_path = pathlib.Path(parquet_file)
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with TemporaryDirectory(prefix=f"{parquet_path.stem}.metadata.", dir=parquet_path.parent) as tmp_dir:
+        tmp_path = pathlib.Path(tmp_dir) / parquet_path.name
+        pl.scan_parquet(parquet_path).sink_parquet(
+            tmp_path,
+            compression=compression,
+            metadata=metadata,
+        )
+        tmp_path.replace(parquet_path)
+    return parquet_path
 
 
 def _iter_parquet_batches(parquet_files: list[pathlib.Path], batch_size: int):
@@ -63,6 +221,7 @@ def merge_parquet_files(
     input_dir: str | pathlib.Path,
     output_file: str | pathlib.Path,
     batch_size: int = -1,
+    allow_mismatch: bool = False,
     progress_callback: Callable[[str], None] | None = None,
 ) -> pathlib.Path:
     """
@@ -97,7 +256,7 @@ def merge_parquet_files(
 
     if batch_size == -1 or total_files <= batch_size:
         emit(f"merge_parquet: single-pass merge start ({total_files} files)")
-        _merge_parquet_chunk(parquet_files, output_path)
+        _merge_parquet_chunk(parquet_files, output_path, allow_mismatch=allow_mismatch)
         emit(f"merge_parquet: single-pass merge done -> {output_path}")
         return output_path
 
@@ -114,7 +273,7 @@ def merge_parquet_files(
                 f"merge_parquet: batch {batch_idx}/{batch_count} start "
                 f"({len(batch_files)} files; processed {processed_files}/{total_files})"
             )
-            _merge_parquet_chunk(batch_files, batch_output)
+            _merge_parquet_chunk(batch_files, batch_output, allow_mismatch=allow_mismatch)
             batch_outputs.append(batch_output)
             emit(
                 f"merge_parquet: batch {batch_idx}/{batch_count} done "
@@ -125,7 +284,7 @@ def merge_parquet_files(
             f"merge_parquet: final merge start "
             f"({len(batch_outputs)} batch outputs)"
         )
-        _merge_parquet_chunk(batch_outputs, output_path)
+        _merge_parquet_chunk(batch_outputs, output_path, allow_mismatch=allow_mismatch)
         emit(f"merge_parquet: final merge done -> {output_path}")
         return output_path
 
@@ -833,7 +992,10 @@ def make_the_bed(db_fasta_dir: str | pathlib.Path, max_scaffold_length: int = 50
                 end = min(start + max_scaffold_length, len(seq))
                 records.append((scaffold, start, end))
 
-    return pl.DataFrame(records, schema=["scaffold", "start", "end"], orient="row")
+    return (
+        pl.DataFrame(records, schema=["scaffold", "start", "end"], orient="row")
+        .sort(["scaffold", "start", "end"])
+    )
 
 
 def infer_sample_name_from_stat_table(stat_table: str | pathlib.Path) -> str:
@@ -847,7 +1009,10 @@ def infer_sample_name_from_stat_table(stat_table: str | pathlib.Path) -> str:
 
 def infer_sample_name_from_profile(profile_path: str | pathlib.Path) -> str:
     """Infer sample name from a classic profile parquet path."""
-    return pathlib.Path(profile_path).stem
+    stem = pathlib.Path(profile_path).stem
+    if stem.endswith("_profile"):
+        return stem[:-len("_profile")]
+    return stem
 
 
 def _looks_like_classic_profile_parquet(path: pathlib.Path) -> bool:
@@ -869,9 +1034,9 @@ def discover_classic_profile_parquets(profile_dir: str | pathlib.Path) -> list[p
         path for path in input_dir.glob("*.parquet")
         if path.is_file() and _looks_like_classic_profile_parquet(path)
     )
-    sample_names = [path.stem for path in profiles]
+    sample_names = [infer_sample_name_from_profile(path) for path in profiles]
     if len(sample_names) != len(set(sample_names)):
-        raise ValueError("Profile file stems must be unique to derive unique sample names.")
+        raise ValueError("Profile file names must map to unique sample names after _profile normalization.")
     return profiles
 
 
@@ -982,7 +1147,7 @@ def generate_genome_pairs(
     output_path = pathlib.Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     profiles = discover_classic_profile_parquets(profile_dir)
-    sample_rows = [(path.stem, str(path.resolve())) for path in profiles]
+    sample_rows = [(infer_sample_name_from_profile(path), str(path.resolve())) for path in profiles]
     total_profiles = len(sample_rows)
     total_pairs = total_profiles * (total_profiles - 1) // 2
 

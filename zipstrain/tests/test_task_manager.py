@@ -306,7 +306,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
     assert len(tasks) == 1
     expected_outputs = tasks[0].expected_outputs
     assert set(expected_outputs.keys()) == {"profile", "genome-stats", "gene-stats"}
-    assert expected_outputs["profile"]._expected_file_name == "sample_1.parquet"
+    assert expected_outputs["profile"]._expected_file_name == "sample_1_profile.parquet"
     assert expected_outputs["genome-stats"]._expected_file_name == "sample_1_genome_stats.parquet"
     assert expected_outputs["gene-stats"]._expected_file_name == "sample_1_gene_stats.parquet"
 
@@ -314,6 +314,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
 def test_profile_bam_task_template_moves_gene_stats():
     cmd = task_manager.ProfileBamTask.TEMPLATE_CMD
     assert "--null-model null_model.parquet" in cmd
+    assert "mv input_profile.parquet <sample-name>_profile.parquet" in cmd
     assert "mv input_gene_stats.parquet <sample-name>_gene_stats.parquet" in cmd
 
 
@@ -372,8 +373,6 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
         }
     ).lazy()
     config = database.GenomeComparisonConfig(
-        gene_db_id="gene_ref",
-        reference_id="ref",
         scope="all",
         min_cov=5,
         min_gene_compare_len=100,
@@ -424,8 +423,6 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
         }
     ).lazy()
     config = database.GenomeComparisonConfig(
-        gene_db_id="gene_ref",
-        reference_id="ref",
         scope="all",
         min_cov=5,
         min_gene_compare_len=100,
@@ -474,8 +471,6 @@ def test_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path):
         }
     ).lazy()
     config = database.GenomeComparisonConfig(
-        gene_db_id="gene_ref",
-        reference_id="ref",
         scope="all",
         min_cov=5,
         min_gene_compare_len=100,
@@ -547,8 +542,6 @@ def test_gene_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_pat
         }
     ).lazy()
     config = database.GeneComparisonConfig(
-        gene_db_id="gene_ref",
-        reference_genome_id="ref",
         scope="all:all",
         min_cov=5,
         min_gene_compare_len=100,
@@ -593,8 +586,6 @@ def test_gene_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path)
         }
     ).lazy()
     config = database.GeneComparisonConfig(
-        gene_db_id="gene_ref",
-        reference_genome_id="ref",
         scope="all:all",
         min_cov=5,
         min_gene_compare_len=100,

@@ -125,20 +125,20 @@ Outputs include:
 |---|---|
 | `zipstrain compare genomes` | Batch genome-level comparisons |
 | `zipstrain compare genes` | Batch gene-level comparisons |
-| `zipstrain compare build-comp-database` | Build comparison DB object from profile DB + config |
 | `zipstrain utilities single_compare_genome` | Compare one pair at genome level |
 | `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
 | `zipstrain utilities single_compare_gene` | Compare one pair at gene level |
 | `zipstrain utilities generate-genome-pairs` | Create all non-redundant standard-profile pairs |
-| `zipstrain utilities build-genome-comparison-config` | Build genome comparison config |
-| `zipstrain utilities build-gene-comparison-config` | Build gene comparison config |
+| `zipstrain utilities build-profile-db` | Build a profile DB parquet from `profile_name,profile_location` |
 | `zipstrain utilities to-complete-table` | Emit not-yet-completed pair table |
 
 ### `zipstrain compare genomes`
 
 ```bash
 zipstrain compare genomes \
-  --genome-comparison-object genome_comp.json \
+  --profile-db profile_db.parquet \
+  --scope all \
+  --stb-file mapping.stb \
   --run-dir compare_run \
   --ani-method popani \
   --engine duckdb \
@@ -147,7 +147,12 @@ zipstrain compare genomes \
 
 Options:
 
-- `-g, --genome-comparison-object` (required)
+- `--profile-db` (required)
+- `--comp-db-file` (optional current genome comparison parquet)
+- `--scope` (default: `all`)
+- `--min-cov` (default: `5`)
+- `--min-gene-compare-len` (default: `100`)
+- `--stb-file` (optional)
 - `-r, --run-dir` (required)
 - `-m, --max-concurrent-batches` (default: `5`)
 - `-p, --poll-interval` (default: `1`)
@@ -165,13 +170,20 @@ Options:
 
 ```bash
 zipstrain compare genes \
-  --gene-comparison-object gene_comp.json \
+  --profile-db profile_db.parquet \
+  --scope all:all \
+  --stb-file mapping.stb \
   --run-dir gene_compare_run
 ```
 
 Options:
 
-- `-g, --gene-comparison-object` (required)
+- `--profile-db` (required)
+- `--comp-db-file` (optional current gene comparison parquet)
+- `--scope` (default: `all:all`)
+- `--min-cov` (default: `5`)
+- `--min-gene-compare-len` (default: `100`)
+- `--stb-file` (optional)
 - `-r, --run-dir` (required)
 - `-m, --max-concurrent-batches` (default: `5`)
 - `-p, --poll-interval` (default: `1`)
@@ -183,22 +195,6 @@ Options:
 - `--engine` (`polars|duckdb`, default: `polars`)
 - `-d, --duckdb-memory-limit`
 - `--duckdb-threads`
-
-### `zipstrain compare build-comp-database`
-
-```bash
-zipstrain compare build-comp-database \
-  --profile-db-dir profiles.parquet \
-  --config-file comparison_config.json \
-  --output-dir comparison_db
-```
-
-Options:
-
-- `-p, --profile-db-dir` (required)
-- `-c, --config-file` (required)
-- `-o, --output-dir` (required)
-- `-f, --comp-db-file`
 
 ### `zipstrain utilities single_compare_genome`
 
@@ -321,27 +317,20 @@ Options:
 - `--duckdb-temp-directory`
 - `--duckdb-threads`
 
-### Comparison Config Helpers
-
-`build-genome-comparison-config` and `build-gene-comparison-config` share the same option pattern:
-
-- `-p, --profile-db` (required)
-- `-g, --gene-db-id` (required)
-- `-r, --reference-genome-id` (required)
-- `-s, --scope` (default: `all` for genome, `all:all` for gene)
-- `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `200`)
-- `-t, --stb-file-loc` (required)
-- `-a, --current-comp-table`
-- `-o, --output-file` (required)
-
 ### `zipstrain utilities to-complete-table`
 
 ```bash
 zipstrain utilities to-complete-table \
-  --genome-comparison-object genome_comp.json \
+  --profile-db profile_db.parquet \
+  --comp-db-file current_compare.parquet \
   --output-file remaining_pairs.csv
 ```
+
+Options:
+
+- `--profile-db` (required)
+- `--comp-db-file` (optional)
+- `-o, --output-file` (required)
 
 ## Utilities
 
@@ -586,6 +575,26 @@ Notes:
 - `--batch-size -1` keeps the current single-pass merge behavior.
 - Positive `--batch-size` values first merge input files batch-by-batch into a temporary directory, then do one final lazy merge over those batch outputs.
 - Progress is logged as active line-oriented batch updates and flushed immediately, which is easier to follow in cluster logs.
+- When input files contain ZipStrain compare metadata, those metadata fields must match across inputs unless `--allow-mismatch` is used.
+- With `--allow-mismatch`, mismatched compare metadata are rewritten to `NA` in the merged parquet metadata.
+
+### `zipstrain utilities build-profile-db`
+
+```bash
+zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file profile_db.parquet
+```
+
+Input CSV columns:
+
+- `profile_name`
+- `profile_location`
+
+Notes:
+
+- By default, ZipStrain checks that all listed profiles carry matching embedded contract metadata.
+- Use `--allow-mismatch` to skip that validation and build a mixed profile DB intentionally.
 
 ### `zipstrain utilities get-coverage-stats`
 

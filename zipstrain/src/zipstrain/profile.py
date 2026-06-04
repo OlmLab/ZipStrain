@@ -6,16 +6,35 @@ This is a fundamental step for downstream analysis in zipstrain.
 """
 import pathlib
 import polars as pl
+from bisect import bisect_right
 from typing import Generator, Optional
 from zipstrain import utils
 import asyncio
 import os
+import re
+import shutil
 import duckdb
 import tempfile
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
+PROFILE_WRITE_BATCH_SIZE = 10_000
+PROFILE_PARQUET_SCHEMA = pa.schema(
+    [
+        ("chrom", pa.string()),
+        ("genome", pa.string()),
+        ("gene", pa.string()),
+        ("pos", pa.int32()),
+        ("A", pa.int32()),
+        ("C", pa.int32()),
+        ("G", pa.int32()),
+        ("T", pa.int32()),
+    ]
+)
+MPILEUP_INDEL_RE = re.compile(r"\^.|[\$]|[+-](\d+)")
 
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
@@ -181,22 +200,30 @@ def _write_sorted_profile_with_metadata(
     output_file: pathlib.Path,
     tmp_dir: pathlib.Path,
 ) -> None:
-    """Write the final profile parquet sorted by coordinate and tagged in metadata."""
+    """Write the final profile parquet and only fall back to sorting when needed."""
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    unsorted_path = tmp_dir / f"{output_file.stem}.unsorted.parquet"
-    unsorted_path.unlink(missing_ok=True)
+    candidate_path = tmp_dir / f"{output_file.stem}.candidate.parquet"
+    candidate_path.unlink(missing_ok=True)
 
     profile_lf.sink_parquet(
-        unsorted_path,
+        candidate_path,
         compression="zstd",
         engine="streaming",
     )
 
-    _sort_existing_profile_parquet(
-        input_file=unsorted_path,
-        output_file=output_file,
-        tmp_dir=tmp_dir,
-    )
+    if _parquet_rows_are_coordinate_sorted(candidate_path):
+        pl.scan_parquet(candidate_path).sink_parquet(
+            output_file,
+            compression="zstd",
+            engine="streaming",
+            metadata={PROFILE_SORTED_METADATA_KEY: PROFILE_SORTED_METADATA_VALUE},
+        )
+    else:
+        _sort_existing_profile_parquet(
+            input_file=candidate_path,
+            output_file=output_file,
+            tmp_dir=tmp_dir,
+        )
 
 
 def _sort_existing_profile_parquet(
@@ -277,6 +304,186 @@ def _profile_parquet_is_coordinate_sorted(profile_parquet: pathlib.Path) -> bool
     except Exception:
         return False
     return metadata.get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE
+
+
+def _parquet_rows_are_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
+    """Check row order without materializing the full parquet in memory."""
+    check_expr = (
+        pl.when(pl.col("chrom").shift(1).is_null())
+        .then(True)
+        .otherwise(
+            (pl.col("chrom") > pl.col("chrom").shift(1))
+            | (
+                (pl.col("chrom") == pl.col("chrom").shift(1))
+                & (pl.col("pos") >= pl.col("pos").shift(1))
+            )
+        )
+        .all()
+        .alias("is_sorted")
+    )
+    return bool(
+        pl.scan_parquet(profile_parquet)
+        .select(check_expr)
+        .collect(engine="streaming")
+        .item()
+    )
+
+
+def _build_null_model_threshold_lookup(null_model: pl.LazyFrame) -> dict[int, int]:
+    return {
+        int(cov): int(max_error_count)
+        for cov, max_error_count in (
+            null_model.select(["cov", "max_error_count"]).collect().iter_rows()
+        )
+    }
+
+
+def _build_scaffold_to_genome_lookup(stb: pl.LazyFrame) -> dict[str, str]:
+    return {
+        str(scaffold): str(genome)
+        for scaffold, genome in (
+            stb.select(["scaffold", "genome"]).collect().iter_rows()
+        )
+    }
+
+
+def _build_gene_lookup(
+    gene_range: pl.LazyFrame,
+) -> dict[str, tuple[list[int], list[tuple[int, int, str]]]]:
+    gene_df = (
+        gene_range.select(["gene", "scaffold", "start", "end"])
+        .collect()
+        .sort(["scaffold", "start"])
+    )
+    gene_lookup: dict[str, tuple[list[int], list[tuple[int, int, str]]]] = {}
+    for gene, scaffold, start, end in gene_df.iter_rows():
+        chrom = str(scaffold)
+        if chrom not in gene_lookup:
+            gene_lookup[chrom] = ([], [])
+        starts, intervals = gene_lookup[chrom]
+        starts.append(int(start))
+        intervals.append((int(start), int(end), str(gene)))
+    return gene_lookup
+
+
+def _lookup_gene_name(
+    gene_lookup: dict[str, tuple[list[int], list[tuple[int, int, str]]]],
+    chrom: str,
+    pos: int,
+) -> str:
+    starts_and_intervals = gene_lookup.get(chrom)
+    if starts_and_intervals is None:
+        return "NA"
+    starts, intervals = starts_and_intervals
+    interval_index = bisect_right(starts, pos) - 1
+    if interval_index < 0:
+        return "NA"
+    _, end, gene = intervals[interval_index]
+    return gene if pos <= end else "NA"
+
+
+async def _stream_profile_mpileup_chunk_to_parquet(
+    *,
+    bed_file: pathlib.Path,
+    bam_file: pathlib.Path,
+    output_parquet: pathlib.Path,
+    null_model_thresholds: dict[int, int],
+    scaffold_to_genome_lookup: dict[str, str],
+    gene_lookup: dict[str, tuple[list[int], list[tuple[int, int, str]]]],
+    batch_size: int = PROFILE_WRITE_BATCH_SIZE,
+) -> None:
+    """Stream one mpileup chunk directly into a final annotated parquet file."""
+    cmd = ["samtools", "mpileup", "-A", "-l", str(bed_file.absolute()), str(bam_file.absolute())]
+    proc = await asyncio.create_subprocess_shell(
+        " ".join(cmd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=output_parquet.parent,
+    )
+
+    chroms: list[str] = []
+    genomes: list[str] = []
+    genes: list[str] = []
+    positions: list[int] = []
+    As: list[int] = []
+    Cs: list[int] = []
+    Gs: list[int] = []
+    Ts: list[int] = []
+    writer: Optional[pq.ParquetWriter] = None
+    success = False
+
+    def flush_batch() -> None:
+        nonlocal writer
+        if not chroms:
+            return
+        batch = pa.RecordBatch.from_arrays(
+            [
+                pa.array(chroms, type=pa.string()),
+                pa.array(genomes, type=pa.string()),
+                pa.array(genes, type=pa.string()),
+                pa.array(positions, type=pa.int32()),
+                pa.array(As, type=pa.int32()),
+                pa.array(Cs, type=pa.int32()),
+                pa.array(Gs, type=pa.int32()),
+                pa.array(Ts, type=pa.int32()),
+            ],
+            schema=PROFILE_PARQUET_SCHEMA,
+        )
+        if writer is None:
+            writer = pq.ParquetWriter(str(output_parquet), PROFILE_PARQUET_SCHEMA, compression="zstd")
+        writer.write_table(pa.Table.from_batches([batch]))
+        chroms.clear()
+        genomes.clear()
+        genes.clear()
+        positions.clear()
+        As.clear()
+        Cs.clear()
+        Gs.clear()
+        Ts.clear()
+
+    try:
+        while True:
+            raw_line = await proc.stdout.readline()
+            if not raw_line:
+                break
+            line = raw_line.decode().strip()
+            if not line:
+                continue
+            fields = line.split("\t")
+            if len(fields) < 5:
+                continue
+            chrom, pos_str, _, _, bases = fields[:5]
+            counts = utils.count_bases(utils.clean_bases(bases, MPILEUP_INDEL_RE))
+            coverage = counts["A"] + counts["C"] + counts["G"] + counts["T"]
+            threshold = null_model_thresholds.get(coverage)
+            if threshold is None:
+                adjusted_a = adjusted_c = adjusted_g = adjusted_t = 0
+            else:
+                adjusted_a = counts["A"] if counts["A"] >= threshold else 0
+                adjusted_c = counts["C"] if counts["C"] >= threshold else 0
+                adjusted_g = counts["G"] if counts["G"] >= threshold else 0
+                adjusted_t = counts["T"] if counts["T"] >= threshold else 0
+            pos = int(pos_str)
+            chroms.append(chrom)
+            genomes.append(scaffold_to_genome_lookup.get(chrom, "NA"))
+            genes.append(_lookup_gene_name(gene_lookup, chrom, pos))
+            positions.append(pos)
+            As.append(adjusted_a)
+            Cs.append(adjusted_c)
+            Gs.append(adjusted_g)
+            Ts.append(adjusted_t)
+            if len(chroms) >= batch_size:
+                flush_batch()
+        stderr = await proc.stderr.read()
+        if await proc.wait() != 0:
+            raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+        flush_batch()
+        success = True
+    finally:
+        if writer is not None:
+            writer.close()
+        if not success:
+            output_parquet.unlink(missing_ok=True)
 
 
 def _annotate_mpileup_chunk_with_duckdb(
@@ -425,58 +632,20 @@ def get_strain_hetrogeneity(profile:pl.LazyFrame,
 async def _profile_chunk_task(
     bed_file:pathlib.Path,
     bam_file:pathlib.Path,
-    gene_range_table: Optional[pathlib.Path],
-    stb:pl.LazyFrame,
-    null_model:pl.LazyFrame,
+    scaffold_to_genome_lookup: dict[str, str],
+    gene_lookup: dict[str, tuple[list[int], list[tuple[int, int, str]]]],
+    null_model_thresholds: dict[int, int],
     output_dir:pathlib.Path,
     chunk_id:int
 )->None:
-    cmd=["samtools", "mpileup", "-A", "-l", str(bed_file.absolute()), str(bam_file.absolute())]
-    cmd += ["|", "zipstrain", "utilities", "process_mpileup", "--output-file", f"{bam_file.stem}_{chunk_id}_pre.parquet"]
-    proc = await asyncio.create_subprocess_shell(
-                " ".join(cmd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=output_dir
-            )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
-    else:
-        pre_parquet = output_dir / f"{bam_file.stem}_{chunk_id}_pre.parquet"
-        adjusted_parquet = output_dir / f"{bam_file.stem}_{chunk_id}_adjusted.parquet"
-        final_parquet = output_dir / f"{bam_file.stem}_{chunk_id}.parquet"
-        mpileup=pl.scan_parquet(pre_parquet)
-        scaffolds=pl.scan_csv(bed_file,has_header=False,separator="\t").select("column_1").unique().collect().to_series().to_list()
-        if pre_parquet.exists():
-            adjusted_mpileup = adjust_for_sequence_errors(
-                mpile_frame=mpileup,
-                null_model=null_model
-            ).select(["chrom", "pos", "A", "C", "G", "T"])
-            adjusted_mpileup.sink_parquet(
-                adjusted_parquet,
-                compression="zstd",
-                engine="streaming",
-            )
-            if gene_range_table is None:
-                gene_range_lf = empty_gene_range_table()
-            else:
-                gene_range_lf = pl.scan_csv(
-                    gene_range_table,
-                    has_header=False,
-                    separator="\t",
-                ).rename({
-                    "column_1": "gene",
-                    "column_2": "scaffold",
-                    "column_3": "start",
-                    "column_4": "end",
-                }).filter(pl.col("scaffold").is_in(scaffolds))
-            _annotate_mpileup_chunk_with_duckdb(
-                adjusted_mpileup_parquet=adjusted_parquet,
-                output_parquet=final_parquet,
-                scaffold_to_genome=stb.filter(pl.col("scaffold").is_in(scaffolds)).select(["scaffold", "genome"]),
-                gene_range=gene_range_lf,
-            )
+    await _stream_profile_mpileup_chunk_to_parquet(
+        bed_file=bed_file,
+        bam_file=bam_file,
+        output_parquet=output_dir / f"{bam_file.stem}_{chunk_id}.parquet",
+        null_model_thresholds=null_model_thresholds,
+        scaffold_to_genome_lookup=scaffold_to_genome_lookup,
+        gene_lookup=gene_lookup,
+    )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(
                 " ".join(cmd),
@@ -493,9 +662,9 @@ async def _run_profile_chunk_with_semaphore(
     *,
     bed_file: pathlib.Path,
     bam_file: pathlib.Path,
-    gene_range_table: Optional[pathlib.Path],
-    stb: pl.LazyFrame,
-    null_model: pl.LazyFrame,
+    scaffold_to_genome_lookup: dict[str, str],
+    gene_lookup: dict[str, tuple[list[int], list[tuple[int, int, str]]]],
+    null_model_thresholds: dict[int, int],
     output_dir: pathlib.Path,
     chunk_id: int,
 ) -> None:
@@ -504,9 +673,9 @@ async def _run_profile_chunk_with_semaphore(
         await _profile_chunk_task(
             bed_file=bed_file,
             bam_file=bam_file,
-            gene_range_table=gene_range_table,
-            stb=stb,
-            null_model=null_model,
+            scaffold_to_genome_lookup=scaffold_to_genome_lookup,
+            gene_lookup=gene_lookup,
+            null_model_thresholds=null_model_thresholds,
             output_dir=output_dir,
             chunk_id=chunk_id,
         )
@@ -556,6 +725,9 @@ async def profile_bam_in_chunks(
             "column_3": "start",
             "column_4": "end",
         })
+    null_model_thresholds = _build_null_model_threshold_lookup(null_model)
+    scaffold_to_genome_lookup = _build_scaffold_to_genome_lookup(stb)
+    gene_lookup = _build_gene_lookup(gene_range_lf)
     bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
     for chunk_id, bed_file in enumerate(bed_chunks):
@@ -568,9 +740,9 @@ async def profile_bam_in_chunks(
             semaphore,
             bed_file=bed_chunk_file,
             bam_file=bam_file,
-            gene_range_table=gene_range_table_path,
-            stb=stb,
-            null_model=null_model,
+            scaffold_to_genome_lookup=scaffold_to_genome_lookup,
+            gene_lookup=gene_lookup,
+            null_model_thresholds=null_model_thresholds,
             output_dir=output_dir/"tmp",
             chunk_id=chunk_id
         ))
@@ -628,7 +800,7 @@ async def profile_bam_in_chunks(
         ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
     
     
-    os.system(f"rm -r {output_dir}/tmp")
+    shutil.rmtree(output_dir / "tmp", ignore_errors=True)
 
 def profile_bam(
     bed_file:str,

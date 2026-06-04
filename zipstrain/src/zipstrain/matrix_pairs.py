@@ -34,6 +34,8 @@ MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps"
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
 MATRIX_HDF5_SUFFIXES = (".h5", ".hdf5", ".hd5")
 HDF5_FILE_SIGNATURE = b"\x89HDF\r\n\x1a\n"
+MATRIX_HDF5_CONTRACT_GENOMES_GROUP = "contract_genomes"
+MATRIX_HDF5_CONTRACT_SCAFFOLDS_GROUP = "contract_genome_scaffolds"
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
 MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs", "gene")
@@ -289,6 +291,7 @@ class MatrixDbAppendSummary:
     total_sample_count: int
     scaffold_count: int
     stored_rows: int
+    ignored_genome_count: int
     count_dtype: str
     genome_scope: str
     memory_limit_gb: float
@@ -302,6 +305,7 @@ class MatrixHdf5AppendSummary:
     total_sample_count: int
     scaffold_count: int
     stored_rows: int
+    ignored_genome_count: int
     count_dtype: str
     genome_scope: str
     memory_limit_gb: float
@@ -442,6 +446,117 @@ def _read_hdf5_string_dataset(dataset) -> list[str]:
         value.decode("utf-8") if isinstance(value, (bytes, bytearray, np.bytes_)) else str(value)
         for value in raw.tolist()
     ]
+
+
+def _write_hdf5_genomes_group(
+    h5_file,
+    group_name: str,
+    genomes: list[GenomeSpec],
+    *,
+    h5py_module,
+) -> None:
+    genomes_group = h5_file.create_group(group_name)
+    genomes_group.create_dataset(
+        "genome_idx",
+        data=np.asarray([spec.genome_idx for spec in genomes], dtype=np.int64),
+    )
+    _write_hdf5_string_dataset(
+        genomes_group,
+        "genome",
+        [spec.genome for spec in genomes],
+        h5py_module=h5py_module,
+    )
+    genomes_group.create_dataset(
+        "matrix_length",
+        data=np.asarray([spec.matrix_length for spec in genomes], dtype=np.int64),
+    )
+    genomes_group.create_dataset(
+        "true_length",
+        data=np.asarray([spec.true_length for spec in genomes], dtype=np.int64),
+    )
+    genomes_group.create_dataset(
+        "scaffold_count",
+        data=np.asarray([spec.scaffold_count for spec in genomes], dtype=np.int64),
+    )
+
+
+def _write_hdf5_genome_scaffolds_group(
+    h5_file,
+    group_name: str,
+    genome_scaffolds: list[GenomeScaffoldOffset],
+    *,
+    h5py_module,
+) -> None:
+    scaffold_group = h5_file.create_group(group_name)
+    scaffold_group.create_dataset(
+        "genome_idx",
+        data=np.asarray([spec.genome_idx for spec in genome_scaffolds], dtype=np.int64),
+    )
+    scaffold_group.create_dataset(
+        "scaffold_ordinal",
+        data=np.asarray([spec.scaffold_ordinal for spec in genome_scaffolds], dtype=np.int64),
+    )
+    _write_hdf5_string_dataset(
+        scaffold_group,
+        "genome",
+        [spec.genome for spec in genome_scaffolds],
+        h5py_module=h5py_module,
+    )
+    _write_hdf5_string_dataset(
+        scaffold_group,
+        "chrom",
+        [spec.chrom for spec in genome_scaffolds],
+        h5py_module=h5py_module,
+    )
+    for field_name in ("axis_start", "axis_end", "index_base", "vector_length", "min_pos", "max_pos"):
+        scaffold_group.create_dataset(
+            field_name,
+            data=np.asarray([getattr(spec, field_name) for spec in genome_scaffolds], dtype=np.int64),
+        )
+
+
+def _write_hdf5_gene_ranges_group(
+    h5_file,
+    group_name: str,
+    gene_ranges: list[GeneRangeSpec],
+    *,
+    h5py_module,
+) -> None:
+    genes_group = h5_file.create_group(group_name)
+    genes_group.create_dataset(
+        "gene_idx",
+        data=np.asarray([spec.gene_idx for spec in gene_ranges], dtype=np.int64),
+    )
+    genes_group.create_dataset(
+        "genome_idx",
+        data=np.asarray([spec.genome_idx for spec in gene_ranges], dtype=np.int64),
+    )
+    _write_hdf5_string_dataset(
+        genes_group,
+        "genome",
+        [spec.genome for spec in gene_ranges],
+        h5py_module=h5py_module,
+    )
+    _write_hdf5_string_dataset(
+        genes_group,
+        "chrom",
+        [spec.chrom for spec in gene_ranges],
+        h5py_module=h5py_module,
+    )
+    _write_hdf5_string_dataset(
+        genes_group,
+        "gene",
+        [spec.gene for spec in gene_ranges],
+        h5py_module=h5py_module,
+    )
+    genes_group.create_dataset(
+        "axis_start",
+        data=np.asarray([spec.axis_start for spec in gene_ranges], dtype=np.int64),
+    )
+    genes_group.create_dataset(
+        "axis_end",
+        data=np.asarray([spec.axis_end for spec in gene_ranges], dtype=np.int64),
+    )
 
 
 def _hdf5_matrix_dataset_path(genome_idx: int) -> str:
@@ -742,6 +857,134 @@ def _collect_scaffold_specs_from_bed(
     return specs
 
 
+def _read_stb_mapping(stb_file: Path) -> pl.DataFrame:
+    stb_path = Path(stb_file)
+    if not stb_path.exists():
+        raise FileNotFoundError(f"STB file does not exist: {stb_path}")
+    if not stb_path.is_file():
+        raise FileNotFoundError(f"STB path is not a file: {stb_path}")
+
+    mapping = (
+        pl.scan_csv(stb_path, separator="\t", has_header=False)
+        .select(
+            pl.col("column_1").cast(pl.Utf8).alias("scaffold"),
+            pl.col("column_2").cast(pl.Utf8).alias("genome"),
+        )
+        .collect(engine="streaming")
+    )
+    duplicate_scaffolds = (
+        mapping.group_by("scaffold")
+        .agg(pl.col("genome").n_unique().alias("genome_count"))
+        .filter(pl.col("genome_count") > 1)
+        .get_column("scaffold")
+        .to_list()
+    )
+    if duplicate_scaffolds:
+        raise ValueError(
+            "STB file must map each scaffold to exactly one genome. "
+            "Duplicate scaffold mappings found for: "
+            + ", ".join(sorted(str(name) for name in duplicate_scaffolds))
+        )
+    return mapping.unique(["scaffold", "genome"])
+
+
+def _collect_scaffold_specs_from_bed_and_stb(
+    *,
+    bed_file: Path,
+    stb_file: Path,
+    genome: Optional[str] = None,
+) -> list[ScaffoldSpec]:
+    bed_path = Path(bed_file)
+    if not bed_path.exists():
+        raise FileNotFoundError(f"BED file does not exist: {bed_path}")
+    if not bed_path.is_file():
+        raise FileNotFoundError(f"BED path is not a file: {bed_path}")
+
+    bed_spans = (
+        pl.scan_csv(bed_path, separator="\t", has_header=False)
+        .select(
+            pl.col("column_1").cast(pl.Utf8).alias("chrom"),
+            pl.col("column_2").cast(pl.Int64).alias("start"),
+            pl.col("column_3").cast(pl.Int64).alias("end"),
+        )
+        .group_by("chrom")
+        .agg(
+            pl.col("start").min().alias("min_start"),
+            pl.col("end").max().alias("max_end"),
+        )
+        .collect(engine="streaming")
+    )
+    if bed_spans.height == 0:
+        raise ValueError(f"No scaffold intervals found in BED file: {bed_path}")
+
+    stb_mapping = _read_stb_mapping(Path(stb_file))
+    if genome is not None:
+        stb_mapping = stb_mapping.filter(pl.col("genome") == genome)
+    if stb_mapping.height == 0:
+        detail = genome if genome is not None else "all"
+        raise ValueError(f"No STB rows found for genome scope: {detail}")
+
+    contract_df = stb_mapping.join(
+        bed_spans,
+        left_on="scaffold",
+        right_on="chrom",
+        how="left",
+    )
+    missing_scaffolds = (
+        contract_df
+        .filter(pl.col("max_end").is_null() | pl.col("min_start").is_null())
+        .get_column("scaffold")
+        .to_list()
+    )
+    if missing_scaffolds:
+        raise ValueError(
+            "BED file is missing scaffold intervals for the following STB scaffolds: "
+            + ", ".join(sorted(str(name) for name in missing_scaffolds))
+        )
+
+    specs: list[ScaffoldSpec] = []
+    for scaffold_idx, row in enumerate(contract_df.sort(["genome", "scaffold"]).iter_rows(named=True)):
+        min_start = int(row["min_start"])
+        max_end = int(row["max_end"])
+        index_base = min_start + 1
+        vector_length = max_end - min_start
+        if vector_length <= 0:
+            raise ValueError(
+                f"Invalid BED span for scaffold {row['scaffold']}: start={min_start}, end={max_end}"
+            )
+        specs.append(
+            ScaffoldSpec(
+                scaffold_idx=scaffold_idx,
+                genome=str(row["genome"]),
+                chrom=str(row["scaffold"]),
+                index_base=index_base,
+                vector_length=vector_length,
+                min_pos=index_base,
+                max_pos=max_end,
+            )
+        )
+    return specs
+
+
+def _collect_profile_genome_names(
+    profile_paths: list[Path],
+    genome: Optional[str] = None,
+) -> set[str]:
+    scope = pl.lit(True)
+    if genome is not None:
+        scope = scope & (pl.col("genome") == genome)
+    genomes = (
+        pl.scan_parquet([str(path) for path in profile_paths])
+        .filter(scope)
+        .select(pl.col("genome").cast(pl.Utf8))
+        .unique()
+        .collect(engine="streaming")
+        .get_column("genome")
+        .to_list()
+    )
+    return {str(genome_name) for genome_name in genomes}
+
+
 def _build_genome_specs(
     scaffolds: list[ScaffoldSpec],
 ) -> tuple[list[GenomeSpec], list[GenomeScaffoldOffset]]:
@@ -786,6 +1029,18 @@ def _build_genome_specs(
             )
         )
     return genomes, offsets
+
+
+def _subset_contract_to_genomes(
+    *,
+    contract_genomes: list[GenomeSpec],
+    contract_genome_scaffolds: list[GenomeScaffoldOffset],
+    genome_names: set[str],
+) -> tuple[list[GenomeSpec], list[GenomeScaffoldOffset]]:
+    return (
+        [spec for spec in contract_genomes if spec.genome in genome_names],
+        [offset for offset in contract_genome_scaffolds if offset.genome in genome_names],
+    )
 
 
 def _collect_gene_range_specs(
@@ -1672,11 +1927,19 @@ def _validate_profile_against_matrix_contract(
     profile_path: Path,
     genomes: list[GenomeSpec],
     genome_scaffolds: list[GenomeScaffoldOffset],
+    genome_scope: Optional[str] = None,
+    accepted_genomes: Optional[set[str]] = None,
 ) -> None:
     genome_names = {spec.genome for spec in genomes}
     offsets_by_key = {(offset.genome, offset.chrom): offset for offset in genome_scaffolds}
+    scope = pl.lit(True)
+    if genome_scope is not None:
+        scope = scope & (pl.col("genome") == genome_scope)
+    if accepted_genomes is not None:
+        scope = scope & pl.col("genome").is_in(sorted(accepted_genomes))
     grouped = (
         pl.scan_parquet(profile_path)
+        .filter(scope)
         .select("genome", "chrom", "pos")
         .group_by(["genome", "chrom"])
         .agg(
@@ -1731,6 +1994,7 @@ def build_matrix_db(
     memory_limit_gb: float = 16.0,
     commit_batch_gb: Optional[float] = None,
     bed_file: Optional[Path] = None,
+    stb_file: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
     sparse: bool = False,
 ) -> MatrixDbSummary:
@@ -1741,6 +2005,7 @@ def build_matrix_db(
         count_dtype=count_dtype,
         memory_limit_gb=memory_limit_gb,
         bed_file=bed_file,
+        stb_file=stb_file,
         progress_callback=progress_callback,
         sparse=sparse,
         export_batch_mb=max(
@@ -1767,6 +2032,7 @@ def build_matrix_hdf5(
     count_dtype: str = "uint16",
     memory_limit_gb: float = 16.0,
     bed_file: Optional[Path] = None,
+    stb_file: Optional[Path] = None,
     gene_range_table: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
@@ -1781,22 +2047,37 @@ def build_matrix_hdf5(
         raise ValueError(f"Unsupported count dtype '{count_dtype}'. Choose one of {', '.join(COUNT_DTYPES)}.")
     if export_batch_mb <= 0:
         raise ValueError("export_batch_mb must be > 0")
+    if bed_file is None or stb_file is None:
+        raise ValueError("build_matrix_hdf5 requires both bed_file and stb_file.")
     profile_paths = discover_profile_parquets(profile_dir)
     genome_scope = None if genome == "all" else genome
-    if bed_file is None:
-        scaffolds = _collect_scaffold_specs(profile_paths=profile_paths, genome=genome_scope)
-    else:
-        scaffolds = _collect_scaffold_specs_from_bed(
-            profile_paths=profile_paths,
-            bed_file=Path(bed_file),
-            genome=genome_scope,
-        )
+    contract_scaffolds = _collect_scaffold_specs_from_bed_and_stb(
+        bed_file=Path(bed_file),
+        stb_file=Path(stb_file),
+        genome=genome_scope,
+    )
     if gene_range_table is not None:
-        scaffolds = _expand_scaffold_specs_with_gene_ranges(
-            scaffolds=scaffolds,
+        contract_scaffolds = _expand_scaffold_specs_with_gene_ranges(
+            scaffolds=contract_scaffolds,
             gene_range_table=Path(gene_range_table),
         )
-    genomes, genome_scaffolds = _build_genome_specs(scaffolds)
+    contract_genomes, contract_genome_scaffolds = _build_genome_specs(contract_scaffolds)
+    observed_genome_names = _collect_profile_genome_names(profile_paths=profile_paths, genome=genome_scope)
+    if not observed_genome_names:
+        detail = genome_scope if genome_scope is not None else "all"
+        raise ValueError(f"No profile rows found for genome scope: {detail}")
+    contract_genome_names = {spec.genome for spec in contract_genomes}
+    unknown_observed = observed_genome_names - contract_genome_names
+    if unknown_observed:
+        raise ValueError(
+            "Profiles contain genomes that are missing from the provided BED/STB contract: "
+            + ", ".join(sorted(unknown_observed))
+        )
+    genomes, genome_scaffolds = _subset_contract_to_genomes(
+        contract_genomes=contract_genomes,
+        contract_genome_scaffolds=contract_genome_scaffolds,
+        genome_names=observed_genome_names,
+    )
     gene_ranges = (
         _collect_gene_range_specs(
             gene_range_table=Path(gene_range_table),
@@ -1852,6 +2133,10 @@ def build_matrix_hdf5(
         }
         if gene_range_table is not None:
             metadata_rows["gene_range_table"] = str(Path(gene_range_table).resolve())
+        if bed_file is not None:
+            metadata_rows["bed_file"] = str(Path(bed_file).resolve())
+        if stb_file is not None:
+            metadata_rows["stb_file"] = str(Path(stb_file).resolve())
         scaffolds_by_genome_idx: dict[int, list[GenomeScaffoldOffset]] = {}
         for offset in genome_scaffolds:
             scaffolds_by_genome_idx.setdefault(offset.genome_idx, []).append(offset)
@@ -1880,92 +2165,33 @@ def build_matrix_hdf5(
                 maxshape=(None,),
             )
 
-            genomes_group = h5_file.create_group("genomes")
-            genomes_group.create_dataset(
-                "genome_idx",
-                data=np.asarray([spec.genome_idx for spec in genomes], dtype=np.int64),
-            )
-            _write_hdf5_string_dataset(
-                genomes_group,
-                "genome",
-                [spec.genome for spec in genomes],
+            _write_hdf5_genomes_group(h5_file, "genomes", genomes, h5py_module=h5py_module)
+            _write_hdf5_genome_scaffolds_group(
+                h5_file,
+                "genome_scaffolds",
+                genome_scaffolds,
                 h5py_module=h5py_module,
             )
-            genomes_group.create_dataset(
-                "matrix_length",
-                data=np.asarray([spec.matrix_length for spec in genomes], dtype=np.int64),
-            )
-            genomes_group.create_dataset(
-                "true_length",
-                data=np.asarray([spec.true_length for spec in genomes], dtype=np.int64),
-            )
-            genomes_group.create_dataset(
-                "scaffold_count",
-                data=np.asarray([spec.scaffold_count for spec in genomes], dtype=np.int64),
-            )
-
-            scaffold_group = h5_file.create_group("genome_scaffolds")
-            scaffold_group.create_dataset(
-                "genome_idx",
-                data=np.asarray([spec.genome_idx for spec in genome_scaffolds], dtype=np.int64),
-            )
-            scaffold_group.create_dataset(
-                "scaffold_ordinal",
-                data=np.asarray([spec.scaffold_ordinal for spec in genome_scaffolds], dtype=np.int64),
-            )
-            _write_hdf5_string_dataset(
-                scaffold_group,
-                "genome",
-                [spec.genome for spec in genome_scaffolds],
-                h5py_module=h5py_module,
-            )
-            _write_hdf5_string_dataset(
-                scaffold_group,
-                "chrom",
-                [spec.chrom for spec in genome_scaffolds],
-                h5py_module=h5py_module,
-            )
-            for field_name in ("axis_start", "axis_end", "index_base", "vector_length", "min_pos", "max_pos"):
-                scaffold_group.create_dataset(
-                    field_name,
-                    data=np.asarray([getattr(spec, field_name) for spec in genome_scaffolds], dtype=np.int64),
+            if contract_genomes is not None and contract_genome_scaffolds is not None:
+                _write_hdf5_genomes_group(
+                    h5_file,
+                    MATRIX_HDF5_CONTRACT_GENOMES_GROUP,
+                    contract_genomes,
+                    h5py_module=h5py_module,
+                )
+                _write_hdf5_genome_scaffolds_group(
+                    h5_file,
+                    MATRIX_HDF5_CONTRACT_SCAFFOLDS_GROUP,
+                    contract_genome_scaffolds,
+                    h5py_module=h5py_module,
                 )
 
             if gene_ranges:
-                genes_group = h5_file.create_group("genes")
-                genes_group.create_dataset(
-                    "gene_idx",
-                    data=np.asarray([spec.gene_idx for spec in gene_ranges], dtype=np.int64),
-                )
-                genes_group.create_dataset(
-                    "genome_idx",
-                    data=np.asarray([spec.genome_idx for spec in gene_ranges], dtype=np.int64),
-                )
-                _write_hdf5_string_dataset(
-                    genes_group,
-                    "genome",
-                    [spec.genome for spec in gene_ranges],
+                _write_hdf5_gene_ranges_group(
+                    h5_file,
+                    "genes",
+                    gene_ranges,
                     h5py_module=h5py_module,
-                )
-                _write_hdf5_string_dataset(
-                    genes_group,
-                    "chrom",
-                    [spec.chrom for spec in gene_ranges],
-                    h5py_module=h5py_module,
-                )
-                _write_hdf5_string_dataset(
-                    genes_group,
-                    "gene",
-                    [spec.gene for spec in gene_ranges],
-                    h5py_module=h5py_module,
-                )
-                genes_group.create_dataset(
-                    "axis_start",
-                    data=np.asarray([spec.axis_start for spec in gene_ranges], dtype=np.int64),
-                )
-                genes_group.create_dataset(
-                    "axis_end",
-                    data=np.asarray([spec.axis_end for spec in gene_ranges], dtype=np.int64),
                 )
 
             matrices_group = h5_file.create_group("matrices")
@@ -2076,7 +2302,7 @@ def build_matrix_hdf5(
         output_file=output_file,
         profile_files=len(profile_paths),
         sample_count=len(profile_paths),
-        scaffold_count=len(scaffolds),
+        scaffold_count=len(genome_scaffolds),
         stored_rows=stored_rows,
         count_dtype=count_dtype,
         genome_scope=genome_scope or "all",
@@ -2094,6 +2320,7 @@ def _append_matrix_hdf5_in_place(
     count_dtype: str,
     layout: str,
     genome_scope: str,
+    ignored_genome_count: int,
     memory_limit_gb: float,
     memory_limit_bytes: int,
     progress_callback: Optional[BuildProgressCallback],
@@ -2225,6 +2452,7 @@ def _append_matrix_hdf5_in_place(
         total_sample_count=total_sample_count,
         scaffold_count=len(genome_scaffolds),
         stored_rows=stored_rows,
+        ignored_genome_count=ignored_genome_count,
         count_dtype=count_dtype,
         genome_scope=genome_scope or "all",
         memory_limit_gb=memory_limit_gb,
@@ -2237,11 +2465,15 @@ def _append_matrix_hdf5_via_rewrite(
     metadata: dict[str, str],
     genomes: list[GenomeSpec],
     genome_scaffolds: list[GenomeScaffoldOffset],
+    contract_genomes: Optional[list[GenomeSpec]],
+    contract_genome_scaffolds: Optional[list[GenomeScaffoldOffset]],
+    gene_ranges: Optional[list[GeneRangeSpec]],
     existing_samples: list[tuple[int, str]],
     appended_samples: list[tuple[int, str, str, Path]],
     count_dtype: str,
     layout: str,
     genome_scope: str,
+    ignored_genome_count: int,
     memory_limit_gb: float,
     memory_limit_bytes: int,
     export_batch_mb: float,
@@ -2250,6 +2482,7 @@ def _append_matrix_hdf5_via_rewrite(
     total_work = len(appended_samples) * len(genomes)
     completed_work = 0
     stored_rows = 0
+    source_gene_ranges = None if gene_ranges is not None else _load_matrix_hdf5_gene_ranges(matrix_hdf5_file)
 
     if progress_callback is not None:
         progress_callback(
@@ -2305,80 +2538,42 @@ def _append_matrix_hdf5_via_rewrite(
                 maxshape=(None,),
             )
 
-            genomes_group = dst_h5.create_group("genomes")
-            genomes_group.create_dataset(
-                "genome_idx",
-                data=np.asarray([spec.genome_idx for spec in genomes], dtype=np.int64),
-            )
-            _write_hdf5_string_dataset(
-                genomes_group,
-                "genome",
-                [spec.genome for spec in genomes],
+            _write_hdf5_genomes_group(dst_h5, "genomes", genomes, h5py_module=h5py_module)
+            _write_hdf5_genome_scaffolds_group(
+                dst_h5,
+                "genome_scaffolds",
+                genome_scaffolds,
                 h5py_module=h5py_module,
             )
-            genomes_group.create_dataset(
-                "matrix_length",
-                data=np.asarray([spec.matrix_length for spec in genomes], dtype=np.int64),
-            )
-            genomes_group.create_dataset(
-                "true_length",
-                data=np.asarray([spec.true_length for spec in genomes], dtype=np.int64),
-            )
-            genomes_group.create_dataset(
-                "scaffold_count",
-                data=np.asarray([spec.scaffold_count for spec in genomes], dtype=np.int64),
-            )
-
-            scaffold_group = dst_h5.create_group("genome_scaffolds")
-            scaffold_group.create_dataset(
-                "genome_idx",
-                data=np.asarray([spec.genome_idx for spec in genome_scaffolds], dtype=np.int64),
-            )
-            scaffold_group.create_dataset(
-                "scaffold_ordinal",
-                data=np.asarray([spec.scaffold_ordinal for spec in genome_scaffolds], dtype=np.int64),
-            )
-            _write_hdf5_string_dataset(
-                scaffold_group,
-                "genome",
-                [spec.genome for spec in genome_scaffolds],
-                h5py_module=h5py_module,
-            )
-            _write_hdf5_string_dataset(
-                scaffold_group,
-                "chrom",
-                [spec.chrom for spec in genome_scaffolds],
-                h5py_module=h5py_module,
-            )
-            for field_name in ("axis_start", "axis_end", "index_base", "vector_length", "min_pos", "max_pos"):
-                scaffold_group.create_dataset(
-                    field_name,
-                    data=np.asarray([getattr(spec, field_name) for spec in genome_scaffolds], dtype=np.int64),
+            if contract_genomes is not None and contract_genome_scaffolds is not None:
+                _write_hdf5_genomes_group(
+                    dst_h5,
+                    MATRIX_HDF5_CONTRACT_GENOMES_GROUP,
+                    contract_genomes,
+                    h5py_module=h5py_module,
+                )
+                _write_hdf5_genome_scaffolds_group(
+                    dst_h5,
+                    MATRIX_HDF5_CONTRACT_SCAFFOLDS_GROUP,
+                    contract_genome_scaffolds,
+                    h5py_module=h5py_module,
                 )
 
-            if "genes" in src_h5:
-                src_genes = src_h5["genes"]
-                genes_group = dst_h5.create_group("genes")
-                genes_group.create_dataset(
-                    "gene_idx",
-                    data=np.asarray(src_genes["gene_idx"][...], dtype=np.int64),
-                )
-                genes_group.create_dataset(
-                    "genome_idx",
-                    data=np.asarray(src_genes["genome_idx"][...], dtype=np.int64),
-                )
-                for field_name in ("genome", "chrom", "gene"):
-                    _write_hdf5_string_dataset(
-                        genes_group,
-                        field_name,
-                        _read_hdf5_string_dataset(src_genes[field_name]),
+            if gene_ranges is not None:
+                if gene_ranges:
+                    _write_hdf5_gene_ranges_group(
+                        dst_h5,
+                        "genes",
+                        gene_ranges,
                         h5py_module=h5py_module,
                     )
-                for field_name in ("axis_start", "axis_end"):
-                    genes_group.create_dataset(
-                        field_name,
-                        data=np.asarray(src_genes[field_name][...], dtype=np.int64),
-                    )
+            elif source_gene_ranges:
+                _write_hdf5_gene_ranges_group(
+                    dst_h5,
+                    "genes",
+                    source_gene_ranges,
+                    h5py_module=h5py_module,
+                )
 
             matrices_group = dst_h5.create_group("matrices")
             for spec in genomes:
@@ -2389,7 +2584,7 @@ def _append_matrix_hdf5_via_rewrite(
                         f"{_format_memory_bytes(estimated_python_peak)} of Python-side working memory, "
                         f"which exceeds the configured total limit of {_format_memory_bytes(memory_limit_bytes)}."
                     )
-                src_node = src_h5[_hdf5_matrix_dataset_path(spec.genome_idx)]
+                src_node = src_h5[_hdf5_matrix_dataset_path(spec.genome_idx)] if _hdf5_matrix_dataset_path(spec.genome_idx) in src_h5 else None
                 if _matrix_hdf5_layout_is_sparse(layout):
                     dst_group = _create_sparse_hdf5_genome_store(
                         matrices_group,
@@ -2397,24 +2592,26 @@ def _append_matrix_hdf5_via_rewrite(
                         sample_count=total_sample_count,
                         matrix_length=spec.matrix_length,
                     )
-                    src_indptr = src_node["indptr"]
-                    src_indices = src_node["indices"]
                     dst_indptr = dst_group["indptr"]
                     dst_indices = dst_group["indices"]
-                    existing_indices_len = int(src_indices.shape[0])
-                    if existing_indices_len > 0:
-                        dst_indices.resize((existing_indices_len,))
-                        dst_indices[:] = np.asarray(src_indices[...], dtype=np.int64)
-                    dst_indptr[: existing_sample_count + 1] = np.asarray(
-                        src_indptr[: existing_sample_count + 1],
-                        dtype=np.int64,
-                    )
-                    current_nnz = int(dst_indptr[existing_sample_count])
+                    if src_node is not None:
+                        src_indptr = src_node["indptr"]
+                        src_indices = src_node["indices"]
+                        existing_indices_len = int(src_indices.shape[0])
+                        if existing_indices_len > 0:
+                            dst_indices.resize((existing_indices_len,))
+                            dst_indices[:] = np.asarray(src_indices[...], dtype=np.int64)
+                        dst_indptr[: existing_sample_count + 1] = np.asarray(
+                            src_indptr[: existing_sample_count + 1],
+                            dtype=np.int64,
+                        )
+                        current_nnz = int(dst_indptr[existing_sample_count])
+                    else:
+                        current_nnz = 0
                 else:
-                    src_dataset = src_node
                     src_chunk_samples = (
-                        int(src_dataset.chunks[0])
-                        if src_dataset.chunks is not None and len(src_dataset.chunks) > 0
+                        int(src_node.chunks[0])
+                        if src_node is not None and src_node.chunks is not None and len(src_node.chunks) > 0
                         else _matrix_hdf5_chunk_sample_count(
                             sample_count=total_sample_count,
                             matrix_length=spec.matrix_length,
@@ -2431,9 +2628,10 @@ def _append_matrix_hdf5_via_rewrite(
                         maxshape=(None, spec.matrix_length, 4),
                         fillvalue=0,
                     )
-                    for batch_start in range(0, existing_sample_count, chunk_samples):
-                        batch_stop = min(existing_sample_count, batch_start + chunk_samples)
-                        dst_dataset[batch_start:batch_stop, :, :] = src_dataset[batch_start:batch_stop, :, :]
+                    if src_node is not None:
+                        for batch_start in range(0, existing_sample_count, chunk_samples):
+                            batch_stop = min(existing_sample_count, batch_start + chunk_samples)
+                            dst_dataset[batch_start:batch_stop, :, :] = src_node[batch_start:batch_stop, :, :]
 
                 for appended_offset, (_sample_idx, sample_name, _profile_path_str, profile_path) in enumerate(appended_samples):
                     if progress_callback is not None:
@@ -2505,6 +2703,7 @@ def _append_matrix_hdf5_via_rewrite(
         total_sample_count=len(existing_samples) + len(appended_samples),
         scaffold_count=len(genome_scaffolds),
         stored_rows=stored_rows,
+        ignored_genome_count=ignored_genome_count,
         count_dtype=count_dtype,
         genome_scope=genome_scope or "all",
         memory_limit_gb=memory_limit_gb,
@@ -2518,7 +2717,11 @@ def append_matrix_hdf5(
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
 ) -> MatrixHdf5AppendSummary:
-    """Append new profile parquets into an existing HDF5 matrix store."""
+    """Append new profile parquets into an existing HDF5 matrix store.
+
+    Genomes outside the persisted BED/STB contract are ignored. Known genomes
+    must still match the stored scaffold and coordinate contract.
+    """
     if export_batch_mb <= 0:
         raise ValueError("export_batch_mb must be > 0")
     profile_paths = discover_profile_parquets(profile_dir)
@@ -2536,6 +2739,18 @@ def append_matrix_hdf5(
     count_dtype, genome_scope, layout = _validate_matrix_hdf5_appendable(metadata)
     genomes = _load_matrix_hdf5_genomes(matrix_hdf5_file)
     genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_hdf5_file)
+    contract_genomes, contract_genome_scaffolds = _load_matrix_hdf5_reference_contract(matrix_hdf5_file)
+    if contract_genomes is None or contract_genome_scaffolds is None:
+        raise ValueError(
+            "Matrix store is missing the persisted BED/STB reference contract required for append. "
+            "Rebuild the matrix store with both --bed-file and --stb-file."
+        )
+    contract_genome_names = {spec.genome for spec in contract_genomes}
+    allowed_genome_names = (
+        contract_genome_names
+        if genome_scope == "all"
+        else {genome_scope} & contract_genome_names
+    )
     existing_samples = _load_matrix_hdf5_samples(matrix_hdf5_file)
 
     existing_sample_names = {sample_name for _sample_idx, sample_name in existing_samples}
@@ -2546,11 +2761,15 @@ def append_matrix_hdf5(
             + ", ".join(duplicate_sample_names)
         )
 
+    incoming_genome_names = _collect_profile_genome_names(profile_paths=profile_paths, genome=None)
+    ignored_genome_names = incoming_genome_names - contract_genome_names
     for profile_path in profile_paths:
         _validate_profile_against_matrix_contract(
             profile_path=profile_path,
-            genomes=genomes,
-            genome_scaffolds=genome_scaffolds,
+            genomes=contract_genomes,
+            genome_scaffolds=contract_genome_scaffolds,
+            genome_scope=None if genome_scope == "all" else genome_scope,
+            accepted_genomes=allowed_genome_names,
         )
 
     memory_limit_bytes = _memory_limit_bytes(memory_limit_gb)
@@ -2559,8 +2778,40 @@ def append_matrix_hdf5(
         (next_sample_idx + idx, profile_path.stem, str(profile_path.resolve()), profile_path)
         for idx, profile_path in enumerate(profile_paths)
     ]
+    materialized_genome_names = {spec.genome for spec in genomes}
+    relevant_incoming_genome_names = incoming_genome_names & allowed_genome_names
+    new_genome_names = sorted(relevant_incoming_genome_names - materialized_genome_names)
 
-    if _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file):
+    rewritten_genomes = genomes
+    rewritten_genome_scaffolds = genome_scaffolds
+    rewritten_gene_ranges: Optional[list[GeneRangeSpec]] = None
+    needs_rewrite = not _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file)
+
+    if new_genome_names:
+        new_genome_specs, new_genome_scaffolds = _subset_contract_to_genomes(
+            contract_genomes=contract_genomes,
+            contract_genome_scaffolds=contract_genome_scaffolds,
+            genome_names=set(new_genome_names),
+        )
+        rewritten_genomes = sorted(genomes + new_genome_specs, key=lambda spec: spec.genome_idx)
+        rewritten_genome_scaffolds = sorted(
+            genome_scaffolds + new_genome_scaffolds,
+            key=lambda spec: (spec.genome_idx, spec.scaffold_ordinal),
+        )
+        if metadata.get("has_gene_ranges") == "1":
+            gene_range_path = metadata.get("gene_range_table")
+            if not gene_range_path:
+                raise ValueError(
+                    "Matrix store contains gene ranges but is missing the source gene_range_table metadata, "
+                    "so newly materialized genomes cannot be annotated safely during append."
+                )
+            rewritten_gene_ranges = _collect_gene_range_specs(
+                gene_range_table=Path(gene_range_path),
+                genome_scaffolds=rewritten_genome_scaffolds,
+            )
+        needs_rewrite = True
+
+    if not needs_rewrite:
         return _append_matrix_hdf5_in_place(
             matrix_hdf5_file=matrix_hdf5_file,
             genomes=genomes,
@@ -2570,6 +2821,7 @@ def append_matrix_hdf5(
             count_dtype=count_dtype,
             layout=layout,
             genome_scope=genome_scope,
+            ignored_genome_count=len(ignored_genome_names),
             memory_limit_gb=memory_limit_gb,
             memory_limit_bytes=memory_limit_bytes,
             progress_callback=progress_callback,
@@ -2577,13 +2829,17 @@ def append_matrix_hdf5(
     return _append_matrix_hdf5_via_rewrite(
         matrix_hdf5_file=matrix_hdf5_file,
         metadata=metadata,
-        genomes=genomes,
-        genome_scaffolds=genome_scaffolds,
+        genomes=rewritten_genomes,
+        genome_scaffolds=rewritten_genome_scaffolds,
+        contract_genomes=contract_genomes,
+        contract_genome_scaffolds=contract_genome_scaffolds,
+        gene_ranges=rewritten_gene_ranges,
         existing_samples=existing_samples,
         appended_samples=appended_samples,
         count_dtype=count_dtype,
         layout=layout,
         genome_scope=genome_scope,
+        ignored_genome_count=len(ignored_genome_names),
         memory_limit_gb=memory_limit_gb,
         memory_limit_bytes=memory_limit_bytes,
         export_batch_mb=export_batch_mb,
@@ -2610,6 +2866,7 @@ def append_matrix_db(
         total_sample_count=summary.total_sample_count,
         scaffold_count=summary.scaffold_count,
         stored_rows=summary.stored_rows,
+        ignored_genome_count=summary.ignored_genome_count,
         count_dtype=summary.count_dtype,
         genome_scope=summary.genome_scope,
         memory_limit_gb=summary.memory_limit_gb,
@@ -2727,13 +2984,16 @@ def _load_matrix_hdf5_samples(matrix_hdf5_file: Path) -> list[tuple[int, str]]:
     return [(int(sample_idx), str(sample_name)) for sample_idx, sample_name in zip(sample_ids.tolist(), sample_names)]
 
 
-def _load_matrix_hdf5_genomes(
+def _load_matrix_hdf5_genomes_from_group(
     matrix_hdf5_file: Path,
+    group_name: str,
     genome: Optional[str] = None,
 ) -> list[GenomeSpec]:
     h5py_module = _import_h5py()
     with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
-        genome_group = h5_file["genomes"]
+        if group_name not in h5_file:
+            return []
+        genome_group = h5_file[group_name]
         genome_ids = np.asarray(genome_group["genome_idx"][...], dtype=np.int64)
         genome_names = _read_hdf5_string_dataset(genome_group["genome"])
         matrix_lengths = np.asarray(genome_group["matrix_length"][...], dtype=np.int64)
@@ -2760,14 +3020,24 @@ def _load_matrix_hdf5_genomes(
     return [spec for spec in specs if spec.genome == genome]
 
 
-def _load_matrix_hdf5_genome_scaffolds(
+def _load_matrix_hdf5_genomes(
     matrix_hdf5_file: Path,
+    genome: Optional[str] = None,
+) -> list[GenomeSpec]:
+    return _load_matrix_hdf5_genomes_from_group(matrix_hdf5_file, "genomes", genome=genome)
+
+
+def _load_matrix_hdf5_genome_scaffolds_from_group(
+    matrix_hdf5_file: Path,
+    group_name: str,
     genome_idx: Optional[int] = None,
     genome: Optional[str] = None,
 ) -> list[GenomeScaffoldOffset]:
     h5py_module = _import_h5py()
     with h5py_module.File(str(matrix_hdf5_file), "r") as h5_file:
-        scaffold_group = h5_file["genome_scaffolds"]
+        if group_name not in h5_file:
+            return []
+        scaffold_group = h5_file[group_name]
         rows = list(
             zip(
                 np.asarray(scaffold_group["genome_idx"][...], dtype=np.int64).tolist(),
@@ -2802,6 +3072,35 @@ def _load_matrix_hdf5_genome_scaffolds(
     if genome_idx is None and genome is None:
         return offsets
     return sorted(offsets, key=lambda item: (item.genome_idx, item.scaffold_ordinal))
+
+
+def _load_matrix_hdf5_genome_scaffolds(
+    matrix_hdf5_file: Path,
+    genome_idx: Optional[int] = None,
+    genome: Optional[str] = None,
+) -> list[GenomeScaffoldOffset]:
+    return _load_matrix_hdf5_genome_scaffolds_from_group(
+        matrix_hdf5_file,
+        "genome_scaffolds",
+        genome_idx=genome_idx,
+        genome=genome,
+    )
+
+
+def _load_matrix_hdf5_reference_contract(
+    matrix_hdf5_file: Path,
+) -> tuple[Optional[list[GenomeSpec]], Optional[list[GenomeScaffoldOffset]]]:
+    contract_genomes = _load_matrix_hdf5_genomes_from_group(
+        matrix_hdf5_file,
+        MATRIX_HDF5_CONTRACT_GENOMES_GROUP,
+    )
+    contract_genome_scaffolds = _load_matrix_hdf5_genome_scaffolds_from_group(
+        matrix_hdf5_file,
+        MATRIX_HDF5_CONTRACT_SCAFFOLDS_GROUP,
+    )
+    if not contract_genomes or not contract_genome_scaffolds:
+        return None, None
+    return contract_genomes, contract_genome_scaffolds
 
 
 def _load_matrix_hdf5_gene_ranges(

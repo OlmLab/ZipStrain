@@ -42,6 +42,7 @@ The `fiji` profile is configured for Slurm plus Singularity, which is useful on 
 - `--compare_genome_calculate`: genome metrics to compute (`all` or `ani`)
 - `--compare_gene_scope`: gene scope for gene comparisons (`all:all`, `<genome>:all`, `all:<gene>`, `<genome>:<gene>`)
 - `--compare_ani_method`: ANI method forwarded to compare tasks (`popani`, `conani`, `cosani_<threshold>`)
+- `--compare_engine`: comparison engine for standard compare tasks (`polars` or `duckdb`). Default: `polars`
 - `--compare_duckdb_memory_limit`: forwarded to single compare commands
 - `--compare_calculate`: genome metrics for genome compare (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations). Default: `all`
 
@@ -192,7 +193,7 @@ nextflow run zipstrain.nf \
 ### Input Option A: All-vs-All from Profile List (`--input_type profile_table`)
 
 ```csv
-sample_names,mpileup_files
+sample_name,profile_location
 S1,/profiles/S1_profile.parquet
 S2,/profiles/S2_profile.parquet
 S3,/profiles/S3_profile.parquet
@@ -214,12 +215,12 @@ nextflow run zipstrain.nf \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
+  --compare_engine polars \
   --compare_genome_scope all \
   --compare_calculate ani+ibs+identical_genes \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --compare_duckdb_memory_limit 4GB \
   --output_dir out_compare_genomes \
   -c conf.config \
   -profile docker \
@@ -238,12 +239,12 @@ nextflow run zipstrain.nf \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
+  --compare_engine polars \
   --compare_gene_scope all:all \
   --compare_ani_method popani \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --compare_duckdb_memory_limit 4GB \
   --output_dir out_compare_genes \
   -c conf.config \
   -profile docker \
@@ -258,5 +259,7 @@ nextflow run zipstrain.nf \
 ## Important Notes
 
 - The old `--compare_memory_mode` and `--compare_chrom_batch_size` parameters are not part of the current `zipstrain.nf`.
-- The pipeline currently forwards DuckDB memory limit via `--compare_duckdb_memory_limit` but does not expose compare engine/threads as Nextflow params in this script.
+- For `--input_type profile_table`, the preferred columns are `sample_name` and `profile_location`.
+- Older `sample_names` and `mpileup_files` headers are still accepted for compatibility.
+- `--compare_duckdb_memory_limit` is only relevant when `--compare_engine duckdb`.
 - For auto-built references, genome selection comes from the merged Sylph abundance table through `zipstrain utilities build-genome-db`.

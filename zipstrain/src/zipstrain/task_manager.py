@@ -555,7 +555,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 "max-concurrency": IntInput(self.num_procs),
                 }
                 expected_outputs ={
-                "profile":  FileOutput(row["sample_name"]+".parquet" ),
+                "profile":  FileOutput(row["sample_name"]+"_profile.parquet" ),
                 "genome-stats": FileOutput(row["sample_name"]+"_genome_stats.parquet" ),
                 "gene-stats": FileOutput(row["sample_name"]+"_gene_stats.parquet" ),
                 }
@@ -1648,7 +1648,7 @@ class ProfileBamTask(Task):
     --num-chunks <num-chunks> \
     --max-concurrency <max-concurrency> \
     --output-dir .
-    mv input_profile.parquet <sample-name>.parquet
+    mv input_profile.parquet <sample-name>_profile.parquet
     mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
     mv input_gene_stats.parquet <sample-name>_gene_stats.parquet
     """
@@ -1691,7 +1691,7 @@ class CollectComps(Task):
     rm -rf comps
     mkdir -p comps
     find . -maxdepth 2 -type f -name "*_comparison.parquet" ! -path "./comps/*" -exec cp {} comps/ \\;
-    zipstrain utilities merge_parquet --input-dir comps --output-file <output-file>
+    zipstrain utilities merge_parquet --input-dir comps --output-file <output-file> --allow-mismatch
     rm -rf comps
     """
     
@@ -1706,7 +1706,7 @@ class PrepareCompareGenomeRunOutputs(Task):
     TEMPLATE_CMD="""
     mkdir -p <output-dir>/comps
     find "$(pwd)" -type f -name "Merged_batch_*.parquet" -print0 | xargs -0 -I {} ln -s {} <output-dir>/comps/
-    zipstrain utilities merge_parquet --input-dir <output-dir>/comps --output-file <output-dir>/all_comparisons.parquet
+    zipstrain utilities merge_parquet --input-dir <output-dir>/comps --output-file <output-dir>/all_comparisons.parquet --allow-mismatch
     rm -rf <output-dir>/comps
     """
     
@@ -2116,7 +2116,7 @@ class CollectGeneComps(Task):
     rm -rf gene_comps
     mkdir -p gene_comps
     find . -maxdepth 2 -type f -name "*_gene_comparison.parquet" ! -path "./gene_comps/*" -exec cp {} gene_comps/ \\;
-    zipstrain utilities merge_parquet --input-dir gene_comps --output-file <output-file>
+    zipstrain utilities merge_parquet --input-dir gene_comps --output-file <output-file> --allow-mismatch
     rm -rf gene_comps
     """
     
@@ -2129,7 +2129,7 @@ class PrepareGeneCompareRunOutputs(Task):
     TEMPLATE_CMD="""
     mkdir -p <output-dir>/gene_comps
     find "$(pwd)" -type f -name "Merged_gene_batch_*.parquet" -print0 | xargs -0 -I {} ln -s {} <output-dir>/gene_comps/
-    zipstrain utilities merge_parquet --input-dir <output-dir>/gene_comps --output-file <output-dir>/all_gene_comparisons.parquet
+    zipstrain utilities merge_parquet --input-dir <output-dir>/gene_comps --output-file <output-dir>/all_gene_comparisons.parquet --allow-mismatch
     rm -rf <output-dir>/gene_comps
     """
     

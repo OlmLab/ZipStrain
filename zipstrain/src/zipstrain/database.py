@@ -10,11 +10,10 @@ import polars as pl
 import pathlib 
 import os
 import tempfile
-import json
-import copy
 from pydantic import BaseModel, Field, field_validator,ConfigDict
+from zipstrain import utils as ut
 
-_PROFILE_DB_COLUMNS = ["profile_name", "profile_location", "reference_db_id", "gene_db_id"]
+_PROFILE_DB_COLUMNS = ["profile_name", "profile_location"]
 
 
 class ProfileItem(BaseModel):
@@ -24,19 +23,11 @@ class ProfileItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
     profile_name: str = Field(description="An arbitrary name given to the profile (Usually sample name or name of the parquet file)")
     profile_location: str = Field(description="The location of the profile")
-    reference_db_id: str = Field(description="The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.")
-    gene_db_id:str= Field(default="",description="The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.")
     
     @field_validator("profile_location")
     def check_file_exists(cls, v):
         if not os.path.exists(v):
             raise ValueError(f"The file {v} does not exist.")
-        return v
-
-    @field_validator("reference_db_id","gene_db_id")
-    def check_reference_db_id(cls, v):
-        if not v:
-            raise ValueError("The reference_db_id and gene_db_id cannot be empty.")
         return v
     
     
@@ -49,10 +40,6 @@ class ProfileDatabase:
     - profile_name: An arbitrary name given to the profile (Usually sample name or name of the parquet file)
     
     - profile_location: The location of the profile
-    
-    - reference_db_id: The ID of the reference database. This could be the name or any other identifier for the database that the reads are mapped to.
-    
-    - gene_db_id: The ID of the gene database in fasta format. This could be the name or any other identifier for the database that the reads are mapped to.
     
     Args:
         db_loc (str|None): The location of the profile database parquet file. If None, an empty database is created.
@@ -68,13 +55,9 @@ class ProfileDatabase:
             self._db=pl.LazyFrame({
                 "profile_name": [],
                 "profile_location": [],
-                "reference_db_id": [],
-                "gene_db_id": []
             }, schema={
                 "profile_name": pl.Utf8,
                 "profile_location": pl.Utf8,
-                "reference_db_id": pl.Utf8,
-                "gene_db_id": pl.Utf8
             })
             self.db_loc=None
             
@@ -99,6 +82,29 @@ class ProfileDatabase:
             if db_path_validated.height != 0:
                 raise ValueError(f"There are {db_path_validated.height} profiles that do not exist: {db_path_validated['profile_location'].to_list()}")
             ### add log later
+
+    def _validate_profile_contracts(self) -> None:
+        """Require all registered profiles to share the same embedded contract metadata."""
+        rows = self.db.collect(engine="streaming").iter_rows(named=True)
+        expected_contract: dict[str, str] | None = None
+        mismatches: list[str] = []
+        for row in rows:
+            profile_location = row["profile_location"]
+            observed_contract = ut.read_profile_contract_metadata(profile_location)
+            comparable_contract = {
+                logical_name: observed_contract.get(logical_name, ut.COMPARE_METADATA_MISSING_VALUE)
+                for logical_name in ut.PROFILE_CONTRACT_METADATA_KEYS
+            }
+            if expected_contract is None:
+                expected_contract = comparable_contract
+                continue
+            if comparable_contract != expected_contract:
+                mismatches.append(profile_location)
+        if mismatches:
+            raise ValueError(
+                "Profile contract metadata do not match across the provided profiles. "
+                "Re-run with allow_mismatch=True to skip this validation."
+            )
         
     def add_profile(self,
                     data: dict
@@ -109,10 +115,6 @@ class ProfileDatabase:
         - profile_name
         
         - profile_location
-        
-        - reference_db_id
-
-        - gene_db_id
 
         Args:
             data (dict): The profile data to add.
@@ -122,8 +124,6 @@ class ProfileDatabase:
             lf=pl.LazyFrame({
                 "profile_name": [profile_item.profile_name],
                 "profile_location": [profile_item.profile_location],
-                "reference_db_id": [profile_item.reference_db_id],
-                "gene_db_id": [profile_item.gene_db_id]
             })
             self._db = pl.concat([self.db, lf]).unique()
             self._validate_db()
@@ -176,7 +176,7 @@ class ProfileDatabase:
              
     
     @classmethod
-    def from_csv(cls, csv_path: str) -> ProfileDatabase:
+    def from_csv(cls, csv_path: str, allow_mismatch: bool = False) -> ProfileDatabase:
         """Create a ProfileDatabase instance from a CSV file with exactly same columns as the required columns for a profile database.
         
         Args:
@@ -189,6 +189,8 @@ class ProfileDatabase:
         prof_db=cls()
         prof_db._db=lf
         prof_db._validate_db()
+        if not allow_mismatch:
+            prof_db._validate_profile_contracts()
         return prof_db
     
     def to_csv(self,output_dir:str)->None:
@@ -209,21 +211,16 @@ class ProfileDatabase:
      
 class GenomeComparisonConfig(BaseModel):
     """
-    This class defines object which have all necessary options to describe 
-    Parameters used to compare profiles:
+    In-memory options for genome comparison workflows.
     
     Attributes:
-        gene_db_id (str): The ID of the gene fasta database to use for the comparison. The file name is perfect.
-        reference_id (str): The ID of the reference fasta database to use for the comparison. The file name is perfect.
         scope (str): The scope of the comparison- 'all' if all covered positions are desired. Otherwise, a bunch of genome names separated by commas.
         min_cov (int): Minimum coverage a base on the reference fasta that must have in order to be compared.
         min_gene_compare_len (int): Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations
         stb_file_loc (str | None): Optional location of the scaffold to bin file.
     """
     model_config = ConfigDict(extra="forbid")
-    gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
-    reference_id:str= Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
-    scope: str =Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
+    scope: str =Field(description="Genome scope for comparison. Use 'all' to compare all available genomes.")
     min_cov: int =Field(description="Minimum coverage a base on the reference fasta that must have in order to be compared.")
     min_gene_compare_len: int=Field(description="Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
     stb_file_loc:str | None = Field(default=None, description="Optional location of the scaffold to bin file.")
@@ -247,28 +244,6 @@ class GenomeComparisonConfig(BaseModel):
                 return False
         return True
 
-    @classmethod
-    def from_dict(cls, config_dict: dict) -> GenomeComparisonConfig:
-        """Create a GenomeComparisonConfig from a dictionary."""
-        return cls(**config_dict)
-
-    @classmethod
-    def from_json(cls,json_file_dir:str)->GenomeComparisonConfig:
-        """Create a GenomeComparisonConfig instance from a json file."""
-        with open(json_file_dir, 'r') as f:
-            config_dict = json.load(f)
-        return cls.from_dict(config_dict)
-    
-    def to_json(self,json_file_dir:str)->None:
-        """Writes the the current object to a json file"""
-        with open(json_file_dir,"w") as f:
-            json.dump(self.__dict__,f)
-            
-    def to_dict(self)->dict:
-        """Returns the dictionary representation of the current object"""
-        return copy.copy(self.__dict__)
-    
-    
     def get_maximal_scope_config(self, other: GenomeComparisonConfig) -> GenomeComparisonConfig:
         """
         Get a new GenomeComparisonConfig object with the maximal scope that is compatible with the two configurations.
@@ -292,7 +267,7 @@ class GenomeComparisonConfig(BaseModel):
         
         else:
             new_scope=list(set(self.scope.split(",")).intersection(set(other.scope.split(","))))
-        curr_config_dict=self.to_dict()
+        curr_config_dict=self.model_dump()
         curr_config_dict["scope"]=new_scope if new_scope=="all" else ",".join(sorted(new_scope))
         return GenomeComparisonConfig(**curr_config_dict)
 
@@ -302,15 +277,11 @@ class GeneComparisonConfig(BaseModel):
     
     Attributes:
         scope (str): The scope of the comparison in format "GENOME:GENE" (e.g., "all:gene1" compares gene1 across all genomes, "genome1:gene1" compares gene1 only in genome1 across samples).
-        gene_db_id (str): An ID given to the gene fasta file used for profiling.
-        reference_genome_id (str): An ID given to the reference fasta file used for profiling.
         stb_file_loc (str | None): Optional location of the scaffold-to-genome mapping file.
         min_cov (int): Minimum coverage threshold for considering a position.
         min_gene_compare_len (int): Minimum gene length required for comparison.
     """
     model_config = ConfigDict(extra="forbid")
-    gene_db_id:str= Field(default="",description="An ID given to the gene fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with gene database IDs in the Profile Database.")
-    reference_genome_id:str= Field(description="An ID given to the reference fasta file used for profiling. IMPORTANT: Make sure that this is in agreement with reference IDs in the Profile Database.")
     scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
     stb_file_loc: str | None = Field(default=None, description="Optional location of the scaffold-to-genome mapping file")
     min_cov: int = Field(default=5, description="Minimum coverage threshold")
@@ -350,27 +321,6 @@ class GeneComparisonConfig(BaseModel):
             return True
         return self_genome_scope == other_genome_scope and self_gene_scope == other_gene_scope
 
-    @classmethod
-    def from_dict(cls, config_dict: dict) -> GeneComparisonConfig:
-        """Create a GeneComparisonConfig from a dictionary."""
-        return cls(**config_dict)
-
-    @classmethod
-    def from_json(cls,json_file_dir:str)->GeneComparisonConfig:
-        """Create a GeneComparisonConfig instance from a json file."""
-        with open(json_file_dir, 'r') as f:
-            config_dict = json.load(f)
-        return cls.from_dict(config_dict)
-    
-    def to_json(self,json_file_dir:str)->None:
-        """Writes the the current object to a json file"""
-        with open(json_file_dir,"w") as f:
-            json.dump(self.__dict__,f)
-    
-    def to_dict(self)->dict:
-        """Returns the dictionary representation of the current object"""
-        return copy.copy(self.__dict__)
-    
     def get_maximal_scope_config(self, other: GeneComparisonConfig) -> GeneComparisonConfig:
         """
         Get a new GeneComparisonConfig object with the maximal scope that is compatible with the two configurations.
@@ -405,7 +355,7 @@ class GeneComparisonConfig(BaseModel):
         else:
             new_gene_scope = self_gene_scope  # They must be equal if compatible
         
-        curr_config_dict=self.to_dict()
+        curr_config_dict=self.model_dump()
         curr_config_dict["scope"]=f"{new_genome_scope}:{new_gene_scope}"
         return GeneComparisonConfig(**curr_config_dict)
 
@@ -594,38 +544,6 @@ class GenomeComparisonDatabase:
             self._comp_db=pl.scan_parquet(self.comp_db_loc)
         except Exception as e:
             raise Exception(f"Something went wrong when updating the comparison database:{e}")
-    
-    def dump_obj(self, output_path: str) -> None:
-        """Dump the current object to a json file.
-        
-        Args:
-            output_path (str): The path to save the json file to.
-        """
-        obj_dict = {
-            "profile_db_loc": str(self.profile_db.db_loc.absolute()) if self.profile_db.db_loc is not None else None,
-            "config": self.config.to_dict(),
-            "comp_db_loc": str(self.comp_db_loc.absolute()) if self.comp_db_loc is not None else None
-        }
-        with open(output_path, "w") as f:
-            json.dump(obj_dict, f, indent=4)
-    
-    @classmethod
-    def load_obj(cls, json_path: str) -> GenomeComparisonDatabase:
-        """Load a GenomeComparisonDatabase object from a json file.
-        
-        Args:
-            json_path (str): The path to the json file.
-            
-        Returns:
-            GenomeComparisonDatabase: The loaded GenomeComparisonDatabase object.
-        """
-        with open(json_path, "r") as f:
-            obj_dict = json.load(f)
-        
-        return cls(profile_db=ProfileDatabase(db_loc=obj_dict["profile_db_loc"]) , 
-                   config=GenomeComparisonConfig.from_dict(obj_dict["config"]), 
-                   comp_db_loc=obj_dict["comp_db_loc"])
-    
     
     def to_complete_input_table(self)->pl.LazyFrame:
         """This method gives a table of all pairwise comparisons that is needed to make the comparison database complete. The table contains the following columns:
@@ -821,39 +739,6 @@ class GeneComparisonDatabase:
             self._comp_db = pl.scan_parquet(self.comp_db_loc)
         except Exception as e:
             raise Exception(f"Something went wrong when updating the comparison database: {e}")
-    
-    def dump_obj(self, output_path: str) -> None:
-        """Dump the current object to a json file.
-        
-        Args:
-            output_path (str): The path to save the json file to.
-        """
-        obj_dict = {
-            "profile_db_loc": str(self.profile_db.db_loc.absolute()) if self.profile_db.db_loc is not None else None,
-            "config": self.config.to_dict(),
-            "comp_db_loc": str(self.comp_db_loc.absolute()) if self.comp_db_loc is not None else None
-        }
-        with open(output_path, "w") as f:
-            json.dump(obj_dict, f, indent=4)
-    
-    @classmethod
-    def load_obj(cls, json_path: str) -> GeneComparisonDatabase:
-        """Load a GeneComparisonDatabase object from a json file.
-        
-        Args:
-            json_path (str): The path to the json file.
-            
-        Returns:
-            GeneComparisonDatabase: The loaded GeneComparisonDatabase object.
-        """
-        with open(json_path, "r") as f:
-            obj_dict = json.load(f)
-        
-        return cls(
-            profile_db=ProfileDatabase(db_loc=obj_dict["profile_db_loc"]),
-            config=GeneComparisonConfig.from_dict(obj_dict["config"]),
-            comp_db_loc=obj_dict["comp_db_loc"]
-        )
     
     def to_complete_input_table(self) -> pl.LazyFrame:
         """This method gives a table of all pairwise comparisons that is needed to make the comparison database complete. 

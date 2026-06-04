@@ -349,9 +349,9 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
     profile_db_csv.write_text(
         "\n".join(
             [
-                "profile_name,profile_location,reference_db_id,gene_db_id",
-                f"sample_alpha,{paths['sample_alpha_profile']},{REFERENCE_ID},{GENE_DB_ID}",
-                f"sample_beta,{paths['sample_beta_profile']},{REFERENCE_ID},{GENE_DB_ID}",
+                "profile_name,profile_location",
+                f"sample_alpha,{paths['sample_alpha_profile']}",
+                f"sample_beta,{paths['sample_beta_profile']}",
             ]
         )
         + "\n"
@@ -374,14 +374,10 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         {
             "profile_name": "sample_alpha",
             "profile_location": str(paths["sample_alpha_profile"]),
-            "reference_db_id": REFERENCE_ID,
-            "gene_db_id": GENE_DB_ID,
         },
         {
             "profile_name": "sample_beta",
             "profile_location": str(paths["sample_beta_profile"]),
-            "reference_db_id": REFERENCE_ID,
-            "gene_db_id": GENE_DB_ID,
         },
     ]
 
@@ -438,8 +434,8 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
     assert by_genome["genome_b"]["genome_pop_ani"] == pytest.approx(90.0)
     assert by_genome["genome_b"]["max_consecutive_length"] == 5
     assert {by_genome["genome_a"]["sample_1"], by_genome["genome_a"]["sample_2"]} == {
-        "sample_alpha_profile",
-        "sample_beta_profile",
+        "sample_alpha",
+        "sample_beta",
     }
 
     gene_compare_out = tmp_path / "gene_compare.parquet"

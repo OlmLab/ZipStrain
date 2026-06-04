@@ -5,12 +5,12 @@ This tutorial walks through the current ZipStrain workflow from mapped reads to 
 It covers two current comparison methods:
 
 1. The **standard** method, which compares profile tables directly with table operations
-2. The **matrix** method, which first builds dense whole-genome matrices and then compares from that store
+2. The **matrix** method, which first builds a reusable whole-genome matrix store and then compares from that store
 
 The most important difference is not “old versus new.” It is when each method is a better fit.
 
-- The **standard** method is easier to start with, more general, and usually the better choice when you only have a few samples or only need a modest number of comparisons.
-- The **matrix** method is worth the extra setup when you expect repeated all-vs-all comparison runs against the same reference set, especially when your analysis is centered on one genome or a small set of target genomes across many samples.
+- The **standard** method is easier to start with, more general, and usually the better choice when you want to compare many genomes at the same time. Its parallel work is naturally spread across genomes.
+- The **matrix** method is worth the extra setup when you expect repeated comparison runs across many samples but only need one genome or a small set of genomes at a time. Its parallel work is naturally spread across sample pairs once the target genome matrices are loaded.
 
 ## Before You Start
 
@@ -18,6 +18,12 @@ You should already have one of these two starting points:
 
 1. mapped BAM files for your samples, plus the reference bundle they were mapped against
 2. raw reads for your samples, plus enough information to build the reference bundle first
+
+Important:
+
+- BAM files used for ZipStrain profiling should be coordinate-sorted.
+- In practice, profile generation assumes BAM records are ordered by reference coordinate.
+- If your BAMs are not sorted, sort them before profiling.
 
 The reference bundle means:
 
@@ -55,11 +61,12 @@ If you are starting from BAM files that are already mapped against the right ref
 
 If you are deciding which route to use before doing anything else, use this rule of thumb:
 
-- Choose **standard** if you want the simplest path from profiles to results.
-- Choose **matrix** if you expect to reuse the same profile cohort for repeated comparison jobs.
+- Choose **standard** if you want the simplest path from profiles to results, or if you want to compare many genomes in one run.
+- Choose **matrix** if you expect to reuse the same profile cohort for repeated comparison jobs centered on one genome or a small set of genomes.
 
 Use the standard workflow when:
 
+- you want to compare many genomes at the same time
 - you only need a few comparisons
 - you want the fewest moving parts
 - you want direct profile-table operations without building another artifact first
@@ -68,16 +75,18 @@ Use the standard workflow when:
 Use the matrix workflow when:
 
 - you have many samples against the same reference set
+- you mostly care about one genome or a small set of genomes per run
 - you want resumable all-vs-all comparison runs
 - you expect to append new samples over time
 - you want one prebuilt store that can be reused for many comparison jobs
-- you are mainly focused on one genome or a small set of genomes and want repeated comparison throughput
+- you want parallel work to concentrate on sample pairs rather than genome fan-out
 
 In practice:
 
 - standard compare is simpler for small ad hoc work
+- standard compare usually scales better when one run needs many genomes at once
 - matrix compare is usually not worth it for only a few samples, because you first have to build the matrix store
-- matrix compare becomes attractive once repeated comparison cost becomes the bottleneck
+- matrix compare becomes attractive once repeated one-genome or few-genome comparison cost becomes the bottleneck
 
 One important clarification:
 
@@ -233,6 +242,12 @@ Where:
 - `pos` is the coordinate on the scaffold
 - `A/C/G/T` are nucleotide counts
 
+Profiling input requirement:
+
+- the BAM files passed into profiling should be coordinate-sorted BAMs
+- this applies to both the CLI profile workflow and the Nextflow profile workflow
+- if BAMs are unsorted, sort and index them before running profiling
+
 ### CLI Profile Workflow
 
 Prepare a CSV of BAM files:
@@ -281,6 +296,44 @@ Outputs include:
 ## Step 5A: Standard Comparison Route
 
 This route compares profile parquets directly.
+It is the better fit when one run needs to evaluate many genomes at once, because the work parallelizes efficiently across genomes.
+
+### Standard Route Inputs
+
+The standard route expects standard ZipStrain profile parquets with columns:
+
+```text
+chrom | genome | gene | pos | A | C | G | T
+```
+
+Depending on which command you use, the immediate inputs are:
+
+- one pair of profile parquets for `single_compare_genome`
+- a profile DB plus direct compare arguments for `zipstrain compare genomes`
+- optionally an STB when you want the requested genome universe carried through explicitly
+
+### Standard Route Outputs
+
+Genome-level standard comparison tables contain one row per `sample_1`, `sample_2`, `genome` combination.
+
+When ANI is requested, the output columns include:
+
+- `sample_1`
+- `sample_2`
+- `genome`
+- `total_positions`
+- `share_allele_pos`
+- `genome_pop_ani`
+
+When IBS is also requested, add:
+
+- `max_consecutive_length`
+
+When `identical_genes` is also requested, add:
+
+- `shared_genes_count`
+- `identical_gene_count`
+- `perc_id_genes`
 
 ### Single Pair Compare
 
@@ -301,7 +354,7 @@ zipstrain utilities single_compare_genome \
 For many standard comparisons, the direct profile-table workflow is still:
 
 1. build a profile DB
-2. build a comparison config
+2. optionally point at an existing comparison parquet
 3. run `zipstrain compare genomes`
 
 Example:
@@ -313,20 +366,12 @@ zipstrain utilities build-profile-db \
 ```
 
 ```bash
-zipstrain utilities build-genome-comparison-config \
+zipstrain compare genomes \
   --profile-db profile_db.parquet \
-  --gene-db-id ref_genes_v1 \
-  --reference-genome-id ref_genomes_v1 \
   --scope all \
   --min-cov 5 \
   --min-gene-compare-len 200 \
-  --stb-file-loc reference_genomes.stb \
-  --output-file genome_compare_config.json
-```
-
-```bash
-zipstrain compare genomes \
-  --genome-comparison-object genome_compare_config.json \
+  --stb-file reference_genomes.stb \
   --run-dir compare_run \
   --calculate ani+ibs+identical_genes \
   --ani-method popani \
@@ -335,16 +380,19 @@ zipstrain compare genomes \
 ```
 
 This route is still valid, but it is not the best option once you repeatedly compare many samples against the same reference set.
+It remains especially strong when you need broad genome scope in the same run.
 
 ## Step 5B: Matrix Comparison Route
 
 This route converts standard sample profiles into a reusable matrix store, then compares all non-redundant sample pairs from that store.
+It is the better fit when you have many samples and want repeated comparison work on one genome or a small set of genomes, because the hot parallel work is across pairs rather than across genome fan-out.
 
 ### Why Use the Matrix Route
 
 The matrix route is useful when:
 
 - you want to compare many samples repeatedly
+- you usually care about one genome or a small set of genomes per compare run
 - you want appendable sample growth over time
 - you want resumable compare state in a DuckDB result database
 - you want ANI, IBS, and optional gene ANI from the same store
@@ -360,6 +408,15 @@ The matrix route has four steps:
 
 ### Build the Matrix Store
 
+Expected input:
+
+- a directory of standard ZipStrain profile parquets
+- each profile parquet should contain:
+
+```text
+chrom | genome | gene | pos | A | C | G | T
+```
+
 ```bash
 zipstrain utilities build-matrix-db \
   --profile-dir out_profile \
@@ -372,14 +429,18 @@ What this does:
 
 - scans all standard profile parquets in `out_profile`
 - builds one HDF5-backed matrix store
-- keeps one dense whole-genome matrix per sample per genome
+- keeps one whole-genome matrix per sample per genome
 - stores gene coordinate metadata if `--gene-range-table` is provided
 
 Important notes:
 
 - `matrix_db.h5` is the current matrix-store format
+- dense storage is the default; add `--sparse` if you want sparse HDF5 storage
 - this store is appendable on the sample axis
 - if gene ranges are included here, matrix compare can also compute gene ANI later
+
+This step does not yet produce comparison result tables.
+Its output is the reusable matrix store itself: `matrix_db.h5`.
 
 ### Append New Samples Later
 
@@ -408,7 +469,9 @@ This is only needed for older matrix builds. New matrix workflows should start d
 
 ### Run Matrix Compare
 
-Run all-vs-all sample comparison from the matrix store:
+Run pairwise sample comparison from the matrix store.
+If you want to focus on one genome, add `--genome <genome_id>`.
+If you want a small set of genomes, run a few scoped matrix-compare jobs, one genome at a time:
 
 ```bash
 zipstrain utilities matrix-compare \
@@ -449,6 +512,41 @@ Important operational notes:
 - rerunning the same command on the same output file only processes unfinished sample pairs
 - `--memory-limit-gb` is the main throughput control for target block size
 
+Expected input:
+
+- one matrix store such as `matrix_db.h5`
+- optionally one genome scope via `--genome`
+- optionally gene metadata already embedded in that store if you want gene ANI
+
+Expected output:
+
+- a DuckDB database such as `matrix_compare.duckdb`
+- a genome-level result table named `matrix_compare_results`
+- optionally a gene-level result table named `matrix_compare_gene_results`
+
+`matrix_compare_results` contains one row per `sample_1`, `sample_2`, `genome` combination.
+
+When ANI is requested, the table includes:
+
+- `sample_1`
+- `sample_2`
+- `genome`
+- `total_positions`
+- `share_allele_pos`
+- `genome_pop_ani`
+
+When IBS is also requested, add:
+
+- `max_consecutive_length`
+
+`matrix_compare_gene_results` contains one row per `sample_1`, `sample_2`, `genome`, `gene` combination with:
+
+- `sample_1`
+- `sample_2`
+- `genome`
+- `gene`
+- `gene_pop_ani`
+
 ### Export Matrix Compare Results
 
 Export genome-level rows:
@@ -470,7 +568,46 @@ zipstrain utilities matrix-compare-export \
 
 If the compare DB does not contain gene results, the gene export command raises a clear error.
 
-## Understanding Matrix Inputs and Outputs
+These export commands are the normal way to extract the relevant result tables from the compare DB:
+
+- export `matrix_compare_results` with the default `matrix-compare-export` command
+- export `matrix_compare_gene_results` with `--table gene`
+
+## Understanding Standard and Matrix Inputs and Outputs
+
+### Standard Compare Input
+
+The standard route reads classic ZipStrain profile parquets directly.
+Those parquets contain per-position nucleotide counts and annotation columns:
+
+- `chrom`
+- `genome`
+- `gene`
+- `pos`
+- `A`
+- `C`
+- `G`
+- `T`
+
+### Standard Compare Output
+
+Standard genome comparison outputs are parquet tables with one row per sample pair and genome.
+
+Core genome ANI columns:
+
+- `sample_1`
+- `sample_2`
+- `genome`
+- `total_positions`
+- `share_allele_pos`
+- `genome_pop_ani`
+
+Optional additional columns:
+
+- `max_consecutive_length` for IBS
+- `shared_genes_count`
+- `identical_gene_count`
+- `perc_id_genes` for identical-gene summaries
 
 ### Matrix Store Input
 
@@ -480,6 +617,7 @@ The matrix store is:
 - stored as HDF5
 - organized by genome
 - reused across many compare runs
+- stored densely by default, or sparsely if `--sparse` is used during build or conversion
 
 ### Matrix Compare Output
 
@@ -511,13 +649,15 @@ Gene parquet exports contain:
 
 Use standard compare when:
 
+- you want to compare many genomes in the same run
 - you only need a limited number of pairwise comparisons
 - you want direct profile-to-profile comparison without building another store
-- your existing workflow is already based on comparison config objects or Nextflow standard compare jobs
+- your existing workflow is already based on direct profile comparisons or Nextflow standard compare jobs
 
 Use matrix compare when:
 
 - you want to compare all samples against all samples repeatedly
+- you are usually working on one genome or a small set of genomes at a time
 - you want resumability at the compare-DB level
 - you expect to append new profiles over time
 - you want one reusable comparison substrate for ANI, IBS, and gene ANI
@@ -534,16 +674,14 @@ Use matrix compare when:
 For a new project:
 
 1. generate standard sample profiles
-2. build one matrix store from those profiles
-3. run matrix compare into a resumable DuckDB compare DB
-4. append new samples into the matrix store as the cohort grows
+2. if your main analyses will span many genomes at once, start with the standard compare route
+3. if your main analyses will revisit one genome or a small set of genomes across many samples, build one matrix store and use the matrix route
+4. append new samples into the matrix store later only if you chose the matrix route
 
-This gives you:
+This gives you the right optimization for your actual workload:
 
-- reusable comparison input
-- resumable output state
-- fast repeated cohort comparison runs
-- one place to export genome and gene comparison tables
+- standard route: simpler direct profile-based comparison across many genomes
+- matrix route: reusable comparison input plus resumable output state for repeated pair-heavy genome-specific work
 
 ## Worked Example A: Standard Workflow with the Python CLI
 
@@ -626,7 +764,7 @@ This gives you one profile parquet per sample plus gene and genome stats tables.
 Create `profiles.csv`:
 
 ```csv
-sample_name,profile_loc
+profile_name,profile_location
 sample1,/abs/path/project/outputs/profile_run/sample1_profile.parquet
 sample2,/abs/path/project/outputs/profile_run/sample2_profile.parquet
 sample3,/abs/path/project/outputs/profile_run/sample3_profile.parquet
@@ -640,25 +778,15 @@ zipstrain utilities build-profile-db \
   --output-file outputs/profile_db.parquet
 ```
 
-### 6. Build the standard compare config
-
-```bash
-zipstrain utilities build-genome-comparison-config \
-  --profile-db outputs/profile_db.parquet \
-  --gene-db-id tutorial_genes_v1 \
-  --reference-genome-id tutorial_reference_v1 \
-  --scope all \
-  --min-cov 5 \
-  --min-gene-compare-len 200 \
-  --stb-file-loc reference/reference_genomes.stb \
-  --output-file outputs/genome_compare_config.json
-```
-
-### 7. Run the standard compare
+### 6. Run the standard compare
 
 ```bash
 zipstrain compare genomes \
-  --genome-comparison-object outputs/genome_compare_config.json \
+  --profile-db outputs/profile_db.parquet \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file reference/reference_genomes.stb \
   --run-dir outputs/standard_compare \
   --calculate ani+ibs+identical_genes \
   --ani-method popani \
@@ -668,7 +796,7 @@ zipstrain compare genomes \
 
 ### Result
 
-This route gives you standard profile-based comparison outputs without building a matrix store. It is the best tutorial example when you want the simplest direct route from profiles to compare results.
+This route gives you standard profile-based comparison outputs without building a matrix store. It is the best tutorial example when you want the simplest direct route from profiles to compare results, especially when the same run needs many genomes at once.
 
 ## Worked Example B: Standard Workflow with Nextflow
 
@@ -736,7 +864,7 @@ This writes profile parquets under `outputs/nf_profile/profiles/`.
 `profiles.csv`
 
 ```csv
-sample_names,mpileup_files
+sample_name,profile_location
 sample1,/abs/path/project/outputs/nf_profile/profiles/sample1_profile.parquet
 sample2,/abs/path/project/outputs/nf_profile/profiles/sample2_profile.parquet
 sample3,/abs/path/project/outputs/nf_profile/profiles/sample3_profile.parquet
@@ -750,12 +878,12 @@ nextflow run zipstrain.nf \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference/reference_genomes.stb \
+  --compare_engine polars \
   --compare_genome_scope all \
   --compare_calculate ani+ibs+identical_genes \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --compare_duckdb_memory_limit 4GB \
   --output_dir outputs/nf_compare_genomes \
   -c conf.config \
   -profile docker \
@@ -770,12 +898,12 @@ nextflow run zipstrain.nf \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference/reference_genomes.stb \
+  --compare_engine polars \
   --compare_gene_scope all:all \
   --compare_ani_method popani \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --compare_duckdb_memory_limit 4GB \
   --output_dir outputs/nf_compare_genes \
   -c conf.config \
   -profile docker \
@@ -788,7 +916,7 @@ This route keeps you in the standard profile-based world, but uses Nextflow to o
 
 ## Worked Example C: Matrix Workflow for Repeated All-vs-All Comparison
 
-This is the best route when you expect to compare many samples repeatedly against the same reference set.
+This is the best route when you expect to compare many samples repeatedly against the same reference set, but each run is usually focused on one genome or a small set of genomes.
 
 ### When to use this route
 
@@ -797,6 +925,7 @@ Use this when:
 - you already have standard profile parquets
 - you want resumable all-vs-all compare runs
 - you expect to add new samples over time
+- you usually care about one genome or a small set of genomes per run
 - you want genome ANI, IBS, and optional gene ANI from one reusable matrix store
 
 ### 1. Start from standard profiles
@@ -830,6 +959,7 @@ zipstrain utilities build-matrix-db \
 zipstrain utilities matrix-compare \
   --matrix-db-file outputs/matrix_db.h5 \
   --output-file outputs/matrix_compare.duckdb \
+  --genome target_genome_name \
   --memory-limit-gb 16 \
   --loader-executor thread \
   --writer-executor thread \
@@ -842,6 +972,8 @@ Typical backend substitutions:
 - Apple Silicon: `--backend torch-mps`
 - NVIDIA GPU: `--backend torch-cuda`
 - CPU only: `--backend torch-cpu`
+
+If you want all genomes instead, omit `--genome`.
 
 ### 4. Export genome-level results
 
@@ -875,7 +1007,12 @@ Then rerun `matrix-compare` against the same compare DB. Already completed sampl
 
 ### Result
 
-This route turns standard per-sample profile parquets into a reusable comparison substrate. It is the best example for large or growing cohorts where repeated comparison cost matters more than one-time matrix construction.
+This route turns standard per-sample profile parquets into a reusable comparison substrate. It is the best example for large or growing cohorts where repeated pair-heavy work on one genome or a small set of genomes matters more than one-time matrix construction.
+
+The relevant result tables can then be extracted with:
+
+- `zipstrain utilities matrix-compare-export --matrix-compare-db-file outputs/matrix_compare.duckdb --output-file outputs/matrix_compare.parquet`
+- `zipstrain utilities matrix-compare-export --matrix-compare-db-file outputs/matrix_compare.duckdb --output-file outputs/matrix_compare_gene.parquet --table gene`
 
 ## Optional: Add a New Sample Later and Run Only the Remaining Pairs
 
@@ -887,16 +1024,16 @@ The two methods handle it differently.
 The standard method does not maintain a dedicated resumable compare database in the same way the matrix route does. Instead, you:
 
 1. add the new sample profile to the profile DB
-2. point the new comparison config at the previous comparison table
+2. point the next run at the previous comparison table
 3. regenerate only the remaining pairs
-4. rerun compare on the updated config
+4. rerun compare with the same direct arguments
 
 #### 1. Update the profile DB input table
 
 Extend your `profiles.csv` to include the new sample:
 
 ```csv
-sample_name,profile_loc
+profile_name,profile_location
 sample1,/abs/path/project/outputs/profile_run/sample1_profile.parquet
 sample2,/abs/path/project/outputs/profile_run/sample2_profile.parquet
 sample3,/abs/path/project/outputs/profile_run/sample3_profile.parquet
@@ -911,38 +1048,29 @@ zipstrain utilities build-profile-db \
   --output-file outputs/profile_db.parquet
 ```
 
-#### 2. Rebuild the standard compare config with the current comparison table
+#### 2. Rebuild the remaining-pairs table with the current comparison parquet
 
-Point `--current-comp-table` at the existing genome comparison parquet from your previous standard run. The path below is an example placeholder; use the actual parquet produced by your earlier standard compare workflow:
-
-```bash
-zipstrain utilities build-genome-comparison-config \
-  --profile-db outputs/profile_db.parquet \
-  --gene-db-id tutorial_genes_v1 \
-  --reference-genome-id tutorial_reference_v1 \
-  --scope all \
-  --min-cov 5 \
-  --min-gene-compare-len 200 \
-  --stb-file-loc reference/reference_genomes.stb \
-  --current-comp-table outputs/standard_compare/genome_compare_results.parquet \
-  --output-file outputs/genome_compare_config_updated.json
-```
-
-#### 3. Optionally inspect the remaining pairs
+Point `--comp-db-file` at the existing genome comparison parquet from your previous standard run. The path below is an example placeholder; use the actual parquet produced by your earlier standard compare workflow:
 
 ```bash
 zipstrain utilities to-complete-table \
-  --genome-comparison-object outputs/genome_compare_config_updated.json \
+  --profile-db outputs/profile_db.parquet \
+  --comp-db-file outputs/standard_compare/genome_compare_results.parquet \
   --output-file outputs/remaining_pairs.csv
 ```
 
-This gives you the not-yet-completed sample pairs implied by the updated config.
+This gives you the not-yet-completed sample pairs implied by the updated profile DB plus existing comparison parquet.
 
-#### 4. Rerun standard compare
+#### 3. Rerun standard compare
 
 ```bash
 zipstrain compare genomes \
-  --genome-comparison-object outputs/genome_compare_config_updated.json \
+  --profile-db outputs/profile_db.parquet \
+  --comp-db-file outputs/standard_compare/genome_compare_results.parquet \
+  --scope all \
+  --min-cov 5 \
+  --min-gene-compare-len 200 \
+  --stb-file reference/reference_genomes.stb \
   --run-dir outputs/standard_compare_update \
   --calculate ani+ibs+identical_genes \
   --ani-method popani \
@@ -950,7 +1078,7 @@ zipstrain compare genomes \
   --duckdb-threads 8
 ```
 
-In other words, the standard route handles incremental updates by carrying forward the previous comparison table into a new config.
+In other words, the standard route handles incremental updates by carrying forward the previous comparison parquet directly, without a separate comparison-config JSON layer.
 
 ### Matrix Method
 

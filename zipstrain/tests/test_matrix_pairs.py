@@ -17,7 +17,7 @@ def _write_profiles(profile_dir: Path) -> None:
     sample_a = pl.DataFrame(
         {
             "chrom": ["chr1", "chr1", "chr2"],
-            "pos": [0, 2, 5],
+            "pos": [1, 3, 6],
             "gene": ["gene1", "gene1", "gene2"],
             "genome": ["genome1", "genome1", "genome2"],
             "A": [6, 0, 0],
@@ -29,7 +29,7 @@ def _write_profiles(profile_dir: Path) -> None:
     sample_b = pl.DataFrame(
         {
             "chrom": ["chr1", "chr2", "chr2"],
-            "pos": [1, 5, 7],
+            "pos": [2, 6, 8],
             "gene": ["gene1", "gene2", "gene3"],
             "genome": ["genome1", "genome2", "genome2"],
             "A": [0, 1, 0],
@@ -41,7 +41,7 @@ def _write_profiles(profile_dir: Path) -> None:
     sample_c = pl.DataFrame(
         {
             "chrom": ["chr1", "chr1", "chr2", "chr2"],
-            "pos": [0, 1, 5, 7],
+            "pos": [1, 2, 6, 8],
             "gene": ["gene1", "gene1", "gene2", "gene3"],
             "genome": ["genome1", "genome1", "genome2", "genome2"],
             "A": [5, 0, 0, 0],
@@ -88,13 +88,56 @@ def _write_profiles_one_based(profile_dir: Path) -> None:
     sample_b.write_parquet(profile_dir / "sample_b.parquet")
 
 
+def _write_profiles_one_based_full(profile_dir: Path) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    sample_a = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr2"],
+            "pos": [1, 3, 6],
+            "gene": ["gene1", "gene1", "gene2"],
+            "genome": ["genome1", "genome1", "genome2"],
+            "A": [6, 0, 0],
+            "T": [0, 0, 8],
+            "C": [0, 3, 0],
+            "G": [0, 2, 0],
+        }
+    )
+    sample_b = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr2", "chr2"],
+            "pos": [2, 6, 8],
+            "gene": ["gene1", "gene2", "gene3"],
+            "genome": ["genome1", "genome2", "genome2"],
+            "A": [0, 1, 0],
+            "T": [9, 1, 0],
+            "C": [0, 0, 0],
+            "G": [0, 0, 6],
+        }
+    )
+    sample_c = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr2", "chr2"],
+            "pos": [1, 2, 6, 8],
+            "gene": ["gene1", "gene1", "gene2", "gene3"],
+            "genome": ["genome1", "genome1", "genome2", "genome2"],
+            "A": [5, 0, 0, 0],
+            "T": [0, 7, 4, 0],
+            "C": [0, 0, 0, 0],
+            "G": [0, 0, 0, 5],
+        }
+    )
+    sample_a.write_parquet(profile_dir / "sample_a.parquet")
+    sample_b.write_parquet(profile_dir / "sample_b.parquet")
+    sample_c.write_parquet(profile_dir / "sample_c.parquet")
+
+
 def _write_many_profiles_same_genome(profile_dir: Path, sample_count: int = 5) -> None:
     profile_dir.mkdir(parents=True, exist_ok=True)
     for idx in range(sample_count):
         frame = pl.DataFrame(
             {
                 "chrom": ["chr1", "chr1", "chr1"],
-                "pos": [0, 1, 2],
+                "pos": [1, 2, 3],
                 "gene": ["gene1", "gene1", "gene1"],
                 "genome": ["genome1", "genome1", "genome1"],
                 "A": [6 if idx % 2 == 0 else 0, 0, 6],
@@ -111,7 +154,7 @@ def _write_profiles_multiscaffold_same_genome(profile_dir: Path) -> None:
     sample_a = pl.DataFrame(
         {
             "chrom": ["chr1", "chr1", "chr2", "chr2"],
-            "pos": [0, 1, 0, 1],
+            "pos": [1, 2, 1, 2],
             "gene": ["gene1", "gene1", "gene2", "gene2"],
             "genome": ["genome1", "genome1", "genome1", "genome1"],
             "A": [6, 6, 6, 6],
@@ -123,7 +166,7 @@ def _write_profiles_multiscaffold_same_genome(profile_dir: Path) -> None:
     sample_b = pl.DataFrame(
         {
             "chrom": ["chr1", "chr1", "chr2", "chr2"],
-            "pos": [0, 1, 0, 1],
+            "pos": [1, 2, 1, 2],
             "gene": ["gene1", "gene1", "gene2", "gene2"],
             "genome": ["genome1", "genome1", "genome1", "genome1"],
             "A": [7, 7, 7, 7],
@@ -141,7 +184,7 @@ def _write_invalid_append_profile(profile_dir: Path) -> None:
     invalid = pl.DataFrame(
         {
             "chrom": ["chr9"],
-            "pos": [0],
+            "pos": [1],
             "gene": ["gene_bad"],
             "genome": ["genome9"],
             "A": [6],
@@ -153,16 +196,155 @@ def _write_invalid_append_profile(profile_dir: Path) -> None:
     invalid.write_parquet(profile_dir / "sample_bad.parquet")
 
 
+def _write_out_of_range_append_profile(profile_dir: Path) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    invalid = pl.DataFrame(
+        {
+            "chrom": ["chr1"],
+            "pos": [99],
+            "gene": ["gene_bad"],
+            "genome": ["genome1"],
+            "A": [6],
+            "T": [0],
+            "C": [0],
+            "G": [0],
+        }
+    )
+    invalid.write_parquet(profile_dir / "sample_bad.parquet")
+
+
+def _write_scoped_append_profile_with_extra_genomes(profile_dir: Path) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    mixed = pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr9"],
+            "pos": [1, 1],
+            "gene": ["gene1", "gene_bad"],
+            "genome": ["genome1", "genome9"],
+            "A": [6, 6],
+            "T": [0, 0],
+            "C": [0, 0],
+            "G": [0, 0],
+        }
+    )
+    mixed.write_parquet(profile_dir / "sample_scope_ok.parquet")
+
+
+def _write_contract_stb(stb_file: Path) -> None:
+    stb_file.parent.mkdir(parents=True, exist_ok=True)
+    stb_file.write_text("chr1\tgenome1\nchr2\tgenome2\nchr3\tgenome3\n")
+
+
+def _write_default_contract_bed_and_stb(bed_file: Path, stb_file: Path) -> None:
+    bed_file.parent.mkdir(parents=True, exist_ok=True)
+    bed_file.write_text("chr1\t0\t3\nchr2\t5\t8\n")
+    stb_file.parent.mkdir(parents=True, exist_ok=True)
+    stb_file.write_text("chr1\tgenome1\nchr2\tgenome2\n")
+
+
+def _write_contract_append_profile_one_based(profile_dir: Path) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    sample = pl.DataFrame(
+        {
+            "chrom": ["chr3"],
+            "pos": [11],
+            "gene": ["gene3"],
+            "genome": ["genome3"],
+            "A": [7],
+            "T": [0],
+            "C": [0],
+            "G": [0],
+        }
+    )
+    sample.write_parquet(profile_dir / "sample_new_contract.parquet")
+
+
 def _write_gene_range_table(gene_range_table: Path) -> None:
     gene_range_table.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {
             "gene": ["gene1", "gene2", "gene3"],
             "scaffold": ["chr1", "chr2", "chr2"],
-            "start": [0, 5, 7],
-            "end": [2, 5, 7],
+            "start": [1, 6, 8],
+            "end": [3, 6, 8],
         }
     ).write_csv(gene_range_table, separator="\t", include_header=False)
+
+
+def _write_contract_from_profiles(
+    profile_dir: Path,
+    bed_file: Path | None = None,
+    stb_file: Path | None = None,
+) -> None:
+    profile_paths = sorted(
+        path for path in profile_dir.glob("*.parquet")
+        if path.is_file() and mp._looks_like_profile_parquet(path)
+    )
+    frame = (
+        pl.scan_parquet([str(path) for path in profile_paths])
+        .select("genome", "chrom", "pos")
+        .group_by(["genome", "chrom"])
+        .agg(
+            pl.col("pos").min().cast(pl.Int64).alias("min_pos"),
+            pl.col("pos").max().cast(pl.Int64).alias("max_pos"),
+        )
+        .collect(engine="streaming")
+        .sort(["genome", "chrom"])
+    )
+    if bed_file is not None:
+        bed_file.parent.mkdir(parents=True, exist_ok=True)
+        with bed_file.open("w") as fh:
+            for row in frame.iter_rows(named=True):
+                fh.write(f"{row['chrom']}\t{int(row['min_pos']) - 1}\t{int(row['max_pos'])}\n")
+    if stb_file is not None:
+        stb_file.parent.mkdir(parents=True, exist_ok=True)
+        with stb_file.open("w") as fh:
+            for row in frame.iter_rows(named=True):
+                fh.write(f"{row['chrom']}\t{row['genome']}\n")
+
+
+def _build_matrix_hdf5_with_contract(profile_dir: Path, output_file: Path, **kwargs):
+    bed_file = kwargs.pop("bed_file", None)
+    stb_file = kwargs.pop("stb_file", None)
+    if bed_file is None:
+        contract_dir = output_file.parent / "_test_contracts"
+        bed_file = contract_dir / f"{output_file.stem}.bed"
+    if stb_file is None:
+        contract_dir = output_file.parent / "_test_contracts"
+        stb_file = contract_dir / f"{output_file.stem}.stb"
+    if not Path(bed_file).exists():
+        _write_contract_from_profiles(profile_dir, bed_file=Path(bed_file))
+    if not Path(stb_file).exists():
+        _write_contract_from_profiles(profile_dir, stb_file=Path(stb_file))
+    return mp.build_matrix_hdf5(
+        profile_dir=profile_dir,
+        output_file=output_file,
+        bed_file=bed_file,
+        stb_file=stb_file,
+        **kwargs,
+    )
+
+
+def _build_matrix_db_with_contract(profile_dir: Path, output_file: Path, **kwargs):
+    bed_file = kwargs.pop("bed_file", None)
+    stb_file = kwargs.pop("stb_file", None)
+    if bed_file is None:
+        contract_dir = output_file.parent / "_test_contracts"
+        bed_file = contract_dir / f"{output_file.stem}.bed"
+    if stb_file is None:
+        contract_dir = output_file.parent / "_test_contracts"
+        stb_file = contract_dir / f"{output_file.stem}.stb"
+    if not Path(bed_file).exists():
+        _write_contract_from_profiles(profile_dir, bed_file=Path(bed_file))
+    if not Path(stb_file).exists():
+        _write_contract_from_profiles(profile_dir, stb_file=Path(stb_file))
+    return mp.build_matrix_db(
+        profile_dir=profile_dir,
+        output_file=output_file,
+        bed_file=bed_file,
+        stb_file=stb_file,
+        **kwargs,
+    )
 
 
 def test_parse_matrix_calculations_supports_all_and_gene_aliases():
@@ -241,6 +423,10 @@ def _load_matrix_hdf5_store(matrix_hdf5: Path):
                 )
     genes = mp._load_matrix_hdf5_gene_ranges(matrix_hdf5)
     return metadata, samples, genomes, scaffolds, matrices, genes
+
+
+def _load_matrix_hdf5_contract(matrix_hdf5: Path):
+    return mp._load_matrix_hdf5_reference_contract(matrix_hdf5)
 
 
 def _expected_classic_pairwise_gene_results(
@@ -449,7 +635,7 @@ def test_build_matrix_hdf5(tmp_path):
     _write_profiles(profile_dir)
     progress_events: list[dict[str, object]] = []
 
-    summary = mp.build_matrix_hdf5(
+    summary = _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         count_dtype="uint16",
@@ -501,7 +687,7 @@ def test_build_matrix_hdf5_sparse(tmp_path):
     matrix_hdf5 = tmp_path / "matrix_sparse.h5"
     _write_profiles(profile_dir)
 
-    summary = mp.build_matrix_hdf5(
+    summary = _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         count_dtype="uint16",
@@ -530,7 +716,7 @@ def test_build_matrix_hdf5_with_gene_ranges(tmp_path):
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         count_dtype="uint16",
@@ -576,7 +762,7 @@ def test_build_matrix_hdf5_expands_scaffold_span_for_scaffold_relative_gene_rang
         }
     ).write_csv(gene_range_table, separator="\t", include_header=False)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         count_dtype="uint16",
@@ -609,12 +795,12 @@ def test_build_matrix_hdf5_gene_ranges_follow_multiscaffold_axis_offsets(tmp_pat
         {
             "gene": ["gene_chr1", "gene_chr2"],
             "scaffold": ["chr1", "chr2"],
-            "start": [0, 0],
-            "end": [1, 1],
+            "start": [1, 1],
+            "end": [2, 2],
         }
     ).write_csv(gene_range_table, separator="\t", include_header=False)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         count_dtype="uint16",
@@ -681,7 +867,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare(tmp_path):
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         memory_limit_gb=1.0,
@@ -726,7 +912,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare_multiscaffold(tm
         }
     ).write_csv(gene_range_table, separator="\t", include_header=False)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         memory_limit_gb=1.0,
@@ -858,7 +1044,7 @@ def test_matrix_compare_hdf5_explicit_gene_results_match_classic_compare(tmp_pat
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         memory_limit_gb=1.0,
@@ -895,7 +1081,7 @@ def test_matrix_compare_gene_requires_gene_annotations(tmp_path):
     compare_db = tmp_path / "compare_hdf5_gene.duckdb"
     _write_profiles(profile_dir)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         memory_limit_gb=1.0,
@@ -921,7 +1107,7 @@ def test_matrix_compare_torch_cpu_matches_classic_compare(tmp_path):
     output_file = tmp_path / "matrix_compare_torch.duckdb"
     _write_profiles(profile_dir)
 
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
         output_file=output_file,
@@ -950,7 +1136,7 @@ def test_matrix_compare_torch_cpu_with_ibs_matches_classic_compare(tmp_path):
     output_file = tmp_path / "matrix_compare_torch_ibs.duckdb"
     _write_profiles(profile_dir)
 
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
         output_file=output_file,
@@ -980,7 +1166,7 @@ def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
     output_file = tmp_path / "matrix_compare_hdf5_classic.duckdb"
     _write_profiles(profile_dir)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
         count_dtype="uint16",
@@ -1014,7 +1200,7 @@ def test_build_matrix_db(tmp_path):
     _write_profiles(profile_dir)
     progress_events: list[dict[str, object]] = []
 
-    summary = mp.build_matrix_db(
+    summary = _build_matrix_db_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
         count_dtype="uint16",
@@ -1065,7 +1251,7 @@ def test_build_matrix_db_with_small_commit_batches(tmp_path):
     matrix_db = tmp_path / "matrix_small_batches.h5"
     _write_profiles(profile_dir)
 
-    summary = mp.build_matrix_db(
+    summary = _build_matrix_db_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
         count_dtype="uint16",
@@ -1090,7 +1276,7 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
     _write_profiles_one_based(profile_dir)
     bed_file.write_text("chr1\t0\t2\nchr1\t2\t5\nchr2\t5\t7\nchr2\t7\t10\n")
 
-    summary = mp.build_matrix_db(
+    summary = _build_matrix_db_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
         bed_file=bed_file,
@@ -1131,15 +1317,20 @@ def test_append_matrix_db_success(tmp_path):
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_append"
     matrix_db = tmp_path / "matrix.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
 
-    _write_profiles(initial_profile_dir)
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
 
-    initial_summary = mp.build_matrix_db(
+    initial_summary = _build_matrix_db_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_db,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
     )
     assert initial_summary.sample_count == 2
@@ -1174,15 +1365,20 @@ def test_append_matrix_hdf5_success(tmp_path):
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_append"
     matrix_hdf5 = tmp_path / "matrix.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
 
-    _write_profiles(initial_profile_dir)
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
 
-    initial_summary = mp.build_matrix_hdf5(
+    initial_summary = _build_matrix_hdf5_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_hdf5,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
     )
     assert initial_summary.sample_count == 2
@@ -1217,15 +1413,20 @@ def test_append_matrix_hdf5_sparse_success(tmp_path):
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_append"
     matrix_hdf5 = tmp_path / "matrix_sparse.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
 
-    _write_profiles(initial_profile_dir)
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
 
-    initial_summary = mp.build_matrix_hdf5(
+    initial_summary = _build_matrix_hdf5_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_hdf5,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
         sparse=True,
     )
@@ -1250,15 +1451,20 @@ def test_append_matrix_hdf5_uses_in_place_path_for_resizable_store(tmp_path, mon
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_append"
     matrix_hdf5 = tmp_path / "matrix.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
 
-    _write_profiles(initial_profile_dir)
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_hdf5,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
     )
 
@@ -1275,19 +1481,165 @@ def test_append_matrix_hdf5_uses_in_place_path_for_resizable_store(tmp_path, mon
     assert summary.appended_sample_count == 1
 
 
+def test_append_matrix_hdf5_scoped_store_ignores_non_scope_genomes(tmp_path):
+    pytest.importorskip("h5py")
+    initial_profile_dir = tmp_path / "profiles_initial"
+    append_profile_dir = tmp_path / "profiles_append"
+    matrix_hdf5 = tmp_path / "matrix_scope.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
+    _write_scoped_append_profile_with_extra_genomes(append_profile_dir)
+
+    _build_matrix_hdf5_with_contract(
+        profile_dir=initial_profile_dir,
+        output_file=matrix_hdf5,
+        genome="genome1",
+        bed_file=bed_file,
+        stb_file=stb_file,
+        memory_limit_gb=1.0,
+    )
+
+    summary = mp.append_matrix_hdf5(
+        profile_dir=append_profile_dir,
+        matrix_hdf5_file=matrix_hdf5,
+        memory_limit_gb=1.0,
+    )
+
+    assert summary.appended_sample_count == 1
+    assert summary.ignored_genome_count == 1
+    _metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
+    assert [sample_name for _sample_idx, sample_name in samples] == [
+        "sample_a",
+        "sample_b",
+        "sample_c",
+        "sample_scope_ok",
+    ]
+    assert [spec.genome for spec in genomes] == ["genome1"]
+    assert [offset.chrom for offset in scaffolds] == ["chr1"]
+    assert matrices["0"].shape[0] == 4
+    assert matrices["0"][3].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+
+
+def test_append_matrix_hdf5_ignores_contract_unknown_genomes(tmp_path):
+    pytest.importorskip("h5py")
+    initial_profile_dir = tmp_path / "profiles_initial"
+    append_profile_dir = tmp_path / "profiles_bad"
+    matrix_hdf5 = tmp_path / "matrix_ignore.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
+    (initial_profile_dir / "sample_c.parquet").unlink()
+    _write_invalid_append_profile(append_profile_dir)
+
+    _build_matrix_hdf5_with_contract(
+        profile_dir=initial_profile_dir,
+        output_file=matrix_hdf5,
+        bed_file=bed_file,
+        stb_file=stb_file,
+        memory_limit_gb=1.0,
+    )
+
+    summary = mp.append_matrix_hdf5(
+        profile_dir=append_profile_dir,
+        matrix_hdf5_file=matrix_hdf5,
+        memory_limit_gb=1.0,
+    )
+
+    assert summary.appended_sample_count == 1
+    assert summary.ignored_genome_count == 1
+    _metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
+    assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_bad"]
+    assert [spec.genome for spec in genomes] == ["genome1", "genome2"]
+    assert [spec.chrom for spec in scaffolds] == ["chr1", "chr2"]
+    assert matrices["0"].shape[0] == 3
+    assert matrices["1"].shape[0] == 3
+    assert np.array_equal(matrices["0"][2], np.zeros((3, 4), dtype=matrices["0"].dtype))
+    assert np.array_equal(matrices["1"][2], np.zeros((3, 4), dtype=matrices["1"].dtype))
+
+
+def test_append_matrix_hdf5_materializes_contract_known_genome(tmp_path):
+    pytest.importorskip("h5py")
+    initial_profile_dir = tmp_path / "profiles_initial"
+    append_profile_dir = tmp_path / "profiles_append"
+    matrix_hdf5 = tmp_path / "matrix_contract.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+
+    _write_profiles_one_based(initial_profile_dir)
+    _write_contract_append_profile_one_based(append_profile_dir)
+    bed_file.write_text("chr1\t0\t5\nchr2\t5\t10\nchr3\t10\t15\n")
+    _write_contract_stb(stb_file)
+
+    initial_summary = _build_matrix_hdf5_with_contract(
+        profile_dir=initial_profile_dir,
+        output_file=matrix_hdf5,
+        bed_file=bed_file,
+        stb_file=stb_file,
+        memory_limit_gb=1.0,
+    )
+
+    assert initial_summary.sample_count == 2
+    _metadata, _samples, initial_genomes, _scaffolds, _matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
+    contract_genomes, contract_scaffolds = _load_matrix_hdf5_contract(matrix_hdf5)
+    assert [spec.genome for spec in initial_genomes] == ["genome1", "genome2"]
+    assert contract_genomes is not None
+    assert contract_scaffolds is not None
+    assert [spec.genome for spec in contract_genomes] == ["genome1", "genome2", "genome3"]
+    assert [offset.chrom for offset in contract_scaffolds] == ["chr1", "chr2", "chr3"]
+
+    append_summary = mp.append_matrix_hdf5(
+        profile_dir=append_profile_dir,
+        matrix_hdf5_file=matrix_hdf5,
+        memory_limit_gb=1.0,
+    )
+
+    assert append_summary.appended_sample_count == 1
+    assert append_summary.total_sample_count == 3
+    assert append_summary.ignored_genome_count == 0
+    metadata, samples, genomes, scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
+    assert metadata["stb_file"] == str(stb_file.resolve())
+    assert [sample_name for _sample_idx, sample_name in samples] == [
+        "sample_a",
+        "sample_b",
+        "sample_new_contract",
+    ]
+    assert [spec.genome for spec in genomes] == ["genome1", "genome2", "genome3"]
+    assert [offset.chrom for offset in scaffolds] == ["chr1", "chr2", "chr3"]
+    assert matrices["2"].shape == (3, 5, 4)
+    assert np.array_equal(matrices["2"][0], np.zeros((5, 4), dtype=matrices["2"].dtype))
+    assert np.array_equal(matrices["2"][1], np.zeros((5, 4), dtype=matrices["2"].dtype))
+    assert matrices["2"][2].tolist() == [
+        [1, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+
+
 def test_append_matrix_db_rejects_incompatible_profile_without_mutation(tmp_path):
     pytest.importorskip("h5py")
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_bad"
     matrix_db = tmp_path / "matrix.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
 
-    _write_profiles(initial_profile_dir)
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     (initial_profile_dir / "sample_c.parquet").unlink()
-    _write_invalid_append_profile(append_profile_dir)
+    _write_out_of_range_append_profile(append_profile_dir)
 
-    mp.build_matrix_db(
+    _build_matrix_db_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_db,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
     )
     metadata_before, samples_before, genomes_before, scaffolds_before, matrices_before, genes_before = _load_matrix_hdf5_store(matrix_db)
@@ -1315,14 +1667,19 @@ def test_append_matrix_hdf5_rejects_incompatible_profile_without_mutation(tmp_pa
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_bad"
     matrix_hdf5 = tmp_path / "matrix.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
 
-    _write_profiles(initial_profile_dir)
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     (initial_profile_dir / "sample_c.parquet").unlink()
-    _write_invalid_append_profile(append_profile_dir)
+    _write_out_of_range_append_profile(append_profile_dir)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_hdf5,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
     )
     metadata_before, samples_before, genomes_before, scaffolds_before, matrices_before, _genes_before = _load_matrix_hdf5_store(matrix_hdf5)
@@ -1351,7 +1708,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
     _write_profiles(profile_dir)
     progress_events: list[dict[str, object]] = []
 
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
         output_file=output_file,
@@ -1416,7 +1773,7 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
     output_file = tmp_path / "matrix_compare_ibs.duckdb"
     _write_profiles(profile_dir)
 
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
         output_file=output_file,
@@ -1472,7 +1829,7 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     original_load_indices = mp._Hdf5GenomeMatrixNumpyDataset.load_indices
     call_sizes: list[int] = []
@@ -1513,7 +1870,10 @@ def test_cli_matrix_build_and_compare(tmp_path):
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     export_file = tmp_path / "matrix_compare.parquet"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
     _write_profiles(profile_dir)
+    _write_contract_from_profiles(profile_dir, bed_file, stb_file)
 
     runner = CliRunner()
     build_result = runner.invoke(
@@ -1525,6 +1885,10 @@ def test_cli_matrix_build_and_compare(tmp_path):
             str(profile_dir),
             "--output-file",
             str(matrix_db),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
             "--memory-limit-gb",
             "1",
             "--export-batch-mb",
@@ -1604,7 +1968,10 @@ def test_cli_matrix_build_sparse_and_compare(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix_sparse.h5"
     output_file = tmp_path / "matrix_compare_sparse.duckdb"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
     _write_profiles(profile_dir)
+    _write_contract_from_profiles(profile_dir, bed_file, stb_file)
 
     runner = CliRunner()
     build_result = runner.invoke(
@@ -1616,6 +1983,10 @@ def test_cli_matrix_build_sparse_and_compare(tmp_path):
             str(profile_dir),
             "--output-file",
             str(matrix_db),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
             "--memory-limit-gb",
             "1",
             "--sparse",
@@ -1661,8 +2032,11 @@ def test_cli_matrix_compare_export_gene_table(tmp_path):
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     export_file = tmp_path / "matrix_compare_gene.parquet"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
+    _write_contract_from_profiles(profile_dir, bed_file, stb_file)
 
     runner = CliRunner()
     build_result = runner.invoke(
@@ -1674,6 +2048,10 @@ def test_cli_matrix_compare_export_gene_table(tmp_path):
             str(profile_dir),
             "--output-file",
             str(matrix_db),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
             "--memory-limit-gb",
             "1",
             "--gene-range-table",
@@ -1744,7 +2122,7 @@ def test_export_matrix_compare_parquet_supports_genome_and_gene_tables(tmp_path)
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
         memory_limit_gb=1.0,
@@ -1789,7 +2167,7 @@ def test_export_matrix_compare_parquet_gene_requires_gene_rows(tmp_path):
     gene_export = tmp_path / "matrix_compare_gene.parquet"
     _write_profiles(profile_dir)
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
         memory_limit_gb=1.0,
@@ -1840,7 +2218,10 @@ def test_cli_append_matrix_db(tmp_path):
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_append"
     matrix_db = tmp_path / "matrix.h5"
-    _write_profiles(initial_profile_dir)
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
@@ -1855,6 +2236,10 @@ def test_cli_append_matrix_db(tmp_path):
             str(initial_profile_dir),
             "--output-file",
             str(matrix_db),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
             "--memory-limit-gb",
             "1",
             "--export-batch-mb",
@@ -1879,10 +2264,117 @@ def test_cli_append_matrix_db(tmp_path):
     assert append_result.exit_code == 0
     assert "appended_samples=1" in append_result.output
     assert "total_samples=3" in append_result.output
+    assert "ignored_genomes=0" in append_result.output
 
     _metadata, samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_db)
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
     assert matrices["0"].shape[0] == 3
+
+
+def test_cli_append_matrix_db_materializes_contract_known_genome(tmp_path):
+    pytest.importorskip("h5py")
+    initial_profile_dir = tmp_path / "profiles_initial"
+    append_profile_dir = tmp_path / "profiles_append"
+    matrix_db = tmp_path / "matrix_contract.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+    _write_profiles_one_based(initial_profile_dir)
+    _write_contract_append_profile_one_based(append_profile_dir)
+    bed_file.write_text("chr1\t0\t5\nchr2\t5\t10\nchr3\t10\t15\n")
+    _write_contract_stb(stb_file)
+
+    runner = CliRunner()
+    build_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-matrix-db",
+            "--profile-dir",
+            str(initial_profile_dir),
+            "--output-file",
+            str(matrix_db),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
+            "--memory-limit-gb",
+            "1",
+        ],
+    )
+    assert build_result.exit_code == 0
+
+    append_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "append-matrix-db",
+            "--profile-dir",
+            str(append_profile_dir),
+            "--matrix-db-file",
+            str(matrix_db),
+            "--memory-limit-gb",
+            "1",
+        ],
+    )
+    assert append_result.exit_code == 0
+    assert "ignored_genomes=0" in append_result.output
+    _metadata, samples, genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_db)
+    assert [sample_name for _sample_idx, sample_name in samples] == [
+        "sample_a",
+        "sample_b",
+        "sample_new_contract",
+    ]
+    assert [spec.genome for spec in genomes] == ["genome1", "genome2", "genome3"]
+    assert matrices["2"].shape[0] == 3
+
+
+def test_cli_append_matrix_db_reports_ignored_unknown_genomes(tmp_path):
+    pytest.importorskip("h5py")
+    initial_profile_dir = tmp_path / "profiles_initial"
+    ignored_profile_dir = tmp_path / "profiles_ignored"
+    matrix_db = tmp_path / "matrix_ignore.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
+    (initial_profile_dir / "sample_c.parquet").unlink()
+    _write_invalid_append_profile(ignored_profile_dir)
+
+    runner = CliRunner()
+    build_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-matrix-db",
+            "--profile-dir",
+            str(initial_profile_dir),
+            "--output-file",
+            str(matrix_db),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
+            "--memory-limit-gb",
+            "1",
+        ],
+    )
+    assert build_result.exit_code == 0
+
+    append_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "append-matrix-db",
+            "--profile-dir",
+            str(ignored_profile_dir),
+            "--matrix-db-file",
+            str(matrix_db),
+            "--memory-limit-gb",
+            "1",
+        ],
+    )
+    assert append_result.exit_code == 0
+    assert "ignored_genomes=1" in append_result.output
 
 
 def test_cli_legacy_append_matrix_hdf5_command_is_removed(tmp_path):
@@ -1890,7 +2382,10 @@ def test_cli_legacy_append_matrix_hdf5_command_is_removed(tmp_path):
     initial_profile_dir = tmp_path / "profiles_initial"
     append_profile_dir = tmp_path / "profiles_append"
     matrix_hdf5 = tmp_path / "matrix.h5"
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
     _write_profiles(initial_profile_dir)
+    _write_contract_from_profiles(initial_profile_dir, bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
@@ -1905,6 +2400,10 @@ def test_cli_legacy_append_matrix_hdf5_command_is_removed(tmp_path):
             str(initial_profile_dir),
             "--output-file",
             str(matrix_hdf5),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
             "--memory-limit-gb",
             "1",
         ],
@@ -1931,14 +2430,19 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
     append_profile_dir = tmp_path / "profiles_append"
     matrix_db = tmp_path / "matrix.duckdb"
     compare_db = tmp_path / "matrix_compare.duckdb"
-    _write_profiles(initial_profile_dir)
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
 
-    mp.build_matrix_db(
+    _build_matrix_db_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_db,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
     )
     first_summary = mp.matrix_compare(
@@ -2001,14 +2505,19 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
     append_profile_dir = tmp_path / "profiles_append"
     matrix_hdf5 = tmp_path / "matrix.h5"
     compare_db = tmp_path / "matrix_compare.duckdb"
-    _write_profiles(initial_profile_dir)
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     append_profile_dir.mkdir(parents=True, exist_ok=True)
     pl.read_parquet(initial_profile_dir / "sample_c.parquet").write_parquet(append_profile_dir / "sample_c.parquet")
     (initial_profile_dir / "sample_c.parquet").unlink()
 
-    mp.build_matrix_hdf5(
+    _build_matrix_hdf5_with_contract(
         profile_dir=initial_profile_dir,
         output_file=matrix_hdf5,
+        bed_file=bed_file,
+        stb_file=stb_file,
         memory_limit_gb=1.0,
     )
     first_summary = mp.matrix_compare(
@@ -2073,7 +2582,7 @@ def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
     matrix_db = tmp_path / "matrix.duckdb"
     compare_db = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     first_summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -2127,9 +2636,12 @@ def test_cli_append_matrix_db_failure_keeps_existing_db(tmp_path):
     initial_profile_dir = tmp_path / "profiles_initial"
     bad_profile_dir = tmp_path / "profiles_bad"
     matrix_db = tmp_path / "matrix.h5"
-    _write_profiles(initial_profile_dir)
+    bed_file = tmp_path / "genomes.bed"
+    stb_file = tmp_path / "genomes.stb"
+    _write_profiles_one_based_full(initial_profile_dir)
+    _write_default_contract_bed_and_stb(bed_file, stb_file)
     (initial_profile_dir / "sample_c.parquet").unlink()
-    _write_invalid_append_profile(bad_profile_dir)
+    _write_out_of_range_append_profile(bad_profile_dir)
 
     runner = CliRunner()
     build_result = runner.invoke(
@@ -2141,6 +2653,10 @@ def test_cli_append_matrix_db_failure_keeps_existing_db(tmp_path):
             str(initial_profile_dir),
             "--output-file",
             str(matrix_db),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
             "--memory-limit-gb",
             "1",
             "--export-batch-mb",
@@ -2183,7 +2699,7 @@ def test_matrix_compare_torch_backend_requires_torch(tmp_path, monkeypatch):
     matrix_db = tmp_path / "matrix.duckdb"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     def _raise_import_error(_name):
         raise ImportError("torch missing")
@@ -2206,7 +2722,7 @@ def test_matrix_compare_ignores_requested_min_cov(tmp_path):
     matrix_db = tmp_path / "matrix.duckdb"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -2228,7 +2744,7 @@ def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
     matrix_db = tmp_path / "matrix.duckdb"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     with pytest.raises(ValueError, match="loader_executor_kind must be one of"):
         mp.matrix_compare(
@@ -2270,7 +2786,7 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     class FakeTorchBackend:
         def __init__(self, backend: str):
@@ -2352,7 +2868,7 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     class FakeTorchBackend:
         def __init__(self, backend: str):
@@ -2435,7 +2951,7 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     class FakeTorchBackend:
         def __init__(self, backend: str):
@@ -2519,7 +3035,7 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_many_profiles_same_genome(profile_dir, sample_count=5)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     class FakeTorchBackend:
         def __init__(self, backend: str):
@@ -2626,7 +3142,7 @@ def test_build_matrix_db_inserts_separator_rows_for_multiscaffold_genome(tmp_pat
     matrix_db = tmp_path / "matrix_multi.h5"
     _write_profiles_multiscaffold_same_genome(profile_dir)
 
-    summary = mp.build_matrix_db(
+    summary = _build_matrix_db_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
         memory_limit_gb=1.0,
@@ -2656,7 +3172,7 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
     matrix_db = tmp_path / "matrix_multi.h5"
     output_file = tmp_path / "matrix_multi_compare.duckdb"
     _write_profiles_multiscaffold_same_genome(profile_dir)
-    mp.build_matrix_db(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
+    _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,

@@ -54,6 +54,15 @@ def test_nextflow_calls_updated_profile_commands():
     assert "zipstrain utilities profile-single" in text
 
 
+def test_nextflow_compare_profile_tables_use_profile_location_names_and_engine_param():
+    text = NEXTFLOW_FILE.read_text()
+    assert 'params.compare_engine="polars"' in text
+    assert "getProfileLocationsTableColumn" in text
+    assert "getProfileSampleNamesTableColumn" in text
+    assert "profile_location" in text
+    assert "--engine ${params.compare_engine}" in text
+
+
 def test_nextflow_from_sra_to_profile_auto_builds_reference_without_genes():
     text = NEXTFLOW_FILE.read_text()
     assert 'if (!params.reference_genome)' in text

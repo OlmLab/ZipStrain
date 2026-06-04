@@ -8,6 +8,7 @@ params.min_gene_compare_len=200
 params.batch_size=10
 params.bed_max_scaffold_length=500000
 params.compare_duckdb_memory_limit=""
+params.compare_engine="polars"
 params.compare_calculate="all"
 params.batch_compare_n_parallel=4
 params.publish_mode="symlink"
@@ -52,6 +53,26 @@ def tableToDict(file, delimiter = ',') {
     }
     
     return result
+}
+
+def getProfileLocationsTableColumn(input_table) {
+    if (input_table.containsKey('profile_location')) {
+        return input_table['profile_location']
+    }
+    if (input_table.containsKey('mpileup_files')) {
+        return input_table['mpileup_files']
+    }
+    throw new IllegalArgumentException("Profile-table input must include a 'profile_location' column.")
+}
+
+def getProfileSampleNamesTableColumn(input_table) {
+    if (input_table.containsKey('sample_name')) {
+        return input_table['sample_name']
+    }
+    if (input_table.containsKey('sample_names')) {
+        return input_table['sample_names']
+    }
+    throw new IllegalArgumentException("Profile-table input must include a 'sample_name' column.")
 }
 
 process download_sylph_db{
@@ -284,23 +305,25 @@ process compare_genome_fast_profiles_single {
     * It takes in the mpileup files and outputs the comparison results.
     */
     input:
-    path mpileup_file1
-    path mpileup_file2
+    path profile_location_1
+    path profile_location_2
     path stb
     val pair_name
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
+    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     zipstrain utilities single_compare_genome  \
-                        --mpileup-contig-1 ${mpileup_file1} \
-                        --mpileup-contig-2 ${mpileup_file2} \
+                        --mpileup-contig-1 ${profile_location_1} \
+                        --mpileup-contig-2 ${profile_location_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_compare_engine} \
                         ${add_calculate} \
                         ${add_duckdb_memory_limit} \
                         ${add_genome_scope} \
@@ -314,21 +337,23 @@ process compare_gene_fast_profiles_single {
     * It takes in the mpileup files and outputs the comparison results.
     */
     input:
-    path mpileup_file1
-    path mpileup_file2
+    path profile_location_1
+    path profile_location_2
     path stb
     val pair_name
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
-    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     zipstrain utilities single_compare_gene  \
-                        --mpileup-contig-1 ${mpileup_file1} \
-                        --mpileup-contig-2 ${mpileup_file2} \
+                        --mpileup-contig-1 ${profile_location_1} \
+                        --mpileup-contig-2 ${profile_location_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_compare_engine} \
                         --ani-method ${params.compare_ani_method} \
                         ${add_duckdb_memory_limit} \
                         --scope ${params.compare_gene_scope} \
@@ -342,11 +367,11 @@ process compare_genome_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
-    rm -f ${mpiles.collect{t->t.join(' ')}}
+    rm -f ${profile_locations.collect{t->t.join(' ')}}
     rm -f ${stb}
     """
     input:
-    path mpiles
+    path profile_locations
     val pairs
     path stb
 
@@ -356,10 +381,11 @@ process compare_genome_batched {
 
     script:
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
-    remove_mpiles = mpiles.join(' ')
+    remove_profile_locations = profile_locations.join(' ')
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
+    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     echo -e "${pairs_text}" > pairs.txt
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_genome \
@@ -368,6 +394,7 @@ process compare_genome_batched {
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_compare_engine} \
                         ${add_calculate} \
                         ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_genome_scope}
@@ -377,7 +404,7 @@ process compare_genome_batched {
     zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
     rm -rf comps
     rm -f pairs.txt
-    rm -f ${remove_mpiles}
+    rm -f ${remove_profile_locations}
 
     """
 
@@ -388,20 +415,21 @@ process compare_gene_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
-    rm -f ${mpiles.collect{t->t.join(' ')}}
+    rm -f ${profile_locations.collect{t->t.join(' ')}}
     rm -f ${stb}
     """
     input:
-    path mpiles
+    path profile_locations
     val pairs
     path stb
     output:
     path "Batch_*_comparisons.parquet", emit: comparison_results
     script:
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
-    remove_mpiles = mpiles.join(' ')
+    remove_profile_locations = profile_locations.join(' ')
     def add_gene_scope= (params.compare_gene_scope=="all") ? "" : "--scope ${params.compare_gene_scope}"
-    def add_duckdb_memory_limit = params.compare_duckdb_memory_limit ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     echo -e "${pairs_text}" > pairs.txt
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_gene \
@@ -410,6 +438,7 @@ process compare_gene_batched {
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
+                        ${add_compare_engine} \
                         --ani-method ${params.compare_ani_method} \
                         ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_gene_scope}
@@ -419,7 +448,7 @@ process compare_gene_batched {
     zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
     rm -rf comps
     rm -f pairs.txt
-    rm -f ${remove_mpiles}
+    rm -f ${remove_profile_locations}
 
     """ 
 }
@@ -688,9 +717,9 @@ workflow
         input_table = tableToDict(file(params.input_table))
         
         if (params.input_type=="profile_table"){
-            mpileup_files_list = input_table['mpileup_files'].collect{t->file(t)}
-            sample_names_list = input_table['sample_names']
-            profiles=[mpileup_files_list,sample_names_list].transpose()
+            profile_locations_list = getProfileLocationsTableColumn(input_table).collect{t->file(t)}
+            sample_names_list = getProfileSampleNamesTableColumn(input_table)
+            profiles=[profile_locations_list,sample_names_list].transpose()
             def profile_pairs = []
             for (int i = 0; i < profiles.size(); i++) {
                 for (int j = i + 1; j < profiles.size(); j++) {
@@ -718,9 +747,9 @@ workflow
         input_table = tableToDict(file(params.input_table))
         
         if (params.input_type=="profile_table"){
-            mpileup_files_list = input_table['mpileup_files'].collect{t->file(t)}
-            sample_names_list = input_table['sample_names']
-            profiles=[mpileup_files_list,sample_names_list].transpose()
+            profile_locations_list = getProfileLocationsTableColumn(input_table).collect{t->file(t)}
+            sample_names_list = getProfileSampleNamesTableColumn(input_table)
+            profiles=[profile_locations_list,sample_names_list].transpose()
             def profile_pairs = []
             for (int i = 0; i < profiles.size(); i++) {
                 for (int j = i + 1; j < profiles.size(); j++) {

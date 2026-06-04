@@ -123,6 +123,30 @@ def test_merge_parquet_files_single_pass(tmp_path):
     assert any("single-pass merge done" in message for message in progress_messages)
 
 
+def test_infer_sample_name_from_profile_strips_standard_suffix():
+    assert utils.infer_sample_name_from_profile("/tmp/sample_alpha_profile.parquet") == "sample_alpha"
+    assert utils.infer_sample_name_from_profile("/tmp/sample_beta.parquet") == "sample_beta"
+
+
+def test_make_the_bed_returns_scaffold_and_start_sorted_rows(tmp_path):
+    fasta_path = tmp_path / "ref.fa"
+    fasta_path.write_text(
+        ">chr2\n"
+        "AAAA\n"
+        ">chr1\n"
+        "AAAAAA\n"
+    )
+
+    bed = utils.make_the_bed(fasta_path, max_scaffold_length=3)
+
+    assert bed.to_dicts() == [
+        {"scaffold": "chr1", "start": 0, "end": 3},
+        {"scaffold": "chr1", "start": 3, "end": 6},
+        {"scaffold": "chr2", "start": 0, "end": 3},
+        {"scaffold": "chr2", "start": 3, "end": 4},
+    ]
+
+
 def test_merge_parquet_files_batched(tmp_path):
     input_dir = tmp_path / "parts"
     output_file = tmp_path / "merged.parquet"
