@@ -331,7 +331,7 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
         task_dir = batch_dir / sample_name
         assert task_dir.exists()
         assert (task_dir / ".status").read_text().strip() == "done"
-        prof = pl.read_parquet(task_dir / f"{sample_name}.parquet").sort(["chrom", "pos"])
+        prof = pl.read_parquet(task_dir / f"{sample_name}_profile.parquet").sort(["chrom", "pos"])
         assert prof.equals(_expected_profile_frame(sample_name))
         genome_stats = pl.read_parquet(task_dir / f"{sample_name}_genome_stats.parquet").sort("genome")
         by_genome = genome_stats.rows_by_key("genome", unique=True, named=True)
