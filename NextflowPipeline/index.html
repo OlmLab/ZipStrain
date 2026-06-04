@@ -957,6 +957,7 @@ The <code>fiji</code> profile is configured for Slurm plus Singularity, which is
 <li><code>--compare_genome_calculate</code>: genome metrics to compute (<code>all</code> or <code>ani</code>)</li>
 <li><code>--compare_gene_scope</code>: gene scope for gene comparisons (<code>all:all</code>, <code>&lt;genome&gt;:all</code>, <code>all:&lt;gene&gt;</code>, <code>&lt;genome&gt;:&lt;gene&gt;</code>)</li>
 <li><code>--compare_ani_method</code>: ANI method forwarded to compare tasks (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;threshold&gt;</code>)</li>
+<li><code>--compare_engine</code>: comparison engine for standard compare tasks (<code>polars</code> or <code>duckdb</code>). Default: <code>polars</code></li>
 <li><code>--compare_duckdb_memory_limit</code>: forwarded to single compare commands</li>
 <li><code>--compare_calculate</code>: genome metrics for genome compare (<code>ani</code>, <code>ibs</code>, <code>identical_genes</code>, <code>all</code>, or <code>+</code> combinations). Default: <code>all</code></li>
 </ul>
@@ -1072,7 +1073,7 @@ SRR12345679
 </ul>
 <h2 id="4-compare-genomes-modecompare_genomes">4) Compare Genomes (<code>mode=compare_genomes</code>)</h2>
 <h3 id="input-option-a-all-vs-all-from-profile-list-input_type-profile_table">Input Option A: All-vs-All from Profile List (<code>--input_type profile_table</code>)</h3>
-<pre><code class="language-csv">sample_names,mpileup_files
+<pre><code class="language-csv">sample_name,profile_location
 S1,/profiles/S1_profile.parquet
 S2,/profiles/S2_profile.parquet
 S3,/profiles/S3_profile.parquet
@@ -1088,12 +1089,12 @@ S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
+  --compare_engine polars \
   --compare_genome_scope all \
   --compare_calculate ani+ibs+identical_genes \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --compare_duckdb_memory_limit 4GB \
   --output_dir out_compare_genomes \
   -c conf.config \
   -profile docker \
@@ -1107,12 +1108,12 @@ S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
+  --compare_engine polars \
   --compare_gene_scope all:all \
   --compare_ani_method popani \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --compare_duckdb_memory_limit 4GB \
   --output_dir out_compare_genes \
   -c conf.config \
   -profile docker \
@@ -1126,7 +1127,9 @@ S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
 <h2 id="important-notes">Important Notes</h2>
 <ul>
 <li>The old <code>--compare_memory_mode</code> and <code>--compare_chrom_batch_size</code> parameters are not part of the current <code>zipstrain.nf</code>.</li>
-<li>The pipeline currently forwards DuckDB memory limit via <code>--compare_duckdb_memory_limit</code> but does not expose compare engine/threads as Nextflow params in this script.</li>
+<li>For <code>--input_type profile_table</code>, the preferred columns are <code>sample_name</code> and <code>profile_location</code>.</li>
+<li>Older <code>sample_names</code> and <code>mpileup_files</code> headers are still accepted for compatibility.</li>
+<li><code>--compare_duckdb_memory_limit</code> is only relevant when <code>--compare_engine duckdb</code>.</li>
 <li>For auto-built references, genome selection comes from the merged Sylph abundance table through <code>zipstrain utilities build-genome-db</code>.</li>
 </ul>
 

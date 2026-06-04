@@ -404,15 +404,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zipstrain-compare-build-comp-database" class="md-nav__link">
-    <span class="md-ellipsis">
-      zipstrain compare build-comp-database
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zipstrain-utilities-single_compare_genome" class="md-nav__link">
     <span class="md-ellipsis">
       zipstrain utilities single_compare_genome
@@ -443,15 +434,6 @@
   <a href="#zipstrain-utilities-single_compare_gene" class="md-nav__link">
     <span class="md-ellipsis">
       zipstrain utilities single_compare_gene
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#comparison-config-helpers" class="md-nav__link">
-    <span class="md-ellipsis">
-      Comparison Config Helpers
     </span>
   </a>
   
@@ -548,6 +530,15 @@
   <a href="#zipstrain-utilities-merge_parquet" class="md-nav__link">
     <span class="md-ellipsis">
       zipstrain utilities merge_parquet
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zipstrain-utilities-build-profile-db" class="md-nav__link">
+    <span class="md-ellipsis">
+      zipstrain utilities build-profile-db
     </span>
   </a>
   
@@ -743,15 +734,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zipstrain-compare-build-comp-database" class="md-nav__link">
-    <span class="md-ellipsis">
-      zipstrain compare build-comp-database
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zipstrain-utilities-single_compare_genome" class="md-nav__link">
     <span class="md-ellipsis">
       zipstrain utilities single_compare_genome
@@ -782,15 +764,6 @@
   <a href="#zipstrain-utilities-single_compare_gene" class="md-nav__link">
     <span class="md-ellipsis">
       zipstrain utilities single_compare_gene
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#comparison-config-helpers" class="md-nav__link">
-    <span class="md-ellipsis">
-      Comparison Config Helpers
     </span>
   </a>
   
@@ -887,6 +860,15 @@
   <a href="#zipstrain-utilities-merge_parquet" class="md-nav__link">
     <span class="md-ellipsis">
       zipstrain utilities merge_parquet
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zipstrain-utilities-build-profile-db" class="md-nav__link">
+    <span class="md-ellipsis">
+      zipstrain utilities build-profile-db
     </span>
   </a>
   
@@ -1064,10 +1046,6 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <td>Batch gene-level comparisons</td>
 </tr>
 <tr>
-<td><code>zipstrain compare build-comp-database</code></td>
-<td>Build comparison DB object from profile DB + config</td>
-</tr>
-<tr>
 <td><code>zipstrain utilities single_compare_genome</code></td>
 <td>Compare one pair at genome level</td>
 </tr>
@@ -1084,12 +1062,8 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <td>Create all non-redundant standard-profile pairs</td>
 </tr>
 <tr>
-<td><code>zipstrain utilities build-genome-comparison-config</code></td>
-<td>Build genome comparison config</td>
-</tr>
-<tr>
-<td><code>zipstrain utilities build-gene-comparison-config</code></td>
-<td>Build gene comparison config</td>
+<td><code>zipstrain utilities build-profile-db</code></td>
+<td>Build a profile DB parquet from <code>profile_name,profile_location</code></td>
 </tr>
 <tr>
 <td><code>zipstrain utilities to-complete-table</code></td>
@@ -1099,7 +1073,9 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 </table>
 <h3 id="zipstrain-compare-genomes"><code>zipstrain compare genomes</code></h3>
 <pre><code class="language-bash">zipstrain compare genomes \
-  --genome-comparison-object genome_comp.json \
+  --profile-db profile_db.parquet \
+  --scope all \
+  --stb-file mapping.stb \
   --run-dir compare_run \
   --ani-method popani \
   --engine duckdb \
@@ -1107,7 +1083,12 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 </code></pre>
 <p>Options:</p>
 <ul>
-<li><code>-g, --genome-comparison-object</code> (required)</li>
+<li><code>--profile-db</code> (required)</li>
+<li><code>--comp-db-file</code> (optional current genome comparison parquet)</li>
+<li><code>--scope</code> (default: <code>all</code>)</li>
+<li><code>--min-cov</code> (default: <code>5</code>)</li>
+<li><code>--min-gene-compare-len</code> (default: <code>100</code>)</li>
+<li><code>--stb-file</code> (optional)</li>
 <li><code>-r, --run-dir</code> (required)</li>
 <li><code>-m, --max-concurrent-batches</code> (default: <code>5</code>)</li>
 <li><code>-p, --poll-interval</code> (default: <code>1</code>)</li>
@@ -1123,12 +1104,19 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 </ul>
 <h3 id="zipstrain-compare-genes"><code>zipstrain compare genes</code></h3>
 <pre><code class="language-bash">zipstrain compare genes \
-  --gene-comparison-object gene_comp.json \
+  --profile-db profile_db.parquet \
+  --scope all:all \
+  --stb-file mapping.stb \
   --run-dir gene_compare_run
 </code></pre>
 <p>Options:</p>
 <ul>
-<li><code>-g, --gene-comparison-object</code> (required)</li>
+<li><code>--profile-db</code> (required)</li>
+<li><code>--comp-db-file</code> (optional current gene comparison parquet)</li>
+<li><code>--scope</code> (default: <code>all:all</code>)</li>
+<li><code>--min-cov</code> (default: <code>5</code>)</li>
+<li><code>--min-gene-compare-len</code> (default: <code>100</code>)</li>
+<li><code>--stb-file</code> (optional)</li>
 <li><code>-r, --run-dir</code> (required)</li>
 <li><code>-m, --max-concurrent-batches</code> (default: <code>5</code>)</li>
 <li><code>-p, --poll-interval</code> (default: <code>1</code>)</li>
@@ -1140,19 +1128,6 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <li><code>--engine</code> (<code>polars|duckdb</code>, default: <code>polars</code>)</li>
 <li><code>-d, --duckdb-memory-limit</code></li>
 <li><code>--duckdb-threads</code></li>
-</ul>
-<h3 id="zipstrain-compare-build-comp-database"><code>zipstrain compare build-comp-database</code></h3>
-<pre><code class="language-bash">zipstrain compare build-comp-database \
-  --profile-db-dir profiles.parquet \
-  --config-file comparison_config.json \
-  --output-dir comparison_db
-</code></pre>
-<p>Options:</p>
-<ul>
-<li><code>-p, --profile-db-dir</code> (required)</li>
-<li><code>-c, --config-file</code> (required)</li>
-<li><code>-o, --output-dir</code> (required)</li>
-<li><code>-f, --comp-db-file</code></li>
 </ul>
 <h3 id="zipstrain-utilities-single_compare_genome"><code>zipstrain utilities single_compare_genome</code></h3>
 <pre><code class="language-bash">zipstrain utilities single_compare_genome \
@@ -1262,24 +1237,18 @@ does not change the main workflow commands.</p>
 <li><code>--duckdb-temp-directory</code></li>
 <li><code>--duckdb-threads</code></li>
 </ul>
-<h3 id="comparison-config-helpers">Comparison Config Helpers</h3>
-<p><code>build-genome-comparison-config</code> and <code>build-gene-comparison-config</code> share the same option pattern:</p>
-<ul>
-<li><code>-p, --profile-db</code> (required)</li>
-<li><code>-g, --gene-db-id</code> (required)</li>
-<li><code>-r, --reference-genome-id</code> (required)</li>
-<li><code>-s, --scope</code> (default: <code>all</code> for genome, <code>all:all</code> for gene)</li>
-<li><code>-c, --min-cov</code> (default: <code>5</code>)</li>
-<li><code>-l, --min-gene-compare-len</code> (default: <code>200</code>)</li>
-<li><code>-t, --stb-file-loc</code> (required)</li>
-<li><code>-a, --current-comp-table</code></li>
-<li><code>-o, --output-file</code> (required)</li>
-</ul>
 <h3 id="zipstrain-utilities-to-complete-table"><code>zipstrain utilities to-complete-table</code></h3>
 <pre><code class="language-bash">zipstrain utilities to-complete-table \
-  --genome-comparison-object genome_comp.json \
+  --profile-db profile_db.parquet \
+  --comp-db-file current_compare.parquet \
   --output-file remaining_pairs.csv
 </code></pre>
+<p>Options:</p>
+<ul>
+<li><code>--profile-db</code> (required)</li>
+<li><code>--comp-db-file</code> (optional)</li>
+<li><code>-o, --output-file</code> (required)</li>
+</ul>
 <h2 id="utilities">Utilities</h2>
 <h3 id="utility-commands-at-a-glance">Utility Commands At A Glance</h3>
 <table>
@@ -1568,6 +1537,23 @@ does not change the main workflow commands.</p>
 <li><code>--batch-size -1</code> keeps the current single-pass merge behavior.</li>
 <li>Positive <code>--batch-size</code> values first merge input files batch-by-batch into a temporary directory, then do one final lazy merge over those batch outputs.</li>
 <li>Progress is logged as active line-oriented batch updates and flushed immediately, which is easier to follow in cluster logs.</li>
+<li>When input files contain ZipStrain compare metadata, those metadata fields must match across inputs unless <code>--allow-mismatch</code> is used.</li>
+<li>With <code>--allow-mismatch</code>, mismatched compare metadata are rewritten to <code>NA</code> in the merged parquet metadata.</li>
+</ul>
+<h3 id="zipstrain-utilities-build-profile-db"><code>zipstrain utilities build-profile-db</code></h3>
+<pre><code class="language-bash">zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file profile_db.parquet
+</code></pre>
+<p>Input CSV columns:</p>
+<ul>
+<li><code>profile_name</code></li>
+<li><code>profile_location</code></li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>By default, ZipStrain checks that all listed profiles carry matching embedded contract metadata.</li>
+<li>Use <code>--allow-mismatch</code> to skip that validation and build a mixed profile DB intentionally.</li>
 </ul>
 <h3 id="zipstrain-utilities-get-coverage-stats"><code>zipstrain utilities get-coverage-stats</code></h3>
 <pre><code class="language-bash">zipstrain utilities get-coverage-stats \
