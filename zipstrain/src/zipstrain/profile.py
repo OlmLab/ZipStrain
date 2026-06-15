@@ -22,19 +22,24 @@ import pyarrow.parquet as pq
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 PROFILE_WRITE_BATCH_SIZE = 10_000
-PROFILE_PARQUET_SCHEMA = pa.schema(
-    [
-        ("chrom", pa.string()),
-        ("genome", pa.string()),
-        ("gene", pa.string()),
-        ("pos", pa.int32()),
-        ("A", pa.int32()),
-        ("C", pa.int32()),
-        ("G", pa.int32()),
-        ("T", pa.int32()),
-    ]
-)
+PROFILE_PARQUET_BASE_FIELDS = [
+    ("chrom", pa.string()),
+    ("genome", pa.string()),
+    ("gene", pa.string()),
+    ("pos", pa.int32()),
+    ("A", pa.int32()),
+    ("C", pa.int32()),
+    ("G", pa.int32()),
+    ("T", pa.int32()),
+]
 MPILEUP_INDEL_RE = re.compile(r"\^.|[\$]|[+-](\d+)")
+
+
+def profile_parquet_schema(include_reference_base: bool = True) -> pa.Schema:
+    fields = list(PROFILE_PARQUET_BASE_FIELDS)
+    if include_reference_base:
+        fields.append((utils.REF_BASE_BITMASK_COLUMN, pa.uint8()))
+    return pa.schema(fields)
 
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
@@ -199,6 +204,7 @@ def _write_sorted_profile_with_metadata(
     profile_lf: pl.LazyFrame,
     output_file: pathlib.Path,
     tmp_dir: pathlib.Path,
+    metadata: Optional[dict[str, str]] = None,
 ) -> None:
     """Write the final profile parquet and only fall back to sorting when needed."""
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -211,18 +217,22 @@ def _write_sorted_profile_with_metadata(
         engine="streaming",
     )
 
+    output_metadata = dict(metadata or {})
+    output_metadata[PROFILE_SORTED_METADATA_KEY] = PROFILE_SORTED_METADATA_VALUE
+
     if _parquet_rows_are_coordinate_sorted(candidate_path):
         pl.scan_parquet(candidate_path).sink_parquet(
             output_file,
             compression="zstd",
             engine="streaming",
-            metadata={PROFILE_SORTED_METADATA_KEY: PROFILE_SORTED_METADATA_VALUE},
+            metadata=output_metadata,
         )
     else:
         _sort_existing_profile_parquet(
             input_file=candidate_path,
             output_file=output_file,
             tmp_dir=tmp_dir,
+            metadata=output_metadata,
         )
 
 
@@ -230,6 +240,7 @@ def _sort_existing_profile_parquet(
     input_file: pathlib.Path,
     output_file: pathlib.Path,
     tmp_dir: pathlib.Path,
+    metadata: Optional[dict[str, str]] = None,
 ) -> None:
     """Sort an existing classic profile parquet and attach sortedness metadata."""
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -240,18 +251,13 @@ def _sort_existing_profile_parquet(
     try:
         in_sql = _duckdb_quote_sql_string(str(input_file))
         out_sql = _duckdb_quote_sql_string(str(sorted_path))
+        input_columns = pq.read_schema(input_file).names
+        select_columns_sql = ",\n                ".join(f'"{column}"' for column in input_columns)
         conn.execute(
             f"""
             COPY (
               SELECT
-                chrom,
-                genome,
-                gene,
-                pos,
-                A,
-                C,
-                G,
-                T
+                {select_columns_sql}
               FROM read_parquet('{in_sql}')
               ORDER BY chrom, pos
             ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION ZSTD)
@@ -260,11 +266,16 @@ def _sort_existing_profile_parquet(
     finally:
         conn.close()
 
+    output_metadata = utils._read_custom_parquet_metadata(input_file)
+    if metadata:
+        output_metadata.update(metadata)
+    output_metadata[PROFILE_SORTED_METADATA_KEY] = PROFILE_SORTED_METADATA_VALUE
+
     pl.scan_parquet(sorted_path).sink_parquet(
         output_file,
         compression="zstd",
         engine="streaming",
-        metadata={PROFILE_SORTED_METADATA_KEY: PROFILE_SORTED_METADATA_VALUE},
+        metadata=output_metadata,
     )
 
 
@@ -390,6 +401,7 @@ async def _stream_profile_mpileup_chunk_to_parquet(
     null_model_thresholds: dict[int, int],
     scaffold_to_genome_lookup: dict[str, str],
     gene_lookup: dict[str, tuple[list[int], list[tuple[int, int, str]]]],
+    include_reference_base: bool = True,
     batch_size: int = PROFILE_WRITE_BATCH_SIZE,
 ) -> None:
     """Stream one mpileup chunk directly into a final annotated parquet file."""
@@ -409,28 +421,30 @@ async def _stream_profile_mpileup_chunk_to_parquet(
     Cs: list[int] = []
     Gs: list[int] = []
     Ts: list[int] = []
+    ref_base_bitmasks: list[int] = []
     writer: Optional[pq.ParquetWriter] = None
     success = False
+    parquet_schema = profile_parquet_schema(include_reference_base=include_reference_base)
 
     def flush_batch() -> None:
         nonlocal writer
         if not chroms:
             return
-        batch = pa.RecordBatch.from_arrays(
-            [
-                pa.array(chroms, type=pa.string()),
-                pa.array(genomes, type=pa.string()),
-                pa.array(genes, type=pa.string()),
-                pa.array(positions, type=pa.int32()),
-                pa.array(As, type=pa.int32()),
-                pa.array(Cs, type=pa.int32()),
-                pa.array(Gs, type=pa.int32()),
-                pa.array(Ts, type=pa.int32()),
-            ],
-            schema=PROFILE_PARQUET_SCHEMA,
-        )
+        arrays = [
+            pa.array(chroms, type=pa.string()),
+            pa.array(genomes, type=pa.string()),
+            pa.array(genes, type=pa.string()),
+            pa.array(positions, type=pa.int32()),
+            pa.array(As, type=pa.int32()),
+            pa.array(Cs, type=pa.int32()),
+            pa.array(Gs, type=pa.int32()),
+            pa.array(Ts, type=pa.int32()),
+        ]
+        if include_reference_base:
+            arrays.append(pa.array(ref_base_bitmasks, type=pa.uint8()))
+        batch = pa.RecordBatch.from_arrays(arrays, schema=parquet_schema)
         if writer is None:
-            writer = pq.ParquetWriter(str(output_parquet), PROFILE_PARQUET_SCHEMA, compression="zstd")
+            writer = pq.ParquetWriter(str(output_parquet), parquet_schema, compression="zstd")
         writer.write_table(pa.Table.from_batches([batch]))
         chroms.clear()
         genomes.clear()
@@ -440,6 +454,7 @@ async def _stream_profile_mpileup_chunk_to_parquet(
         Cs.clear()
         Gs.clear()
         Ts.clear()
+        ref_base_bitmasks.clear()
 
     try:
         while True:
@@ -452,8 +467,8 @@ async def _stream_profile_mpileup_chunk_to_parquet(
             fields = line.split("\t")
             if len(fields) < 5:
                 continue
-            chrom, pos_str, _, _, bases = fields[:5]
-            counts = utils.count_bases(utils.clean_bases(bases, MPILEUP_INDEL_RE))
+            chrom, pos_str, ref_base, _, bases = fields[:5]
+            counts = utils.count_mpileup_bases(bases, ref_base, MPILEUP_INDEL_RE)
             coverage = counts["A"] + counts["C"] + counts["G"] + counts["T"]
             threshold = null_model_thresholds.get(coverage)
             if threshold is None:
@@ -472,6 +487,8 @@ async def _stream_profile_mpileup_chunk_to_parquet(
             Cs.append(adjusted_c)
             Gs.append(adjusted_g)
             Ts.append(adjusted_t)
+            if include_reference_base:
+                ref_base_bitmasks.append(utils.encode_reference_base_bitmask(ref_base))
             if len(chroms) >= batch_size:
                 flush_batch()
         stderr = await proc.stderr.read()
@@ -628,6 +645,127 @@ def get_strain_hetrogeneity(profile:pl.LazyFrame,
     return strain_heterogeneity
 
 
+def _reference_sharing_prepared_profile(
+    profile: pl.LazyFrame,
+    *,
+    min_cov: int,
+    consumer_name: str,
+) -> tuple[pl.LazyFrame, list[str]]:
+    """Prepare a reference-aware profile with coverage and shared-reference flags."""
+    schema_names = profile.collect_schema().names()
+    if utils.REF_BASE_BITMASK_COLUMN not in schema_names:
+        raise ValueError(
+            "Profile parquet is missing the required ref_base_bitmask column. "
+            f"Re-run profiling with --include-reference-base to use {consumer_name}."
+        )
+
+    coverage = (pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")).alias("coverage")
+    shares_reference = (
+        (
+            ((pl.col(utils.REF_BASE_BITMASK_COLUMN) == 1) & (pl.col("A") > 0))
+            | ((pl.col(utils.REF_BASE_BITMASK_COLUMN) == 2) & (pl.col("C") > 0))
+            | ((pl.col(utils.REF_BASE_BITMASK_COLUMN) == 4) & (pl.col("G") > 0))
+            | ((pl.col(utils.REF_BASE_BITMASK_COLUMN) == 8) & (pl.col("T") > 0))
+        )
+        .cast(pl.Int64)
+        .alias("share_ref_site")
+    )
+
+    prepared = (
+        profile.with_columns(coverage)
+        .filter(
+            (pl.col("coverage") >= min_cov)
+            & (pl.col(utils.REF_BASE_BITMASK_COLUMN) > 0)
+        )
+        .with_columns(shares_reference)
+    )
+    return prepared, schema_names
+
+
+def get_reference_ani(
+    profile: pl.LazyFrame,
+    *,
+    agg_level: str = "genome",
+    min_cov: int = 5,
+) -> pl.LazyFrame:
+    """
+    Calculate reference-relative ANI from a profile carrying ``ref_base_bitmask``.
+
+    The reference base is encoded as a one-hot bitmask:
+    - A -> 1
+    - C -> 2
+    - G -> 4
+    - T -> 8
+    - other / unknown -> 0
+
+    A covered position is treated as sharing the reference allele when the
+    observed nucleotide counts contain the reference allele after profile
+    sequence-error adjustment.
+    """
+    prepared, _ = _reference_sharing_prepared_profile(
+        profile,
+        min_cov=min_cov,
+        consumer_name="ani-reference",
+    )
+
+    if agg_level == "scaffold":
+        group_cols = ["chrom"]
+        renamed_cols = {"chrom": "scaffold"}
+        sort_cols = ["scaffold"]
+    elif agg_level == "genome":
+        group_cols = ["genome"]
+        renamed_cols = {}
+        sort_cols = ["genome"]
+    elif agg_level == "gene":
+        prepared = prepared.filter(pl.col("gene") != "NA")
+        group_cols = ["genome", "chrom", "gene"]
+        renamed_cols = {"chrom": "scaffold"}
+        sort_cols = ["genome", "scaffold", "gene"]
+    else:
+        raise ValueError("agg_level must be one of: scaffold, genome, gene")
+
+    result = (
+        prepared.group_by(group_cols)
+        .agg(
+            total_positions=pl.len().cast(pl.Int64),
+            share_allele_pos=pl.sum("share_ref_site").cast(pl.Int64),
+        )
+        .with_columns(
+            (pl.col("share_allele_pos") / pl.col("total_positions") * 100.0)
+            .cast(pl.Float64)
+            .alias("ani_reference")
+        )
+    )
+    if renamed_cols:
+        result = result.rename(renamed_cols)
+    return result.sort(sort_cols)
+
+
+def get_reference_snps(
+    profile: pl.LazyFrame,
+    *,
+    min_cov: int = 5,
+) -> pl.LazyFrame:
+    """
+    Return profile-like rows that are SNPs relative to the reference.
+
+    A row is emitted when it passes ``min_cov``, has a known reference base,
+    and does not retain the reference allele after profile sequence-error
+    adjustment. This matches the reference-sharing logic used by
+    ``get_reference_ani``.
+    """
+    prepared, input_columns = _reference_sharing_prepared_profile(
+        profile,
+        min_cov=min_cov,
+        consumer_name="get-snp-reference",
+    )
+    return (
+        prepared.filter(pl.col("share_ref_site") == 0)
+        .select(input_columns)
+        .sort(["chrom", "pos"])
+    )
+
+
 
 async def _profile_chunk_task(
     bed_file:pathlib.Path,
@@ -636,7 +774,8 @@ async def _profile_chunk_task(
     gene_lookup: dict[str, tuple[list[int], list[tuple[int, int, str]]]],
     null_model_thresholds: dict[int, int],
     output_dir:pathlib.Path,
-    chunk_id:int
+    chunk_id:int,
+    include_reference_base: bool = True,
 )->None:
     await _stream_profile_mpileup_chunk_to_parquet(
         bed_file=bed_file,
@@ -645,6 +784,7 @@ async def _profile_chunk_task(
         null_model_thresholds=null_model_thresholds,
         scaffold_to_genome_lookup=scaffold_to_genome_lookup,
         gene_lookup=gene_lookup,
+        include_reference_base=include_reference_base,
     )
     cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
     proc = await asyncio.create_subprocess_shell(
@@ -667,6 +807,7 @@ async def _run_profile_chunk_with_semaphore(
     null_model_thresholds: dict[int, int],
     output_dir: pathlib.Path,
     chunk_id: int,
+    include_reference_base: bool = True,
 ) -> None:
     """Bound chunk-level profiling concurrency."""
     async with semaphore:
@@ -678,6 +819,7 @@ async def _run_profile_chunk_with_semaphore(
             null_model_thresholds=null_model_thresholds,
             output_dir=output_dir,
             chunk_id=chunk_id,
+            include_reference_base=include_reference_base,
         )
 
 async def profile_bam_in_chunks(
@@ -689,6 +831,8 @@ async def profile_bam_in_chunks(
     output_dir:str,
     num_chunks:int=24,
     max_concurrency:int=4,
+    include_reference_base: bool = True,
+    profile_contract: Optional[dict[str, str]] = None,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -744,7 +888,8 @@ async def profile_bam_in_chunks(
             gene_lookup=gene_lookup,
             null_model_thresholds=null_model_thresholds,
             output_dir=output_dir/"tmp",
-            chunk_id=chunk_id
+            chunk_id=chunk_id,
+            include_reference_base=include_reference_base,
         ))
     await asyncio.gather(*tasks) 
     pfs=[(output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet", output_dir/"tmp"/f"{bam_file.stem}_read_locs_{chunk_id}.parquet" ) for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet").exists()]
@@ -765,6 +910,7 @@ async def profile_bam_in_chunks(
             profile_lf=mpileup_df,
             output_file=output_dir / f"{bam_file.stem}_profile.parquet",
             tmp_dir=output_dir / "tmp",
+            metadata=utils.profile_contract_metadata_from_values(profile_contract),
         )
         if gene_range_table_path is None:
             empty_gene_stats_table().sink_parquet(
@@ -811,6 +957,8 @@ def profile_bam(
     output_dir:str,
     num_chunks:int=24,
     max_concurrency:int=4,
+    include_reference_base: bool = True,
+    profile_contract: Optional[dict[str, str]] = None,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -834,4 +982,6 @@ def profile_bam(
         output_dir=output_dir,
         num_chunks=num_chunks,
         max_concurrency=max_concurrency,
+        include_reference_base=include_reference_base,
+        profile_contract=profile_contract,
     ))

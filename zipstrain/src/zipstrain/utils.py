@@ -3,6 +3,8 @@ zipstrain.utils
 ========================
 This module provides utility functions for profiling and compare operations.
 """
+import hashlib
+import json
 import os
 import pathlib
 import time
@@ -22,6 +24,13 @@ import duckdb
 CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
 PROFILE_COVERAGE_STATS_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
 DEFAULT_COVERAGE_STATS_SITE_THRESHOLD = 5
+REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
+REF_BASE_BIT_VALUES = {
+    "A": 1,
+    "C": 2,
+    "G": 4,
+    "T": 8,
+}
 GENOME_PAIR_TABLE_SCHEMA = pa.schema(
     [
         pa.field("sample_name_1", pa.string()),
@@ -68,6 +77,57 @@ PROFILE_CONTRACT_METADATA_KEYS = {
     "null_model_hash": PROFILE_NULL_MODEL_HASH_METADATA_KEY,
     "stb_hash": PROFILE_STB_HASH_METADATA_KEY,
 }
+PROFILE_CONTRACT_MISSING_VALUE = COMPARE_METADATA_MISSING_VALUE
+
+
+def sha256_file(path: str | pathlib.Path, chunk_size: int = 1024 * 1024) -> str:
+    """Return the file-content SHA-256 hex digest for ``path``."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def normalize_profile_contract_values(contract: dict[str, str] | None) -> dict[str, str]:
+    """Return a full profile-contract mapping with missing values set to NA."""
+    source = contract or {}
+    return {
+        logical_name: str(source.get(logical_name, PROFILE_CONTRACT_MISSING_VALUE))
+        if source.get(logical_name, PROFILE_CONTRACT_MISSING_VALUE) not in (None, "")
+        else PROFILE_CONTRACT_MISSING_VALUE
+        for logical_name in PROFILE_CONTRACT_METADATA_KEYS
+    }
+
+
+def profile_contract_metadata_from_values(contract: dict[str, str] | None) -> dict[str, str]:
+    """Map logical profile contract values to parquet metadata keys."""
+    normalized = normalize_profile_contract_values(contract)
+    return {
+        parquet_key: normalized[logical_name]
+        for logical_name, parquet_key in PROFILE_CONTRACT_METADATA_KEYS.items()
+    }
+
+
+def write_profile_contract_file(contract: dict[str, str], output_file: str | pathlib.Path) -> pathlib.Path:
+    """Persist the normalized profiling contract as JSON."""
+    output_path = pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = normalize_profile_contract_values(contract)
+    output_path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n")
+    return output_path
+
+
+def read_profile_contract_file(contract_file: str | pathlib.Path) -> dict[str, str]:
+    """Load a profiling contract JSON file and normalize missing values to NA."""
+    contract_path = pathlib.Path(contract_file)
+    loaded = json.loads(contract_path.read_text())
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Profile contract file must contain a JSON object: {contract_path}")
+    return normalize_profile_contract_values({str(k): str(v) for k, v in loaded.items()})
 
 
 def _read_custom_parquet_metadata(parquet_file: str | pathlib.Path) -> dict[str, str]:
@@ -773,6 +833,19 @@ def clean_bases(bases: str, indel_re: re.Pattern) -> str:
             i += 1
     return ''.join(cleaned)
 
+def encode_reference_base_bitmask(base: str) -> int:
+    """
+    Encode a reference base as a one-hot bitmask.
+
+    Mapping:
+    - A -> 1
+    - C -> 2
+    - G -> 4
+    - T -> 8
+    - any other value -> 0
+    """
+    return REF_BASE_BIT_VALUES.get(str(base).upper(), 0)
+
 def count_bases(bases: str):
     """
     Count occurrences of A, C, G, T in the cleaned bases string.
@@ -788,6 +861,25 @@ def count_bases(bases: str):
         'G': counts.get('G', 0),
         'T': counts.get('T', 0),
     }
+
+def count_mpileup_bases(bases: str, ref_base: str, indel_re: re.Pattern) -> dict[str, int]:
+    """
+    Count A/C/G/T bases from an mpileup bases field, expanding reference matches.
+
+    In samtools mpileup, `.` and `,` indicate a read base matching the reference on
+    the forward and reverse strand respectively. This helper resolves those tokens
+    to the provided reference base before counting.
+    """
+    cleaned = clean_bases(bases, indel_re)
+    ref_upper = str(ref_base).upper()
+    translated: list[str] = []
+    for base in cleaned:
+        if base in {".", ","}:
+            if ref_upper in REF_BASE_BIT_VALUES:
+                translated.append(ref_upper)
+            continue
+        translated.append(base.upper())
+    return count_bases("".join(translated))
 
 def process_mpileup_function(batch_size, output_file):
     """
@@ -850,10 +942,8 @@ def process_mpileup_function(batch_size, output_file):
         fields = line.strip().split('\t')
         if len(fields) < 5:
             continue
-        chrom, pos, _, _, bases = fields[:5]
-
-        cleaned = clean_bases(bases, indel_re)
-        counts = count_bases(cleaned)
+        chrom, pos, ref_base, _, bases = fields[:5]
+        counts = count_mpileup_bases(bases, ref_base, indel_re)
 
         chroms.append(chrom)
         positions.append(int(pos))

@@ -256,6 +256,8 @@ process prepare_profile{
     path "genomes_bed_file.bed", emit: genome_bed
     path "gene_range_table.tsv", emit: gene_range_table
     path "genome_lengths.parquet", emit: genome_lengths
+    path "null_model.parquet", emit: null_model
+    path "profiling_contract.json", emit: profiling_contract
     script:
 """
 zipstrain utilities prepare_profiling \\
@@ -281,6 +283,7 @@ process profile_bam {
     path stb_file
     path gene_range_table
     path null_model
+    path profiling_contract
     output:
     path "${bamfile.baseName}_profile.parquet", emit: profile
     path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
@@ -294,6 +297,7 @@ process profile_bam {
                         --gene-range-table ${gene_range_table} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
+                        --profiling-contract ${profiling_contract} \\
                         --max-concurrency ${task.cpus} \\
                         --output-dir .
     """
@@ -499,6 +503,7 @@ process fromSRAtoProfile{
     path genome_length_file
     path stb_file
     path null_model
+    path profiling_contract
     output:
     path "${sra_id}_profile.parquet", emit: profiles
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
@@ -521,6 +526,7 @@ process fromSRAtoProfile{
                         --gene-range-table ${gene_range_file} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
+                        --profiling-contract ${profiling_contract} \\
                         --max-concurrency ${task.cpus} \\
                         --output-dir .
     rm -rf ${sra_id}
@@ -538,6 +544,8 @@ process prepare_profile_no_genes{
     path "genomes_bed_file.bed", emit: genome_bed
     path "gene_range_table.tsv", emit: gene_range_table
     path "genome_lengths.parquet", emit: genome_lengths
+    path "null_model.parquet", emit: null_model
+    path "profiling_contract.json", emit: profiling_contract
     script:
 """
 zipstrain utilities prepare_profiling \\
@@ -553,7 +561,6 @@ process fromSRAtoProfileBuildDb{
     input:
     val sra_id
     path sylph_db
-    path null_model
     output:
     path "${sra_id}_profile.parquet", emit: profiles
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
@@ -594,7 +601,8 @@ process fromSRAtoProfileBuildDb{
         --bam-file ${sra_id}.bam \\
         --bed-file genomes_bed_file.bed \\
         --stb-file reference_genomes.stb \\
-        --null-model ${null_model} \\
+        --null-model null_model.parquet \\
+        --profiling-contract profiling_contract.json \\
         --max-concurrency ${task.cpus} \\
         --output-dir .
 
@@ -667,7 +675,6 @@ workflow
     if (params.mode == "from_sra_to_profile") {
         table=tableToDict(file("${params.input_table}"))
         sra_ids = Channel.fromList(table["Run"])
-        build_null_model()
         if (!params.reference_genome) {
             if (params.sylph_db) {
                 sylph_db = file(params.sylph_db)
@@ -676,7 +683,7 @@ workflow
                 download_sylph_db()
                 download_sylph_db.out.sylph_db.set{ sylph_db }
             }
-            fromSRAtoProfileBuildDb(sra_ids, sylph_db, build_null_model.out.model)
+            fromSRAtoProfileBuildDb(sra_ids, sylph_db)
         }
         else {
             reference_genome = file(params.reference_genome)
@@ -693,14 +700,18 @@ workflow
                 genome_bed = prepare_profile.out.genome_bed
                 gene_range_table = prepare_profile.out.gene_range_table
                 genome_lengths = prepare_profile.out.genome_lengths
+                null_model = prepare_profile.out.null_model
+                profiling_contract = prepare_profile.out.profiling_contract
             }
             else {
                 prepare_profile_no_genes(reference_genome, file(params.stb))
                 genome_bed = prepare_profile_no_genes.out.genome_bed
                 gene_range_table = prepare_profile_no_genes.out.gene_range_table
                 genome_lengths = prepare_profile_no_genes.out.genome_lengths
+                null_model = prepare_profile_no_genes.out.null_model
+                profiling_contract = prepare_profile_no_genes.out.profiling_contract
             }
-            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, genome_lengths, file(params.stb), build_null_model.out.model)
+            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, genome_lengths, file(params.stb), null_model, profiling_contract)
         }
     }
     if (params.mode =='profile') {
@@ -792,14 +803,17 @@ workflow profile{
         prepare_profile(reference_genome, gene_file, file(params.stb))
         genome_bed = prepare_profile.out.genome_bed
         gene_range_table = prepare_profile.out.gene_range_table
+        null_model = prepare_profile.out.null_model
+        profiling_contract = prepare_profile.out.profiling_contract
     }
     else {
         prepare_profile_no_genes(reference_genome, file(params.stb))
         genome_bed = prepare_profile_no_genes.out.genome_bed
         gene_range_table = prepare_profile_no_genes.out.gene_range_table
+        null_model = prepare_profile_no_genes.out.null_model
+        profiling_contract = prepare_profile_no_genes.out.profiling_contract
     }
-    build_null_model()
-    profile_bam(sample_names, bamfiles, genome_bed, file(params.stb), gene_range_table, build_null_model.out.model)
+    profile_bam(sample_names, bamfiles, genome_bed, file(params.stb), gene_range_table, null_model, profiling_contract)
 }
 
 
