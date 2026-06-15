@@ -361,6 +361,15 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zipstrain-utilities-ani-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      zipstrain utilities ani-reference
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -691,6 +700,15 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zipstrain-utilities-ani-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      zipstrain utilities ani-reference
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -950,7 +968,7 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 </tr>
 <tr>
 <td><code>zipstrain utilities prepare_profiling</code></td>
-<td>Build profiling assets (BED, gene ranges, genome lengths)</td>
+<td>Build profiling assets (BED, gene ranges, genome lengths, null model, profiling contract)</td>
 </tr>
 <tr>
 <td><code>zipstrain utilities profile-single</code></td>
@@ -963,9 +981,10 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <pre><code class="language-bash">zipstrain profile \
   --input-table samples.csv \
   --stb-file mapping.stb \
-  --null-model null_model.parquet \
-  --bed-file genomes_bed_file.bed \
-  --genome-length-file genome_lengths.parquet \
+  --null-model profiling_assets/null_model.parquet \
+  --profiling-contract profiling_assets/profiling_contract.json \
+  --bed-file profiling_assets/genomes_bed_file.bed \
+  --genome-length-file profiling_assets/genome_lengths.parquet \
   --run-dir profile_run
 </code></pre>
 <p>Options:</p>
@@ -974,6 +993,7 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <li><code>-s, --stb-file</code> (required)</li>
 <li><code>-u, --null-model</code> (required)</li>
 <li><code>-g, --gene-range-table</code> (optional)</li>
+<li><code>--profiling-contract</code> (optional)</li>
 <li><code>-b, --bed-file</code> (required)</li>
 <li><code>-l, --genome-length-file</code> (required)</li>
 <li><code>-r, --run-dir</code> (required)</li>
@@ -997,7 +1017,19 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <li><code>-r, --reference-fasta</code> (required)</li>
 <li><code>-g, --gene-fasta</code> (optional)</li>
 <li><code>-s, --stb-file</code> (required)</li>
+<li><code>-e, --error-rate</code> (default: <code>0.001</code>)</li>
+<li><code>-m, --max-total-reads</code> (default: <code>10000</code>)</li>
+<li><code>-p, --p-threshold</code> (default: <code>0.05</code>)</li>
+<li><code>-t, --model-type</code> (default: <code>poisson</code>)</li>
 <li><code>-o, --output-dir</code> (required)</li>
+</ul>
+<p>Outputs:</p>
+<ul>
+<li><code>genomes_bed_file.bed</code></li>
+<li><code>gene_range_table.tsv</code></li>
+<li><code>genome_lengths.parquet</code></li>
+<li><code>null_model.parquet</code></li>
+<li><code>profiling_contract.json</code></li>
 </ul>
 <h3 id="zipstrain-utilities-profile-single"><code>zipstrain utilities profile-single</code></h3>
 <p>Profile a single BAM.</p>
@@ -1005,7 +1037,8 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
   --bed-file genomes_bed_file.bed \
   --bam-file sample.bam \
   --stb-file mapping.stb \
-  --null-model null_model.parquet \
+  --null-model profiling_assets/null_model.parquet \
+  --profiling-contract profiling_assets/profiling_contract.json \
   --num-chunks 24 \
   --max-concurrency 4 \
   --output-dir sample_profile
@@ -1017,6 +1050,8 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <li><code>-s, --stb-file</code> (required)</li>
 <li><code>-m, --null-model</code> (required)</li>
 <li><code>-g, --gene-range-table</code> (optional)</li>
+<li><code>--profiling-contract</code> (optional)</li>
+<li><code>--include-reference-base / --no-include-reference-base</code> (default: <code>include</code>) — control whether the output profile contains <code>ref_base_bitmask</code></li>
 <li><code>-n, --num-chunks</code> (default: <code>24</code>) — number of BED chunks to create</li>
 <li><code>-c, --max-concurrency</code> (default: <code>4</code>) — how many chunks run simultaneously</li>
 <li><code>-o, --output-dir</code> (required)</li>
@@ -1027,6 +1062,32 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <li><code>&lt;sample&gt;_genome_stats.parquet</code></li>
 <li><code>&lt;sample&gt;_gene_stats.parquet</code></li>
 </ul>
+<p>When <code>--include-reference-base</code> is enabled, the profile parquet includes <code>ref_base_bitmask</code>.
+Its encoding is:</p>
+<ul>
+<li><code>1</code> = reference base <code>A</code></li>
+<li><code>2</code> = reference base <code>C</code></li>
+<li><code>4</code> = reference base <code>G</code></li>
+<li><code>8</code> = reference base <code>T</code></li>
+<li><code>0</code> = non-ACGT or unknown reference base</li>
+</ul>
+<p>This is a one-hot bitmask, so current profiles are expected to contain only <code>0</code>, <code>1</code>, <code>2</code>, <code>4</code>, or <code>8</code> in this column.</p>
+<h3 id="zipstrain-utilities-ani-reference"><code>zipstrain utilities ani-reference</code></h3>
+<p>Calculate reference-relative ANI from a classic profile parquet that includes <code>ref_base_bitmask</code>.</p>
+<pre><code class="language-bash">zipstrain utilities ani-reference \
+  --profile-file sample_profile.parquet \
+  --agg-level genome \
+  --min-cov 5 \
+  --output-file sample_reference_ani.parquet
+</code></pre>
+<p>Options:</p>
+<ul>
+<li><code>-p, --profile-file</code> (required)</li>
+<li><code>--agg-level</code> (<code>scaffold</code>, <code>genome</code>, or <code>gene</code>; default: <code>genome</code>)</li>
+<li><code>-c, --min-cov</code> (default: <code>5</code>)</li>
+<li><code>-o, --output-file</code> (required)</li>
+</ul>
+<p>If the profile parquet does not contain <code>ref_base_bitmask</code>, the command errors and instructs you to re-run profiling with <code>--include-reference-base</code>.</p>
 <h2 id="comparison">Comparison</h2>
 <h3 id="comparison-commands-at-a-glance">Comparison Commands At A Glance</h3>
 <table>
