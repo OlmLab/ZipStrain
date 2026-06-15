@@ -280,15 +280,15 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_mpileup_rows(scaffold: str) -> list[dict]:
         if scaffold == "chr1":
             return [
-                {"chrom": "chr1", "pos": 1, "A": 10, "C": 0, "G": 0, "T": 0},
-                {"chrom": "chr1", "pos": 2, "A": 0, "C": 6, "G": 0, "T": 0},
-                {"chrom": "chr1", "pos": 3, "A": 0, "C": 0, "G": 8, "T": 0},
+                {"chrom": "chr1", "pos": 1, "ref": "A", "A": 10, "C": 0, "G": 0, "T": 0, "bases": "." * 10},
+                {"chrom": "chr1", "pos": 2, "ref": "C", "A": 0, "C": 6, "G": 0, "T": 0, "bases": "." * 6},
+                {"chrom": "chr1", "pos": 3, "ref": "G", "A": 0, "C": 0, "G": 8, "T": 0, "bases": "." * 8},
             ]
         if scaffold == "chr2":
             return [
-                {"chrom": "chr2", "pos": 1, "A": 0, "C": 0, "G": 0, "T": 7},
-                {"chrom": "chr2", "pos": 2, "A": 5, "C": 0, "G": 0, "T": 0},
-                {"chrom": "chr2", "pos": 3, "A": 0, "C": 9, "G": 0, "T": 0},
+                {"chrom": "chr2", "pos": 1, "ref": "T", "A": 0, "C": 0, "G": 0, "T": 7, "bases": "." * 7},
+                {"chrom": "chr2", "pos": 2, "ref": "A", "A": 5, "C": 0, "G": 0, "T": 0, "bases": "." * 5},
+                {"chrom": "chr2", "pos": 3, "ref": "C", "A": 0, "C": 9, "G": 0, "T": 0, "bases": "." * 9},
             ]
         raise AssertionError(f"Unexpected scaffold in fake mpileup data: {scaffold}")
 
@@ -300,9 +300,9 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
         ]
 
     def _fake_mpileup_line(row: dict) -> bytes:
-        bases = ("A" * row["A"]) + ("C" * row["C"]) + ("G" * row["G"]) + ("T" * row["T"])
+        bases = row["bases"]
         depth = len(bases)
-        return f"{row['chrom']}\t{row['pos']}\tN\t{depth}\t{bases}\t*\n".encode()
+        return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
 
     async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None):
         if command.startswith("samtools mpileup"):
@@ -354,12 +354,14 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert not (tmp_path / "tmp").exists()
 
     prof = pl.read_parquet(profile_file)
-    assert prof.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]
+    assert prof.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T", "ref_base_bitmask"]
     assert prof.height == 6
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
     assert prof.schema["gene"] == pl.Utf8
+    assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()
+    assert prof["ref_base_bitmask"].to_list() == [1, 2, 4, 8, 1, 2]
     assert (
         pl.read_parquet_metadata(profile_file)[profile.PROFILE_SORTED_METADATA_KEY]
         == profile.PROFILE_SORTED_METADATA_VALUE
@@ -407,6 +409,7 @@ def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monk
 
     prof = pl.read_parquet(profile_file)
     assert set(prof["gene"].unique().to_list()) == {"NA"}
+    assert "ref_base_bitmask" in prof.columns
     assert (
         pl.read_parquet_metadata(profile_file)[profile.PROFILE_SORTED_METADATA_KEY]
         == profile.PROFILE_SORTED_METADATA_VALUE
@@ -485,3 +488,39 @@ def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monk
     assert result.exit_code == 0, result.output
     prof = pl.read_parquet(out_dir / "sample_profile.parquet")
     assert set(prof["gene"].unique().to_list()) == {"NA"}
+    assert "ref_base_bitmask" in prof.columns
+
+
+def test_cli_profile_single_bam_without_reference_base_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _install_fake_profile_subprocess(monkeypatch)
+    bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
+    out_dir = tmp_path / "cli_out_no_ref"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "utilities",
+            "profile-single",
+            "--bed-file",
+            str(bed_file),
+            "--bam-file",
+            str(bam_file),
+            "--stb-file",
+            str(stb_file),
+            "--null-model",
+            str(null_model_file),
+            "--gene-range-table",
+            str(gene_range_table),
+            "--no-include-reference-base",
+            "--num-chunks",
+            "2",
+            "--max-concurrency",
+            "2",
+            "--output-dir",
+            str(out_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    prof = pl.read_parquet(out_dir / "sample_profile.parquet")
+    assert "ref_base_bitmask" not in prof.columns

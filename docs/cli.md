@@ -33,7 +33,7 @@ zipstrain <group> <command> --help
 | Command | Purpose |
 |---|---|
 | `zipstrain profile` | Batch profiling for multiple BAM files |
-| `zipstrain utilities prepare_profiling` | Build profiling assets (BED, gene ranges, genome lengths) |
+| `zipstrain utilities prepare_profiling` | Build profiling assets (BED, gene ranges, genome lengths, null model, profiling contract) |
 | `zipstrain utilities profile-single` | Profile one BAM file |
 
 ### `zipstrain profile`
@@ -44,9 +44,10 @@ Run BAM profiling in batch mode.
 zipstrain profile \
   --input-table samples.csv \
   --stb-file mapping.stb \
-  --null-model null_model.parquet \
-  --bed-file genomes_bed_file.bed \
-  --genome-length-file genome_lengths.parquet \
+  --null-model profiling_assets/null_model.parquet \
+  --profiling-contract profiling_assets/profiling_contract.json \
+  --bed-file profiling_assets/genomes_bed_file.bed \
+  --genome-length-file profiling_assets/genome_lengths.parquet \
   --run-dir profile_run
 ```
 
@@ -56,6 +57,7 @@ Options:
 - `-s, --stb-file` (required)
 - `-u, --null-model` (required)
 - `-g, --gene-range-table` (optional)
+- `--profiling-contract` (optional)
 - `-b, --bed-file` (required)
 - `-l, --genome-length-file` (required)
 - `-r, --run-dir` (required)
@@ -83,7 +85,19 @@ Options:
 - `-r, --reference-fasta` (required)
 - `-g, --gene-fasta` (optional)
 - `-s, --stb-file` (required)
+- `-e, --error-rate` (default: `0.001`)
+- `-m, --max-total-reads` (default: `10000`)
+- `-p, --p-threshold` (default: `0.05`)
+- `-t, --model-type` (default: `poisson`)
 - `-o, --output-dir` (required)
+
+Outputs:
+
+- `genomes_bed_file.bed`
+- `gene_range_table.tsv`
+- `genome_lengths.parquet`
+- `null_model.parquet`
+- `profiling_contract.json`
 
 ### `zipstrain utilities profile-single`
 
@@ -94,7 +108,8 @@ zipstrain utilities profile-single \
   --bed-file genomes_bed_file.bed \
   --bam-file sample.bam \
   --stb-file mapping.stb \
-  --null-model null_model.parquet \
+  --null-model profiling_assets/null_model.parquet \
+  --profiling-contract profiling_assets/profiling_contract.json \
   --num-chunks 24 \
   --max-concurrency 4 \
   --output-dir sample_profile
@@ -107,6 +122,8 @@ Options:
 - `-s, --stb-file` (required)
 - `-m, --null-model` (required)
 - `-g, --gene-range-table` (optional)
+- `--profiling-contract` (optional)
+- `--include-reference-base / --no-include-reference-base` (default: `include`) — control whether the output profile contains `ref_base_bitmask`
 - `-n, --num-chunks` (default: `24`) — number of BED chunks to create
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
 - `-o, --output-dir` (required)
@@ -116,6 +133,63 @@ Outputs include:
 - `<sample>_profile.parquet`
 - `<sample>_genome_stats.parquet`
 - `<sample>_gene_stats.parquet`
+
+When `--include-reference-base` is enabled, the profile parquet includes `ref_base_bitmask`.
+Its encoding is:
+
+- `1` = reference base `A`
+- `2` = reference base `C`
+- `4` = reference base `G`
+- `8` = reference base `T`
+- `0` = non-ACGT or unknown reference base
+
+This is a one-hot bitmask, so current profiles are expected to contain only `0`, `1`, `2`, `4`, or `8` in this column.
+
+### `zipstrain utilities ani-reference`
+
+Calculate reference-relative ANI from a classic profile parquet that includes `ref_base_bitmask`.
+
+```bash
+zipstrain utilities ani-reference \
+  --profile-file sample_profile.parquet \
+  --agg-level genome \
+  --min-cov 5 \
+  --output-file sample_reference_ani.parquet
+```
+
+Options:
+
+- `-p, --profile-file` (required)
+- `--agg-level` (`scaffold`, `genome`, or `gene`; default: `genome`)
+- `-c, --min-cov` (default: `5`)
+- `-o, --output-file` (required)
+
+If the profile parquet does not contain `ref_base_bitmask`, the command errors and instructs you to re-run profiling with `--include-reference-base`.
+
+### `zipstrain utilities get-snp-reference`
+
+Emit profile-like rows that are SNPs relative to the reference from a classic profile parquet that includes `ref_base_bitmask`.
+
+```bash
+zipstrain utilities get-snp-reference \
+  --profile-file sample_profile.parquet \
+  --min-cov 5 \
+  --output-file sample_reference_snps.parquet
+```
+
+Options:
+
+- `-p, --profile-file` (required)
+- `-c, --min-cov` (default: `5`)
+- `-o, --output-file` (required)
+
+The output preserves the input profile-like columns and includes only positions that:
+
+- have coverage `>= min_cov`
+- have a known reference base in `ref_base_bitmask`
+- do not retain the reference allele after profile sequence-error adjustment
+
+This uses the same reference-sharing logic as `ani-reference`.
 
 ## Comparison
 

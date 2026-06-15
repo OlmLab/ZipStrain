@@ -77,15 +77,6 @@ def _write_stb(stb_file: Path) -> None:
     )
 
 
-def _write_null_model(null_model_file: Path) -> None:
-    pl.DataFrame(
-        {
-            "cov": list(range(0, 64)),
-            "max_error_count": [0] * 64,
-        }
-    ).write_parquet(null_model_file)
-
-
 def _write_bam(sample_name: str, sequences: dict[str, str], bam_file: Path) -> None:
     sam_file = bam_file.with_suffix(".sam")
     unsorted_bam = bam_file.with_suffix(".unsorted.bam")
@@ -130,6 +121,7 @@ def _expected_profile_frame(sample_name: str) -> pl.DataFrame:
                     "C": READ_DEPTH if base == "C" else 0,
                     "G": READ_DEPTH if base == "G" else 0,
                     "T": READ_DEPTH if base == "T" else 0,
+                    "ref_base_bitmask": 0,
                 }
             )
     return pl.DataFrame(rows).sort(["chrom", "pos"])
@@ -145,7 +137,6 @@ def _workflow_input_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     reference_fasta = tmp_path / "reference.fna"
     gene_fasta = tmp_path / "genes.fna"
     stb_file = tmp_path / "reference.stb"
-    null_model = tmp_path / "null_model.parquet"
     prep_dir = tmp_path / "prep"
     profiles_dir = tmp_path / "profiles"
     prep_dir.mkdir(parents=True, exist_ok=True)
@@ -154,7 +145,6 @@ def _workflow_input_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     _write_reference_fasta(reference_fasta)
     _write_gene_fasta(gene_fasta)
     _write_stb(stb_file)
-    _write_null_model(null_model)
 
     for sample_name, sequences in SAMPLE_SEQUENCES.items():
         _write_bam(sample_name, sequences, tmp_path / f"{sample_name}.bam")
@@ -181,7 +171,8 @@ def _workflow_input_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         "reference_fasta": reference_fasta,
         "gene_fasta": gene_fasta,
         "stb_file": stb_file,
-        "null_model": null_model,
+        "null_model": prep_dir / "null_model.parquet",
+        "profiling_contract": prep_dir / "profiling_contract.json",
         "prep_dir": prep_dir,
         "profiles_dir": profiles_dir,
         "sample_alpha_bam": tmp_path / "sample_alpha.bam",
@@ -207,6 +198,8 @@ def _profile_dir_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dic
                 str(paths["stb_file"]),
                 "--null-model",
                 str(paths["null_model"]),
+                "--profiling-contract",
+                str(paths["profiling_contract"]),
                 "--gene-range-table",
                 str(paths["prep_dir"] / "gene_range_table.tsv"),
                 "--num-chunks",
@@ -254,6 +247,11 @@ def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monk
 
     assert alpha_profile.equals(_expected_profile_frame("sample_alpha"))
     assert beta_profile.equals(_expected_profile_frame("sample_beta"))
+
+    contract = cli_module.ut.read_profile_contract_file(paths["profiling_contract"])
+    alpha_metadata = pl.read_parquet_metadata(paths["sample_alpha_profile"])
+    for logical_name, metadata_key in cli_module.ut.PROFILE_CONTRACT_METADATA_KEYS.items():
+        assert alpha_metadata[metadata_key] == contract[logical_name]
 
     alpha_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_alpha_gene_stats.parquet").sort("gene")
     beta_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_beta_gene_stats.parquet").sort("gene")

@@ -66,7 +66,7 @@ def test_nextflow_compare_profile_tables_use_profile_location_names_and_engine_p
 def test_nextflow_from_sra_to_profile_auto_builds_reference_without_genes():
     text = NEXTFLOW_FILE.read_text()
     assert 'if (!params.reference_genome)' in text
-    assert "fromSRAtoProfileBuildDb(sra_ids, sylph_db, build_null_model.out.model)" in text
+    assert "fromSRAtoProfileBuildDb(sra_ids, sylph_db)" in text
     assert "zipstrain utilities build-genome-db" in text
     assert "--reference-fasta reference_genomes.fna" in text
     assert "--stb-file reference_genomes.stb" in text
@@ -84,6 +84,26 @@ def test_profile_mode_uses_profile_workflow_and_supports_no_gene_path():
     assert "fast_profile(" not in text
     assert "profile(bamfiles, sample_names, gene_file, reference_genome)" in text
     assert "gene_file = params.gene_file ? file(params.gene_file) : null" in text
+
+
+def test_prepare_profile_process_emits_contract_and_null_model():
+    output_section = _extract_output_section("prepare_profile")
+    assert 'path "null_model.parquet", emit: null_model' in output_section
+    assert 'path "profiling_contract.json", emit: profiling_contract' in output_section
+
+
+def test_prepare_profile_no_genes_process_emits_contract_and_null_model():
+    output_section = _extract_output_section("prepare_profile_no_genes")
+    assert 'path "null_model.parquet", emit: null_model' in output_section
+    assert 'path "profiling_contract.json", emit: profiling_contract' in output_section
+
+
+def test_nextflow_profile_processes_pass_profiling_contract():
+    text = NEXTFLOW_FILE.read_text()
+    assert "--profiling-contract ${profiling_contract}" in text
+    assert "--profiling-contract profiling_contract.json" in text
+    assert "prepare_profile.out.profiling_contract" in text
+    assert "prepare_profile_no_genes.out.profiling_contract" in text
 
 
 def test_nextflow_processes_match_conf_config():

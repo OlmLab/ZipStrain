@@ -205,33 +205,25 @@ This creates:
 - `genomes_bed_file.bed`
 - `genome_lengths.parquet`
 - `gene_range_table.tsv`
+- `null_model.parquet`
+- `profiling_contract.json`
 
 Notes:
 
 - `--gene-fasta` is optional, but recommended if you want gene-aware outputs later.
 - The generated `gene_range_table.tsv` is scaffold-relative and can also be reused by the matrix workflow.
+- The generated `null_model.parquet` is ready to use for profiling immediately.
+- The generated `profiling_contract.json` lets later profiling runs stamp reference/gene/null-model/STB hashes into profile metadata.
 
-## Step 3: Build the Null Model
+If you want non-default null-model parameters, set them directly on `prepare_profiling` with `--error-rate`, `--max-total-reads`, and `--p-threshold`.
 
-ZipStrain uses a null model for sequencing-error adjustment during profiling.
-It is parameter-based rather than BAM-specific, so you usually build it once per
-sequencing/error-rate setting:
-
-```bash
-zipstrain utilities build-null-model \
-  --error-rate 0.001 \
-  --max-total-reads 10000 \
-  --p-threshold 0.05 \
-  --output-file null_model.parquet
-```
-
-## Step 4: Generate Profiles
+## Step 3: Generate Profiles
 
 Profiles are parquet tables with nucleotide counts at covered positions.
 Each sample profile contains columns like:
 
 ```text
-chrom | genome | gene | pos | A | C | G | T
+chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
 ```
 
 Where:
@@ -241,6 +233,12 @@ Where:
 - `gene` is the gene label if gene context is available
 - `pos` is the coordinate on the scaffold
 - `A/C/G/T` are nucleotide counts
+- `ref_base_bitmask` is the reference base encoded as a one-hot bitmask:
+  - `1` = `A`
+  - `2` = `C`
+  - `4` = `G`
+  - `8` = `T`
+  - `0` = non-ACGT or unknown reference base
 
 Profiling input requirement:
 
@@ -265,8 +263,10 @@ Then run:
 zipstrain profile \
   --input-table bams.csv \
   --stb-file reference_genomes.stb \
-  --null-model null_model.parquet \
+  --null-model profiling_assets/null_model.parquet \
+  --profiling-contract profiling_assets/profiling_contract.json \
   --gene-range-table profiling_assets/gene_range_table.tsv \
+  --include-reference-base \
   --bed-file profiling_assets/genomes_bed_file.bed \
   --genome-length-file profiling_assets/genome_lengths.parquet \
   --run-dir out_profile
@@ -303,7 +303,7 @@ It is the better fit when one run needs to evaluate many genomes at once, becaus
 The standard route expects standard ZipStrain profile parquets with columns:
 
 ```text
-chrom | genome | gene | pos | A | C | G | T
+chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
 ```
 
 Depending on which command you use, the immediate inputs are:
@@ -723,17 +723,12 @@ zipstrain utilities prepare_profiling \
   --output-dir outputs/profiling_assets
 ```
 
-### 2. Build the null model once
+`prepare_profiling` also writes:
 
-```bash
-zipstrain utilities build-null-model \
-  --error-rate 0.001 \
-  --max-total-reads 10000 \
-  --p-threshold 0.05 \
-  --output-file outputs/null_model.parquet
-```
+- `outputs/profiling_assets/null_model.parquet`
+- `outputs/profiling_assets/profiling_contract.json`
 
-### 3. Make the BAM input table
+### 2. Make the BAM input table
 
 `bams.csv`
 
@@ -744,13 +739,14 @@ sample2,/abs/path/project/mapped_bams/sample2.bam
 sample3,/abs/path/project/mapped_bams/sample3.bam
 ```
 
-### 4. Generate profiles
+### 3. Generate profiles
 
 ```bash
 zipstrain profile \
   --input-table bams.csv \
   --stb-file reference/reference_genomes.stb \
-  --null-model outputs/null_model.parquet \
+  --null-model outputs/profiling_assets/null_model.parquet \
+  --profiling-contract outputs/profiling_assets/profiling_contract.json \
   --gene-range-table outputs/profiling_assets/gene_range_table.tsv \
   --bed-file outputs/profiling_assets/genomes_bed_file.bed \
   --genome-length-file outputs/profiling_assets/genome_lengths.parquet \
@@ -759,7 +755,7 @@ zipstrain profile \
 
 This gives you one profile parquet per sample plus gene and genome stats tables.
 
-### 5. Build the profile DB table
+### 4. Build the profile DB table
 
 Create `profiles.csv`:
 
@@ -778,7 +774,7 @@ zipstrain utilities build-profile-db \
   --output-file outputs/profile_db.parquet
 ```
 
-### 6. Run the standard compare
+### 5. Run the standard compare
 
 ```bash
 zipstrain compare genomes \
@@ -1107,6 +1103,575 @@ zipstrain utilities matrix-compare \
 ```
 
 Because the compare DB tracks completed sample-pair/genome work, the rerun only processes unfinished work. That is one of the main reasons the matrix route is attractive for growing cohorts.
+
+## Appendix: Input and Output Formats
+
+This section is a practical reference for what the core ZipStrain inputs and outputs should look like on disk.
+
+The main idea is:
+
+- plain-text helper tables are usually flat tab-separated or comma-separated tables
+- parquet outputs are typed columnar tables
+- some inputs require headers, and some do not
+
+If a file is malformed, the most common causes are:
+
+- wrong delimiter
+- a header row where ZipStrain expects no header
+- missing required columns
+- columns in the wrong order
+
+### Reference FASTA
+
+What it is:
+
+- a standard multi-record FASTA of scaffolds/contigs used as the mapping reference
+
+Expected form:
+
+- plain-text FASTA
+- each record header starts with `>`
+- the scaffold name used by ZipStrain is the first token in the FASTA header
+
+Example:
+
+```text
+>contigA
+ACGTACGTACGT
+>contigB
+TTGCAATGCAAA
+```
+
+Quick ways to make it:
+
+- provide your existing reference FASTA directly
+- or generate a reference bundle with:
+
+```bash
+zipstrain utilities build-genome-db \
+  --tool sylph \
+  --abundance-table sylph_abundance.csv \
+  --cache-dir genome_cache \
+  --output-dir reference_bundle
+```
+
+### STB File
+
+What it is:
+
+- a scaffold-to-genome mapping table
+
+Expected form:
+
+- plain-text TSV
+- no header
+- exactly 2 columns
+- column order:
+  - `scaffold`
+  - `genome`
+
+Example:
+
+```text
+contigA	genome_1
+contigB	genome_1
+contigC	genome_2
+```
+
+Important:
+
+- do not include a header row for the main profiling and compare workflows
+- scaffold names must match the reference FASTA scaffold names
+
+Quick ways to make it:
+
+- produced by `zipstrain utilities build-genome-db`
+- or generated from a directory of genome FASTAs with:
+
+```bash
+zipstrain utilities generate_stb \
+  --genomes-dir-file genomes_dir \
+  --output-file reference.stb
+```
+
+### Gene FASTA
+
+What it is:
+
+- a nucleotide gene FASTA, typically from Prodigal
+
+Expected form:
+
+- plain-text FASTA
+- for the main `gene_range_table` builder, the headers should follow the Prodigal-style format that encodes scaffold, start, and end
+
+Example:
+
+```text
+>contigA_1 # 1 # 300 # 1 # ID=1_1;partial=00
+ATG...
+>contigA_2 # 450 # 900 # -1 # ID=1_2;partial=00
+ATG...
+```
+
+Quick ways to make it:
+
+- provide your existing Prodigal nucleotide FASTA
+- or run Prodigal yourself, for example:
+
+```bash
+prodigal -i reference_genomes.fna -d reference_genes.fna -p meta
+```
+
+### `gene_range_table.tsv`
+
+What it is:
+
+- a scaffold-relative gene interval table used during profiling and by the matrix workflow
+
+Expected form:
+
+- plain-text TSV
+- no header
+- exactly 4 columns
+- column order:
+  - `gene`
+  - `scaffold`
+  - `start`
+  - `end`
+
+Example:
+
+```text
+contigA_1	contigA	1	300
+contigA_2	contigA	450	900
+contigB_1	contigB	10	250
+```
+
+Important:
+
+- this is a flat table, not JSON and not nested
+- the coordinates are scaffold-relative integer coordinates
+- for the main profiling workflow, ZipStrain expects no header row
+- if you were thinking of a 3-column file here, that is a different object; the current `gene_range_table.tsv` used by profiling is 4 columns
+
+Quick ways to make it:
+
+- created automatically by `zipstrain utilities prepare_profiling`
+- or created directly from a Prodigal-style gene FASTA with:
+
+```bash
+zipstrain utilities gene-range-table \
+  --gene-file reference_genes.fna \
+  --output-file gene_range_table.tsv
+```
+
+### `genomes_bed_file.bed`
+
+What it is:
+
+- the list of scaffold intervals to profile
+
+Expected form:
+
+- plain-text TSV/BED-style file
+- no header
+- exactly 3 columns
+- column order:
+  - `scaffold`
+  - `start`
+  - `end`
+
+Example:
+
+```text
+contigA	0	500000
+contigA	500000	1000000
+contigB	0	240123
+```
+
+Important:
+
+- this follows BED-style interval logic: scaffold plus integer start/end coordinates
+- long scaffolds may appear in multiple rows
+- scaffold names must match the reference FASTA and STB
+
+Quick ways to make it:
+
+- created automatically by `zipstrain utilities prepare_profiling`
+- or created directly from a reference FASTA with:
+
+```bash
+zipstrain utilities make_bed \
+  --db-fasta-dir reference_genomes.fna \
+  --output-file genomes_bed_file.bed
+```
+
+### `genome_lengths.parquet`
+
+What it is:
+
+- per-genome total reference length derived from the BED plus STB
+
+Expected columns:
+
+```text
+genome | genome_length
+```
+
+Example rows:
+
+```text
+genome_1 | 2384921
+genome_2 | 1912044
+```
+
+Quick ways to make it:
+
+- created automatically by `zipstrain utilities prepare_profiling`
+- or created from an STB plus BED with:
+
+```bash
+zipstrain utilities get_genome_lengths \
+  --stb-file reference.stb \
+  --bed-file genomes_bed_file.bed \
+  --output-file genome_lengths.parquet
+```
+
+### `null_model.parquet`
+
+What it is:
+
+- the sequencing-error threshold table used during profile adjustment
+
+Expected columns:
+
+```text
+cov | max_error_count
+```
+
+Example rows:
+
+```text
+0 | 0
+1 | 0
+2 | 0
+...
+```
+
+Quick ways to make it:
+
+- created automatically by `zipstrain utilities prepare_profiling`
+- or created directly with:
+
+```bash
+zipstrain utilities build-null-model \
+  --error-rate 0.001 \
+  --max-total-reads 10000 \
+  --p-threshold 0.05 \
+  --output-file null_model.parquet
+```
+
+### `profiling_contract.json`
+
+What it is:
+
+- a small JSON metadata manifest describing the reference-side assets used for profiling
+
+Expected form:
+
+- JSON object
+- current keys:
+  - `reference_hash`
+  - `gene_hash`
+  - `null_model_hash`
+  - `stb_hash`
+
+Example:
+
+```json
+{
+  "gene_hash": "a1b2c3...",
+  "null_model_hash": "d4e5f6...",
+  "reference_hash": "112233...",
+  "stb_hash": "445566..."
+}
+```
+
+Quick ways to make it:
+
+- created automatically by `zipstrain utilities prepare_profiling`
+
+### BAM Input Table for `zipstrain profile`
+
+What it is:
+
+- the sample table for batch profiling from already mapped BAM files
+
+Expected form:
+
+- CSV
+- header required
+- required columns:
+  - `sample_name`
+  - `bamfile`
+
+Example:
+
+```csv
+sample_name,bamfile
+sample1,/abs/path/sample1.bam
+sample2,/abs/path/sample2.bam
+sample3,/abs/path/sample3.bam
+```
+
+Important:
+
+- this table does require a header
+- BAMs should already be coordinate-sorted and indexed
+
+Quick way to make it with shell:
+
+```bash
+printf "sample_name,bamfile\n" > bams.csv
+find /path/to/bams -name '*.bam' | sort | while read -r bam; do
+  sample=$(basename "$bam" .bam)
+  printf "%s,%s\n" "$sample" "$bam" >> bams.csv
+done
+```
+
+### Reads Table for Nextflow Mapping
+
+What it is:
+
+- the sample table for starting from raw reads
+
+Expected form:
+
+- CSV
+- header required
+
+Paired-end example:
+
+```csv
+sample_name,reads1,reads2
+sample1,/data/sample1_R1.fastq.gz,/data/sample1_R2.fastq.gz
+sample2,/data/sample2_R1.fastq.gz,/data/sample2_R2.fastq.gz
+```
+
+Single-end example:
+
+```csv
+sample_name,reads1
+sample1,/data/sample1.fastq.gz
+sample2,/data/sample2.fastq.gz
+```
+
+SRA example:
+
+```csv
+Run
+SRR12345678
+SRR12345679
+```
+
+### Classic Profile Parquet
+
+What it is:
+
+- the main per-sample profile output
+
+Expected columns:
+
+```text
+chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
+```
+
+Notes:
+
+- `ref_base_bitmask` is present when profiling includes reference-base annotation
+- rows are expected to be sorted by `(chrom, pos)`
+- `A/C/G/T` are post-adjustment counts
+
+Example:
+
+```text
+contigA | genome_1 | contigA_1 | 1 | 10 | 0 | 0 | 0 | 1
+contigA | genome_1 | contigA_1 | 2 | 0  | 7 | 0 | 0 | 2
+```
+
+Quick way to make it:
+
+- `zipstrain utilities profile-single`
+- or batch mode with `zipstrain profile`
+
+### `*_genome_stats.parquet`
+
+What it is:
+
+- per-sample genome summary statistics
+
+Expected columns:
+
+```text
+genome | length | breadth | coverage | 5x_cov_sites | ber
+```
+
+Notes:
+
+- these columns are the standard genome-stats output expected by the tutorial workflow
+
+### `*_gene_stats.parquet`
+
+What it is:
+
+- per-sample gene summary statistics
+
+Expected columns:
+
+```text
+genome | gene | length | breadth | coverage | 5x_cov_sites | ber
+```
+
+### `profiles.csv` for Building a Profile DB
+
+What it is:
+
+- the normal CSV input used by `zipstrain utilities build-profile-db`
+
+Expected form:
+
+- CSV
+- header required
+- required columns:
+  - `profile_name`
+  - `profile_location`
+
+Example:
+
+```csv
+profile_name,profile_location
+sample1,/abs/path/outputs/profile_run/sample1_profile.parquet
+sample2,/abs/path/outputs/profile_run/sample2_profile.parquet
+sample3,/abs/path/outputs/profile_run/sample3_profile.parquet
+```
+
+Quick way to make it with shell:
+
+```bash
+printf "profile_name,profile_location\n" > profiles.csv
+find /abs/path/outputs/profile_run -name '*_profile.parquet' | sort | while read -r pf; do
+  sample=$(basename "$pf" _profile.parquet)
+  printf "%s,%s\n" "$sample" "$pf" >> profiles.csv
+done
+```
+
+Then build the DB:
+
+```bash
+zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file profile_db.parquet
+```
+
+### `profile_db.parquet`
+
+What it is:
+
+- the parquet form of the profile database
+
+Expected columns:
+
+```text
+profile_name | profile_location
+```
+
+Quick way to make it:
+
+- built from `profiles.csv` using `zipstrain utilities build-profile-db`
+
+### Remaining-Pairs Table
+
+What it is:
+
+- the table of sample pairs still needing comparison in the standard workflow
+
+Expected columns:
+
+```text
+sample_name_1 | sample_name_2 | profile_location_1 | profile_location_2
+```
+
+Quick way to make it:
+
+```bash
+zipstrain utilities to-complete-table \
+  --profile-db profile_db.parquet \
+  --comp-db-file current_compare.parquet \
+  --output-file remaining_pairs.csv
+```
+
+### Genome Comparison Parquet
+
+What it is:
+
+- the standard genome-level comparison output
+
+Core columns:
+
+```text
+genome | total_positions | share_allele_pos | sample_1 | sample_2
+```
+
+Common additional columns:
+
+```text
+genome_pop_ani | max_consecutive_length | shared_genes_count | identical_gene_count | perc_id_genes
+```
+
+Important:
+
+- the exact set of metric columns depends on `--calculate`
+- sample pairs are represented by `sample_1` and `sample_2`
+- one row usually corresponds to one sample-pair/genome result
+
+### Gene Comparison Parquet
+
+What it is:
+
+- the standard gene-level comparison output
+
+Expected columns:
+
+```text
+genome | gene | total_positions | share_allele_pos | ani | sample_1 | sample_2
+```
+
+### Matrix Compare Export Outputs
+
+What they are:
+
+- the exported parquet tables from the matrix compare DuckDB database
+
+Typical forms:
+
+- genome export: same practical row meaning as the standard genome comparison parquet
+- gene export: same practical row meaning as the standard gene comparison parquet
+
+Quick ways to make them:
+
+```bash
+zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file outputs/matrix_compare.duckdb \
+  --output-file outputs/matrix_compare.parquet
+```
+
+```bash
+zipstrain utilities matrix-compare-export \
+  --matrix-compare-db-file outputs/matrix_compare.duckdb \
+  --output-file outputs/matrix_compare_gene.parquet \
+  --table gene
+```
 
 ## Further Reading
 
