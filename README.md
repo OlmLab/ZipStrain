@@ -177,7 +177,13 @@ Full documentation is available at:
 
 ## Citation
 
-If you use ZipStrain in your research, please cite the project and check back here for the formal citation entry.
+If you use ZipStrain in your research, please cite the preprint:
+
+Ghadermazi P, Emerson JB, Olm MR. 2026. *ZipStrain Enables Rapid and Precise
+Strain-Resolved Metagenomics*. bioRxiv. [https://doi.org/10.64898/2026.05.20.726564](https://doi.org/10.64898/2026.05.20.726564)
+
+GitHub can also expose the citation metadata directly from
+[CITATION.cff](CITATION.cff).
 
 ## License
 

@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use ZipStrain, please cite the software using the metadata in this file."
+type: software
+title: "ZipStrain"
+version: "0.10.0"
+license: "MIT"
+authors:
+  - family-names: "Ghadermazi"
+    given-names: "Parsa"
+repository-code: "https://github.com/OlmLab/ZipStrain"
+url: "https://github.com/OlmLab/ZipStrain"
+abstract: "ZipStrain is a strain-resolution metagenomics toolkit for profiling mapped reads into nucleotide-count tables and comparing samples at genome and gene resolution."
+preferred-citation:
+  type: article
+  title: "ZipStrain Enables Rapid and Precise Strain-Resolved Metagenomics"
+  authors:
+    - family-names: "Ghadermazi"
+      given-names: "Parsa"
+      orcid: "https://orcid.org/0009-0005-4112-2105"
+    - family-names: "Emerson"
+      given-names: "Joanne B."
+    - family-names: "Olm"
+      given-names: "Matthew R."
+      orcid: "https://orcid.org/0000-0001-5540-350X"
+  journal: "bioRxiv"
+  date-released: 2026-05-22
+  doi: "10.64898/2026.05.20.726564"
+  url: "https://www.biorxiv.org/content/10.64898/2026.05.20.726564v1.full"

@@ -42,3 +42,19 @@ Notes:
 zipstrain --version
 zipstrain test
 ```
+
+## Cite
+
+If you use ZipStrain in your research, please cite the preprint:
+
+Ghadermazi P, Emerson JB, Olm MR. 2026. *ZipStrain Enables Rapid and Precise
+Strain-Resolved Metagenomics*. bioRxiv. DOI:
+`10.64898/2026.05.20.726564`
+
+GitHub citation metadata is provided in `CITATION.cff`:
+
+- https://github.com/OlmLab/ZipStrain/blob/main/CITATION.cff
+
+## License
+
+ZipStrain is distributed under the MIT License.
