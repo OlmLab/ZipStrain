@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 PROFILE_WRITE_BATCH_SIZE = 10_000
+MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_PARQUET_BASE_FIELDS = [
     ("chrom", pa.string()),
     ("genome", pa.string()),
@@ -410,6 +411,7 @@ async def _stream_profile_mpileup_chunk_to_parquet(
         " ".join(cmd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES,
         cwd=output_parquet.parent,
     )
 

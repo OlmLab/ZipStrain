@@ -238,6 +238,8 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
 
 
 def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed_limits: list[int | None] = []
+
     class _FakeStream:
         def __init__(self, *, lines: list[bytes] | None = None, blob: bytes = b""):
             self._lines = list(lines or [])
@@ -304,8 +306,9 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
         depth = len(bases)
         return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
 
-    async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None):
+    async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None, limit=None):
         if command.startswith("samtools mpileup"):
+            observed_limits.append(limit)
             bed_match = re.search(r"-l\s+([^\s]+)", command)
             assert bed_match is not None, command
             scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
@@ -329,10 +332,11 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError(f"Unexpected command in fake subprocess: {command}")
 
     monkeypatch.setattr(profile.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
+    return observed_limits
 
 
 def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    _install_fake_profile_subprocess(monkeypatch)
+    observed_limits = _install_fake_profile_subprocess(monkeypatch)
     bam_file, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
     profile.profile_bam(
         bed_file=str(bed_file),
@@ -358,6 +362,8 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert prof.height == 6
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
+    assert observed_limits
+    assert all(limit == profile.MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES for limit in observed_limits)
     assert prof.schema["gene"] == pl.Utf8
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()
