@@ -23,6 +23,8 @@ from rich.table import Table
 from rich import box
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn, TaskProgressColumn
 
+DEFAULT_CONTAINER_REPOSITORY = "parsaghadermazi/zipstrain"
+
 
 @click.group()
 @click.version_option(version=__version__, prog_name="zipstrain")
@@ -40,6 +42,29 @@ def _emit_stderr_log(prefix: str, **fields: object) -> None:
     payload = " ".join(f"{key}={value}" for key, value in fields.items())
     click.echo(f"{prefix} {payload}".rstrip(), err=True)
     sys.stderr.flush()
+
+
+def _default_container_address(engine_kind: str) -> str:
+    if __version__ in {"", "unknown"}:
+        raise ValueError(
+            "Cannot infer a default container image because the ZipStrain version is unknown. "
+            "Pass --container-address explicitly."
+        )
+    if engine_kind == "docker":
+        return f"{DEFAULT_CONTAINER_REPOSITORY}:{__version__}"
+    if engine_kind == "apptainer":
+        return f"docker://{DEFAULT_CONTAINER_REPOSITORY}:{__version__}"
+    raise ValueError(f"Container defaults are only defined for docker/apptainer, not {engine_kind!r}.")
+
+
+def _build_container_engine(container_engine: str, container_address: str | None) -> tm.Engine:
+    if container_engine == "local":
+        return tm.LocalEngine(address="")
+    if container_engine == "docker":
+        return tm.DockerEngine(address=container_address or _default_container_address("docker"))
+    if container_engine == "apptainer":
+        return tm.ApptainerEngine(address=container_address or _default_container_address("apptainer"))
+    raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
 
 
 class _ThrottledMatrixLogger:
@@ -1528,8 +1553,9 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, p
 @click.option('--execution-mode', '-e', default="local", help="Execution mode: 'local' or 'slurm'.")
 @click.option('--slurm-config', '-c', default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option('--container-engine', '-o', default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option('--container-address', default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option('--task-per-batch', '-t', default=10, help="Number of tasks to include in each batch.")
-def profile(input_table, stb_file, null_model, gene_range_table, profiling_contract, include_reference_base, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch):
+def profile(input_table, stb_file, null_model, gene_range_table, profiling_contract, include_reference_base, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1566,14 +1592,7 @@ def profile(input_table, stb_file, null_model, gene_range_table, profiling_contr
             raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
         slurm_conf = tm.SlurmConfig.from_json(slurm_config)
     
-    if container_engine == "local":
-        container_engine_obj = tm.LocalEngine(address="")
-    elif container_engine == "docker":
-        container_engine_obj = tm.DockerEngine(address="parsaghadermazi/zipstrain:amd64")
-    elif container_engine == "apptainer":
-        container_engine_obj = tm.ApptainerEngine(address="docker://parsaghadermazi/zipstrain:amd64")
-    else:
-        raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
+    container_engine_obj = _build_container_engine(container_engine, container_address)
     
     tm.lazy_run_profile(
         run_dir=run_dir,
@@ -1608,13 +1627,14 @@ def profile(input_table, stb_file, null_model, gene_range_table, profiling_contr
 @click.option("--execution-mode", "-e", default="local", help="Execution mode: 'local' or 'slurm'.")
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
 @click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method passed to genome compare tasks.")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
 @click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genomes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, engine, calculate, duckdb_memory_limit, duckdb_threads):
+def compare_genomes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, ani_method, engine, calculate, duckdb_memory_limit, duckdb_threads):
     """
     Run genome comparisons in batches using the specified execution mode and container engine.
 
@@ -1648,14 +1668,7 @@ def compare_genomes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_l
             raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
         slurm_conf = tm.SlurmConfig.from_json(slurm_config)
     
-    if container_engine == "local":
-        container_engine_obj = tm.LocalEngine(address="")
-    elif container_engine == "docker":
-        container_engine_obj = tm.DockerEngine(address="parsaghadermazi/zipstrain:amd64") #could go to a toml or json config file
-    elif container_engine == "apptainer":
-        container_engine_obj = tm.ApptainerEngine(address="docker://parsaghadermazi/zipstrain:amd64") #could go to a toml or json config file
-    else:
-        raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
+    container_engine_obj = _build_container_engine(container_engine, container_address)
     tm.lazy_run_compares(
         comps_db=genome_comp_db,
         container_engine=container_engine_obj,
@@ -1686,12 +1699,13 @@ def compare_genomes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_l
 @click.option("--execution-mode", "-e", default="local", help="Execution mode: 'local' or 'slurm'.")
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
 @click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
 @click.option("--ani-method", "-n", default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, task_per_batch, ani_method, engine, duckdb_memory_limit, duckdb_threads):
+def compare_genes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, ani_method, engine, duckdb_memory_limit, duckdb_threads):
     """
     Run gene comparisons in batches using the specified execution mode and container engine.
 
@@ -1725,14 +1739,7 @@ def compare_genes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len
             raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
         slurm_conf = tm.SlurmConfig.from_json(slurm_config)
     
-    if container_engine == "local":
-        container_engine_obj = tm.LocalEngine(address="")
-    elif container_engine == "docker":
-        container_engine_obj = tm.DockerEngine(address="parsaghadermazi/zipstrain:amd64")
-    elif container_engine == "apptainer":
-        container_engine_obj = tm.ApptainerEngine(address="docker://parsaghadermazi/zipstrain:amd64")
-    else:
-        raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
+    container_engine_obj = _build_container_engine(container_engine, container_address)
     
     tm.lazy_run_gene_compares(
         comps_db=genome_comp_db,

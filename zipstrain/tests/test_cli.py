@@ -1163,6 +1163,62 @@ def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
     assert captured["calculate"] == "ani"
 
 
+def test_compare_genomes_uses_default_versioned_docker_image(tmp_path, monkeypatch):
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    captured = {}
+
+    def _fake_lazy_run_compares(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", _fake_lazy_run_compares)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "compare",
+            "genomes",
+            "--profile-db",
+            str(profile_db),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--container-engine",
+            "docker",
+        ],
+    )
+    assert result.exit_code == 0
+    assert isinstance(captured["container_engine"], cli.tm.DockerEngine)
+    assert captured["container_engine"].address == f"parsaghadermazi/zipstrain:{_project_version()}"
+
+
+def test_compare_genomes_honors_container_address_override(tmp_path, monkeypatch):
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    captured = {}
+
+    def _fake_lazy_run_compares(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", _fake_lazy_run_compares)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "compare",
+            "genomes",
+            "--profile-db",
+            str(profile_db),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--container-engine",
+            "docker",
+            "--container-address",
+            "parsaghadermazi/zipstrain:custom-tag",
+        ],
+    )
+    assert result.exit_code == 0
+    assert isinstance(captured["container_engine"], cli.tm.DockerEngine)
+    assert captured["container_engine"].address == "parsaghadermazi/zipstrain:custom-tag"
+
+
 def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
     profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
     captured = {}
@@ -1192,6 +1248,35 @@ def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert captured["duckdb_threads"] == 9
     assert captured["compare_engine"] == "duckdb"
+
+
+def test_compare_genes_honors_apptainer_container_address_override(tmp_path, monkeypatch):
+    profile_db, _profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    captured = {}
+
+    def _fake_lazy_run_gene_compares(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", _fake_lazy_run_gene_compares)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "compare",
+            "genes",
+            "--profile-db",
+            str(profile_db),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--container-engine",
+            "apptainer",
+            "--container-address",
+            "/scratch/containers/zipstrain-0.10.1.img",
+        ],
+    )
+    assert result.exit_code == 0
+    assert isinstance(captured["container_engine"], cli.tm.ApptainerEngine)
+    assert captured["container_engine"].address == "/scratch/containers/zipstrain-0.10.1.img"
 
 
 def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
@@ -1231,6 +1316,84 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["run_dir"] == tmp_path / "run"
     assert captured["include_reference_base"] is True
     assert captured["profiling_contract_file"] is None
+
+
+def test_profile_command_uses_default_versioned_apptainer_image(tmp_path, monkeypatch):
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    null_model = tmp_path / "null_model.parquet"
+    pl.DataFrame({"cov": list(range(100)), "max_error_count": [0 for _ in range(100)]}).write_parquet(null_model)
+
+    captured = {}
+
+    def _fake_lazy_run_profile(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table",
+            str(input_table),
+            "--stb-file",
+            str(tmp_path / "stb.tsv"),
+            "--null-model",
+            str(null_model),
+            "--bed-file",
+            str(tmp_path / "bed.bed"),
+            "--genome-length-file",
+            str(tmp_path / "genome_length.parquet"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--container-engine",
+            "apptainer",
+        ],
+    )
+    assert result.exit_code == 0
+    assert isinstance(captured["container_engine"], cli.tm.ApptainerEngine)
+    assert captured["container_engine"].address == f"docker://parsaghadermazi/zipstrain:{_project_version()}"
+
+
+def test_profile_command_honors_container_address_override(tmp_path, monkeypatch):
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    null_model = tmp_path / "null_model.parquet"
+    pl.DataFrame({"cov": list(range(100)), "max_error_count": [0 for _ in range(100)]}).write_parquet(null_model)
+
+    captured = {}
+
+    def _fake_lazy_run_profile(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table",
+            str(input_table),
+            "--stb-file",
+            str(tmp_path / "stb.tsv"),
+            "--null-model",
+            str(null_model),
+            "--bed-file",
+            str(tmp_path / "bed.bed"),
+            "--genome-length-file",
+            str(tmp_path / "genome_length.parquet"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--container-engine",
+            "apptainer",
+            "--container-address",
+            "/scratch/containers/zipstrain-0.10.1.sif",
+        ],
+    )
+    assert result.exit_code == 0
+    assert isinstance(captured["container_engine"], cli.tm.ApptainerEngine)
+    assert captured["container_engine"].address == "/scratch/containers/zipstrain-0.10.1.sif"
 
 
 def test_profile_command_allows_missing_gene_range_table(tmp_path, monkeypatch):
