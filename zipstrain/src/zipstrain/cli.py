@@ -15,6 +15,7 @@ import zipstrain.matrix_pairs as mp
 import zipstrain.healthcheck as hc
 import polars as pl
 import pathlib
+import shutil
 import sys
 import time
 from rich.console import Console
@@ -447,33 +448,6 @@ def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output
     
     het_profile = pf.get_strain_hetrogeneity(profile, stb, min_cov=min_cov, freq_threshold=freq_threshold)
     het_profile.sink_parquet(output_file, compression='zstd')
-
-@utilities.command("ani-reference")
-@click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
-@click.option(
-    '--agg-level',
-    type=click.Choice(["scaffold", "genome", "gene"]),
-    default="genome",
-    show_default=True,
-    help="Aggregation level for reference ANI output rows.",
-)
-@click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage required for a site to contribute.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def ani_reference(profile_file, agg_level, min_cov, output_file):
-    """
-    Calculate reference-relative ANI from a profile parquet that includes ref_base_bitmask.
-    """
-    profile = pl.scan_parquet(profile_file)
-    try:
-        ref_ani = pf.get_reference_ani(
-            profile,
-            agg_level=agg_level,
-            min_cov=min_cov,
-        )
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
-    ref_ani.sink_parquet(output_file, compression='zstd')
-
 
 @utilities.command("get-snp-reference")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
@@ -1452,6 +1426,7 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
     """
     output_dir=pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(reference_fasta, output_dir / "reference.fasta")
     bed_df = ut.make_the_bed(reference_fasta)
     bed_df.write_csv(output_dir / "genomes_bed_file.bed", separator='\t', include_header=False)
     if gene_fasta is None:
@@ -1487,22 +1462,17 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 
 
 @utilities.command("profile-single")
+@click.option('--reference-fasta', '-r', default=None, help="Optional reference FASTA used for mpileup. When provided, ref_base_bitmask is added to the profile.")
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file describing regions to be profiled.")
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model', '-m', required=True, help="Path to the null model parquet file.") 
 @click.option('--gene-range-table', '-g', default=None, help="Optional path to the gene range table.")
 @click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into the profile parquet metadata.")
-@click.option(
-    '--include-reference-base/--no-include-reference-base',
-    default=True,
-    show_default=True,
-    help="Include ref_base_bitmask in the profile. Bitmask encoding: A=1, C=2, G=4, T=8, non-ACGT=0.",
-)
 @click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
 @click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, include_reference_base, num_chunks, max_concurrency, output_dir):
+def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, output_dir):
     """
     Profile a single BAM file using the provided BED file and optional gene range table.
     
@@ -1522,28 +1492,23 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, p
     pf.profile_bam(
         bed_file=bed_file,
         bam_file=bam_file,
+        reference_fasta=reference_fasta,
         gene_range_table=gene_range_table,
         stb=stb,
         null_model=null_model,
         output_dir=output_dir,
         num_chunks=num_chunks,
         max_concurrency=max_concurrency,
-        include_reference_base=include_reference_base,
         profile_contract=profile_contract_values,
     )
 
 @cli.command("profile")
 @click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
+@click.option('--reference-fasta', '-f', default=None, help="Optional reference FASTA used for mpileup during profiling. When provided, ref_base_bitmask is added to each profile.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model', '-u', required=True, help="Path to the null model parquet file.")
 @click.option('--gene-range-table', '-g', default=None, help="Optional path to the gene range table file.")
 @click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into each profile parquet metadata.")
-@click.option(
-    '--include-reference-base/--no-include-reference-base',
-    default=True,
-    show_default=True,
-    help="Include ref_base_bitmask in each generated profile. Bitmask encoding: A=1, C=2, G=4, T=8, non-ACGT=0.",
-)
 @click.option('--bed-file', '-b', required=True, help="Path to the BED file for profiling regions.")
 @click.option('--genome-length-file', '-l', required=True, help="Path to the genome length file.")
 @click.option('--run-dir', '-r', required=True, help="Directory to save the run data.")
@@ -1555,7 +1520,7 @@ def profile_single(bed_file, bam_file, stb_file, null_model, gene_range_table, p
 @click.option('--container-engine', '-o', default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option('--container-address', default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option('--task-per-batch', '-t', default=10, help="Number of tasks to include in each batch.")
-def profile(input_table, stb_file, null_model, gene_range_table, profiling_contract, include_reference_base, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch):
+def profile(input_table, reference_fasta, stb_file, null_model, gene_range_table, profiling_contract, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1598,13 +1563,13 @@ def profile(input_table, stb_file, null_model, gene_range_table, profiling_contr
         run_dir=run_dir,
         container_engine=container_engine_obj,
         bams_lf=bams_lf,
+        reference_fasta_file=pathlib.Path(reference_fasta) if reference_fasta is not None else None,
         stb_file=pathlib.Path(stb_file),
         null_model_file=pathlib.Path(null_model),
         gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
         profiling_contract_file=pathlib.Path(profiling_contract) if profiling_contract is not None else None,
         bed_file=pathlib.Path(bed_file),
         genome_length_file=pathlib.Path(genome_length_file),
-        include_reference_base=include_reference_base,
         num_procs=num_procs,
         tasks_per_batch=task_per_batch,
         max_concurrent_batches=max_concurrent_batches,

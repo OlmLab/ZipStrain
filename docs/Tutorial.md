@@ -220,10 +220,10 @@ If you want non-default null-model parameters, set them directly on `prepare_pro
 ## Step 3: Generate Profiles
 
 Profiles are parquet tables with nucleotide counts at covered positions.
-Each sample profile contains columns like:
+Each sample profile always contains these columns:
 
 ```text
-chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
+chrom | genome | gene | pos | A | C | G | T
 ```
 
 Where:
@@ -233,12 +233,24 @@ Where:
 - `gene` is the gene label if gene context is available
 - `pos` is the coordinate on the scaffold
 - `A/C/G/T` are nucleotide counts
-- `ref_base_bitmask` is the reference base encoded as a one-hot bitmask:
+
+If you provide `--reference-fasta` during profiling, the profile also includes:
+
+```text
+ref_base_bitmask
+```
+
+`ref_base_bitmask` is the reference base encoded as a one-hot bitmask:
   - `1` = `A`
   - `2` = `C`
   - `4` = `G`
   - `8` = `T`
   - `0` = non-ACGT or unknown reference base
+
+This choice also affects the stat tables:
+
+- with `--reference-fasta`: `*_gene_stats.parquet` and `*_genome_stats.parquet` include `ref_ani`
+- without `--reference-fasta`: those stat tables do not include `ref_ani`
 
 Profiling input requirement:
 
@@ -262,15 +274,22 @@ Then run:
 ```bash
 zipstrain profile \
   --input-table bams.csv \
+  --reference-fasta reference_genomes.fna \
   --stb-file reference_genomes.stb \
   --null-model profiling_assets/null_model.parquet \
   --profiling-contract profiling_assets/profiling_contract.json \
   --gene-range-table profiling_assets/gene_range_table.tsv \
-  --include-reference-base \
   --bed-file profiling_assets/genomes_bed_file.bed \
   --genome-length-file profiling_assets/genome_lengths.parquet \
   --run-dir out_profile
 ```
+
+Notes:
+
+- `--reference-fasta` is optional on `zipstrain profile`
+- if you provide it, profiles contain `ref_base_bitmask` and stat tables contain `ref_ani`
+- if you omit it, profiling still works, but those reference-aware fields are omitted
+- `prepare_profiling` still requires a reference FASTA because it builds the BED, genome lengths, and profiling contract assets
 
 ### Nextflow Profile Workflow
 
@@ -293,6 +312,11 @@ Outputs include:
 - `*_genome_stats.parquet`
 - `*_gene_stats.parquet`
 
+Because the Nextflow profile workflow takes `--reference_genome`, these outputs normally include the reference-aware fields:
+
+- profiles include `ref_base_bitmask`
+- gene/genome stat tables include `ref_ani`
+
 ## Step 5A: Standard Comparison Route
 
 This route compares profile parquets directly.
@@ -300,11 +324,19 @@ It is the better fit when one run needs to evaluate many genomes at once, becaus
 
 ### Standard Route Inputs
 
-The standard route expects standard ZipStrain profile parquets with columns:
+The standard route expects standard ZipStrain profile parquets with required columns:
 
 ```text
-chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
+chrom | genome | gene | pos | A | C | G | T
 ```
+
+Optional profile column:
+
+```text
+ref_base_bitmask
+```
+
+`ref_base_bitmask` is not required for standard pairwise compare. It is only present when profiling was run with `--reference-fasta`.
 
 Depending on which command you use, the immediate inputs are:
 
@@ -1484,12 +1516,12 @@ What it is:
 Expected columns:
 
 ```text
-chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
+chrom | genome | gene | pos | A | C | G | T
 ```
 
 Notes:
 
-- `ref_base_bitmask` is present when profiling includes reference-base annotation
+- `ref_base_bitmask` is an optional extra column when profiling includes `--reference-fasta`
 - rows are expected to be sorted by `(chrom, pos)`
 - `A/C/G/T` are post-adjustment counts
 
@@ -1499,6 +1531,8 @@ Example:
 contigA | genome_1 | contigA_1 | 1 | 10 | 0 | 0 | 0 | 1
 contigA | genome_1 | contigA_1 | 2 | 0  | 7 | 0 | 0 | 2
 ```
+
+This example assumes profiling was run with `--reference-fasta`, so the final value shown is `ref_base_bitmask`.
 
 Quick way to make it:
 
@@ -1514,12 +1548,18 @@ What it is:
 Expected columns:
 
 ```text
-genome | length | breadth | coverage | 5x_cov_sites | ber
+genome | coverage | breadth | genome_length | gap_mean | gap_std | 5x_cov_sites | heterogeneity | ber | fug | reads_mapped
 ```
 
 Notes:
 
-- these columns are the standard genome-stats output expected by the tutorial workflow
+- if profiling used `--reference-fasta`, this file also includes:
+
+```text
+ref_ani
+```
+
+- `ref_ani` is the percent of covered positions that still contain the reference allele after sequence-error adjustment
 
 ### `*_gene_stats.parquet`
 
@@ -1530,8 +1570,18 @@ What it is:
 Expected columns:
 
 ```text
-genome | gene | length | breadth | coverage | 5x_cov_sites | ber
+genome | gene | length | breadth | coverage
 ```
+
+Notes:
+
+- if profiling used `--reference-fasta`, this file also includes:
+
+```text
+ref_ani
+```
+
+- `ref_ani` is the percent of covered positions in the gene that still contain the reference allele after sequence-error adjustment
 
 ### `profiles.csv` for Building a Profile DB
 

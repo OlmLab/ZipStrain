@@ -580,139 +580,116 @@ def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.La
     }
 
 
-def test_ani_reference_cli_genome_aggregation(tmp_path):
-    profile_path = tmp_path / "profile_with_ref.parquet"
-    output_path = tmp_path / "ani_reference_genome.parquet"
-    _reference_profile_frame().write_parquet(profile_path)
+def test_reference_ani_is_added_to_gene_and_genome_stats():
+    profile_lf = _reference_profile_frame().lazy()
+    gene_bed = pl.DataFrame(
+        {
+            "gene": ["gene1", "gene2"],
+            "scaffold": ["chr1", "chr2"],
+            "start": [1, 1],
+            "end": [3, 1],
+        }
+    ).lazy()
+    stb = pl.DataFrame(
+        {
+            "scaffold": ["chr1", "chr2"],
+            "genome": ["genome1", "genome2"],
+        }
+    ).lazy()
+    genome_bed = pl.DataFrame(
+        {
+            "scaffold": ["chr1", "chr2"],
+            "start": [0, 0],
+            "end": [3, 1],
+        }
+    ).lazy()
+    read_locs = pl.DataFrame(
+        {
+            "scaffold": ["chr1", "chr1", "chr1", "chr2"],
+            "loc": [1, 2, 3, 1],
+        }
+    ).lazy()
 
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "ani-reference",
-            "--profile-file",
-            str(profile_path),
-            "--agg-level",
-            "genome",
-            "--min-cov",
-            "5",
-            "--output-file",
-            str(output_path),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    out = pl.read_parquet(output_path).sort("genome")
-    assert out.to_dicts() == [
+    gene_stats = cli.ut.get_gene_stats(
+        profile=profile_lf,
+        gene_bed=gene_bed,
+        stb=stb,
+    ).collect().sort(["genome", "gene"])
+    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage", "ref_ani"]
+    assert gene_stats.to_dicts() == [
         {
             "genome": "genome1",
-            "total_positions": 3,
-            "share_allele_pos": 2,
-            "ani_reference": pytest.approx(66.66666666666666),
-        },
-        {
-            "genome": "genome2",
-            "total_positions": 1,
-            "share_allele_pos": 0,
-            "ani_reference": pytest.approx(0.0),
-        },
-    ]
-
-
-def test_ani_reference_cli_scaffold_and_gene_aggregation(tmp_path):
-    profile_path = tmp_path / "profile_with_ref.parquet"
-    scaffold_out = tmp_path / "ani_reference_scaffold.parquet"
-    gene_out = tmp_path / "ani_reference_gene.parquet"
-    _reference_profile_frame().write_parquet(profile_path)
-
-    runner = CliRunner()
-    scaffold_result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "ani-reference",
-            "--profile-file",
-            str(profile_path),
-            "--agg-level",
-            "scaffold",
-            "--output-file",
-            str(scaffold_out),
-        ],
-    )
-    assert scaffold_result.exit_code == 0, scaffold_result.output
-    scaffold_df = pl.read_parquet(scaffold_out).sort("scaffold")
-    assert scaffold_df.to_dicts() == [
-        {
-            "scaffold": "chr1",
-            "total_positions": 3,
-            "share_allele_pos": 2,
-            "ani_reference": pytest.approx(66.66666666666666),
-        },
-        {
-            "scaffold": "chr2",
-            "total_positions": 1,
-            "share_allele_pos": 0,
-            "ani_reference": pytest.approx(0.0),
-        },
-    ]
-
-    gene_result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "ani-reference",
-            "--profile-file",
-            str(profile_path),
-            "--agg-level",
-            "gene",
-            "--output-file",
-            str(gene_out),
-        ],
-    )
-    assert gene_result.exit_code == 0, gene_result.output
-    gene_df = pl.read_parquet(gene_out).sort(["genome", "scaffold", "gene"])
-    assert gene_df.to_dicts() == [
-        {
-            "genome": "genome1",
-            "scaffold": "chr1",
             "gene": "gene1",
-            "total_positions": 3,
-            "share_allele_pos": 2,
-            "ani_reference": pytest.approx(66.66666666666666),
+            "length": 3,
+            "breadth": 1.0,
+            "coverage": pytest.approx((6 + 6 + 5) / 3),
+            "ref_ani": pytest.approx(66.66666666666666),
         },
         {
             "genome": "genome2",
-            "scaffold": "chr2",
             "gene": "gene2",
-            "total_positions": 1,
-            "share_allele_pos": 0,
-            "ani_reference": pytest.approx(0.0),
+            "length": 1,
+            "breadth": 1.0,
+            "coverage": 10.0,
+            "ref_ani": pytest.approx(0.0),
         },
     ]
 
+    genome_stats = cli.ut.get_genome_stats(
+        profile=profile_lf,
+        bed=genome_bed,
+        stb=stb,
+        read_loc_table=read_locs,
+    ).collect().sort("genome")
+    assert "ref_ani" in genome_stats.columns
+    by_genome = genome_stats.rows_by_key("genome", unique=True, named=True)
+    assert by_genome["genome1"]["ref_ani"] == pytest.approx(66.66666666666666)
+    assert by_genome["genome2"]["ref_ani"] == pytest.approx(0.0)
 
-def test_ani_reference_cli_requires_reference_base_column(tmp_path):
-    profile_path = tmp_path / "profile_without_ref.parquet"
-    output_path = tmp_path / "ani_reference_missing_ref.parquet"
-    _reference_profile_frame().drop(cli.ut.REF_BASE_BITMASK_COLUMN).write_parquet(profile_path)
 
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "ani-reference",
-            "--profile-file",
-            str(profile_path),
-            "--output-file",
-            str(output_path),
-        ],
-    )
+def test_reference_ani_is_omitted_from_stats_without_reference_base():
+    profile_lf = _reference_profile_frame().drop(cli.ut.REF_BASE_BITMASK_COLUMN).lazy()
+    gene_bed = pl.DataFrame(
+        {
+            "gene": ["gene1", "gene2"],
+            "scaffold": ["chr1", "chr2"],
+            "start": [1, 1],
+            "end": [3, 1],
+        }
+    ).lazy()
+    stb = pl.DataFrame(
+        {
+            "scaffold": ["chr1", "chr2"],
+            "genome": ["genome1", "genome2"],
+        }
+    ).lazy()
+    genome_bed = pl.DataFrame(
+        {
+            "scaffold": ["chr1", "chr2"],
+            "start": [0, 0],
+            "end": [3, 1],
+        }
+    ).lazy()
+    read_locs = pl.DataFrame(
+        {
+            "scaffold": ["chr1", "chr1", "chr1", "chr2"],
+            "loc": [1, 2, 3, 1],
+        }
+    ).lazy()
 
-    assert result.exit_code != 0
-    assert "ref_base_bitmask" in result.output
-    assert "--include-reference-base" in result.output
+    gene_stats = cli.ut.get_gene_stats(
+        profile=profile_lf,
+        gene_bed=gene_bed,
+        stb=stb,
+    ).collect()
+    genome_stats = cli.ut.get_genome_stats(
+        profile=profile_lf,
+        bed=genome_bed,
+        stb=stb,
+        read_loc_table=read_locs,
+    ).collect()
+    assert "ref_ani" not in gene_stats.columns
+    assert "ref_ani" not in genome_stats.columns
 
 
 def test_get_snp_reference_cli_outputs_only_reference_snps(tmp_path):
@@ -820,7 +797,7 @@ def test_get_snp_reference_cli_requires_reference_base_column(tmp_path):
 
     assert result.exit_code != 0
     assert "ref_base_bitmask" in result.output
-    assert "--include-reference-base" in result.output
+    assert "--reference-fasta" in result.output
 
 
 @pytest.mark.parametrize("engine", ["polars", "duckdb"])
@@ -1282,6 +1259,8 @@ def test_compare_genes_honors_apptainer_container_address_override(tmp_path, mon
 def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     null_model = tmp_path / "null_model.parquet"
     pl.DataFrame({"cov":list(range(100)),"max_error_count":[0 for _ in range(100)]}).write_parquet(null_model)
     
@@ -1298,6 +1277,8 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
             "profile",
             "--input-table",
             str(input_table),
+            "--reference-fasta",
+            str(reference_fasta),
             "--stb-file",
             str(tmp_path / "stb.tsv"),
             "--null-model",
@@ -1314,13 +1295,15 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0
     assert captured["run_dir"] == tmp_path / "run"
-    assert captured["include_reference_base"] is True
+    assert captured["reference_fasta_file"] == reference_fasta
     assert captured["profiling_contract_file"] is None
 
 
 def test_profile_command_uses_default_versioned_apptainer_image(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     null_model = tmp_path / "null_model.parquet"
     pl.DataFrame({"cov": list(range(100)), "max_error_count": [0 for _ in range(100)]}).write_parquet(null_model)
 
@@ -1337,6 +1320,8 @@ def test_profile_command_uses_default_versioned_apptainer_image(tmp_path, monkey
             "profile",
             "--input-table",
             str(input_table),
+            "--reference-fasta",
+            str(reference_fasta),
             "--stb-file",
             str(tmp_path / "stb.tsv"),
             "--null-model",
@@ -1359,6 +1344,8 @@ def test_profile_command_uses_default_versioned_apptainer_image(tmp_path, monkey
 def test_profile_command_honors_container_address_override(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     null_model = tmp_path / "null_model.parquet"
     pl.DataFrame({"cov": list(range(100)), "max_error_count": [0 for _ in range(100)]}).write_parquet(null_model)
 
@@ -1375,6 +1362,8 @@ def test_profile_command_honors_container_address_override(tmp_path, monkeypatch
             "profile",
             "--input-table",
             str(input_table),
+            "--reference-fasta",
+            str(reference_fasta),
             "--stb-file",
             str(tmp_path / "stb.tsv"),
             "--null-model",
@@ -1399,6 +1388,8 @@ def test_profile_command_honors_container_address_override(tmp_path, monkeypatch
 def test_profile_command_allows_missing_gene_range_table(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     null_model = tmp_path / "null_model.parquet"
     pl.DataFrame({"cov": list(range(10)), "max_error_count": [0 for _ in range(10)]}).write_parquet(null_model)
 
@@ -1415,6 +1406,8 @@ def test_profile_command_allows_missing_gene_range_table(tmp_path, monkeypatch):
             "profile",
             "--input-table",
             str(input_table),
+            "--reference-fasta",
+            str(reference_fasta),
             "--stb-file",
             str(tmp_path / "stb.tsv"),
             "--null-model",
@@ -1429,10 +1422,9 @@ def test_profile_command_allows_missing_gene_range_table(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0
     assert captured["gene_range_table"] is None
-    assert captured["include_reference_base"] is True
 
 
-def test_profile_command_can_disable_reference_base(tmp_path, monkeypatch):
+def test_profile_command_allows_missing_reference_fasta(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
     null_model = tmp_path / "null_model.parquet"
@@ -1459,13 +1451,12 @@ def test_profile_command_can_disable_reference_base(tmp_path, monkeypatch):
             str(tmp_path / "bed.bed"),
             "--genome-length-file",
             str(tmp_path / "genome_length.parquet"),
-            "--no-include-reference-base",
             "--run-dir",
             str(tmp_path / "run"),
         ],
     )
     assert result.exit_code == 0
-    assert captured["include_reference_base"] is False
+    assert captured["reference_fasta_file"] is None
 
 
 def test_prepare_profiling_creates_null_model_and_contract(tmp_path):
@@ -1503,6 +1494,7 @@ def test_prepare_profiling_creates_null_model_and_contract(tmp_path):
     assert (output_dir / "genome_lengths.parquet").exists()
     assert (output_dir / "null_model.parquet").exists()
     assert (output_dir / "profiling_contract.json").exists()
+    assert (output_dir / "reference.fasta").read_text() == reference_fasta.read_text()
 
     contract = cli.ut.read_profile_contract_file(output_dir / "profiling_contract.json")
     assert contract == {
@@ -1520,6 +1512,8 @@ def test_prepare_profiling_creates_null_model_and_contract(tmp_path):
 def test_profile_command_passes_profiling_contract(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     null_model = tmp_path / "null_model.parquet"
     profiling_contract = tmp_path / "profiling_contract.json"
     pl.DataFrame({"cov": list(range(10)), "max_error_count": [0 for _ in range(10)]}).write_parquet(null_model)
@@ -1538,6 +1532,8 @@ def test_profile_command_passes_profiling_contract(tmp_path, monkeypatch):
             "profile",
             "--input-table",
             str(input_table),
+            "--reference-fasta",
+            str(reference_fasta),
             "--stb-file",
             str(tmp_path / "stb.tsv"),
             "--null-model",
@@ -1554,15 +1550,18 @@ def test_profile_command_passes_profiling_contract(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0
     assert captured["profiling_contract_file"] == profiling_contract
+    assert captured["reference_fasta_file"] == reference_fasta
 
 
 def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monkeypatch):
+    reference_fasta = tmp_path / "reference.fna"
     bed_file = tmp_path / "genomes.bed"
     bam_file = tmp_path / "sample.bam"
     stb_file = tmp_path / "mapping.stb"
     null_model = tmp_path / "null_model.parquet"
     gene_range = tmp_path / "gene_range.tsv"
     profiling_contract = tmp_path / "profiling_contract.json"
+    reference_fasta.write_text(">chr1\nACGTACGTAA\n")
     bed_file.write_text("chr1\t0\t10\n")
     bam_file.write_text("")
     stb_file.write_text("chr1\tgenome1\n")
@@ -1590,6 +1589,8 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
         [
             "utilities",
             "profile-single",
+            "--reference-fasta",
+            str(reference_fasta),
             "--bed-file",
             str(bed_file),
             "--bam-file",
@@ -1614,7 +1615,7 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
         "null_model_hash": "modelhash",
         "stb_hash": "stbhash",
     }
-    assert captured["include_reference_base"] is True
+    assert captured["reference_fasta"] == str(reference_fasta)
 
 
 def test_merge_stat_tables_command(tmp_path):

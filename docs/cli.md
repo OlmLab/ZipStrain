@@ -117,13 +117,13 @@ zipstrain utilities profile-single \
 
 Options:
 
+- `-r, --reference-fasta` (optional) — when provided, profiling also records `ref_base_bitmask` and adds `ref_ani` to gene/genome stat tables
 - `-b, --bed-file` (required)
 - `-a, --bam-file` (required)
 - `-s, --stb-file` (required)
 - `-m, --null-model` (required)
 - `-g, --gene-range-table` (optional)
 - `--profiling-contract` (optional)
-- `--include-reference-base / --no-include-reference-base` (default: `include`) — control whether the output profile contains `ref_base_bitmask`
 - `-n, --num-chunks` (default: `24`) — number of BED chunks to create
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
 - `-o, --output-dir` (required)
@@ -134,8 +134,12 @@ Outputs include:
 - `<sample>_genome_stats.parquet`
 - `<sample>_gene_stats.parquet`
 
-When `--include-reference-base` is enabled, the profile parquet includes `ref_base_bitmask`.
-Its encoding is:
+When `--reference-fasta` is provided during profiling, the profile parquet includes `ref_base_bitmask`.
+In the same case, the generated genome and gene stat tables also include a `ref_ani` column.
+
+`ref_ani` is the percentage of covered sites whose observed allele set still contains the reference allele after ZipStrain's sequence-error adjustment.
+
+`ref_base_bitmask` uses this encoding:
 
 - `1` = reference base `A`
 - `2` = reference base `C`
@@ -144,27 +148,6 @@ Its encoding is:
 - `0` = non-ACGT or unknown reference base
 
 This is a one-hot bitmask, so current profiles are expected to contain only `0`, `1`, `2`, `4`, or `8` in this column.
-
-### `zipstrain utilities ani-reference`
-
-Calculate reference-relative ANI from a classic profile parquet that includes `ref_base_bitmask`.
-
-```bash
-zipstrain utilities ani-reference \
-  --profile-file sample_profile.parquet \
-  --agg-level genome \
-  --min-cov 5 \
-  --output-file sample_reference_ani.parquet
-```
-
-Options:
-
-- `-p, --profile-file` (required)
-- `--agg-level` (`scaffold`, `genome`, or `gene`; default: `genome`)
-- `-c, --min-cov` (default: `5`)
-- `-o, --output-file` (required)
-
-If the profile parquet does not contain `ref_base_bitmask`, the command errors and instructs you to re-run profiling with `--include-reference-base`.
 
 ### `zipstrain utilities get-snp-reference`
 
@@ -189,7 +172,7 @@ The output preserves the input profile-like columns and includes only positions 
 - have a known reference base in `ref_base_bitmask`
 - do not retain the reference allele after profile sequence-error adjustment
 
-This uses the same reference-sharing logic as `ani-reference`.
+This uses the same reference-sharing logic used to populate `ref_ani` in the gene and genome stat tables.
 
 ## Comparison
 

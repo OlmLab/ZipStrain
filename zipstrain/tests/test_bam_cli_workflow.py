@@ -190,6 +190,8 @@ def _profile_dir_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dic
             [
                 "utilities",
                 "profile-single",
+                "--reference-fasta",
+                str(paths["reference_fasta"]),
                 "--bed-file",
                 str(paths["prep_dir"] / "genomes_bed_file.bed"),
                 "--bam-file",
@@ -262,6 +264,7 @@ def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monk
         ]
         assert gene_stats["breadth"].to_list() == pytest.approx([1.0, 1.0])
         assert gene_stats["coverage"].to_list() == pytest.approx([float(READ_DEPTH), float(READ_DEPTH)])
+        assert "ref_ani" in gene_stats.columns
 
     alpha_genome_stats = pl.read_parquet(paths["profiles_dir"] / "sample_alpha_genome_stats.parquet").sort("genome")
     alpha_by_genome = alpha_genome_stats.rows_by_key("genome", unique=True, named=True)
@@ -269,6 +272,7 @@ def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monk
     assert alpha_by_genome["genome_b"]["coverage"] == pytest.approx(float(READ_DEPTH))
     assert alpha_by_genome["genome_a"]["breadth"] == pytest.approx(1.0)
     assert alpha_by_genome["genome_b"]["breadth"] == pytest.approx(1.0)
+    assert "ref_ani" in alpha_genome_stats.columns
 
 
 def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -288,12 +292,14 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
     run_dir = tmp_path / "profile_run"
     result = runner.invoke(
         cli_module.cli,
-        [
-            "profile",
-            "--input-table",
-            str(input_table),
-            "--stb-file",
-            str(paths["stb_file"]),
+            [
+                "profile",
+                "--input-table",
+                str(input_table),
+                "--reference-fasta",
+                str(paths["reference_fasta"]),
+                "--stb-file",
+                str(paths["stb_file"]),
             "--null-model",
             str(paths["null_model"]),
             "--gene-range-table",
@@ -335,8 +341,10 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
         by_genome = genome_stats.rows_by_key("genome", unique=True, named=True)
         assert by_genome["genome_a"]["coverage"] == pytest.approx(float(READ_DEPTH))
         assert by_genome["genome_b"]["coverage"] == pytest.approx(float(READ_DEPTH))
+        assert "ref_ani" in genome_stats.columns
         gene_stats = pl.read_parquet(task_dir / f"{sample_name}_gene_stats.parquet").sort("gene")
         assert gene_stats["breadth"].to_list() == pytest.approx([1.0, 1.0])
+        assert "ref_ani" in gene_stats.columns
 
 
 def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

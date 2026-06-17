@@ -273,6 +273,8 @@ def test_batch_initial_status_reads_success_marker(tmp_path):
 def test_profile_task_generator_includes_gene_stats_output(tmp_path):
     bam = tmp_path / "sample_1.bam"
     bam.write_text("dummy")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     stb_file = tmp_path / "stb.tsv"
     stb_file.write_text("chr1\tgenome1\n")
     null_model_file = tmp_path / "null_model.parquet"
@@ -289,6 +291,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
         data=data,
         yield_size=1,
         container_engine=task_manager.LocalEngine(""),
+        reference_fasta_file=str(reference_fasta),
         stb_file=str(stb_file),
         null_model_file=str(null_model_file),
         profile_bed_file=str(bed_file),
@@ -314,7 +317,8 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
 
 def test_profile_bam_task_template_moves_gene_stats():
     cmd = task_manager.ProfileBamTask.TEMPLATE_CMD
-    assert "<include-reference-base-arg>" in cmd
+    assert "<reference-fasta-link-cmd>" in cmd
+    assert "<reference-fasta-arg>" in cmd
     assert "<profiling-contract-link-cmd>" in cmd
     assert "<profiling-contract-arg>" in cmd
     assert "--null-model null_model.parquet" in cmd
@@ -325,6 +329,8 @@ def test_profile_bam_task_template_moves_gene_stats():
 def test_profile_task_generator_handles_missing_gene_range(tmp_path):
     bam = tmp_path / "sample_1.bam"
     bam.write_text("dummy")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     stb_file = tmp_path / "stb.tsv"
     stb_file.write_text("chr1\tgenome1\n")
     null_model_file = tmp_path / "null_model.parquet"
@@ -339,6 +345,7 @@ def test_profile_task_generator_handles_missing_gene_range(tmp_path):
         data=data,
         yield_size=1,
         container_engine=task_manager.LocalEngine(""),
+        reference_fasta_file=str(reference_fasta),
         stb_file=str(stb_file),
         null_model_file=str(null_model_file),
         profile_bed_file=str(bed_file),
@@ -355,16 +362,57 @@ def test_profile_task_generator_handles_missing_gene_range(tmp_path):
 
     tasks = asyncio.run(_collect())
     assert len(tasks) == 1
+    assert tasks[0].inputs["reference-fasta-link-cmd"].get_value() == f"ln -s {reference_fasta.absolute()} reference.fasta"
+    assert tasks[0].inputs["reference-fasta-arg"].get_value() == "--reference-fasta reference.fasta"
     assert tasks[0].inputs["gene-range-table-link-cmd"].get_value() == ""
     assert tasks[0].inputs["gene-range-table-arg"].get_value() == ""
     assert tasks[0].inputs["profiling-contract-link-cmd"].get_value() == ""
     assert tasks[0].inputs["profiling-contract-arg"].get_value() == ""
-    assert tasks[0].inputs["include-reference-base-arg"].get_value() == "--include-reference-base"
+
+
+def test_profile_task_generator_handles_missing_reference_fasta(tmp_path):
+    bam = tmp_path / "sample_1.bam"
+    bam.write_text("dummy")
+    stb_file = tmp_path / "stb.tsv"
+    stb_file.write_text("chr1\tgenome1\n")
+    null_model_file = tmp_path / "null_model.parquet"
+    null_model_file.write_text("dummy")
+    bed_file = tmp_path / "genomes.bed"
+    bed_file.write_text("chr1\t0\t10\n")
+    genome_length_file = tmp_path / "genome_lengths.parquet"
+    genome_length_file.write_text("dummy")
+
+    data = pl.DataFrame({"sample_name": ["sample_1"], "bamfile": [str(bam)]}).lazy()
+    generator = task_manager.ProfileTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        reference_fasta_file=None,
+        stb_file=str(stb_file),
+        null_model_file=str(null_model_file),
+        profile_bed_file=str(bed_file),
+        gene_range_file=None,
+        profiling_contract_file=None,
+        genome_length_file=str(genome_length_file),
+    )
+
+    async def _collect():
+        out = []
+        async for chunk in generator.generate_tasks():
+            out.extend(chunk)
+        return out
+
+    tasks = asyncio.run(_collect())
+    assert len(tasks) == 1
+    assert tasks[0].inputs["reference-fasta-link-cmd"].get_value() == ""
+    assert tasks[0].inputs["reference-fasta-arg"].get_value() == ""
 
 
 def test_profile_task_generator_wires_optional_profiling_contract(tmp_path):
     bam = tmp_path / "sample_1.bam"
     bam.write_text("dummy")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACGT\n")
     stb_file = tmp_path / "stb.tsv"
     stb_file.write_text("chr1\tgenome1\n")
     null_model_file = tmp_path / "null_model.parquet"
@@ -381,6 +429,7 @@ def test_profile_task_generator_wires_optional_profiling_contract(tmp_path):
         data=data,
         yield_size=1,
         container_engine=task_manager.LocalEngine(""),
+        reference_fasta_file=str(reference_fasta),
         stb_file=str(stb_file),
         null_model_file=str(null_model_file),
         profile_bed_file=str(bed_file),

@@ -214,9 +214,11 @@ def test_write_sorted_profile_with_metadata_falls_back_to_sort_for_unsorted_inpu
     )
 
 
-def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, pl.LazyFrame]:
+def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, pl.LazyFrame]:
     bam_file = tmp_path / "sample.bam"
     bam_file.write_text("")
+    reference_fasta = tmp_path / "reference.fna"
+    reference_fasta.write_text(">chr1\nACG\n>chr2\nTAC\n")
     bed_file = tmp_path / "genomes.bed"
     bed_file.write_text("chr1\t0\t3\nchr2\t0\t3\n")
     gene_range_table = tmp_path / "gene_ranges.tsv"
@@ -234,11 +236,12 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
         pl.col("column_1").alias("scaffold"),
         pl.col("column_2").alias("genome"),
     )
-    return bam_file, bed_file, gene_range_table, stb_file, null_model_file, stb_lf
+    return bam_file, reference_fasta, bed_file, gene_range_table, stb_file, null_model_file, stb_lf
 
 
-def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch):
     observed_limits: list[int | None] = []
+    observed_reference_flags: list[bool] = []
 
     class _FakeStream:
         def __init__(self, *, lines: list[bytes] | None = None, blob: bytes = b""):
@@ -301,20 +304,25 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
             {"chrom": scaffold, "pos": 3},
         ]
 
-    def _fake_mpileup_line(row: dict) -> bytes:
-        bases = row["bases"]
+    def _fake_mpileup_line(row: dict, *, use_reference_matches: bool) -> bytes:
+        bases = row["bases"] if use_reference_matches else row["ref"] * len(row["bases"])
         depth = len(bases)
         return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
 
     async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None, limit=None):
         if command.startswith("samtools mpileup"):
             observed_limits.append(limit)
+            has_reference_fasta = re.search(r"-f\s+([^\s]+)", command) is not None
+            observed_reference_flags.append(has_reference_fasta)
             bed_match = re.search(r"-l\s+([^\s]+)", command)
             assert bed_match is not None, command
             scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
             lines = []
             for scaffold in scaffolds:
-                lines.extend(_fake_mpileup_line(row) for row in _fake_mpileup_rows(scaffold))
+                lines.extend(
+                    _fake_mpileup_line(row, use_reference_matches=has_reference_fasta)
+                    for row in _fake_mpileup_rows(scaffold)
+                )
             return _FakeProc(stdout_lines=lines)
         if "process-read-locs" in command:
             out_match = re.search(r"--output-file\s+([^\s]+)", command)
@@ -332,15 +340,16 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError(f"Unexpected command in fake subprocess: {command}")
 
     monkeypatch.setattr(profile.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
-    return observed_limits
+    return observed_limits, observed_reference_flags
 
 
 def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    observed_limits = _install_fake_profile_subprocess(monkeypatch)
-    bam_file, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
+    observed_limits, observed_reference_flags = _install_fake_profile_subprocess(monkeypatch)
+    bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
     profile.profile_bam(
         bed_file=str(bed_file),
         bam_file=str(bam_file),
+        reference_fasta=str(reference_fasta),
         gene_range_table=str(gene_range_table),
         stb=stb_lf,
         null_model=pl.scan_parquet(null_model_file),
@@ -363,6 +372,8 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
     assert observed_limits
+    assert observed_reference_flags
+    assert all(observed_reference_flags)
     assert all(limit == profile.MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES for limit in observed_limits)
     assert prof.schema["gene"] == pl.Utf8
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
@@ -379,9 +390,11 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert g1["length"] == 3
     assert g1["breadth"] == pytest.approx(1.0)
     assert g1["coverage"] == pytest.approx(8.0)
+    assert g1["ref_ani"] == pytest.approx(100.0)
     assert g2["length"] == 3
     assert g2["breadth"] == pytest.approx(1.0)
     assert g2["coverage"] == pytest.approx(7.0)
+    assert g2["ref_ani"] == pytest.approx(100.0)
 
     genome_stats = pl.read_parquet(genome_stats_file)
     assert set(genome_stats["genome"].to_list()) == {"genome1", "genome2"}
@@ -390,14 +403,17 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert by_genome["genome2"]["coverage"] == pytest.approx(7.0)
     assert by_genome["genome1"]["breadth"] == pytest.approx(1.0)
     assert by_genome["genome2"]["breadth"] == pytest.approx(1.0)
+    assert by_genome["genome1"]["ref_ani"] == pytest.approx(100.0)
+    assert by_genome["genome2"]["ref_ani"] == pytest.approx(100.0)
 
 
 def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _install_fake_profile_subprocess(monkeypatch)
-    bam_file, bed_file, _, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
+    bam_file, reference_fasta, bed_file, _, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
     profile.profile_bam(
         bed_file=str(bed_file),
         bam_file=str(bam_file),
+        reference_fasta=str(reference_fasta),
         gene_range_table=None,
         stb=stb_lf,
         null_model=pl.scan_parquet(null_model_file),
@@ -422,16 +438,42 @@ def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monk
     )
 
     gene_stats = pl.read_parquet(gene_stats_file)
-    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage"]
+    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage", "ref_ani"]
     assert gene_stats.height == 0
 
     genome_stats = pl.read_parquet(genome_stats_file)
     assert set(genome_stats["genome"].to_list()) == {"genome1", "genome2"}
+    assert "ref_ani" in genome_stats.columns
+
+
+def test_profile_bam_end_to_end_outputs_without_reference_base_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _, observed_reference_flags = _install_fake_profile_subprocess(monkeypatch)
+    bam_file, _, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
+    profile.profile_bam(
+        bed_file=str(bed_file),
+        bam_file=str(bam_file),
+        reference_fasta=None,
+        gene_range_table=str(gene_range_table),
+        stb=stb_lf,
+        null_model=pl.scan_parquet(null_model_file),
+        output_dir=str(tmp_path),
+        num_chunks=2,
+        max_concurrency=2,
+    )
+
+    prof = pl.read_parquet(tmp_path / "sample_profile.parquet")
+    assert "ref_base_bitmask" not in prof.columns
+    gene_stats = pl.read_parquet(tmp_path / "sample_gene_stats.parquet")
+    genome_stats = pl.read_parquet(tmp_path / "sample_genome_stats.parquet")
+    assert "ref_ani" not in gene_stats.columns
+    assert "ref_ani" not in genome_stats.columns
+    assert observed_reference_flags
+    assert not any(observed_reference_flags)
 
 
 def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _install_fake_profile_subprocess(monkeypatch)
-    bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
+    bam_file, reference_fasta, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
     out_dir = tmp_path / "cli_out"
 
     runner = CliRunner()
@@ -440,6 +482,8 @@ def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.Monk
         [
             "utilities",
             "profile-single",
+            "--reference-fasta",
+            str(reference_fasta),
             "--bed-file",
             str(bed_file),
             "--bam-file",
@@ -466,7 +510,7 @@ def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _install_fake_profile_subprocess(monkeypatch)
-    bam_file, bed_file, _, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
+    bam_file, reference_fasta, bed_file, _, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
     out_dir = tmp_path / "cli_out_no_gene"
 
     runner = CliRunner()
@@ -475,6 +519,8 @@ def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monk
         [
             "utilities",
             "profile-single",
+            "--reference-fasta",
+            str(reference_fasta),
             "--bed-file",
             str(bed_file),
             "--bam-file",
@@ -499,7 +545,7 @@ def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monk
 
 def test_cli_profile_single_bam_without_reference_base_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _install_fake_profile_subprocess(monkeypatch)
-    bam_file, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
+    bam_file, _, bed_file, gene_range_table, stb_file, null_model_file, _ = _write_profile_test_inputs(tmp_path)
     out_dir = tmp_path / "cli_out_no_ref"
 
     runner = CliRunner()
@@ -518,7 +564,6 @@ def test_cli_profile_single_bam_without_reference_base_column(tmp_path: Path, mo
             str(null_model_file),
             "--gene-range-table",
             str(gene_range_table),
-            "--no-include-reference-base",
             "--num-chunks",
             "2",
             "--max-concurrency",

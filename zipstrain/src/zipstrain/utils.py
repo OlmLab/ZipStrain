@@ -442,7 +442,10 @@ def _resolve_scaffold_to_genome_mapping(
     return _validate_unique_scaffold_genome_mapping(mapping)
 
 
-def _profile_rows_cte_sql(profile_sql: str) -> str:
+def _profile_rows_cte_sql(profile_sql: str, *, include_reference_base: bool = False) -> str:
+    ref_column_sql = ""
+    if include_reference_base:
+        ref_column_sql = "\n            CAST(p.ref_base_bitmask AS BIGINT) AS ref_base_bitmask,"
     return f"""
         profile_rows AS (
           SELECT
@@ -454,6 +457,7 @@ def _profile_rows_cte_sql(profile_sql: str) -> str:
             CAST(p.C AS DOUBLE) AS C,
             CAST(p.G AS DOUBLE) AS G,
             CAST(p.T AS DOUBLE) AS T,
+            {ref_column_sql}
             CAST(p.A AS DOUBLE) + CAST(p.C AS DOUBLE) + CAST(p.G AS DOUBLE) + CAST(p.T AS DOUBLE) AS site_coverage
           FROM read_parquet('{profile_sql}') AS p
         )
@@ -484,6 +488,7 @@ def get_coverage_stats(
     missing_columns = PROFILE_COVERAGE_STATS_REQUIRED_COLUMNS - profile_schema
     if missing_columns:
         raise ValueError(f"Profile parquet is missing required columns: {sorted(missing_columns)}")
+    include_reference_ani = REF_BASE_BITMASK_COLUMN in profile_schema
 
     gene_bed = _read_gene_coverage_bed(gene_bed_file)
     genome_bed = _read_genome_coverage_bed(genome_bed_file)
@@ -492,7 +497,43 @@ def get_coverage_stats(
     )
     profile_sql = _duckdb_quote_sql_string(str(profile_path))
     cov_sites_column = f"{int(cov_site_threshold)}x_cov_sites"
-    profile_rows_cte = _profile_rows_cte_sql(profile_sql=profile_sql)
+    profile_rows_cte = _profile_rows_cte_sql(
+        profile_sql=profile_sql,
+        include_reference_base=include_reference_ani,
+    )
+    ref_cov_sql = ""
+    ref_select_sql = ""
+    if include_reference_ani:
+        ref_cov_sql = f""",
+                    SUM(
+                      CASE
+                        WHEN site_coverage >= {int(cov_site_threshold)}
+                         AND ref_base_bitmask > 0
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_total_positions,
+                    SUM(
+                      CASE
+                        WHEN site_coverage >= {int(cov_site_threshold)}
+                         AND ref_base_bitmask > 0
+                         AND (
+                           (ref_base_bitmask = 1 AND A > 0)
+                           OR (ref_base_bitmask = 2 AND C > 0)
+                           OR (ref_base_bitmask = 4 AND G > 0)
+                           OR (ref_base_bitmask = 8 AND T > 0)
+                         )
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_share_allele_pos"""
+        ref_select_sql = """
+                  ,
+                  CASE
+                    WHEN COALESCE(cs.ref_total_positions, 0) > 0
+                    THEN COALESCE(cs.ref_share_allele_pos, 0)::DOUBLE / cs.ref_total_positions * 100.0
+                    ELSE NULL
+                  END AS ref_ani"""
 
     with TemporaryDirectory(prefix="zipstrain_coverage_stats_") as tmp_dir:
         conn = _duckdb_connect_with_temp_dir(tmp_dir)
@@ -528,6 +569,7 @@ def get_coverage_stats(
                     COUNT(*)::BIGINT AS total_covered_sites,
                     SUM(site_coverage)::DOUBLE AS covered_bases,
                     SUM(CASE WHEN site_coverage >= {int(cov_site_threshold)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites
+                    {ref_cov_sql}
                   FROM profile_rows
                   WHERE gene IS NOT NULL
                     AND CAST(gene AS VARCHAR) <> 'NA'
@@ -556,6 +598,7 @@ def get_coverage_stats(
                       (1 - EXP(-0.883 * (COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length)))
                     ELSE 0.0
                   END AS ber
+                  {ref_select_sql}
                 FROM gene_lengths AS gl
                 LEFT JOIN covered_stats AS cs
                   ON gl.genome = cs.genome
@@ -589,6 +632,7 @@ def get_coverage_stats(
                     COUNT(*)::BIGINT AS total_covered_sites,
                     SUM(site_coverage)::DOUBLE AS covered_bases,
                     SUM(CASE WHEN site_coverage >= {int(cov_site_threshold)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites
+                    {ref_cov_sql}
                   FROM profile_rows
                   WHERE genome IS NOT NULL
                   GROUP BY 1
@@ -614,6 +658,7 @@ def get_coverage_stats(
                       (1 - EXP(-0.883 * (COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length)))
                     ELSE 0.0
                   END AS ber
+                  {ref_select_sql}
                 FROM genome_lengths AS gl
                 LEFT JOIN covered_stats AS cs
                   ON gl.genome = cs.genome
@@ -1765,20 +1810,25 @@ def get_genome_stats(
     read_loc_table: pl.LazyFrame,
     comp_min_cov_breadth: int = 5,
     hetro_min_freq: float = 0.8,
-    hetro_min_cov: int = 5
+    hetro_min_cov: int = 5,
+    ref_ani_min_cov: int = 5,
     
 )->pl.LazyFrame:
+    include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
     genome_lengths = extract_genome_length(stb, bed)
     genome_gap_stats = get_genome_gaps(read_loc_table, stb, genome_lengths)
+    profile_columns = [
+        pl.col("genome").cast(pl.Utf8).alias("genome"),
+        pl.col("A"),
+        pl.col("C"),
+        pl.col("G"),
+        pl.col("T"),
+    ]
+    if include_reference_ani:
+        profile_columns.append(pl.col(REF_BASE_BITMASK_COLUMN).cast(pl.UInt8).alias(REF_BASE_BITMASK_COLUMN))
     with TemporaryDirectory(prefix="zipstrain_genome_stats_") as tmp_dir:
         profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
-        profile.select(
-            pl.col("genome").cast(pl.Utf8).alias("genome"),
-            pl.col("A"),
-            pl.col("C"),
-            pl.col("G"),
-            pl.col("T"),
-        ).sink_parquet(profile_path, compression="zstd", engine="streaming")
+        profile.select(profile_columns).sink_parquet(profile_path, compression="zstd", engine="streaming")
 
         conn = _duckdb_connect_with_temp_dir(tmp_dir)
         try:
@@ -1791,6 +1841,41 @@ def get_genome_stats(
                 genome_gap_stats.select("genome", "fug", "rn", "gap_mean", "gap_std").collect().to_arrow(),
             )
             profile_sql = _duckdb_quote_sql_string(str(profile_path))
+            ref_profile_sql = ""
+            ref_agg_sql = ""
+            ref_select_sql = ""
+            if include_reference_ani:
+                ref_profile_sql = "\n                    CAST(ref_base_bitmask AS BIGINT) AS ref_base_bitmask,"
+                ref_agg_sql = f""",
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_total_positions,
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                         AND (
+                           (ref_base_bitmask = 1 AND A > 0)
+                           OR (ref_base_bitmask = 2 AND C > 0)
+                           OR (ref_base_bitmask = 4 AND G > 0)
+                           OR (ref_base_bitmask = 8 AND T > 0)
+                         )
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_share_allele_pos"""
+                ref_select_sql = """
+                  ,
+                  CASE
+                    WHEN p.ref_total_positions > 0
+                    THEN p.ref_share_allele_pos::DOUBLE / p.ref_total_positions * 100.0
+                    ELSE NULL
+                  END AS ref_ani"""
             table = conn.execute(
                 f"""
                 WITH profile_rows AS (
@@ -1800,6 +1885,7 @@ def get_genome_stats(
                     CAST(C AS DOUBLE) AS C,
                     CAST(G AS DOUBLE) AS G,
                     CAST(T AS DOUBLE) AS T,
+                    {ref_profile_sql}
                     CAST(A AS DOUBLE) + CAST(C AS DOUBLE) + CAST(G AS DOUBLE) + CAST(T AS DOUBLE) AS coverage,
                     GREATEST(
                       CAST(A AS DOUBLE),
@@ -1827,6 +1913,7 @@ def get_genome_stats(
                         SUM(CASE WHEN coverage > {int(hetro_min_cov)} THEN 1 ELSE 0 END),
                         0
                       ) AS heterogeneity
+                    {ref_agg_sql}
                   FROM profile_rows
                   GROUP BY genome
                 )
@@ -1843,6 +1930,7 @@ def get_genome_stats(
                     / (1 - EXP(-0.883 * (p.covered_bases / gl.genome_length))) AS ber,
                   CAST(gg.fug AS DOUBLE) AS fug,
                   COALESCE(CAST(gg.rn AS BIGINT), 0) AS reads_mapped
+                  {ref_select_sql}
                 FROM profile_stats AS p
                 LEFT JOIN genome_length_src AS gl
                   ON p.genome = CAST(gl.genome AS VARCHAR)
@@ -1860,17 +1948,22 @@ def get_gene_stats(
     profile:pl.LazyFrame,
     gene_bed: pl.LazyFrame,
     stb: pl.LazyFrame,
+    ref_ani_min_cov: int = 5,
 )->pl.LazyFrame:
+    include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
+    profile_columns = [
+        pl.col("genome").cast(pl.Utf8).alias("genome"),
+        pl.col("gene").cast(pl.Utf8).alias("gene"),
+        pl.col("A"),
+        pl.col("C"),
+        pl.col("G"),
+        pl.col("T"),
+    ]
+    if include_reference_ani:
+        profile_columns.append(pl.col(REF_BASE_BITMASK_COLUMN).cast(pl.UInt8).alias(REF_BASE_BITMASK_COLUMN))
     with TemporaryDirectory(prefix="zipstrain_gene_stats_") as tmp_dir:
         profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
-        profile.select(
-            pl.col("genome").cast(pl.Utf8).alias("genome"),
-            pl.col("gene").cast(pl.Utf8).alias("gene"),
-            pl.col("A"),
-            pl.col("C"),
-            pl.col("G"),
-            pl.col("T"),
-        ).sink_parquet(profile_path, compression="zstd", engine="streaming")
+        profile.select(profile_columns).sink_parquet(profile_path, compression="zstd", engine="streaming")
 
         conn = _duckdb_connect_with_temp_dir(tmp_dir)
         try:
@@ -1883,6 +1976,49 @@ def get_gene_stats(
                 stb.select("scaffold", "genome").collect().to_arrow(),
             )
             profile_sql = _duckdb_quote_sql_string(str(profile_path))
+            ref_cov_sql = ""
+            ref_select_sql = ""
+            if include_reference_ani:
+                ref_cov_sql = f""",
+                    SUM(
+                      CASE
+                        WHEN (
+                          CAST(A AS DOUBLE) +
+                          CAST(C AS DOUBLE) +
+                          CAST(G AS DOUBLE) +
+                          CAST(T AS DOUBLE)
+                        ) >= {int(ref_ani_min_cov)}
+                         AND CAST(ref_base_bitmask AS BIGINT) > 0
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_total_positions,
+                    SUM(
+                      CASE
+                        WHEN (
+                          CAST(A AS DOUBLE) +
+                          CAST(C AS DOUBLE) +
+                          CAST(G AS DOUBLE) +
+                          CAST(T AS DOUBLE)
+                        ) >= {int(ref_ani_min_cov)}
+                         AND CAST(ref_base_bitmask AS BIGINT) > 0
+                         AND (
+                           (CAST(ref_base_bitmask AS BIGINT) = 1 AND CAST(A AS DOUBLE) > 0)
+                           OR (CAST(ref_base_bitmask AS BIGINT) = 2 AND CAST(C AS DOUBLE) > 0)
+                           OR (CAST(ref_base_bitmask AS BIGINT) = 4 AND CAST(G AS DOUBLE) > 0)
+                           OR (CAST(ref_base_bitmask AS BIGINT) = 8 AND CAST(T AS DOUBLE) > 0)
+                         )
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_share_allele_pos"""
+                ref_select_sql = """
+                  ,
+                  CASE
+                    WHEN COALESCE(cs.ref_total_positions, 0) > 0
+                    THEN COALESCE(cs.ref_share_allele_pos, 0)::DOUBLE / cs.ref_total_positions * 100.0
+                    ELSE NULL
+                  END AS ref_ani"""
             table = conn.execute(
                 f"""
                 WITH gene_lengths AS (
@@ -1909,6 +2045,7 @@ def get_gene_stats(
                       CAST(G AS DOUBLE) +
                       CAST(T AS DOUBLE)
                     )::DOUBLE AS covered_bases
+                    {ref_cov_sql}
                   FROM read_parquet('{profile_sql}')
                   WHERE gene IS NOT NULL
                     AND CAST(gene AS VARCHAR) <> 'NA'
@@ -1928,6 +2065,7 @@ def get_gene_stats(
                     THEN COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length
                     ELSE 0.0
                   END AS coverage
+                  {ref_select_sql}
                 FROM gene_lengths AS gl
                 LEFT JOIN covered_stats AS cs
                   ON gl.genome = cs.genome

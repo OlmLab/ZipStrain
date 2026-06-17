@@ -279,6 +279,7 @@ process profile_bam {
     input:
     val sample_name
     path bamfile
+    path reference_fasta
     path bed_file
     path stb_file
     path gene_range_table
@@ -293,6 +294,7 @@ process profile_bam {
     """
     zipstrain utilities profile-single \\
                         --bam-file ${bamfile} \\
+                        --reference-fasta ${reference_fasta} \\
                         --bed-file ${bed_file} \\
                         --gene-range-table ${gene_range_table} \\
                         --stb-file ${stb_file} \\
@@ -522,6 +524,7 @@ process fromSRAtoProfile{
     fi
     zipstrain utilities profile-single \\
                         --bam-file ${sra_id}.bam \\
+                        --reference-fasta ${reference_genome} \\
                         --bed-file ${bed_file} \\
                         --gene-range-table ${gene_range_file} \\
                         --stb-file ${stb_file} \\
@@ -599,6 +602,7 @@ process fromSRAtoProfileBuildDb{
 
     zipstrain utilities profile-single \\
         --bam-file ${sra_id}.bam \\
+        --reference-fasta reference_genomes.fna \\
         --bed-file genomes_bed_file.bed \\
         --stb-file reference_genomes.stb \\
         --null-model null_model.parquet \\
@@ -813,7 +817,7 @@ workflow profile{
         null_model = prepare_profile_no_genes.out.null_model
         profiling_contract = prepare_profile_no_genes.out.profiling_contract
     }
-    profile_bam(sample_names, bamfiles, genome_bed, file(params.stb), gene_range_table, null_model, profiling_contract)
+    profile_bam(sample_names, bamfiles, reference_genome, genome_bed, file(params.stb), gene_range_table, null_model, profiling_contract)
 }
 
 

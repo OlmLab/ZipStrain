@@ -100,6 +100,9 @@ def test_prepare_profile_no_genes_process_emits_contract_and_null_model():
 
 def test_nextflow_profile_processes_pass_profiling_contract():
     text = NEXTFLOW_FILE.read_text()
+    assert "--reference-fasta ${reference_fasta}" in text
+    assert "--reference-fasta ${reference_genome}" in text
+    assert "--reference-fasta reference_genomes.fna" in text
     assert "--profiling-contract ${profiling_contract}" in text
     assert "--profiling-contract profiling_contract.json" in text
     assert "prepare_profile.out.profiling_contract" in text

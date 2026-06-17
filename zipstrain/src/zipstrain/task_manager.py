@@ -497,6 +497,7 @@ class ProfileTaskGenerator(TaskGenerator):
         data: pl.LazyFrame,
         yield_size: int,
         container_engine: Engine,
+        reference_fasta_file: str | None,
         stb_file: str,
         null_model_file: str,
         profile_bed_file: str,
@@ -504,9 +505,9 @@ class ProfileTaskGenerator(TaskGenerator):
         profiling_contract_file: str | None,
         genome_length_file: str,
         num_procs: int = 4,
-        include_reference_base: bool = True,
     ) -> None:
         super().__init__(data, yield_size)
+        self.reference_fasta_file = pathlib.Path(reference_fasta_file) if reference_fasta_file is not None else None
         self.stb_file = pathlib.Path(stb_file)
         self.null_model_file = pathlib.Path(null_model_file)
         self.profile_bed_file = pathlib.Path(profile_bed_file)
@@ -514,7 +515,6 @@ class ProfileTaskGenerator(TaskGenerator):
         self.profiling_contract_file = pathlib.Path(profiling_contract_file) if profiling_contract_file is not None else None
         self.genome_length_file = pathlib.Path(genome_length_file)
         self.num_procs = num_procs
-        self.include_reference_base = bool(include_reference_base)
         self.engine = container_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
@@ -526,6 +526,8 @@ class ProfileTaskGenerator(TaskGenerator):
         ]:
             if not path_attr.exists():
                 raise FileNotFoundError(f"File {path_attr} does not exist.")
+        if self.reference_fasta_file is not None and not self.reference_fasta_file.exists():
+            raise FileNotFoundError(f"File {self.reference_fasta_file} does not exist.")
         if self.gene_range_file is not None and not self.gene_range_file.exists():
             raise FileNotFoundError(f"File {self.gene_range_file} does not exist.")
         if self.profiling_contract_file is not None and not self.profiling_contract_file.exists():
@@ -543,11 +545,15 @@ class ProfileTaskGenerator(TaskGenerator):
             batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
             tasks = []
             for row in batch_df.iter_rows(named=True):
+                reference_fasta_link_cmd = ""
+                reference_fasta_arg = ""
                 gene_range_link_cmd = ""
                 gene_range_arg = ""
                 profiling_contract_link_cmd = ""
                 profiling_contract_arg = ""
-                include_reference_base_arg = "--include-reference-base" if self.include_reference_base else "--no-include-reference-base"
+                if self.reference_fasta_file is not None:
+                    reference_fasta_link_cmd = f"ln -s {self.reference_fasta_file.absolute()} reference.fasta"
+                    reference_fasta_arg = "--reference-fasta reference.fasta"
                 if self.gene_range_file is not None:
                     gene_range_link_cmd = f"ln -s {self.gene_range_file.absolute()} gene-range-table.bed"
                     gene_range_arg = "--gene-range-table gene-range-table.bed"
@@ -557,6 +563,8 @@ class ProfileTaskGenerator(TaskGenerator):
                 inputs = {
                 "bam-file": FileInput(row["bamfile"]),
                 "sample-name": StringInput(row["sample_name"]),
+                "reference-fasta-link-cmd": StringInput(reference_fasta_link_cmd),
+                "reference-fasta-arg": StringInput(reference_fasta_arg),
                 "stb-file": FileInput(self.stb_file),
                 "null-model": FileInput(self.null_model_file),
                 "bed-file": FileInput(self.profile_bed_file),
@@ -564,7 +572,6 @@ class ProfileTaskGenerator(TaskGenerator):
                 "gene-range-table-arg": StringInput(gene_range_arg),
                 "profiling-contract-link-cmd": StringInput(profiling_contract_link_cmd),
                 "profiling-contract-arg": StringInput(profiling_contract_arg),
-                "include-reference-base-arg": StringInput(include_reference_base_arg),
                 "genome-length-file": FileInput(self.genome_length_file),
                 "num-chunks": IntInput(24),
                 "max-concurrency": IntInput(self.num_procs),
@@ -1651,16 +1658,16 @@ class ProfileBamTask(Task):
     
     TEMPLATE_CMD="""
     ln -s <bam-file> input.bam
+    <reference-fasta-link-cmd>
     ln -s <bed-file> bed_file.bed
     <gene-range-table-link-cmd>
     <profiling-contract-link-cmd>
     ln -s <null-model> null_model.parquet
     samtools index <bam-file>
-    zipstrain utilities profile-single --bam-file input.bam \
+    zipstrain utilities profile-single --bam-file input.bam <reference-fasta-arg> \
     --bed-file bed_file.bed \
     <gene-range-table-arg> \
     <profiling-contract-arg> \
-    <include-reference-base-arg> \
     --stb-file <stb-file> \
     --null-model null_model.parquet \
     --num-chunks <num-chunks> \
@@ -1773,13 +1780,13 @@ def lazy_run_profile(
     run_dir: str | pathlib.Path,
     container_engine: Engine,
     bams_lf:pl.LazyFrame,
+    reference_fasta_file:pathlib.Path | None,
     stb_file:pathlib.Path,
     null_model_file:pathlib.Path,
     gene_range_table:pathlib.Path | None,
     profiling_contract_file:pathlib.Path | None,
     bed_file:pathlib.Path,
     genome_length_file:pathlib.Path,
-    include_reference_base: bool = True,
     num_procs:int=8,
     tasks_per_batch: int = 10,
     max_concurrent_batches: int = 1,
@@ -1791,6 +1798,7 @@ def lazy_run_profile(
         data=bams_lf,
         yield_size=tasks_per_batch,
         container_engine=container_engine,
+        reference_fasta_file=reference_fasta_file,
         stb_file=stb_file,
         null_model_file=null_model_file,
         profile_bed_file=bed_file,
@@ -1798,7 +1806,6 @@ def lazy_run_profile(
         profiling_contract_file=profiling_contract_file,
         genome_length_file=genome_length_file,
         num_procs=num_procs,
-        include_reference_base=include_reference_base,
     )
     if execution_mode=="local":
         batch_type="local"
