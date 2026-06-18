@@ -2342,8 +2342,8 @@ sample2,/data/sample2_R1.fastq.gz,/data/sample2_R2.fastq.gz
 <p>If you want non-default null-model parameters, set them directly on <code>prepare_profiling</code> with <code>--error-rate</code>, <code>--max-total-reads</code>, and <code>--p-threshold</code>.</p>
 <h2 id="step-3-generate-profiles">Step 3: Generate Profiles</h2>
 <p>Profiles are parquet tables with nucleotide counts at covered positions.
-Each sample profile contains columns like:</p>
-<pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
+Each sample profile always contains these columns:</p>
+<pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T
 </code></pre>
 <p>Where:</p>
 <ul>
@@ -2352,12 +2352,20 @@ Each sample profile contains columns like:</p>
 <li><code>gene</code> is the gene label if gene context is available</li>
 <li><code>pos</code> is the coordinate on the scaffold</li>
 <li><code>A/C/G/T</code> are nucleotide counts</li>
-<li><code>ref_base_bitmask</code> is the reference base encoded as a one-hot bitmask:</li>
-<li><code>1</code> = <code>A</code></li>
-<li><code>2</code> = <code>C</code></li>
-<li><code>4</code> = <code>G</code></li>
-<li><code>8</code> = <code>T</code></li>
-<li><code>0</code> = non-ACGT or unknown reference base</li>
+</ul>
+<p>If you provide <code>--reference-fasta</code> during profiling, the profile also includes:</p>
+<pre><code class="language-text">ref_base_bitmask
+</code></pre>
+<p><code>ref_base_bitmask</code> is the reference base encoded as a one-hot bitmask:
+  - <code>1</code> = <code>A</code>
+  - <code>2</code> = <code>C</code>
+  - <code>4</code> = <code>G</code>
+  - <code>8</code> = <code>T</code>
+  - <code>0</code> = non-ACGT or unknown reference base</p>
+<p>This choice also affects the stat tables:</p>
+<ul>
+<li>with <code>--reference-fasta</code>: <code>*_gene_stats.parquet</code> and <code>*_genome_stats.parquet</code> include <code>ref_ani</code></li>
+<li>without <code>--reference-fasta</code>: those stat tables do not include <code>ref_ani</code></li>
 </ul>
 <p>Profiling input requirement:</p>
 <ul>
@@ -2375,15 +2383,22 @@ sample3,/path/to/sample3.bam
 <p>Then run:</p>
 <pre><code class="language-bash">zipstrain profile \
   --input-table bams.csv \
+  --reference-fasta reference_genomes.fna \
   --stb-file reference_genomes.stb \
   --null-model profiling_assets/null_model.parquet \
   --profiling-contract profiling_assets/profiling_contract.json \
   --gene-range-table profiling_assets/gene_range_table.tsv \
-  --include-reference-base \
   --bed-file profiling_assets/genomes_bed_file.bed \
   --genome-length-file profiling_assets/genome_lengths.parquet \
   --run-dir out_profile
 </code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>--reference-fasta</code> is optional on <code>zipstrain profile</code></li>
+<li>if you provide it, profiles contain <code>ref_base_bitmask</code> and stat tables contain <code>ref_ani</code></li>
+<li>if you omit it, profiling still works, but those reference-aware fields are omitted</li>
+<li><code>prepare_profiling</code> still requires a reference FASTA because it builds the BED, genome lengths, and profiling contract assets</li>
+</ul>
 <h3 id="nextflow-profile-workflow">Nextflow Profile Workflow</h3>
 <pre><code class="language-bash">nextflow run zipstrain.nf \
   --mode profile \
@@ -2402,13 +2417,22 @@ sample3,/path/to/sample3.bam
 <li><code>*_genome_stats.parquet</code></li>
 <li><code>*_gene_stats.parquet</code></li>
 </ul>
+<p>Because the Nextflow profile workflow takes <code>--reference_genome</code>, these outputs normally include the reference-aware fields:</p>
+<ul>
+<li>profiles include <code>ref_base_bitmask</code></li>
+<li>gene/genome stat tables include <code>ref_ani</code></li>
+</ul>
 <h2 id="step-5a-standard-comparison-route">Step 5A: Standard Comparison Route</h2>
 <p>This route compares profile parquets directly.
 It is the better fit when one run needs to evaluate many genomes at once, because the work parallelizes efficiently across genomes.</p>
 <h3 id="standard-route-inputs">Standard Route Inputs</h3>
-<p>The standard route expects standard ZipStrain profile parquets with columns:</p>
-<pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
+<p>The standard route expects standard ZipStrain profile parquets with required columns:</p>
+<pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T
 </code></pre>
+<p>Optional profile column:</p>
+<pre><code class="language-text">ref_base_bitmask
+</code></pre>
+<p><code>ref_base_bitmask</code> is not required for standard pairwise compare. It is only present when profiling was run with <code>--reference-fasta</code>.</p>
 <p>Depending on which command you use, the immediate inputs are:</p>
 <ul>
 <li>one pair of profile parquets for <code>single_compare_genome</code></li>
@@ -3345,11 +3369,11 @@ SRR12345679
 <li>the main per-sample profile output</li>
 </ul>
 <p>Expected columns:</p>
-<pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T | ref_base_bitmask
+<pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T
 </code></pre>
 <p>Notes:</p>
 <ul>
-<li><code>ref_base_bitmask</code> is present when profiling includes reference-base annotation</li>
+<li><code>ref_base_bitmask</code> is an optional extra column when profiling includes <code>--reference-fasta</code></li>
 <li>rows are expected to be sorted by <code>(chrom, pos)</code></li>
 <li><code>A/C/G/T</code> are post-adjustment counts</li>
 </ul>
@@ -3357,6 +3381,7 @@ SRR12345679
 <pre><code class="language-text">contigA | genome_1 | contigA_1 | 1 | 10 | 0 | 0 | 0 | 1
 contigA | genome_1 | contigA_1 | 2 | 0  | 7 | 0 | 0 | 2
 </code></pre>
+<p>This example assumes profiling was run with <code>--reference-fasta</code>, so the final value shown is <code>ref_base_bitmask</code>.</p>
 <p>Quick way to make it:</p>
 <ul>
 <li><code>zipstrain utilities profile-single</code></li>
@@ -3368,11 +3393,16 @@ contigA | genome_1 | contigA_1 | 2 | 0  | 7 | 0 | 0 | 2
 <li>per-sample genome summary statistics</li>
 </ul>
 <p>Expected columns:</p>
-<pre><code class="language-text">genome | length | breadth | coverage | 5x_cov_sites | ber
+<pre><code class="language-text">genome | coverage | breadth | genome_length | gap_mean | gap_std | 5x_cov_sites | heterogeneity | ber | fug | reads_mapped
 </code></pre>
 <p>Notes:</p>
 <ul>
-<li>these columns are the standard genome-stats output expected by the tutorial workflow</li>
+<li>if profiling used <code>--reference-fasta</code>, this file also includes:</li>
+</ul>
+<pre><code class="language-text">ref_ani
+</code></pre>
+<ul>
+<li><code>ref_ani</code> is the percent of covered positions that still contain the reference allele after sequence-error adjustment</li>
 </ul>
 <h3 id="_gene_statsparquet"><code>*_gene_stats.parquet</code></h3>
 <p>What it is:</p>
@@ -3380,8 +3410,17 @@ contigA | genome_1 | contigA_1 | 2 | 0  | 7 | 0 | 0 | 2
 <li>per-sample gene summary statistics</li>
 </ul>
 <p>Expected columns:</p>
-<pre><code class="language-text">genome | gene | length | breadth | coverage | 5x_cov_sites | ber
+<pre><code class="language-text">genome | gene | length | breadth | coverage
 </code></pre>
+<p>Notes:</p>
+<ul>
+<li>if profiling used <code>--reference-fasta</code>, this file also includes:</li>
+</ul>
+<pre><code class="language-text">ref_ani
+</code></pre>
+<ul>
+<li><code>ref_ani</code> is the percent of covered positions in the gene that still contain the reference allele after sequence-error adjustment</li>
+</ul>
 <h3 id="profilescsv-for-building-a-profile-db"><code>profiles.csv</code> for Building a Profile DB</h3>
 <p>What it is:</p>
 <ul>
