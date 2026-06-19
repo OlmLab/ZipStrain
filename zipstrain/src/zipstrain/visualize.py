@@ -144,38 +144,52 @@ def _prepare_similarity_matrix(
             & (~pl.col("sample_2").is_in(exclude_samples))
         )
 
-    filtered_opposite = filtered_pairs.select(
-        pl.col("sample_2").alias("sample_1"),
-        pl.col("sample_1").alias("sample_2"),
-        pl.col("genome_pop_ani"),
-    )
-    filtered_df = pl.concat([filtered_pairs, filtered_opposite], how="vertical")
-
-    self_similarity = pl.DataFrame(
+    samples = sample_names
+    sample_index = pl.DataFrame(
         {
-            "sample_1": sample_names,
-            "sample_2": sample_names,
-            "genome_pop_ani": [100.0] * len(sample_names),
+            "sample": samples,
+            "sample_idx": np.arange(len(samples), dtype=np.int32),
         }
     )
-    matrix_source = pl.concat([filtered_df, self_similarity], how="vertical")
-    clustermap_data = matrix_source.pivot(
-        index="sample_1",
-        on="sample_2",
-        values="genome_pop_ani",
-    ).select(["sample_1"] + sample_names).sort("sample_1")
-
-    comparable_column_count = max(len(clustermap_data.columns) - 1, 1)
-    null_fraction = clustermap_data.select(
-        pl.col("sample_1"),
-        (
-            pl.sum_horizontal(pl.exclude("sample_1").is_null()) / comparable_column_count
-        ).alias("null_fraction"),
+    sample_index_lf = sample_index.lazy()
+    indexed_pairs = (
+        filtered_pairs.lazy()
+        .join(sample_index_lf, left_on="sample_1", right_on="sample", how="inner")
+        .rename({"sample_idx": "sample_idx_1"})
+        .join(sample_index_lf, left_on="sample_2", right_on="sample", how="inner")
+        .rename({"sample_idx": "sample_idx_2"})
+        .select("sample_idx_1", "sample_idx_2", "genome_pop_ani")
+        .collect(engine="streaming")
     )
 
-    clustermap_data = clustermap_data.fill_null(float(impute_method))
-    samples = clustermap_data.get_column("sample_1").to_list()
-    similarity_matrix = clustermap_data.select(pl.exclude("sample_1")).to_numpy()
+    similarity_matrix_raw = np.full((len(samples), len(samples)), np.nan, dtype=np.float64)
+    np.fill_diagonal(similarity_matrix_raw, 100.0)
+    if indexed_pairs.height > 0:
+        sample_idx_1 = indexed_pairs.get_column("sample_idx_1").to_numpy()
+        sample_idx_2 = indexed_pairs.get_column("sample_idx_2").to_numpy()
+        genome_pop_ani = indexed_pairs.get_column("genome_pop_ani").to_numpy()
+        similarity_matrix_raw[sample_idx_1, sample_idx_2] = genome_pop_ani
+        similarity_matrix_raw[sample_idx_2, sample_idx_1] = genome_pop_ani
+
+    comparable_column_count = max(len(samples), 1)
+    null_fraction = pl.DataFrame(
+        {
+            "sample_1": samples,
+            "null_fraction": np.isnan(similarity_matrix_raw).sum(axis=1) / comparable_column_count,
+        }
+    )
+
+    similarity_matrix = np.where(
+        np.isnan(similarity_matrix_raw),
+        float(impute_method),
+        similarity_matrix_raw,
+    )
+    clustermap_data = pl.DataFrame(
+        {
+            "sample_1": samples,
+            **{sample: similarity_matrix[:, idx] for idx, sample in enumerate(samples)},
+        }
+    )
     distance_matrix = 1 - (similarity_matrix / 100.0)
     np.fill_diagonal(distance_matrix, 0.0)
     linkage_matrix = linkage(squareform(distance_matrix, checks=False), method="average")

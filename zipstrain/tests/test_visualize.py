@@ -127,3 +127,25 @@ def test_prepare_similarity_matrix_requires_two_connected_samples_after_filterin
             min_comp_len=10000,
             max_null_samples=1,
         )
+
+
+def test_prepare_similarity_matrix_builds_numpy_matrix_with_imputation_and_null_fraction():
+    bundle = vz._prepare_similarity_matrix(
+        _sparse_comparison_frame_with_dense_core(),
+        genome="genome1",
+        min_comp_len=10000,
+        max_null_samples=10,
+        impute_method=97.0,
+    )
+
+    assert bundle.samples == ["sample_a", "sample_b", "sample_c", "sample_d", "sample_e"]
+    assert bundle.similarity_matrix.shape == (5, 5)
+    assert bundle.similarity_matrix[0, 1] == pytest.approx(99.9)
+    assert bundle.similarity_matrix[1, 0] == pytest.approx(99.9)
+    assert bundle.similarity_matrix[1, 3] == pytest.approx(97.0)
+    assert bundle.similarity_matrix[3, 1] == pytest.approx(97.0)
+
+    null_fraction = dict(bundle.null_fraction.iter_rows())
+    assert null_fraction["sample_a"] == pytest.approx(0.0)
+    assert null_fraction["sample_d"] == pytest.approx(3 / 5)
+    assert null_fraction["sample_e"] == pytest.approx(3 / 5)
