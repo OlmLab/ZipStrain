@@ -7,7 +7,7 @@ It covers two current comparison methods:
 1. The **standard** method, which compares profile tables directly with table operations
 2. The **matrix** method, which first builds a reusable whole-genome matrix store and then compares from that store
 
-The most important difference is not “old versus new.” It is when each method is a better fit.
+The most important difference is which workload each method fits best.
 
 - The **standard** method is easier to start with, more general, and usually the better choice when you want to compare many genomes at the same time. Its parallel work is naturally spread across genomes.
 - The **matrix** method is worth the extra setup when you expect repeated comparison runs across many samples but only need one genome or a small set of genomes at a time. Its parallel work is naturally spread across sample pairs once the target genome matrices are loaded.
@@ -290,6 +290,14 @@ Notes:
 - if you provide it, profiles contain `ref_base_bitmask` and stat tables contain `ref_ani`
 - if you omit it, profiling still works, but those reference-aware fields are omitted
 - `prepare_profiling` still requires a reference FASTA because it builds the BED, genome lengths, and profiling contract assets
+- `--profiling-contract` is optional but recommended when you want reference/gene/null-model/STB hashes stamped into each profile parquet metadata
+- optional read/base filters are available directly on profiling:
+  - `--min-mapq` default `0`
+  - `--min-baseq` default `13`
+  - `--min-read-ani` optional
+  - `--read-inclusion proper-pairs|paired|all-mapped`
+- the `--min-mapq 0` and `--min-baseq 13` defaults match samtools mpileup defaults
+- `--min-read-ani` currently uses the BAM `NM` tag together with aligned query span, so BAM alignments need `NM` tags if you enable it
 
 ### Nextflow Profile Workflow
 
@@ -316,6 +324,8 @@ Because the Nextflow profile workflow takes `--reference_genome`, these outputs 
 
 - profiles include `ref_base_bitmask`
 - gene/genome stat tables include `ref_ani`
+
+At the moment, the bundled Nextflow profile workflow uses the default profiling read filters unless you edit `zipstrain.nf` directly.
 
 ## Step 5A: Standard Comparison Route
 
@@ -443,6 +453,8 @@ The matrix route has four steps:
 Expected input:
 
 - a directory of standard ZipStrain profile parquets
+- a BED file defining scaffold coordinate extents for the matrix contract
+- an STB file defining scaffold-to-genome membership for the matrix contract
 - each profile parquet should contain:
 
 ```text
@@ -453,6 +465,8 @@ chrom | genome | gene | pos | A | C | G | T
 zipstrain utilities build-matrix-db \
   --profile-dir out_profile \
   --output-file matrix_db.h5 \
+  --bed-file profiling_assets/genomes_bed_file.bed \
+  --stb-file reference_genomes.stb \
   --gene-range-table profiling_assets/gene_range_table.tsv \
   --memory-limit-gb 16
 ```
@@ -461,6 +475,7 @@ What this does:
 
 - scans all standard profile parquets in `out_profile`
 - builds one HDF5-backed matrix store
+- uses the BED+STB pair as the explicit contract for scaffold extents and genome membership
 - keeps one whole-genome matrix per sample per genome
 - stores gene coordinate metadata if `--gene-range-table` is provided
 
@@ -470,6 +485,7 @@ Important notes:
 - dense storage is the default; add `--sparse` if you want sparse HDF5 storage
 - this store is appendable on the sample axis
 - if gene ranges are included here, matrix compare can also compute gene ANI later
+- the matrix build is not just reading profiles; it is also locking in the BED+STB contract you provide here
 
 This step does not yet produce comparison result tables.
 Its output is the reusable matrix store itself: `matrix_db.h5`.
@@ -486,18 +502,20 @@ zipstrain utilities append-matrix-db \
 ```
 
 This validates that the new profiles match the stored genome/scaffold contract and appends only new sample rows.
+If a genome is allowed by the stored contract but does not yet have materialized matrix storage, append creates it on demand.
+If a genome falls outside the stored contract, it is ignored and counted in the append summary.
 
-### Convert a Legacy Matrix DuckDB
+### Convert a DuckDB Matrix Database
 
-If you already have an old matrix DuckDB from a previous workflow:
+If you already have a DuckDB-based matrix database from an earlier workflow:
 
 ```bash
 zipstrain utilities matrix-db-to-hdf5 \
-  --matrix-db-file legacy_matrix.duckdb \
+  --matrix-db-file existing_matrix.duckdb \
   --output-file matrix_db.h5
 ```
 
-This is only needed for older matrix builds. New matrix workflows should start directly from `build-matrix-db`.
+This is only needed when your matrix data already exists in DuckDB format. New matrix workflows should start directly from `build-matrix-db`.
 
 ### Run Matrix Compare
 
@@ -697,8 +715,9 @@ Use matrix compare when:
 ## Current Limitations and Practical Notes
 
 - The matrix route is currently a CLI workflow, not a Nextflow mode.
-- HDF5 matrix input currently requires a torch backend.
+- Matrix compare supports both `numpy` and torch backends. Use torch only when you want the torch CPU/GPU path.
 - Gene ANI from matrix compare requires that the matrix store was built with `--gene-range-table`.
+- Sparse HDF5 storage reduces matrix-store size on disk, but matrix compare currently materializes sparse storage back into dense arrays when loading for comparison.
 - The matrix route does not replace the standard `zipstrain compare` workflow everywhere yet; both routes remain supported.
 
 ## Recommended Starting Point
@@ -973,13 +992,24 @@ outputs/profile_run/sample3_profile.parquet
 
 ### 2. Build the matrix store
 
+This step needs more than just the profile directory. The matrix store is built against an explicit reference-side contract, so gather these files first:
+
+- `outputs/profile_run/` with the standard profile parquets
+- `outputs/profiling_assets/genomes_bed_file.bed`
+- `reference/reference_genomes.stb`
+- optionally `outputs/profiling_assets/gene_range_table.tsv` if you want gene ANI from the matrix workflow
+
 ```bash
 zipstrain utilities build-matrix-db \
   --profile-dir outputs/profile_run \
   --output-file outputs/matrix_db.h5 \
+  --bed-file outputs/profiling_assets/genomes_bed_file.bed \
+  --stb-file reference/reference_genomes.stb \
   --gene-range-table outputs/profiling_assets/gene_range_table.tsv \
   --memory-limit-gb 16
 ```
+
+If you want sparse HDF5 storage instead of dense storage, add `--sparse`.
 
 ### 3. Run matrix compare
 
@@ -1032,6 +1062,12 @@ zipstrain utilities append-matrix-db \
 ```
 
 Then rerun `matrix-compare` against the same compare DB. Already completed sample pairs remain marked complete, and only unfinished work is processed.
+
+The append uses the matrix store's existing BED+STB contract. That means:
+
+- new samples are appended normally
+- compatible genomes can be materialized if they were part of the contract but not yet written into the store
+- genomes outside the contract are ignored and reported in the append summary
 
 ### Result
 
@@ -1660,6 +1696,45 @@ zipstrain utilities to-complete-table \
   --comp-db-file current_compare.parquet \
   --output-file remaining_pairs.csv
 ```
+
+### `matrix_db.h5`
+
+What it is:
+
+- the HDF5-backed matrix store used by the matrix workflow
+
+What went into building it:
+
+- a directory of standard profile parquets
+- a BED file defining scaffold extents
+- an STB file defining scaffold-to-genome membership
+- optionally a `gene_range_table.tsv` file for gene ANI support
+
+Important:
+
+- this is a binary store, not a flat table
+- it is the direct output of `zipstrain utilities build-matrix-db`
+- it is the direct input for `zipstrain utilities append-matrix-db` and `zipstrain utilities matrix-compare`
+- dense storage is the default; `--sparse` changes the HDF5 storage layout but not the matrix-compare command interface
+- with current matrix compare, sparse HDF5 storage is mainly a disk-space optimization because the data are materialized back to dense arrays during compare loading
+
+### `matrix_compare.duckdb`
+
+What it is:
+
+- the resumable DuckDB result database written by `zipstrain utilities matrix-compare`
+
+What it contains:
+
+- genome-level compare rows
+- optionally gene-level compare rows
+- completion bookkeeping so reruns process only unfinished sample-pair/genome work
+
+Important:
+
+- this is not usually the final downstream table
+- export parquet tables from it with `zipstrain utilities matrix-compare-export`
+- rerunning `matrix-compare` against the same file continues from its recorded completion state
 
 ### Genome Comparison Parquet
 

@@ -214,6 +214,56 @@ def test_write_sorted_profile_with_metadata_falls_back_to_sort_for_unsorted_inpu
     )
 
 
+def test_profile_filter_helpers_handle_read_inclusion_and_read_ani():
+    assert profile._aligned_query_bases_from_cigar("10S90M5I2D") == 95
+
+    assert profile._sam_alignment_passes_profile_filters(
+        flag=3,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PROPER_PAIRS,
+    )
+    assert not profile._sam_alignment_passes_profile_filters(
+        flag=3,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:4"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PROPER_PAIRS,
+    )
+    assert profile._sam_alignment_passes_profile_filters(
+        flag=1,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+    )
+    assert not profile._sam_alignment_passes_profile_filters(
+        flag=0,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+    )
+    assert profile._sam_alignment_passes_profile_filters(
+        flag=0,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_ALL_MAPPED,
+    )
+
+
 def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, pl.LazyFrame]:
     bam_file = tmp_path / "sample.bam"
     bam_file.write_text("")
@@ -239,7 +289,7 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
     return bam_file, reference_fasta, bed_file, gene_range_table, stb_file, null_model_file, stb_lf
 
 
-def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch):
+def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_commands: list[str] | None = None):
     observed_limits: list[int | None] = []
     observed_reference_flags: list[bool] = []
 
@@ -310,6 +360,8 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch):
         return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
 
     async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None, limit=None):
+        if observed_commands is not None:
+            observed_commands.append(command)
         if command.startswith("samtools mpileup"):
             observed_limits.append(limit)
             has_reference_fasta = re.search(r"-f\s+([^\s]+)", command) is not None
@@ -405,6 +457,48 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert by_genome["genome2"]["breadth"] == pytest.approx(1.0)
     assert by_genome["genome1"]["ref_ani"] == pytest.approx(100.0)
     assert by_genome["genome2"]["ref_ani"] == pytest.approx(100.0)
+
+
+def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    observed_commands: list[str] = []
+    observed_limits, _ = _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
+    bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
+
+    captured_prefilter = {}
+
+    def _fake_filter_bam_for_profiling(**kwargs):
+        captured_prefilter.update(kwargs)
+        kwargs["output_bam"].write_text("")
+        kwargs["output_bam"].with_suffix(".bam.bai").write_text("")
+
+    monkeypatch.setattr(profile, "_filter_bam_for_profiling", _fake_filter_bam_for_profiling)
+
+    profile.profile_bam(
+        bed_file=str(bed_file),
+        bam_file=str(bam_file),
+        reference_fasta=str(reference_fasta),
+        gene_range_table=str(gene_range_table),
+        stb=stb_lf,
+        null_model=pl.scan_parquet(null_model_file),
+        output_dir=str(tmp_path),
+        num_chunks=2,
+        max_concurrency=2,
+        min_mapq=7,
+        min_baseq=23,
+        min_read_ani=0.96,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+    )
+
+    assert captured_prefilter["min_mapq"] == 7
+    assert captured_prefilter["min_read_ani"] == 0.96
+    assert captured_prefilter["read_inclusion"] == profile.READ_INCLUSION_PAIRED
+    assert captured_prefilter["output_bam"].name.endswith(".filtered.bam")
+    mpileup_commands = [cmd for cmd in observed_commands if cmd.startswith("samtools mpileup")]
+    assert mpileup_commands
+    assert all("-q 7" in cmd for cmd in mpileup_commands)
+    assert all("-Q 23" in cmd for cmd in mpileup_commands)
+    assert all(".filtered.bam" in cmd for cmd in mpileup_commands)
+    assert observed_limits
 
 
 def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

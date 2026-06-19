@@ -21,11 +21,11 @@ ZipStrain now supports two comparison styles:
 
 1. **Standard profile compare**
    - compares profile parquets directly through table operations
-   - best for smaller or one-off runs
+   - best when one run needs to evaluate many genomes at the same time
 
 2. **Matrix compare**
    - builds a reusable matrix store from profile parquets
-   - best for repeated many-sample comparisons against the same reference set
+   - best for repeated many-sample comparisons focused on one genome or a small set of genomes
    - supports resumable compare databases and optional gene ANI
 
 If you are new to the project, start with the [Tutorial](./Tutorial.md).

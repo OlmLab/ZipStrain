@@ -17,7 +17,7 @@ Base install:
 pip install zipstrain
 ```
 
-Experimental matrix utilities with Torch-backed execution:
+Matrix-store workflow dependencies:
 
 ```bash
 pip install "zipstrain[matrix]"

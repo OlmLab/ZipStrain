@@ -505,6 +505,10 @@ class ProfileTaskGenerator(TaskGenerator):
         profiling_contract_file: str | None,
         genome_length_file: str,
         num_procs: int = 4,
+        min_mapq: int = 0,
+        min_baseq: int = 13,
+        min_read_ani: float | None = None,
+        read_inclusion: str = "all-mapped",
     ) -> None:
         super().__init__(data, yield_size)
         self.reference_fasta_file = pathlib.Path(reference_fasta_file) if reference_fasta_file is not None else None
@@ -515,6 +519,10 @@ class ProfileTaskGenerator(TaskGenerator):
         self.profiling_contract_file = pathlib.Path(profiling_contract_file) if profiling_contract_file is not None else None
         self.genome_length_file = pathlib.Path(genome_length_file)
         self.num_procs = num_procs
+        self.min_mapq = min_mapq
+        self.min_baseq = min_baseq
+        self.min_read_ani = min_read_ani
+        self.read_inclusion = read_inclusion
         self.engine = container_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
@@ -551,6 +559,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 gene_range_arg = ""
                 profiling_contract_link_cmd = ""
                 profiling_contract_arg = ""
+                min_read_ani_arg = ""
                 if self.reference_fasta_file is not None:
                     reference_fasta_link_cmd = f"ln -s {self.reference_fasta_file.absolute()} reference.fasta"
                     reference_fasta_arg = "--reference-fasta reference.fasta"
@@ -560,6 +569,8 @@ class ProfileTaskGenerator(TaskGenerator):
                 if self.profiling_contract_file is not None:
                     profiling_contract_link_cmd = f"ln -s {self.profiling_contract_file.absolute()} profiling_contract.json"
                     profiling_contract_arg = "--profiling-contract profiling_contract.json"
+                if self.min_read_ani is not None:
+                    min_read_ani_arg = f"--min-read-ani {self.min_read_ani}"
                 inputs = {
                 "bam-file": FileInput(row["bamfile"]),
                 "sample-name": StringInput(row["sample_name"]),
@@ -575,6 +586,10 @@ class ProfileTaskGenerator(TaskGenerator):
                 "genome-length-file": FileInput(self.genome_length_file),
                 "num-chunks": IntInput(24),
                 "max-concurrency": IntInput(self.num_procs),
+                "min-mapq": IntInput(self.min_mapq),
+                "min-baseq": IntInput(self.min_baseq),
+                "min-read-ani-arg": StringInput(min_read_ani_arg),
+                "read-inclusion": StringInput(self.read_inclusion),
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+"_profile.parquet" ),
@@ -1672,6 +1687,10 @@ class ProfileBamTask(Task):
     --null-model null_model.parquet \
     --num-chunks <num-chunks> \
     --max-concurrency <max-concurrency> \
+    --min-mapq <min-mapq> \
+    --min-baseq <min-baseq> \
+    <min-read-ani-arg> \
+    --read-inclusion <read-inclusion> \
     --output-dir .
     mv input_profile.parquet <sample-name>_profile.parquet
     mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
@@ -1788,6 +1807,10 @@ def lazy_run_profile(
     bed_file:pathlib.Path,
     genome_length_file:pathlib.Path,
     num_procs:int=8,
+    min_mapq: int = 0,
+    min_baseq: int = 13,
+    min_read_ani: float | None = None,
+    read_inclusion: str = "all-mapped",
     tasks_per_batch: int = 10,
     max_concurrent_batches: int = 1,
     poll_interval: float = 5.0,
@@ -1806,6 +1829,10 @@ def lazy_run_profile(
         profiling_contract_file=profiling_contract_file,
         genome_length_file=genome_length_file,
         num_procs=num_procs,
+        min_mapq=min_mapq,
+        min_baseq=min_baseq,
+        min_read_ani=min_read_ani,
+        read_inclusion=read_inclusion,
     )
     if execution_mode=="local":
         batch_type="local"

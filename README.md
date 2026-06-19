@@ -52,6 +52,7 @@ zipstrain test
 
 ZipStrain requires Python 3.12+.
 If you install with `pip`, install `samtools` separately.
+If you plan to use the matrix-store workflow from pip, install the optional matrix dependencies with `pip install "zipstrain[matrix]"`.
 
 Other supported installation paths:
 
@@ -83,17 +84,9 @@ zipstrain utilities prepare_profiling \
   --output-dir profiling_assets
 ```
 
-### 2. Build a null model
+`prepare_profiling` writes `null_model.parquet`, `genomes_bed_file.bed`, `gene_range_table.tsv`, and `genome_lengths.parquet` into `profiling_assets`.
 
-```bash
-zipstrain utilities build-null-model \
-  --error-rate 0.001 \
-  --max-total-reads 10000 \
-  --p-threshold 0.05 \
-  --output-file null_model.parquet
-```
-
-### 3. Profile BAM files in batch
+### 2. Profile BAM files in batch
 
 `samples.csv` must contain `sample_name` and `bamfile` columns.
 
@@ -101,20 +94,34 @@ zipstrain utilities build-null-model \
 zipstrain profile \
   --input-table samples.csv \
   --stb-file reference_genomes.stb \
-  --null-model null_model.parquet \
+  --null-model profiling_assets/null_model.parquet \
   --gene-range-table profiling_assets/gene_range_table.tsv \
   --bed-file profiling_assets/genomes_bed_file.bed \
   --genome-length-file profiling_assets/genome_lengths.parquet \
   --run-dir profile_run
 ```
 
+If you also pass `--reference-fasta`, each profile gains `ref_base_bitmask` and the companion gene/genome stat tables gain `ref_ani`.
+
+### 3. Build a profile DB
+
+Create a CSV with header `profile_name,profile_location`, then build the profile DB:
+
+```bash
+zipstrain utilities build-profile-db \
+  --profile-db-csv profiles.csv \
+  --output-file profile_db.parquet
+```
+
 ### 4. Run genome comparisons
 
-After preparing a comparison object, launch batched genome comparisons:
+Launch batched genome comparisons from the profile DB:
 
 ```bash
 zipstrain compare genomes \
-  --genome-comparison-object genome_compare.json \
+  --profile-db profile_db.parquet \
+  --scope all \
+  --stb-file reference_genomes.stb \
   --run-dir genome_compare_run \
   --calculate all
 ```
@@ -123,14 +130,16 @@ For ANI-only runs:
 
 ```bash
 zipstrain compare genomes \
-  --genome-comparison-object genome_compare.json \
+  --profile-db profile_db.parquet \
+  --scope all \
+  --stb-file reference_genomes.stb \
   --run-dir genome_compare_run \
   --calculate ani
 ```
 
 Set `--engine duckdb` to switch the genome-compare backend from the default Polars engine.
 
-Comparison-object creation and single-pair helpers live under `zipstrain utilities`.
+Single-pair helpers and table builders live under `zipstrain utilities`.
 The full command reference is linked below.
 
 ## Nextflow Workflows

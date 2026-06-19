@@ -1471,8 +1471,12 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into the profile parquet metadata.")
 @click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
 @click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
+@click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
+@click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-read-ani', default=None, type=float, help="Optional minimum read ANI proxy based on the NM tag and aligned query span.")
+@click.option('--read-inclusion', default=pf.READ_INCLUSION_ALL_MAPPED, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible for profiling.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, output_dir):
+def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_read_ani, read_inclusion, output_dir):
     """
     Profile a single BAM file using the provided BED file and optional gene range table.
     
@@ -1500,6 +1504,10 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
         num_chunks=num_chunks,
         max_concurrency=max_concurrency,
         profile_contract=profile_contract_values,
+        min_mapq=min_mapq,
+        min_baseq=min_baseq,
+        min_read_ani=min_read_ani,
+        read_inclusion=read_inclusion,
     )
 
 @cli.command("profile")
@@ -1520,7 +1528,11 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
 @click.option('--container-engine', '-o', default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option('--container-address', default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option('--task-per-batch', '-t', default=10, help="Number of tasks to include in each batch.")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_range_table, profiling_contract, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch):
+@click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
+@click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-read-ani', default=None, type=float, help="Optional minimum read ANI proxy based on the NM tag and aligned query span.")
+@click.option('--read-inclusion', default=pf.READ_INCLUSION_ALL_MAPPED, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible for profiling.")
+def profile(input_table, reference_fasta, stb_file, null_model, gene_range_table, profiling_contract, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1571,6 +1583,10 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_range_table
         bed_file=pathlib.Path(bed_file),
         genome_length_file=pathlib.Path(genome_length_file),
         num_procs=num_procs,
+        min_mapq=min_mapq,
+        min_baseq=min_baseq,
+        min_read_ani=min_read_ani,
+        read_inclusion=read_inclusion,
         tasks_per_batch=task_per_batch,
         max_concurrent_batches=max_concurrent_batches,
         poll_interval=poll_interval,

@@ -19,7 +19,7 @@ Follow the steps below to set up ZipStrain on your system.
 
     This installs all Python dependencies **except samtools**. Install samtools separately from [htslib.org](http://www.htslib.org/download/) or via your package manager (e.g., `brew install samtools`, `apt install samtools`).
 
-3. If you want the matrix-store workflow with Torch-backed CPU/GPU execution, install the optional extra:
+3. If you want the matrix-store workflow from a pip install, add the optional matrix dependencies:
 
     ```
     pip install "zipstrain[matrix]"
@@ -56,6 +56,8 @@ Verify with:
 ```bash
 zipstrain test
 ```
+
+If you plan to use the matrix-store workflow from Conda, `zipstrain test` is the quickest way to confirm that the environment also has the expected matrix dependencies available.
 
 ## Docker
 

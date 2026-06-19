@@ -321,6 +321,10 @@ def test_profile_bam_task_template_moves_gene_stats():
     assert "<reference-fasta-arg>" in cmd
     assert "<profiling-contract-link-cmd>" in cmd
     assert "<profiling-contract-arg>" in cmd
+    assert "--min-mapq <min-mapq>" in cmd
+    assert "--min-baseq <min-baseq>" in cmd
+    assert "<min-read-ani-arg>" in cmd
+    assert "--read-inclusion <read-inclusion>" in cmd
     assert "--null-model null_model.parquet" in cmd
     assert "mv input_profile.parquet <sample-name>_profile.parquet" in cmd
     assert "mv input_gene_stats.parquet <sample-name>_gene_stats.parquet" in cmd

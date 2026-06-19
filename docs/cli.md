@@ -67,7 +67,18 @@ Options:
 - `-e, --execution-mode` (default: `local`)
 - `-c, --slurm-config`
 - `-o, --container-engine` (default: `local`)
+- `--container-address` (optional) — explicit image/address override for `docker` or `apptainer`; otherwise the current ZipStrain version tag is used
 - `-t, --task-per-batch` (default: `10`)
+- `--min-mapq` (default: `0`)
+- `--min-baseq` (default: `13`)
+- `--min-read-ani` (optional) — filters reads before pileup using the BAM `NM` tag and aligned query span
+- `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `all-mapped`)
+
+Read-filter notes:
+
+- `--min-mapq 0` and `--min-baseq 13` match current samtools mpileup defaults
+- `--read-inclusion all-mapped` is the least restrictive mode and is the default
+- `--min-read-ani` requires BAM alignments with `NM` tags
 
 ### `zipstrain utilities prepare_profiling`
 
@@ -126,7 +137,17 @@ Options:
 - `--profiling-contract` (optional)
 - `-n, --num-chunks` (default: `24`) — number of BED chunks to create
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
+- `--min-mapq` (default: `0`)
+- `--min-baseq` (default: `13`)
+- `--min-read-ani` (optional) — filters reads before pileup using the BAM `NM` tag and aligned query span
+- `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `all-mapped`)
 - `-o, --output-dir` (required)
+
+Read-inclusion modes:
+
+- `proper-pairs`: keep only mapped read pairs carrying the aligner `PROPER_PAIR` flag
+- `paired`: keep mapped paired-end reads even if they are discordant
+- `all-mapped`: keep any mapped read, whether paired or single-end
 
 Outputs include:
 
@@ -216,6 +237,7 @@ Options:
 - `-e, --execution-mode` (default: `local`)
 - `-s, --slurm-config`
 - `-c, --container-engine` (default: `local`)
+- `--container-address` (optional) — explicit image/address override for `docker` or `apptainer`; otherwise the current ZipStrain version tag is used
 - `-t, --task-per-batch` (default: `10`)
 - `-a, --ani-method` (default: `popani`) — ANI method (`popani`, `conani`, `cosani_<threshold>`)
 - `--engine` (`polars|duckdb`, default: `polars`)
@@ -247,6 +269,7 @@ Options:
 - `-e, --execution-mode` (default: `local`)
 - `-s, --slurm-config`
 - `-c, --container-engine` (default: `local`)
+- `--container-address` (optional) — explicit image/address override for `docker` or `apptainer`; otherwise the current ZipStrain version tag is used
 - `-t, --task-per-batch` (default: `10`)
 - `-n, --ani-method` (default: `popani`)
 - `--engine` (`polars|duckdb`, default: `polars`)
@@ -389,6 +412,18 @@ Options:
 - `--comp-db-file` (optional)
 - `-o, --output-file` (required)
 
+Output columns:
+
+- `sample_name_1`
+- `sample_name_2`
+- `profile_location_1`
+- `profile_location_2`
+
+Notes:
+
+- this command does not need `--scope`, `--min-cov`, `--min-gene-compare-len`, or `--stb-file`
+- it only compares the sample-pair universe implied by the profile DB against the pairs already present in the current genome comparison parquet
+
 ## Utilities
 
 ### Utility Commands At A Glance
@@ -408,7 +443,7 @@ Options:
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
 | `zipstrain utilities build-matrix-db` | Build the current per-sample genome matrix store directly from profile parquets |
 | `zipstrain utilities append-matrix-db` | Append new profiles into an existing matrix store |
-| `zipstrain utilities matrix-db-to-hdf5` | Convert a legacy matrix DuckDB into the current matrix-store format |
+| `zipstrain utilities matrix-db-to-hdf5` | Convert a DuckDB matrix database into the current matrix-store format |
 | `zipstrain utilities matrix-compare` | Resumable all-vs-all matrix compare into a DuckDB compare DB |
 | `zipstrain utilities matrix-compare-export` | Export a matrix compare DuckDB to parquet |
 | `zipstrain utilities build-genome-db` | Build local genome reference bundle from abundance table |
@@ -441,6 +476,8 @@ zipstrain utilities build-matrix-db \
   --profile-dir profiles \
   --output-file matrix_db.h5 \
   --bed-file genomes_bed_file.bed \
+  --stb-file reference.stb \
+  --gene-range-table gene_range_table.tsv \
   --memory-limit-gb 16
 ```
 
@@ -448,6 +485,7 @@ What it does:
 
 - scans a directory of standard ZipStrain profile parquets
 - builds one matrix store directly from those profiles
+- uses the BED and STB files as the explicit scaffold/genome contract for the store
 - stores each genome as one sample-major dense dataset with shape `samples x positions x 4`
 - positions with total coverage below `5` are zeroed during matrix build
 - can optionally store scaffold-relative gene ranges for later gene ANI
@@ -458,19 +496,24 @@ Important options:
 - `-p, --profile-dir` (required)
 - `-o, --output-file` (required)
 - `-g, --genome` optional genome scope (default: `all`)
-- `-b, --bed-file` optional BED file to define scaffold extents instead of scanning profile min/max positions
+- `-b, --bed-file` (required) BED file defining scaffold coordinate extents for the matrix contract
+- `-s, --stb-file` (required) STB file defining scaffold-to-genome membership for the matrix contract
+- `--gene-range-table` optional headerless TSV of `gene, scaffold, start, end` for gene ANI support
 - `--count-dtype` stored matrix dtype (`uint16|uint32`, default: `uint16`)
 - `--memory-limit-gb` approximate maximum memory budget for the entire build process (default: `16.0`)
 - `--export-batch-mb` approximate matrix-store sample-axis chunk target size in MiB (default: `128.0`)
+- `--sparse` store genome matrices sparsely in HDF5
 
 Notes:
 
 - the output matrix store is intended for `zipstrain utilities matrix-compare`
 - new matrix stores are append-friendly on the sample axis
+- every input profile is interpreted against the BED+STB contract you provide here
 - install matrix support with `pip install "zipstrain[matrix]"`
 - the CLI shows a progress bar in an interactive terminal
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
-- if `--bed-file` is provided, scaffold spans come from grouped BED intervals rather than inferred profile min/max positions
+- if `--gene-range-table` is omitted, matrix compare can still compute genome ANI and IBS, but not gene ANI
+- `--sparse` reduces on-disk HDF5 size, but matrix compare currently materializes sparse storage back into dense arrays when loading for comparison
 
 ### `zipstrain utilities append-matrix-db`
 
@@ -486,6 +529,8 @@ What it does:
 - scans a directory of new standard ZipStrain profile parquets
 - validates that they match the existing matrix-store contract
 - appends new sample rows and whole-genome matrices into the existing matrix store
+- materializes newly encountered genomes when they are still compatible with the stored BED+STB contract
+- ignores genomes that fall outside the stored contract and reports the ignored count
 
 Important options:
 
@@ -494,11 +539,12 @@ Important options:
 - `--memory-limit-gb` approximate maximum memory budget for the append process (default: `16.0`)
 - `--export-batch-mb` approximate matrix-store sample-axis chunk target size in MiB used when rewriting an older fixed-size store (default: `128.0`)
 
-Append requirements:
+Append behavior:
 
 - sample names must be new
-- genomes and scaffolds must already exist in the matrix store
-- profile positions must stay within the stored scaffold coordinate ranges
+- known scaffolds and coordinate ranges must stay within the stored contract
+- compatible genomes can be appended even if no matrix dataset existed for them yet
+- genomes outside the stored contract are skipped and counted in the summary output
 
 ### `zipstrain utilities matrix-db-to-hdf5`
 
@@ -510,8 +556,9 @@ zipstrain utilities matrix-db-to-hdf5 \
 
 What it does:
 
-- converts an existing legacy matrix DuckDB into the current matrix-store layout
+- converts an existing DuckDB matrix database into the current matrix-store layout
 - preserves sample, genome, and scaffold metadata
+- is only needed when you already have a DuckDB-based matrix database from an older workflow
 
 Important options:
 
@@ -572,6 +619,7 @@ Important options:
 Notes:
 
 - install Torch support with `pip install "zipstrain[matrix]"`
+- `--backend numpy` works without Torch and is the simplest CPU-only path
 - on Apple Silicon, the standard `torch` wheel can use MPS
 - on Linux with NVIDIA GPUs, replace Torch with the CUDA wheel that matches your system, for example:
 
@@ -652,6 +700,7 @@ Notes:
 
 - By default, ZipStrain checks that all listed profiles carry matching embedded contract metadata.
 - Use `--allow-mismatch` to skip that validation and build a mixed profile DB intentionally.
+- The output parquet stores at least `profile_name` and `profile_location`, plus shared metadata fields derived from the listed profiles.
 
 ### `zipstrain utilities get-coverage-stats`
 

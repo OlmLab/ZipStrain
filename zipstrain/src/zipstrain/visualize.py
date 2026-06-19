@@ -94,16 +94,62 @@ def _prepare_similarity_matrix(
         .group_by(["sample_1", "sample_2"])
         .agg(pl.col("genome_pop_ani").mean().alias("genome_pop_ani"))
     )
+    filtered_pairs = filtered.collect(engine="streaming")
+    sample_names = (
+        pl.concat(
+            [
+                filtered_pairs.select(pl.col("sample_1").alias("sample")),
+                filtered_pairs.select(pl.col("sample_2").alias("sample")),
+            ],
+            how="vertical",
+        )
+        .get_column("sample")
+        .unique()
+        .sort()
+        .to_list()
+    )
+    if len(sample_names) < 2:
+        raise ValueError("At least two samples are required to build a similarity matrix.")
 
-    filtered_opposite = filtered.select(
+    comparable_counts = (
+        pl.concat(
+            [
+                filtered_pairs.select(pl.col("sample_1").alias("sample")),
+                filtered_pairs.select(pl.col("sample_2").alias("sample")),
+            ],
+            how="vertical",
+        )
+        .group_by("sample")
+        .len()
+        .with_columns((pl.col("len") + 1).alias("comparable_count"))
+        .select("sample", "comparable_count")
+    )
+    total_sample_count = len(sample_names)
+    exclude_samples = (
+        comparable_counts
+        .filter((pl.lit(total_sample_count) - pl.col("comparable_count")) > max_null_samples)
+        .get_column("sample")
+        .to_list()
+    )
+    if exclude_samples:
+        exclude_set = set(exclude_samples)
+        sample_names = [sample for sample in sample_names if sample not in exclude_set]
+        if len(sample_names) < 2:
+            raise ValueError(
+                "At least two sufficiently connected samples are required to build a similarity matrix. "
+                "Relax `max_null_samples` or provide a denser comparison table."
+            )
+        filtered_pairs = filtered_pairs.filter(
+            (~pl.col("sample_1").is_in(exclude_samples))
+            & (~pl.col("sample_2").is_in(exclude_samples))
+        )
+
+    filtered_opposite = filtered_pairs.select(
         pl.col("sample_2").alias("sample_1"),
         pl.col("sample_1").alias("sample_2"),
         pl.col("genome_pop_ani"),
     )
-    filtered_df = pl.concat([filtered, filtered_opposite]).collect(engine="streaming")
-    sample_names = sorted(set(filtered_df.get_column("sample_1").to_list()) | set(filtered_df.get_column("sample_2").to_list()))
-    if len(sample_names) < 2:
-        raise ValueError("At least two samples are required to build a similarity matrix.")
+    filtered_df = pl.concat([filtered_pairs, filtered_opposite], how="vertical")
 
     self_similarity = pl.DataFrame(
         {
@@ -118,18 +164,6 @@ def _prepare_similarity_matrix(
         on="sample_2",
         values="genome_pop_ani",
     ).select(["sample_1"] + sample_names).sort("sample_1")
-
-    exclude_samples = (
-        clustermap_data.null_count()
-        .transpose(include_header=True, header_name="column", column_names=["null_count"])
-        .filter(pl.col("null_count") > max_null_samples)
-        .get_column("column")
-        .to_list()
-    )
-    clustermap_data = clustermap_data.filter(~pl.col("sample_1").is_in(exclude_samples))
-    clustermap_data = clustermap_data.select(
-        [column for column in clustermap_data.columns if column not in exclude_samples]
-    )
 
     comparable_column_count = max(len(clustermap_data.columns) - 1, 1)
     null_fraction = clustermap_data.select(
@@ -874,4 +908,3 @@ def get_clustermap(
         loc="lower left",
     )
     return grid
-

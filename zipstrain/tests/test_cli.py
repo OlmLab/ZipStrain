@@ -1297,6 +1297,56 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["run_dir"] == tmp_path / "run"
     assert captured["reference_fasta_file"] == reference_fasta
     assert captured["profiling_contract_file"] is None
+    assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
+    assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
+    assert captured["min_read_ani"] is None
+    assert captured["read_inclusion"] == cli.pf.READ_INCLUSION_ALL_MAPPED
+
+
+def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    null_model = tmp_path / "null_model.parquet"
+    pl.DataFrame({"cov": list(range(10)), "max_error_count": [0 for _ in range(10)]}).write_parquet(null_model)
+
+    captured = {}
+
+    def _fake_lazy_run_profile(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table",
+            str(input_table),
+            "--stb-file",
+            str(tmp_path / "stb.tsv"),
+            "--null-model",
+            str(null_model),
+            "--bed-file",
+            str(tmp_path / "bed.bed"),
+            "--genome-length-file",
+            str(tmp_path / "genome_length.parquet"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--min-mapq",
+            "7",
+            "--min-baseq",
+            "21",
+            "--min-read-ani",
+            "0.97",
+            "--read-inclusion",
+            "proper-pairs",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["min_mapq"] == 7
+    assert captured["min_baseq"] == 21
+    assert captured["min_read_ani"] == 0.97
+    assert captured["read_inclusion"] == "proper-pairs"
 
 
 def test_profile_command_uses_default_versioned_apptainer_image(tmp_path, monkeypatch):
@@ -1615,7 +1665,59 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
         "null_model_hash": "modelhash",
         "stb_hash": "stbhash",
     }
-    assert captured["reference_fasta"] == str(reference_fasta)
+    assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
+    assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
+    assert captured["min_read_ani"] is None
+    assert captured["read_inclusion"] == cli.pf.READ_INCLUSION_ALL_MAPPED
+
+
+def test_profile_single_passes_custom_read_filters_to_profile_bam(tmp_path, monkeypatch):
+    bed_file = tmp_path / "genomes.bed"
+    bam_file = tmp_path / "sample.bam"
+    stb_file = tmp_path / "mapping.stb"
+    null_model = tmp_path / "null_model.parquet"
+    bed_file.write_text("chr1\t0\t10\n")
+    bam_file.write_text("")
+    stb_file.write_text("chr1\tgenome1\n")
+    pl.DataFrame({"cov": [0, 1], "max_error_count": [0, 0]}).write_parquet(null_model)
+
+    captured = {}
+
+    def _fake_profile_bam(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.pf, "profile_bam", _fake_profile_bam)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "profile-single",
+            "--bed-file",
+            str(bed_file),
+            "--bam-file",
+            str(bam_file),
+            "--stb-file",
+            str(stb_file),
+            "--null-model",
+            str(null_model),
+            "--min-mapq",
+            "9",
+            "--min-baseq",
+            "17",
+            "--min-read-ani",
+            "0.96",
+            "--read-inclusion",
+            "paired",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["min_mapq"] == 9
+    assert captured["min_baseq"] == 17
+    assert captured["min_read_ani"] == 0.96
+    assert captured["read_inclusion"] == "paired"
 
 
 def test_merge_stat_tables_command(tmp_path):

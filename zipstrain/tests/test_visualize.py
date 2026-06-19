@@ -36,6 +36,17 @@ def _sample_to_population() -> pl.LazyFrame:
     ).lazy()
 
 
+def _sparse_comparison_frame_with_dense_core() -> pl.LazyFrame:
+    rows = [
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_b", "genome_pop_ani": 99.9, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_c", "genome_pop_ani": 99.8, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_c", "genome_pop_ani": 99.7, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_d", "genome_pop_ani": 99.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_e", "genome_pop_ani": 99.0, "total_positions": 20000},
+    ]
+    return pl.DataFrame(rows).lazy()
+
+
 def test_get_silhouette_plot_returns_dense_trace():
     fig = vz.get_silhouette_plot(_comparison_frame(), genome="genome1", min_comp_len=10000)
 
@@ -93,3 +104,26 @@ def test_get_clustermap_returns_clustergrid():
         assert hasattr(grid, "ax_heatmap")
     finally:
         plt.close(grid.fig)
+
+
+def test_prepare_similarity_matrix_excludes_sparse_samples_before_matrix_build():
+    bundle = vz._prepare_similarity_matrix(
+        _sparse_comparison_frame_with_dense_core(),
+        genome="genome1",
+        min_comp_len=10000,
+        max_null_samples=2,
+    )
+
+    assert bundle.samples == ["sample_a", "sample_b", "sample_c"]
+    assert bundle.clustermap_data.columns == ["sample_1", "sample_a", "sample_b", "sample_c"]
+    assert bundle.similarity_matrix.shape == (3, 3)
+
+
+def test_prepare_similarity_matrix_requires_two_connected_samples_after_filtering():
+    with pytest.raises(ValueError, match="At least two sufficiently connected samples"):
+        vz._prepare_similarity_matrix(
+            _sparse_comparison_frame_with_dense_core(),
+            genome="genome1",
+            min_comp_len=10000,
+            max_null_samples=1,
+        )

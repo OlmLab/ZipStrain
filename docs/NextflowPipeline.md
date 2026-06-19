@@ -30,6 +30,7 @@ nextflow run zipstrain.nf \
 
 `conf.config` already defines resources for the current process set and includes example execution profiles.
 The `fiji` profile is configured for Slurm plus Singularity, which is useful on clusters that provide Singularity rather than Apptainer.
+Review the container paths or tags in your config before running on a new system.
 
 ## Key Pipeline Parameters
 
@@ -157,6 +158,11 @@ nextflow run zipstrain.nf \
 - `<output_dir>/*_genome_stats.parquet`
 - `<output_dir>/*_gene_stats.parquet`
 
+Because the current Nextflow profiling modes pass a reference FASTA into profiling, these outputs normally include the reference-aware fields:
+
+- profiles include `ref_base_bitmask`
+- gene/genome stat tables include `ref_ani`
+
 ## 3) End-to-End SRA to Profile (`mode=from_sra_to_profile`)
 
 ### Input Table
@@ -258,8 +264,8 @@ nextflow run zipstrain.nf \
 
 ## Important Notes
 
-- The old `--compare_memory_mode` and `--compare_chrom_batch_size` parameters are not part of the current `zipstrain.nf`.
-- For `--input_type profile_table`, the preferred columns are `sample_name` and `profile_location`.
-- Older `sample_names` and `mpileup_files` headers are still accepted for compatibility.
+- For `--input_type profile_table`, use `sample_name` and `profile_location`.
+- For `--input_type pair_table`, use `sample_name_1`, `sample_name_2`, `profile_location_1`, and `profile_location_2`.
 - `--compare_duckdb_memory_limit` is only relevant when `--compare_engine duckdb`.
+- The current Nextflow profiling workflow uses the default profiling read filters unless you edit `zipstrain.nf` directly.
 - For auto-built references, genome selection comes from the merged Sylph abundance table through `zipstrain utilities build-genome-db`.

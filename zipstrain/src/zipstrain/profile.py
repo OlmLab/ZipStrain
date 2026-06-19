@@ -14,6 +14,7 @@ import re
 import shutil
 import duckdb
 import tempfile
+import subprocess
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -22,6 +23,21 @@ PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 PROFILE_WRITE_BATCH_SIZE = 10_000
 MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
+PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
+PROFILE_MIN_MAPQ_DEFAULT = 0
+PROFILE_MIN_BASEQ_DEFAULT = 13
+READ_INCLUSION_ALL_MAPPED = "all-mapped"
+READ_INCLUSION_PAIRED = "paired"
+READ_INCLUSION_PROPER_PAIRS = "proper-pairs"
+PROFILE_READ_INCLUSION_CHOICES = (
+    READ_INCLUSION_PROPER_PAIRS,
+    READ_INCLUSION_PAIRED,
+    READ_INCLUSION_ALL_MAPPED,
+)
+SAM_FLAG_PAIRED = 0x1
+SAM_FLAG_PROPER_PAIR = 0x2
+SAM_FLAG_UNMAP = 0x4
+SAM_FLAG_MUNMAP = 0x8
 RAW_PROFILE_PARQUET_FIELDS = [
     ("chrom", pa.string()),
     ("pos", pa.int32()),
@@ -41,6 +57,172 @@ PROFILE_PARQUET_BASE_FIELDS = [
     ("T", pa.int32()),
 ]
 MPILEUP_INDEL_RE = re.compile(r"\^.|[\$]|[+-](\d+)")
+
+
+def _validate_profile_filter_settings(
+    *,
+    min_mapq: int,
+    min_baseq: int,
+    min_read_ani: float | None,
+    read_inclusion: str,
+) -> None:
+    if min_mapq < 0:
+        raise ValueError("min_mapq must be >= 0")
+    if min_baseq < 0:
+        raise ValueError("min_baseq must be >= 0")
+    if min_read_ani is not None and not (0.0 <= min_read_ani <= 1.0):
+        raise ValueError("min_read_ani must be between 0 and 1")
+    if read_inclusion not in PROFILE_READ_INCLUSION_CHOICES:
+        raise ValueError(
+            f"read_inclusion must be one of: {', '.join(PROFILE_READ_INCLUSION_CHOICES)}"
+        )
+
+
+def _aligned_query_bases_from_cigar(cigar: str) -> int:
+    if cigar == "*" or not cigar:
+        return 0
+    total = 0
+    for length_str, op in PROFILE_CIGAR_RE.findall(cigar):
+        if op in {"M", "I", "=", "X"}:
+            total += int(length_str)
+    return total
+
+
+def _extract_nm_from_optional_fields(optional_fields: list[str]) -> int | None:
+    for field in optional_fields:
+        if field.startswith("NM:i:"):
+            return int(field[5:])
+    return None
+
+
+def _sam_alignment_passes_profile_filters(
+    *,
+    flag: int,
+    mapq: int,
+    cigar: str,
+    optional_fields: list[str],
+    min_mapq: int,
+    min_read_ani: float | None,
+    read_inclusion: str,
+) -> bool:
+    if flag & SAM_FLAG_UNMAP:
+        return False
+
+    if read_inclusion == READ_INCLUSION_PAIRED:
+        if not (flag & SAM_FLAG_PAIRED):
+            return False
+        if flag & SAM_FLAG_MUNMAP:
+            return False
+    elif read_inclusion == READ_INCLUSION_PROPER_PAIRS:
+        if not (flag & SAM_FLAG_PAIRED):
+            return False
+        if not (flag & SAM_FLAG_PROPER_PAIR):
+            return False
+        if flag & SAM_FLAG_MUNMAP:
+            return False
+
+    if mapq < min_mapq:
+        return False
+
+    if min_read_ani is not None:
+        nm = _extract_nm_from_optional_fields(optional_fields)
+        if nm is None:
+            raise ValueError(
+                "min_read_ani filtering requires NM tags in the BAM alignments."
+            )
+        aligned_query_bases = _aligned_query_bases_from_cigar(cigar)
+        if aligned_query_bases <= 0:
+            return False
+        read_ani = 1.0 - (float(nm) / float(aligned_query_bases))
+        if read_ani < min_read_ani:
+            return False
+
+    return True
+
+
+def _profile_alignment_filters_require_prefilter(
+    *,
+    min_mapq: int,
+    min_read_ani: float | None,
+    read_inclusion: str,
+) -> bool:
+    return (
+        min_mapq != PROFILE_MIN_MAPQ_DEFAULT
+        or min_read_ani is not None
+        or read_inclusion != READ_INCLUSION_ALL_MAPPED
+    )
+
+
+def _filter_bam_for_profiling(
+    *,
+    input_bam: pathlib.Path,
+    output_bam: pathlib.Path,
+    min_mapq: int,
+    min_read_ani: float | None,
+    read_inclusion: str,
+) -> None:
+    _validate_profile_filter_settings(
+        min_mapq=min_mapq,
+        min_baseq=PROFILE_MIN_BASEQ_DEFAULT,
+        min_read_ani=min_read_ani,
+        read_inclusion=read_inclusion,
+    )
+    samtools_view_in = subprocess.Popen(
+        ["samtools", "view", "-h", str(input_bam)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    samtools_view_out = subprocess.Popen(
+        ["samtools", "view", "-b", "-o", str(output_bam), "-"],
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert samtools_view_in.stdout is not None
+    assert samtools_view_out.stdin is not None
+
+    try:
+        for line in samtools_view_in.stdout:
+            if line.startswith("@"):
+                samtools_view_out.stdin.write(line)
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            if _sam_alignment_passes_profile_filters(
+                flag=int(fields[1]),
+                mapq=int(fields[4]),
+                cigar=fields[5],
+                optional_fields=fields[11:],
+                min_mapq=min_mapq,
+                min_read_ani=min_read_ani,
+                read_inclusion=read_inclusion,
+            ):
+                samtools_view_out.stdin.write(line)
+    finally:
+        samtools_view_in.stdout.close()
+        samtools_view_out.stdin.close()
+
+    in_stderr = samtools_view_in.stderr.read() if samtools_view_in.stderr is not None else ""
+    out_stderr = samtools_view_out.stderr.read() if samtools_view_out.stderr is not None else ""
+    in_rc = samtools_view_in.wait()
+    out_rc = samtools_view_out.wait()
+    if in_rc != 0:
+        raise RuntimeError(f"samtools view failed while reading BAM: {in_stderr.strip()}")
+    if out_rc != 0:
+        raise RuntimeError(f"samtools view failed while writing filtered BAM: {out_stderr.strip()}")
+
+    index_proc = subprocess.run(
+        ["samtools", "index", str(output_bam)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if index_proc.returncode != 0:
+        raise RuntimeError(
+            f"samtools index failed for filtered BAM: {index_proc.stderr.strip()}"
+        )
 
 
 def raw_profile_parquet_schema(include_reference_base: bool = True) -> pa.Schema:
@@ -374,6 +556,8 @@ async def _stream_profile_mpileup_chunk_to_parquet(
     reference_fasta: pathlib.Path | None,
     output_parquet: pathlib.Path,
     batch_size: int = PROFILE_WRITE_BATCH_SIZE,
+    min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
+    min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
 ) -> None:
     """Stream one mpileup chunk into a raw counts parquet file."""
     include_reference_base = reference_fasta is not None
@@ -381,6 +565,10 @@ async def _stream_profile_mpileup_chunk_to_parquet(
         "samtools",
         "mpileup",
         "-A",
+        "-q",
+        str(min_mapq),
+        "-Q",
+        str(min_baseq),
     ]
     if reference_fasta is not None:
         cmd.extend(["-f", str(reference_fasta.absolute())])
@@ -795,6 +983,8 @@ async def _profile_chunk_task(
     null_model: pl.LazyFrame,
     output_dir:pathlib.Path,
     chunk_id:int,
+    min_mapq: int,
+    min_baseq: int,
 )->None:
     include_reference_base = reference_fasta is not None
     raw_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.parquet"
@@ -807,6 +997,8 @@ async def _profile_chunk_task(
         bam_file=bam_file,
         reference_fasta=reference_fasta,
         output_parquet=raw_chunk_path,
+        min_mapq=min_mapq,
+        min_baseq=min_baseq,
     )
     raw_for_processing = raw_chunk_path
     if not _parquet_rows_are_coordinate_sorted(raw_chunk_path):
@@ -856,6 +1048,8 @@ async def _run_profile_chunk_with_semaphore(
     null_model: pl.LazyFrame,
     output_dir: pathlib.Path,
     chunk_id: int,
+    min_mapq: int,
+    min_baseq: int,
 ) -> None:
     """Bound chunk-level profiling concurrency."""
     async with semaphore:
@@ -868,6 +1062,8 @@ async def _run_profile_chunk_with_semaphore(
             null_model=null_model,
             output_dir=output_dir,
             chunk_id=chunk_id,
+            min_mapq=min_mapq,
+            min_baseq=min_baseq,
         )
 
 async def profile_bam_in_chunks(
@@ -881,6 +1077,10 @@ async def profile_bam_in_chunks(
     num_chunks:int=24,
     max_concurrency:int=4,
     profile_contract: Optional[dict[str, str]] = None,
+    min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
+    min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
+    min_read_ani: float | None = None,
+    read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -902,9 +1102,31 @@ async def profile_bam_in_chunks(
     reference_fasta = pathlib.Path(reference_fasta) if reference_fasta is not None else None
     include_reference_base = reference_fasta is not None
     gene_range_table_path = normalize_gene_range_table_path(gene_range_table)
+    _validate_profile_filter_settings(
+        min_mapq=min_mapq,
+        min_baseq=min_baseq,
+        min_read_ani=min_read_ani,
+        read_inclusion=read_inclusion,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir/"tmp").mkdir(exist_ok=True)
+    filtered_bam_file: pathlib.Path | None = None
+    effective_bam_file = bam_file
+    if _profile_alignment_filters_require_prefilter(
+        min_mapq=min_mapq,
+        min_read_ani=min_read_ani,
+        read_inclusion=read_inclusion,
+    ):
+        filtered_bam_file = output_dir / "tmp" / f"{bam_file.stem}.filtered.bam"
+        _filter_bam_for_profiling(
+            input_bam=bam_file,
+            output_bam=filtered_bam_file,
+            min_mapq=min_mapq,
+            min_read_ani=min_read_ani,
+            read_inclusion=read_inclusion,
+        )
+        effective_bam_file = filtered_bam_file
     bed_lf=pl.scan_csv(bed_file,has_header=False,separator="\t")
     if gene_range_table_path is None:
         gene_range_lf = empty_gene_range_table()
@@ -931,16 +1153,18 @@ async def profile_bam_in_chunks(
         tasks.append(_run_profile_chunk_with_semaphore(
             semaphore,
             bed_file=bed_chunk_file,
-            bam_file=bam_file,
+            bam_file=effective_bam_file,
             reference_fasta=reference_fasta,
             scaffold_to_genome=stb,
             gene_range=gene_range_lf,
             null_model=null_model,
             output_dir=output_dir/"tmp",
             chunk_id=chunk_id,
+            min_mapq=min_mapq,
+            min_baseq=min_baseq,
         ))
     await asyncio.gather(*tasks) 
-    pfs=[(output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet", output_dir/"tmp"/f"{bam_file.stem}_read_locs_{chunk_id}.parquet" ) for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{bam_file.stem}_{chunk_id}.parquet").exists()]
+    pfs=[(output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.parquet", output_dir/"tmp"/f"{effective_bam_file.stem}_read_locs_{chunk_id}.parquet" ) for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.parquet").exists()]
 
     mpile_container: list[pl.LazyFrame] = []
     read_loc_pfs: list[pl.LazyFrame] = []
@@ -1007,6 +1231,10 @@ def profile_bam(
     num_chunks:int=24,
     max_concurrency:int=4,
     profile_contract: Optional[dict[str, str]] = None,
+    min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
+    min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
+    min_read_ani: float | None = None,
+    read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1032,4 +1260,8 @@ def profile_bam(
         num_chunks=num_chunks,
         max_concurrency=max_concurrency,
         profile_contract=profile_contract,
+        min_mapq=min_mapq,
+        min_baseq=min_baseq,
+        min_read_ani=min_read_ani,
+        read_inclusion=read_inclusion,
     ))
