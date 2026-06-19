@@ -467,9 +467,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#convert-a-legacy-matrix-duckdb" class="md-nav__link">
+  <a href="#convert-a-duckdb-matrix-database" class="md-nav__link">
     <span class="md-ellipsis">
-      Convert a Legacy Matrix DuckDB
+      Convert a DuckDB Matrix Database
     </span>
   </a>
   
@@ -1076,6 +1076,24 @@
   <a href="#remaining-pairs-table" class="md-nav__link">
     <span class="md-ellipsis">
       Remaining-Pairs Table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix_dbh5" class="md-nav__link">
+    <span class="md-ellipsis">
+      matrix_db.h5
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix_compareduckdb" class="md-nav__link">
+    <span class="md-ellipsis">
+      matrix_compare.duckdb
     </span>
   </a>
   
@@ -1484,9 +1502,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#convert-a-legacy-matrix-duckdb" class="md-nav__link">
+  <a href="#convert-a-duckdb-matrix-database" class="md-nav__link">
     <span class="md-ellipsis">
-      Convert a Legacy Matrix DuckDB
+      Convert a DuckDB Matrix Database
     </span>
   </a>
   
@@ -2093,6 +2111,24 @@
   <a href="#remaining-pairs-table" class="md-nav__link">
     <span class="md-ellipsis">
       Remaining-Pairs Table
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix_dbh5" class="md-nav__link">
+    <span class="md-ellipsis">
+      matrix_db.h5
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matrix_compareduckdb" class="md-nav__link">
+    <span class="md-ellipsis">
+      matrix_compare.duckdb
     </span>
   </a>
   
@@ -2520,6 +2556,8 @@ It is the better fit when you have many samples and want repeated comparison wor
 <p>Expected input:</p>
 <ul>
 <li>a directory of standard ZipStrain profile parquets</li>
+<li>a BED file defining scaffold coordinate extents for the matrix contract</li>
+<li>an STB file defining scaffold-to-genome membership for the matrix contract</li>
 <li>each profile parquet should contain:</li>
 </ul>
 <pre><code class="language-text">chrom | genome | gene | pos | A | C | G | T
@@ -2527,6 +2565,8 @@ It is the better fit when you have many samples and want repeated comparison wor
 <pre><code class="language-bash">zipstrain utilities build-matrix-db \
   --profile-dir out_profile \
   --output-file matrix_db.h5 \
+  --bed-file profiling_assets/genomes_bed_file.bed \
+  --stb-file reference_genomes.stb \
   --gene-range-table profiling_assets/gene_range_table.tsv \
   --memory-limit-gb 16
 </code></pre>
@@ -2534,6 +2574,7 @@ It is the better fit when you have many samples and want repeated comparison wor
 <ul>
 <li>scans all standard profile parquets in <code>out_profile</code></li>
 <li>builds one HDF5-backed matrix store</li>
+<li>uses the BED+STB pair as the explicit contract for scaffold extents and genome membership</li>
 <li>keeps one whole-genome matrix per sample per genome</li>
 <li>stores gene coordinate metadata if <code>--gene-range-table</code> is provided</li>
 </ul>
@@ -2543,6 +2584,7 @@ It is the better fit when you have many samples and want repeated comparison wor
 <li>dense storage is the default; add <code>--sparse</code> if you want sparse HDF5 storage</li>
 <li>this store is appendable on the sample axis</li>
 <li>if gene ranges are included here, matrix compare can also compute gene ANI later</li>
+<li>the matrix build is not just reading profiles; it is also locking in the BED+STB contract you provide here</li>
 </ul>
 <p>This step does not yet produce comparison result tables.
 Its output is the reusable matrix store itself: <code>matrix_db.h5</code>.</p>
@@ -2553,14 +2595,16 @@ Its output is the reusable matrix store itself: <code>matrix_db.h5</code>.</p>
   --matrix-db-file matrix_db.h5 \
   --memory-limit-gb 16
 </code></pre>
-<p>This validates that the new profiles match the stored genome/scaffold contract and appends only new sample rows.</p>
-<h3 id="convert-a-legacy-matrix-duckdb">Convert a Legacy Matrix DuckDB</h3>
-<p>If you already have an old matrix DuckDB from a previous workflow:</p>
+<p>This validates that the new profiles match the stored genome/scaffold contract and appends only new sample rows.
+If a genome is allowed by the stored contract but does not yet have materialized matrix storage, append creates it on demand.
+If a genome falls outside the stored contract, it is ignored and counted in the append summary.</p>
+<h3 id="convert-a-duckdb-matrix-database">Convert a DuckDB Matrix Database</h3>
+<p>If you already have a DuckDB-based matrix database from an earlier workflow:</p>
 <pre><code class="language-bash">zipstrain utilities matrix-db-to-hdf5 \
-  --matrix-db-file legacy_matrix.duckdb \
+  --matrix-db-file existing_matrix.duckdb \
   --output-file matrix_db.h5
 </code></pre>
-<p>This is only needed for older matrix builds. New matrix workflows should start directly from <code>build-matrix-db</code>.</p>
+<p>This is only needed when your matrix data already exists in DuckDB format. New matrix workflows should start directly from <code>build-matrix-db</code>.</p>
 <h3 id="run-matrix-compare">Run Matrix Compare</h3>
 <p>Run pairwise sample comparison from the matrix store.
 If you want to focus on one genome, add <code>--genome &lt;genome_id&gt;</code>.
@@ -2947,12 +2991,22 @@ outputs/profile_run/sample2_profile.parquet
 outputs/profile_run/sample3_profile.parquet
 </code></pre>
 <h3 id="2-build-the-matrix-store">2. Build the matrix store</h3>
+<p>This step needs more than just the profile directory. The matrix store is built against an explicit reference-side contract, so gather these files first:</p>
+<ul>
+<li><code>outputs/profile_run/</code> with the standard profile parquets</li>
+<li><code>outputs/profiling_assets/genomes_bed_file.bed</code></li>
+<li><code>reference/reference_genomes.stb</code></li>
+<li>optionally <code>outputs/profiling_assets/gene_range_table.tsv</code> if you want gene ANI from the matrix workflow</li>
+</ul>
 <pre><code class="language-bash">zipstrain utilities build-matrix-db \
   --profile-dir outputs/profile_run \
   --output-file outputs/matrix_db.h5 \
+  --bed-file outputs/profiling_assets/genomes_bed_file.bed \
+  --stb-file reference/reference_genomes.stb \
   --gene-range-table outputs/profiling_assets/gene_range_table.tsv \
   --memory-limit-gb 16
 </code></pre>
+<p>If you want sparse HDF5 storage instead of dense storage, add <code>--sparse</code>.</p>
 <h3 id="3-run-matrix-compare">3. Run matrix compare</h3>
 <pre><code class="language-bash">zipstrain utilities matrix-compare \
   --matrix-db-file outputs/matrix_db.h5 \
@@ -2990,6 +3044,12 @@ outputs/profile_run/sample3_profile.parquet
   --memory-limit-gb 16
 </code></pre>
 <p>Then rerun <code>matrix-compare</code> against the same compare DB. Already completed sample pairs remain marked complete, and only unfinished work is processed.</p>
+<p>The append uses the matrix store's existing BED+STB contract. That means:</p>
+<ul>
+<li>new samples are appended normally</li>
+<li>compatible genomes can be materialized if they were part of the contract but not yet written into the store</li>
+<li>genomes outside the contract are ignored and reported in the append summary</li>
+</ul>
 <h3 id="result_2">Result</h3>
 <p>This route turns standard per-sample profile parquets into a reusable comparison substrate. It is the best example for large or growing cohorts where repeated pair-heavy work on one genome or a small set of genomes matters more than one-time matrix construction.</p>
 <p>The relevant result tables can then be extracted with:</p>
@@ -3478,6 +3538,42 @@ done
   --comp-db-file current_compare.parquet \
   --output-file remaining_pairs.csv
 </code></pre>
+<h3 id="matrix_dbh5"><code>matrix_db.h5</code></h3>
+<p>What it is:</p>
+<ul>
+<li>the HDF5-backed matrix store used by the matrix workflow</li>
+</ul>
+<p>What went into building it:</p>
+<ul>
+<li>a directory of standard profile parquets</li>
+<li>a BED file defining scaffold extents</li>
+<li>an STB file defining scaffold-to-genome membership</li>
+<li>optionally a <code>gene_range_table.tsv</code> file for gene ANI support</li>
+</ul>
+<p>Important:</p>
+<ul>
+<li>this is a binary store, not a flat table</li>
+<li>it is the direct output of <code>zipstrain utilities build-matrix-db</code></li>
+<li>it is the direct input for <code>zipstrain utilities append-matrix-db</code> and <code>zipstrain utilities matrix-compare</code></li>
+<li>dense storage is the default; <code>--sparse</code> changes the HDF5 storage layout but not the matrix-compare command interface</li>
+</ul>
+<h3 id="matrix_compareduckdb"><code>matrix_compare.duckdb</code></h3>
+<p>What it is:</p>
+<ul>
+<li>the resumable DuckDB result database written by <code>zipstrain utilities matrix-compare</code></li>
+</ul>
+<p>What it contains:</p>
+<ul>
+<li>genome-level compare rows</li>
+<li>optionally gene-level compare rows</li>
+<li>completion bookkeeping so reruns process only unfinished sample-pair/genome work</li>
+</ul>
+<p>Important:</p>
+<ul>
+<li>this is not usually the final downstream table</li>
+<li>export parquet tables from it with <code>zipstrain utilities matrix-compare-export</code></li>
+<li>rerunning <code>matrix-compare</code> against the same file continues from its recorded completion state</li>
+</ul>
 <h3 id="genome-comparison-parquet">Genome Comparison Parquet</h3>
 <p>What it is:</p>
 <ul>

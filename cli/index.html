@@ -1380,7 +1380,7 @@ does not change the main workflow commands.</p>
 </tr>
 <tr>
 <td><code>zipstrain utilities matrix-db-to-hdf5</code></td>
-<td>Convert a legacy matrix DuckDB into the current matrix-store format</td>
+<td>Convert a DuckDB matrix database into the current matrix-store format</td>
 </tr>
 <tr>
 <td><code>zipstrain utilities matrix-compare</code></td>
@@ -1434,12 +1434,15 @@ does not change the main workflow commands.</p>
   --profile-dir profiles \
   --output-file matrix_db.h5 \
   --bed-file genomes_bed_file.bed \
+  --stb-file reference.stb \
+  --gene-range-table gene_range_table.tsv \
   --memory-limit-gb 16
 </code></pre>
 <p>What it does:</p>
 <ul>
 <li>scans a directory of standard ZipStrain profile parquets</li>
 <li>builds one matrix store directly from those profiles</li>
+<li>uses the BED and STB files as the explicit scaffold/genome contract for the store</li>
 <li>stores each genome as one sample-major dense dataset with shape <code>samples x positions x 4</code></li>
 <li>positions with total coverage below <code>5</code> are zeroed during matrix build</li>
 <li>can optionally store scaffold-relative gene ranges for later gene ANI</li>
@@ -1450,19 +1453,23 @@ does not change the main workflow commands.</p>
 <li><code>-p, --profile-dir</code> (required)</li>
 <li><code>-o, --output-file</code> (required)</li>
 <li><code>-g, --genome</code> optional genome scope (default: <code>all</code>)</li>
-<li><code>-b, --bed-file</code> optional BED file to define scaffold extents instead of scanning profile min/max positions</li>
+<li><code>-b, --bed-file</code> (required) BED file defining scaffold coordinate extents for the matrix contract</li>
+<li><code>-s, --stb-file</code> (required) STB file defining scaffold-to-genome membership for the matrix contract</li>
+<li><code>--gene-range-table</code> optional headerless TSV of <code>gene, scaffold, start, end</code> for gene ANI support</li>
 <li><code>--count-dtype</code> stored matrix dtype (<code>uint16|uint32</code>, default: <code>uint16</code>)</li>
 <li><code>--memory-limit-gb</code> approximate maximum memory budget for the entire build process (default: <code>16.0</code>)</li>
 <li><code>--export-batch-mb</code> approximate matrix-store sample-axis chunk target size in MiB (default: <code>128.0</code>)</li>
+<li><code>--sparse</code> store genome matrices sparsely in HDF5</li>
 </ul>
 <p>Notes:</p>
 <ul>
 <li>the output matrix store is intended for <code>zipstrain utilities matrix-compare</code></li>
 <li>new matrix stores are append-friendly on the sample axis</li>
+<li>every input profile is interpreted against the BED+STB contract you provide here</li>
 <li>install matrix support with <code>pip install "zipstrain[matrix]"</code></li>
 <li>the CLI shows a progress bar in an interactive terminal</li>
 <li>in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files</li>
-<li>if <code>--bed-file</code> is provided, scaffold spans come from grouped BED intervals rather than inferred profile min/max positions</li>
+<li>if <code>--gene-range-table</code> is omitted, matrix compare can still compute genome ANI and IBS, but not gene ANI</li>
 </ul>
 <h3 id="zipstrain-utilities-append-matrix-db"><code>zipstrain utilities append-matrix-db</code></h3>
 <pre><code class="language-bash">zipstrain utilities append-matrix-db \
@@ -1475,6 +1482,8 @@ does not change the main workflow commands.</p>
 <li>scans a directory of new standard ZipStrain profile parquets</li>
 <li>validates that they match the existing matrix-store contract</li>
 <li>appends new sample rows and whole-genome matrices into the existing matrix store</li>
+<li>materializes newly encountered genomes when they are still compatible with the stored BED+STB contract</li>
+<li>ignores genomes that fall outside the stored contract and reports the ignored count</li>
 </ul>
 <p>Important options:</p>
 <ul>
@@ -1483,11 +1492,12 @@ does not change the main workflow commands.</p>
 <li><code>--memory-limit-gb</code> approximate maximum memory budget for the append process (default: <code>16.0</code>)</li>
 <li><code>--export-batch-mb</code> approximate matrix-store sample-axis chunk target size in MiB used when rewriting an older fixed-size store (default: <code>128.0</code>)</li>
 </ul>
-<p>Append requirements:</p>
+<p>Append behavior:</p>
 <ul>
 <li>sample names must be new</li>
-<li>genomes and scaffolds must already exist in the matrix store</li>
-<li>profile positions must stay within the stored scaffold coordinate ranges</li>
+<li>known scaffolds and coordinate ranges must stay within the stored contract</li>
+<li>compatible genomes can be appended even if no matrix dataset existed for them yet</li>
+<li>genomes outside the stored contract are skipped and counted in the summary output</li>
 </ul>
 <h3 id="zipstrain-utilities-matrix-db-to-hdf5"><code>zipstrain utilities matrix-db-to-hdf5</code></h3>
 <pre><code class="language-bash">zipstrain utilities matrix-db-to-hdf5 \
@@ -1496,8 +1506,9 @@ does not change the main workflow commands.</p>
 </code></pre>
 <p>What it does:</p>
 <ul>
-<li>converts an existing legacy matrix DuckDB into the current matrix-store layout</li>
+<li>converts an existing DuckDB matrix database into the current matrix-store layout</li>
 <li>preserves sample, genome, and scaffold metadata</li>
+<li>is only needed when you already have a DuckDB-based matrix database from an older workflow</li>
 </ul>
 <p>Important options:</p>
 <ul>
