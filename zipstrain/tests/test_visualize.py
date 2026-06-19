@@ -3,6 +3,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import numpy as np
 import polars as pl
 import pytest
 
@@ -55,6 +56,20 @@ def test_get_silhouette_plot_returns_dense_trace():
     assert len(fig.data[0].y) == 500
     assert min(fig.data[0].x) >= 99.0
     assert max(fig.data[0].x) <= 100.0
+
+
+def test_get_silhouette_plot_logs_progress_when_requested(capsys):
+    fig = vz.get_silhouette_plot(
+        _comparison_frame(),
+        genome="genome1",
+        min_comp_len=10000,
+        log_progress=True,
+    )
+
+    assert len(fig.data) == 1
+    captured = capsys.readouterr()
+    assert "get_silhouette_plot progress: 0/500" in captured.err
+    assert "get_silhouette_plot progress: 500/500" in captured.err
 
 
 def test_get_cluster_assignments_splits_two_clusters():
@@ -149,3 +164,52 @@ def test_prepare_similarity_matrix_builds_numpy_matrix_with_imputation_and_null_
     assert null_fraction["sample_a"] == pytest.approx(0.0)
     assert null_fraction["sample_d"] == pytest.approx(3 / 5)
     assert null_fraction["sample_e"] == pytest.approx(3 / 5)
+
+
+def test_silhouette_score_precomputed_uses_sklearn_when_available(monkeypatch):
+    calls = {}
+
+    def _fake_sklearn(distance_matrix, labels, metric):
+        calls["metric"] = metric
+        calls["shape"] = distance_matrix.shape
+        calls["labels"] = tuple(labels.tolist())
+        return 0.321
+
+    monkeypatch.setattr(vz, "_sklearn_silhouette_score", _fake_sklearn)
+
+    distance_matrix = np.array(
+        [
+            [0.0, 0.1, 0.5],
+            [0.1, 0.0, 0.4],
+            [0.5, 0.4, 0.0],
+        ]
+    )
+    labels = np.array([1, 1, 2])
+
+    score = vz._silhouette_score_precomputed(distance_matrix, labels)
+
+    assert score == pytest.approx(0.321)
+    assert calls == {
+        "metric": "precomputed",
+        "shape": (3, 3),
+        "labels": (1, 1, 2),
+    }
+
+
+def test_silhouette_score_precomputed_falls_back_to_manual(monkeypatch):
+    monkeypatch.setattr(vz, "_sklearn_silhouette_score", None)
+
+    distance_matrix = np.array(
+        [
+            [0.0, 0.1, 0.5, 0.6],
+            [0.1, 0.0, 0.4, 0.5],
+            [0.5, 0.4, 0.0, 0.1],
+            [0.6, 0.5, 0.1, 0.0],
+        ]
+    )
+    labels = np.array([1, 1, 2, 2])
+
+    score = vz._silhouette_score_precomputed(distance_matrix, labels)
+    manual_score = vz._silhouette_score_precomputed_manual(distance_matrix, labels)
+
+    assert score == pytest.approx(manual_score)

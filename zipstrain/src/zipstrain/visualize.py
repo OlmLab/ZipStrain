@@ -4,6 +4,7 @@ This module provides statistical analysis and visualization functions for profil
 """
 
 from dataclasses import dataclass
+import sys
 import polars as pl
 import plotly.graph_objects as go
 import plotly.express as px
@@ -20,6 +21,11 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
 from scipy.spatial.distance import squareform
 
+try:
+    from sklearn.metrics import silhouette_score as _sklearn_silhouette_score
+except ImportError:
+    _sklearn_silhouette_score = None
+
 
 @dataclass(frozen=True)
 class _SimilarityMatrixBundle:
@@ -33,7 +39,7 @@ class _SimilarityMatrixBundle:
     linkage_matrix: np.ndarray
 
 
-def _silhouette_score_precomputed(distance_matrix: np.ndarray, labels: np.ndarray) -> float:
+def _silhouette_score_precomputed_manual(distance_matrix: np.ndarray, labels: np.ndarray) -> float:
     """Compute an average silhouette score from a precomputed distance matrix."""
     unique_labels = np.unique(labels)
     sample_count = distance_matrix.shape[0]
@@ -58,6 +64,31 @@ def _silhouette_score_precomputed(distance_matrix: np.ndarray, labels: np.ndarra
         denom = max(a_i, b_i)
         scores.append(0.0 if denom == 0 else (b_i - a_i) / denom)
     return float(np.mean(scores))
+
+
+def _silhouette_score_precomputed(distance_matrix: np.ndarray, labels: np.ndarray) -> float:
+    """Compute an average silhouette score from a precomputed distance matrix."""
+    unique_labels = np.unique(labels)
+    sample_count = distance_matrix.shape[0]
+    if sample_count < 2 or len(unique_labels) < 2 or len(unique_labels) >= sample_count:
+        return float("nan")
+    if _sklearn_silhouette_score is not None:
+        return float(_sklearn_silhouette_score(distance_matrix, labels, metric="precomputed"))
+    return _silhouette_score_precomputed_manual(distance_matrix, labels)
+
+
+def _emit_silhouette_progress(
+    current: int,
+    total: int,
+    ani_threshold: float,
+) -> None:
+    """Emit a lightweight stderr progress update for silhouette sweeps."""
+    percent = (100.0 * current) / max(total, 1)
+    sys.stderr.write(
+        f"get_silhouette_plot progress: {current}/{total} "
+        f"({percent:.1f}%) threshold={ani_threshold:.3f}\n"
+    )
+    sys.stderr.flush()
 
 
 def _prepare_similarity_matrix(
@@ -710,6 +741,7 @@ def get_silhouette_plot(
     min_comp_len: int = 100000,
     impute_method: float = 97.0,
     max_null_samples: int = 500,
+    log_progress: bool = False,
 ):
     """Plot silhouette score as a function of ANI threshold for one genome."""
     bundle = _prepare_similarity_matrix(
@@ -721,9 +753,28 @@ def get_silhouette_plot(
     )
     distances = np.linspace(0.01, 0.0, 500)
     scores: list[float] = []
-    for distance_threshold in distances:
+    total_thresholds = len(distances)
+    if log_progress:
+        _emit_silhouette_progress(0, total_thresholds, 100 * (1 - distances[0]))
+    for idx, distance_threshold in enumerate(distances, start=1):
         labels = fcluster(bundle.linkage_matrix, t=distance_threshold, criterion="distance")
-        scores.append(_silhouette_score_precomputed(bundle.distance_matrix, labels))
+        if len(np.unique(labels)) > 1:
+            if _sklearn_silhouette_score is not None:
+                scores.append(
+                    float(
+                        _sklearn_silhouette_score(
+                            bundle.distance_matrix,
+                            labels,
+                            metric="precomputed",
+                        )
+                    )
+                )
+            else:
+                scores.append(_silhouette_score_precomputed_manual(bundle.distance_matrix, labels))
+        else:
+            scores.append(float("nan"))
+        if log_progress and (idx == total_thresholds or idx == 1 or idx % 25 == 0):
+            _emit_silhouette_progress(idx, total_thresholds, 100 * (1 - distance_threshold))
 
     ani_thresholds = 100 * (1 - distances)
     fig = px.line(
