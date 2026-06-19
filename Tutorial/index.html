@@ -2198,7 +2198,7 @@
 <li>The <strong>standard</strong> method, which compares profile tables directly with table operations</li>
 <li>The <strong>matrix</strong> method, which first builds a reusable whole-genome matrix store and then compares from that store</li>
 </ol>
-<p>The most important difference is not “old versus new.” It is when each method is a better fit.</p>
+<p>The most important difference is which workload each method fits best.</p>
 <ul>
 <li>The <strong>standard</strong> method is easier to start with, more general, and usually the better choice when you want to compare many genomes at the same time. Its parallel work is naturally spread across genomes.</li>
 <li>The <strong>matrix</strong> method is worth the extra setup when you expect repeated comparison runs across many samples but only need one genome or a small set of genomes at a time. Its parallel work is naturally spread across sample pairs once the target genome matrices are loaded.</li>
@@ -2434,6 +2434,14 @@ sample3,/path/to/sample3.bam
 <li>if you provide it, profiles contain <code>ref_base_bitmask</code> and stat tables contain <code>ref_ani</code></li>
 <li>if you omit it, profiling still works, but those reference-aware fields are omitted</li>
 <li><code>prepare_profiling</code> still requires a reference FASTA because it builds the BED, genome lengths, and profiling contract assets</li>
+<li><code>--profiling-contract</code> is optional but recommended when you want reference/gene/null-model/STB hashes stamped into each profile parquet metadata</li>
+<li>optional read/base filters are available directly on profiling:</li>
+<li><code>--min-mapq</code> default <code>0</code></li>
+<li><code>--min-baseq</code> default <code>13</code></li>
+<li><code>--min-read-ani</code> optional</li>
+<li><code>--read-inclusion proper-pairs|paired|all-mapped</code></li>
+<li>the <code>--min-mapq 0</code> and <code>--min-baseq 13</code> defaults match samtools mpileup defaults</li>
+<li><code>--min-read-ani</code> currently uses the BAM <code>NM</code> tag together with aligned query span, so BAM alignments need <code>NM</code> tags if you enable it</li>
 </ul>
 <h3 id="nextflow-profile-workflow">Nextflow Profile Workflow</h3>
 <pre><code class="language-bash">nextflow run zipstrain.nf \
@@ -2458,6 +2466,7 @@ sample3,/path/to/sample3.bam
 <li>profiles include <code>ref_base_bitmask</code></li>
 <li>gene/genome stat tables include <code>ref_ani</code></li>
 </ul>
+<p>At the moment, the bundled Nextflow profile workflow uses the default profiling read filters unless you edit <code>zipstrain.nf</code> directly.</p>
 <h2 id="step-5a-standard-comparison-route">Step 5A: Standard Comparison Route</h2>
 <p>This route compares profile parquets directly.
 It is the better fit when one run needs to evaluate many genomes at once, because the work parallelizes efficiently across genomes.</p>
@@ -2783,8 +2792,9 @@ Those parquets contain per-position nucleotide counts and annotation columns:</p
 <h2 id="current-limitations-and-practical-notes">Current Limitations and Practical Notes</h2>
 <ul>
 <li>The matrix route is currently a CLI workflow, not a Nextflow mode.</li>
-<li>HDF5 matrix input currently requires a torch backend.</li>
+<li>Matrix compare supports both <code>numpy</code> and torch backends. Use torch only when you want the torch CPU/GPU path.</li>
 <li>Gene ANI from matrix compare requires that the matrix store was built with <code>--gene-range-table</code>.</li>
+<li>Sparse HDF5 storage reduces matrix-store size on disk, but matrix compare currently materializes sparse storage back into dense arrays when loading for comparison.</li>
 <li>The matrix route does not replace the standard <code>zipstrain compare</code> workflow everywhere yet; both routes remain supported.</li>
 </ul>
 <h2 id="recommended-starting-point">Recommended Starting Point</h2>
@@ -3556,6 +3566,7 @@ done
 <li>it is the direct output of <code>zipstrain utilities build-matrix-db</code></li>
 <li>it is the direct input for <code>zipstrain utilities append-matrix-db</code> and <code>zipstrain utilities matrix-compare</code></li>
 <li>dense storage is the default; <code>--sparse</code> changes the HDF5 storage layout but not the matrix-compare command interface</li>
+<li>with current matrix compare, sparse HDF5 storage is mainly a disk-space optimization because the data are materialized back to dense arrays during compare loading</li>
 </ul>
 <h3 id="matrix_compareduckdb"><code>matrix_compare.duckdb</code></h3>
 <p>What it is:</p>

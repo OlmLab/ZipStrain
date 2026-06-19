@@ -945,7 +945,8 @@
   -resume
 </code></pre>
 <p><code>conf.config</code> already defines resources for the current process set and includes example execution profiles.
-The <code>fiji</code> profile is configured for Slurm plus Singularity, which is useful on clusters that provide Singularity rather than Apptainer.</p>
+The <code>fiji</code> profile is configured for Slurm plus Singularity, which is useful on clusters that provide Singularity rather than Apptainer.
+Review the container paths or tags in your config before running on a new system.</p>
 <h2 id="key-pipeline-parameters">Key Pipeline Parameters</h2>
 <ul>
 <li><code>--mode</code>: <code>map_reads</code>, <code>profile</code>, <code>from_sra_to_profile</code>, <code>compare_genomes</code>, <code>compare_genes</code></li>
@@ -1047,6 +1048,11 @@ S2,/data/S2.bam
 <li><code>&lt;output_dir&gt;/*_genome_stats.parquet</code></li>
 <li><code>&lt;output_dir&gt;/*_gene_stats.parquet</code></li>
 </ul>
+<p>Because the current Nextflow profiling modes pass a reference FASTA into profiling, these outputs normally include the reference-aware fields:</p>
+<ul>
+<li>profiles include <code>ref_base_bitmask</code></li>
+<li>gene/genome stat tables include <code>ref_ani</code></li>
+</ul>
 <h2 id="3-end-to-end-sra-to-profile-modefrom_sra_to_profile">3) End-to-End SRA to Profile (<code>mode=from_sra_to_profile</code>)</h2>
 <h3 id="input-table_1">Input Table</h3>
 <pre><code class="language-csv">Run
@@ -1126,10 +1132,10 @@ S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
 </ul>
 <h2 id="important-notes">Important Notes</h2>
 <ul>
-<li>The old <code>--compare_memory_mode</code> and <code>--compare_chrom_batch_size</code> parameters are not part of the current <code>zipstrain.nf</code>.</li>
-<li>For <code>--input_type profile_table</code>, the preferred columns are <code>sample_name</code> and <code>profile_location</code>.</li>
-<li>Older <code>sample_names</code> and <code>mpileup_files</code> headers are still accepted for compatibility.</li>
+<li>For <code>--input_type profile_table</code>, use <code>sample_name</code> and <code>profile_location</code>.</li>
+<li>For <code>--input_type pair_table</code>, use <code>sample_name_1</code>, <code>sample_name_2</code>, <code>profile_location_1</code>, and <code>profile_location_2</code>.</li>
 <li><code>--compare_duckdb_memory_limit</code> is only relevant when <code>--compare_engine duckdb</code>.</li>
+<li>The current Nextflow profiling workflow uses the default profiling read filters unless you edit <code>zipstrain.nf</code> directly.</li>
 <li>For auto-built references, genome selection comes from the merged Sylph abundance table through <code>zipstrain utilities build-genome-db</code>.</li>
 </ul>
 

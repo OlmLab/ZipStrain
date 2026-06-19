@@ -535,7 +535,7 @@
 <p>This installs all Python dependencies <strong>except samtools</strong>. Install samtools separately from <a href="http://www.htslib.org/download/">htslib.org</a> or via your package manager (e.g., <code>brew install samtools</code>, <code>apt install samtools</code>).</p>
 </li>
 <li>
-<p>If you want the matrix-store workflow with Torch-backed CPU/GPU execution, install the optional extra:</p>
+<p>If you want the matrix-store workflow from a pip install, add the optional matrix dependencies:</p>
 <p><code>pip install "zipstrain[matrix]"</code></p>
 <p>Notes:</p>
 <ul>
@@ -561,6 +561,7 @@ zipstrain test</code></p>
 <p>Verify with:</p>
 <pre><code class="language-bash">zipstrain test
 </code></pre>
+<p>If you plan to use the matrix-store workflow from Conda, <code>zipstrain test</code> is the quickest way to confirm that the environment also has the expected matrix dependencies available.</p>
 <h2 id="docker">Docker</h2>
 <ol>
 <li>

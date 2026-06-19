@@ -1003,7 +1003,18 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <li><code>-e, --execution-mode</code> (default: <code>local</code>)</li>
 <li><code>-c, --slurm-config</code></li>
 <li><code>-o, --container-engine</code> (default: <code>local</code>)</li>
+<li><code>--container-address</code> (optional) — explicit image/address override for <code>docker</code> or <code>apptainer</code>; otherwise the current ZipStrain version tag is used</li>
 <li><code>-t, --task-per-batch</code> (default: <code>10</code>)</li>
+<li><code>--min-mapq</code> (default: <code>0</code>)</li>
+<li><code>--min-baseq</code> (default: <code>13</code>)</li>
+<li><code>--min-read-ani</code> (optional) — filters reads before pileup using the BAM <code>NM</code> tag and aligned query span</li>
+<li><code>--read-inclusion</code> (<code>proper-pairs|paired|all-mapped</code>, default: <code>all-mapped</code>)</li>
+</ul>
+<p>Read-filter notes:</p>
+<ul>
+<li><code>--min-mapq 0</code> and <code>--min-baseq 13</code> match current samtools mpileup defaults</li>
+<li><code>--read-inclusion all-mapped</code> is the least restrictive mode and is the default</li>
+<li><code>--min-read-ani</code> requires BAM alignments with <code>NM</code> tags</li>
 </ul>
 <h3 id="zipstrain-utilities-prepare_profiling"><code>zipstrain utilities prepare_profiling</code></h3>
 <p>Prepare profiling database assets.</p>
@@ -1054,7 +1065,17 @@ zipstrain &lt;group&gt; &lt;command&gt; --help
 <li><code>--profiling-contract</code> (optional)</li>
 <li><code>-n, --num-chunks</code> (default: <code>24</code>) — number of BED chunks to create</li>
 <li><code>-c, --max-concurrency</code> (default: <code>4</code>) — how many chunks run simultaneously</li>
+<li><code>--min-mapq</code> (default: <code>0</code>)</li>
+<li><code>--min-baseq</code> (default: <code>13</code>)</li>
+<li><code>--min-read-ani</code> (optional) — filters reads before pileup using the BAM <code>NM</code> tag and aligned query span</li>
+<li><code>--read-inclusion</code> (<code>proper-pairs|paired|all-mapped</code>, default: <code>all-mapped</code>)</li>
 <li><code>-o, --output-dir</code> (required)</li>
+</ul>
+<p>Read-inclusion modes:</p>
+<ul>
+<li><code>proper-pairs</code>: keep only mapped read pairs carrying the aligner <code>PROPER_PAIR</code> flag</li>
+<li><code>paired</code>: keep mapped paired-end reads even if they are discordant</li>
+<li><code>all-mapped</code>: keep any mapped read, whether paired or single-end</li>
 </ul>
 <p>Outputs include:</p>
 <ul>
@@ -1162,6 +1183,7 @@ In the same case, the generated genome and gene stat tables also include a <code
 <li><code>-e, --execution-mode</code> (default: <code>local</code>)</li>
 <li><code>-s, --slurm-config</code></li>
 <li><code>-c, --container-engine</code> (default: <code>local</code>)</li>
+<li><code>--container-address</code> (optional) — explicit image/address override for <code>docker</code> or <code>apptainer</code>; otherwise the current ZipStrain version tag is used</li>
 <li><code>-t, --task-per-batch</code> (default: <code>10</code>)</li>
 <li><code>-a, --ani-method</code> (default: <code>popani</code>) — ANI method (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;threshold&gt;</code>)</li>
 <li><code>--engine</code> (<code>polars|duckdb</code>, default: <code>polars</code>)</li>
@@ -1190,6 +1212,7 @@ In the same case, the generated genome and gene stat tables also include a <code
 <li><code>-e, --execution-mode</code> (default: <code>local</code>)</li>
 <li><code>-s, --slurm-config</code></li>
 <li><code>-c, --container-engine</code> (default: <code>local</code>)</li>
+<li><code>--container-address</code> (optional) — explicit image/address override for <code>docker</code> or <code>apptainer</code>; otherwise the current ZipStrain version tag is used</li>
 <li><code>-t, --task-per-batch</code> (default: <code>10</code>)</li>
 <li><code>-n, --ani-method</code> (default: <code>popani</code>)</li>
 <li><code>--engine</code> (<code>polars|duckdb</code>, default: <code>polars</code>)</li>
@@ -1315,6 +1338,18 @@ does not change the main workflow commands.</p>
 <li><code>--profile-db</code> (required)</li>
 <li><code>--comp-db-file</code> (optional)</li>
 <li><code>-o, --output-file</code> (required)</li>
+</ul>
+<p>Output columns:</p>
+<ul>
+<li><code>sample_name_1</code></li>
+<li><code>sample_name_2</code></li>
+<li><code>profile_location_1</code></li>
+<li><code>profile_location_2</code></li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>this command does not need <code>--scope</code>, <code>--min-cov</code>, <code>--min-gene-compare-len</code>, or <code>--stb-file</code></li>
+<li>it only compares the sample-pair universe implied by the profile DB against the pairs already present in the current genome comparison parquet</li>
 </ul>
 <h2 id="utilities">Utilities</h2>
 <h3 id="utility-commands-at-a-glance">Utility Commands At A Glance</h3>
@@ -1470,6 +1505,7 @@ does not change the main workflow commands.</p>
 <li>the CLI shows a progress bar in an interactive terminal</li>
 <li>in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files</li>
 <li>if <code>--gene-range-table</code> is omitted, matrix compare can still compute genome ANI and IBS, but not gene ANI</li>
+<li><code>--sparse</code> reduces on-disk HDF5 size, but matrix compare currently materializes sparse storage back into dense arrays when loading for comparison</li>
 </ul>
 <h3 id="zipstrain-utilities-append-matrix-db"><code>zipstrain utilities append-matrix-db</code></h3>
 <pre><code class="language-bash">zipstrain utilities append-matrix-db \
@@ -1566,6 +1602,7 @@ does not change the main workflow commands.</p>
 <p>Notes:</p>
 <ul>
 <li>install Torch support with <code>pip install "zipstrain[matrix]"</code></li>
+<li><code>--backend numpy</code> works without Torch and is the simplest CPU-only path</li>
 <li>on Apple Silicon, the standard <code>torch</code> wheel can use MPS</li>
 <li>on Linux with NVIDIA GPUs, replace Torch with the CUDA wheel that matches your system, for example:</li>
 </ul>
@@ -1632,6 +1669,7 @@ does not change the main workflow commands.</p>
 <ul>
 <li>By default, ZipStrain checks that all listed profiles carry matching embedded contract metadata.</li>
 <li>Use <code>--allow-mismatch</code> to skip that validation and build a mixed profile DB intentionally.</li>
+<li>The output parquet stores at least <code>profile_name</code> and <code>profile_location</code>, plus shared metadata fields derived from the listed profiles.</li>
 </ul>
 <h3 id="zipstrain-utilities-get-coverage-stats"><code>zipstrain utilities get-coverage-stats</code></h3>
 <pre><code class="language-bash">zipstrain utilities get-coverage-stats \
