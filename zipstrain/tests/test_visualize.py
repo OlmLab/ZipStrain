@@ -58,18 +58,17 @@ def test_get_silhouette_plot_returns_dense_trace():
     assert max(fig.data[0].x) <= 100.0
 
 
-def test_get_silhouette_plot_logs_progress_when_requested(capsys):
-    fig = vz.get_silhouette_plot(
-        _comparison_frame(),
-        genome="genome1",
-        min_comp_len=10000,
-        log_progress=True,
-    )
+def test_get_silhouette_plot_warns_when_sklearn_is_unavailable(monkeypatch):
+    monkeypatch.setattr(vz, "_sklearn_silhouette_score", None)
+
+    with pytest.warns(RuntimeWarning, match="results might not be accurate"):
+        fig = vz.get_silhouette_plot(
+            _comparison_frame(),
+            genome="genome1",
+            min_comp_len=10000,
+        )
 
     assert len(fig.data) == 1
-    captured = capsys.readouterr()
-    assert "get_silhouette_plot progress: 0/500" in captured.err
-    assert "get_silhouette_plot progress: 500/500" in captured.err
 
 
 def test_get_cluster_assignments_splits_two_clusters():

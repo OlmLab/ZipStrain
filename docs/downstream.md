@@ -347,7 +347,6 @@ fig.write_html("identical_vs_popani.html")
   - `min_comp_len`
   - `impute_method`
   - `max_null_samples`
-  - `log_progress`
 - Output:
   - `plotly.graph_objects.Figure`
 - Notes:
@@ -367,7 +366,6 @@ fig = visualize.get_silhouette_plot(
     comps_lf=comps_lf,
     genome="GCF_000269965.1_ASM26996v1_genomic.fna",
     min_comp_len=100000,
-    log_progress=True,
 )
 fig.show()
 fig.write_html("silhouette.html")
