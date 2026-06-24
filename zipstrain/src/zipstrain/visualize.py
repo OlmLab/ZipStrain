@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import warnings
 import polars as pl
 import plotly.graph_objects as go
-import plotly.express as px
 import seaborn as sns
 import numpy as np
 from itertools import chain, combinations
@@ -19,6 +18,7 @@ from matplotlib import colormaps
 from matplotlib.lines import Line2D
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
+from scipy.signal import find_peaks
 from scipy.spatial.distance import squareform
 
 try:
@@ -37,6 +37,22 @@ class _SimilarityMatrixBundle:
     similarity_matrix: np.ndarray
     distance_matrix: np.ndarray
     linkage_matrix: np.ndarray
+
+
+@dataclass(frozen=True)
+class SilhouetteCurveResult:
+    """Computed silhouette sweep plus peak statistics for one genome scope."""
+
+    thresholds: np.ndarray
+    scores: np.ndarray
+    curve: pl.DataFrame
+    candidate_peaks: pl.DataFrame
+    best_peak: pl.DataFrame
+    min_threshold: float
+    peak_prominence: float
+    peak_distance: int
+    used_sklearn: bool
+    sample_count: int
 
 
 def _silhouette_score_precomputed_manual(distance_matrix: np.ndarray, labels: np.ndarray) -> float:
@@ -75,6 +91,68 @@ def _silhouette_score_precomputed(distance_matrix: np.ndarray, labels: np.ndarra
     if _sklearn_silhouette_score is not None:
         return float(_sklearn_silhouette_score(distance_matrix, labels, metric="precomputed"))
     return _silhouette_score_precomputed_manual(distance_matrix, labels)
+
+
+def _summarize_silhouette_curve(
+    thresholds: np.ndarray,
+    scores: np.ndarray,
+    *,
+    min_threshold: float = 99.8,
+    peak_prominence: float = 0.001,
+    peak_distance: int = 3,
+) -> tuple[np.ndarray, np.ndarray, pl.DataFrame, pl.DataFrame]:
+    """Clean a silhouette curve and extract candidate and best peaks."""
+    threshold_array = np.asarray(thresholds, dtype=float)
+    score_array = np.asarray(scores, dtype=float)
+    mask = np.isfinite(threshold_array) & np.isfinite(score_array)
+    threshold_array = threshold_array[mask]
+    score_array = score_array[mask]
+    order = np.argsort(threshold_array)
+    threshold_array = threshold_array[order]
+    score_array = score_array[order]
+    if threshold_array.size == 0:
+        raise ValueError("No finite silhouette scores are available for peak finding.")
+
+    peaks, properties = find_peaks(
+        score_array,
+        prominence=peak_prominence,
+        distance=peak_distance,
+    )
+    allowed_peak_mask = threshold_array[peaks] > min_threshold
+    peaks = peaks[allowed_peak_mask]
+    peak_prominences = properties.get("prominences", np.array([], dtype=float))[allowed_peak_mask]
+
+    if len(peaks) > 0:
+        best_idx = int(peaks[np.argmax(score_array[peaks])])
+        best_source = "detected_peak"
+    else:
+        allowed = threshold_array > min_threshold
+        if allowed.sum() == 0:
+            raise ValueError(f"No thresholds above {min_threshold}")
+        allowed_idx = np.where(allowed)[0]
+        best_idx = int(allowed_idx[np.argmax(score_array[allowed_idx])])
+        best_source = "fallback_global_max"
+
+    candidate_peaks = pl.DataFrame(
+        {
+            "index": peaks.astype(int).tolist(),
+            "threshold": threshold_array[peaks].astype(float).tolist(),
+            "silhouette": score_array[peaks].astype(float).tolist(),
+            "prominence": peak_prominences.astype(float).tolist(),
+        }
+    )
+    if candidate_peaks.height > 0:
+        candidate_peaks = candidate_peaks.sort("silhouette", descending=True)
+
+    best_peak = pl.DataFrame(
+        {
+            "index": [best_idx],
+            "threshold": [float(threshold_array[best_idx])],
+            "silhouette": [float(score_array[best_idx])],
+            "source": [best_source],
+        }
+    )
+    return threshold_array, score_array, candidate_peaks, best_peak
 
 
 def _prepare_similarity_matrix(
@@ -721,14 +799,17 @@ def plot_identical_frac_vs_popani(df:pl.DataFrame,
     )
     return fig
 
-def get_silhouette_plot(
+def compute_silhouette_curve(
     comps_lf: pl.LazyFrame,
     genome: str,
     min_comp_len: int = 100000,
     impute_method: float = 97.0,
     max_null_samples: int = 500,
-):
-    """Plot silhouette score as a function of ANI threshold for one genome."""
+    min_threshold: float = 99.8,
+    peak_prominence: float = 0.001,
+    peak_distance: int = 3,
+) -> SilhouetteCurveResult:
+    """Compute a silhouette sweep and peak summary for one genome."""
     bundle = _prepare_similarity_matrix(
         comps_lf,
         genome=genome,
@@ -764,16 +845,151 @@ def get_silhouette_plot(
         else:
             scores.append(float("nan"))
 
-    ani_thresholds = 100 * (1 - distances)
-    fig = px.line(
-        x=ani_thresholds,
-        y=scores,
-        labels={"x": "ANI Threshold (%)", "y": "Silhouette Score"},
+    thresholds = 100 * (1 - distances)
+    clean_thresholds, clean_scores, candidate_peaks, best_peak = _summarize_silhouette_curve(
+        thresholds,
+        np.asarray(scores, dtype=float),
+        min_threshold=min_threshold,
+        peak_prominence=peak_prominence,
+        peak_distance=peak_distance,
+    )
+    curve = pl.DataFrame(
+        {
+            "threshold": clean_thresholds.astype(float).tolist(),
+            "silhouette": clean_scores.astype(float).tolist(),
+        }
+    )
+    return SilhouetteCurveResult(
+        thresholds=clean_thresholds,
+        scores=clean_scores,
+        curve=curve,
+        candidate_peaks=candidate_peaks,
+        best_peak=best_peak,
+        min_threshold=min_threshold,
+        peak_prominence=peak_prominence,
+        peak_distance=peak_distance,
+        used_sklearn=use_sklearn,
+        sample_count=len(bundle.samples),
+    )
+
+
+def plot_silhouette_curve(
+    result: SilhouetteCurveResult,
+    *,
+    title: str = "Simple peak finding on silhouette curve",
+    xaxis_title: str = "Clustering threshold",
+    yaxis_title: str = "Silhouette score",
+) -> go.Figure:
+    """Plot a computed silhouette sweep and its peak summary."""
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=result.thresholds,
+            y=result.scores,
+            mode="lines+markers",
+            name="Silhouette score",
+            marker=dict(size=5),
+            line=dict(width=2),
+        )
+    )
+
+    if result.candidate_peaks.height > 0:
+        peak_indices = result.candidate_peaks.get_column("index").to_numpy()
+        fig.add_trace(
+            go.Scatter(
+                x=result.candidate_peaks.get_column("threshold").to_list(),
+                y=result.candidate_peaks.get_column("silhouette").to_list(),
+                mode="markers",
+                name=f"Detected peaks above {result.min_threshold}",
+                marker=dict(size=10, symbol="circle"),
+                customdata=np.column_stack([peak_indices]),
+                hovertemplate=(
+                    "threshold=%{x:.6f}<br>"
+                    "silhouette=%{y:.6f}<br>"
+                    "index=%{customdata[0]}<extra></extra>"
+                ),
+            )
+        )
+
+    best_peak_row = result.best_peak.row(0, named=True)
+    best_threshold = float(best_peak_row["threshold"])
+    best_silhouette = float(best_peak_row["silhouette"])
+    best_index = int(best_peak_row["index"])
+    fig.add_trace(
+        go.Scatter(
+            x=[best_threshold],
+            y=[best_silhouette],
+            mode="markers+text",
+            name="Best peak",
+            marker=dict(size=18, symbol="star"),
+            text=[f"best = {best_threshold:.5g}"],
+            textposition="top center",
+            customdata=[[best_index]],
+            hovertemplate=(
+                "BEST<br>"
+                "threshold=%{x:.6f}<br>"
+                "silhouette=%{y:.6f}<br>"
+                "index=%{customdata[0]}<extra></extra>"
+            ),
+        )
+    )
+    fig.add_vline(
+        x=result.min_threshold,
+        line_dash="dot",
+        opacity=0.7,
+        annotation_text=f"min threshold = {result.min_threshold}",
+        annotation_position="top left",
+    )
+    fig.add_vline(
+        x=best_threshold,
+        line_dash="dash",
+        opacity=0.8,
+        annotation_text=f"best = {best_threshold:.5g}",
+        annotation_position="top right",
+    )
+    fig.update_layout(
+        title={"text": title, "x": 0.5},
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
         template="plotly_white",
+        width=1000,
+        height=550,
+        hovermode="x unified",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+        ),
     )
     fig.update_xaxes(range=[99, 100], autorange="reversed")
-    fig.update_layout(title={"text": "Silhouette Score vs ANI Threshold", "x": 0.5})
     return fig
+
+
+def get_silhouette_plot(
+    comps_lf: pl.LazyFrame,
+    genome: str,
+    min_comp_len: int = 100000,
+    impute_method: float = 97.0,
+    max_null_samples: int = 500,
+    min_threshold: float = 99.8,
+    peak_prominence: float = 0.001,
+    peak_distance: int = 3,
+):
+    """Plot silhouette score as a function of ANI threshold for one genome."""
+    return plot_silhouette_curve(
+        compute_silhouette_curve(
+            comps_lf,
+            genome=genome,
+            min_comp_len=min_comp_len,
+            impute_method=impute_method,
+            max_null_samples=max_null_samples,
+            min_threshold=min_threshold,
+            peak_prominence=peak_prominence,
+            peak_distance=peak_distance,
+        )
+    )
 
 
 def get_cluster_assignments(

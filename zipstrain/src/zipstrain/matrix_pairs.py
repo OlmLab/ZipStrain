@@ -3601,6 +3601,32 @@ def _max_ibs_from_shared_mask_numpy(shared_mask) -> np.ndarray:
     return max_runs
 
 
+def _max_ibs_from_shared_mask_torch(
+    *,
+    torch_module,
+    shared_mask,
+):
+    """Return longest consecutive shared-position runs per target on the current torch device."""
+    if int(shared_mask.ndim) != 2:
+        raise ValueError("shared_mask must be a 2D positions-by-target tensor.")
+    target_count = int(shared_mask.shape[1])
+    if target_count == 0:
+        return torch_module.zeros(0, dtype=torch_module.int64, device=shared_mask.device)
+
+    # Work target-major so start/end events are grouped by target and stay on-device.
+    mask_target_major = shared_mask.transpose(0, 1).contiguous()
+    padded = torch_module.nn.functional.pad(mask_target_major.to(torch_module.int8), (1, 1))
+    transitions = padded[:, 1:] - padded[:, :-1]
+    start_targets, start_positions = torch_module.nonzero(transitions == 1, as_tuple=True)
+    if int(start_targets.numel()) == 0:
+        return torch_module.zeros(target_count, dtype=torch_module.int64, device=shared_mask.device)
+    end_targets, end_positions = torch_module.nonzero(transitions == -1, as_tuple=True)
+    run_lengths = (end_positions - start_positions).to(torch_module.int64)
+    max_runs = torch_module.zeros(target_count, dtype=torch_module.int64, device=shared_mask.device)
+    max_runs.scatter_reduce_(0, start_targets.to(torch_module.int64), run_lengths, reduce="amax")
+    return max_runs
+
+
 def _shared_mask_to_numpy(shared_mask) -> np.ndarray:
     if isinstance(shared_mask, np.ndarray):
         return shared_mask
@@ -4052,7 +4078,10 @@ def _compare_anchor_against_target_chunk_torch_device(
             gene_ranges=gene_ranges,
         )
         if need_ibs:
-            max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
+            max_runs = _max_ibs_from_shared_mask_torch(
+                torch_module=compute_backend.torch,
+                shared_mask=shared_mask,
+            )
     elif need_ibs:
         total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_shared_mask(
             torch_module=compute_backend.torch,
@@ -4061,7 +4090,10 @@ def _compare_anchor_against_target_chunk_torch_device(
         )
         chunk_totals_torch += total_inc
         chunk_shared_torch += shared_inc
-        max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
+        max_runs = _max_ibs_from_shared_mask_torch(
+            torch_module=compute_backend.torch,
+            shared_mask=shared_mask,
+        )
     else:
         total_inc, shared_inc = _compare_tile_presence_torch_tensors(
             torch_module=compute_backend.torch,
@@ -4077,16 +4109,21 @@ def _download_torch_result_tensor_batch(
     compute_backend: MatrixPairComputeBackend,
     totals_tensors: list,
     shared_tensors: list,
+    max_run_tensors: Optional[list] = None,
 ) -> np.ndarray:
     if not totals_tensors:
-        return np.zeros((0, 2, 0), dtype=np.int64)
+        channel_count = 3 if max_run_tensors else 2
+        return np.zeros((0, channel_count, 0), dtype=np.int64)
     if len(totals_tensors) != len(shared_tensors):
         raise ValueError("totals_tensors and shared_tensors must have the same length")
+    if max_run_tensors is not None and len(totals_tensors) != len(max_run_tensors):
+        raise ValueError("totals_tensors and max_run_tensors must have the same length")
     torch_module = compute_backend.torch
     lengths = [int(tensor.shape[0]) for tensor in totals_tensors]
     max_length = max(lengths)
     padded_totals = []
     padded_shared = []
+    padded_max_runs = [] if max_run_tensors is not None else None
     for totals_tensor, shared_tensor, length in zip(totals_tensors, shared_tensors, lengths):
         if int(shared_tensor.shape[0]) != length:
             raise ValueError("totals and shared tensors must have matching lengths")
@@ -4097,9 +4134,21 @@ def _download_torch_result_tensor_batch(
         else:
             padded_totals.append(totals_tensor)
             padded_shared.append(shared_tensor)
+    if max_run_tensors is not None and padded_max_runs is not None:
+        for max_run_tensor, length in zip(max_run_tensors, lengths):
+            if int(max_run_tensor.shape[0]) != length:
+                raise ValueError("totals and max-run tensors must have matching lengths")
+            pad_width = max_length - length
+            if pad_width > 0:
+                padded_max_runs.append(torch_module.nn.functional.pad(max_run_tensor, (0, pad_width)))
+            else:
+                padded_max_runs.append(max_run_tensor)
     stacked_totals = torch_module.stack(padded_totals, dim=0)
     stacked_shared = torch_module.stack(padded_shared, dim=0)
-    combined = torch_module.stack((stacked_totals, stacked_shared), dim=1)
+    components = [stacked_totals, stacked_shared]
+    if max_run_tensors is not None and padded_max_runs is not None:
+        components.append(torch_module.stack(padded_max_runs, dim=0))
+    combined = torch_module.stack(components, dim=1)
     if compute_backend.device == "cuda":
         combined_cpu = torch_module.empty(
             combined.shape,
@@ -4375,10 +4424,14 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     return
                 batch_device_results = pending_device_results
                 pending_device_results = []
+                max_run_tensors = None
+                if batch_device_results and batch_device_results[0]["max_consecutive_length"] is not None:
+                    max_run_tensors = [item["max_consecutive_length"] for item in batch_device_results]
                 combined_np = _download_torch_result_tensor_batch(
                     compute_backend=compute_backend,
                     totals_tensors=[item["total_positions"] for item in batch_device_results],
                     shared_tensors=[item["share_allele_pos"] for item in batch_device_results],
+                    max_run_tensors=max_run_tensors,
                 )
                 for result_idx, item in enumerate(batch_device_results):
                     valid_count = int(item["valid_count"])
@@ -4393,7 +4446,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                             "calculations": tuple(item["calculations"]),
                             "total_positions": combined_np[result_idx, 0, :valid_count].astype(np.int64, copy=True),
                             "share_allele_pos": combined_np[result_idx, 1, :valid_count].astype(np.int64, copy=True),
-                            "max_consecutive_length": item["max_consecutive_length"],
+                            "max_consecutive_length": None
+                            if max_run_tensors is None
+                            else combined_np[result_idx, 2, :valid_count].astype(np.int64, copy=True),
                             "gene_names": list(item.get("gene_names") or []),
                             "gene_total_positions": None
                             if item.get("gene_total_positions") is None
@@ -4518,7 +4573,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "share_allele_pos": shared_inc_torch[missing_positions],
                         "max_consecutive_length": None
                         if ibs_inc is None
-                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        else ibs_inc[missing_positions].contiguous(),
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None
@@ -4574,7 +4629,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "share_allele_pos": shared_inc_torch[missing_positions],
                         "max_consecutive_length": None
                         if ibs_inc is None
-                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        else ibs_inc[missing_positions].contiguous(),
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None

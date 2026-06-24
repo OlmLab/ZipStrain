@@ -338,17 +338,20 @@ fig.show()
 fig.write_html("identical_vs_popani.html")
 ```
 
-### `get_silhouette_plot`
+### `compute_silhouette_curve`
 
-- Purpose: sweep ANI thresholds and plot clustering silhouette score for one genome.
+- Purpose: compute the silhouette curve and peak summary for one genome.
 - Inputs:
   - `comps_lf`
   - `genome`
   - `min_comp_len`
   - `impute_method`
   - `max_null_samples`
+  - `min_threshold`
+  - `peak_prominence`
+  - `peak_distance`
 - Output:
-  - `plotly.graph_objects.Figure`
+  - `SilhouetteCurveResult`
 - Notes:
   - Expects one genome scope at a time.
   - Null ANI entries are imputed with a numeric ANI value.
@@ -356,20 +359,53 @@ fig.write_html("identical_vs_popani.html")
 What it does:
 
 - This tries many ANI cutoffs and asks: “At which threshold do the resulting clusters look most coherent?”
-- The result is a line plot of silhouette score versus ANI threshold.
+- The result includes:
+  - the full threshold vector
+  - the full silhouette vector
+  - `curve`: a table with columns `threshold` and `silhouette`
+  - `candidate_peaks`: a table with columns `index`, `threshold`, `silhouette`, and `prominence`
+  - `best_peak`: a one-row table with columns `index`, `threshold`, `silhouette`, and `source`
 - A higher silhouette score usually means cleaner separation between clusters.
 
 Example:
 
 ```python
-fig = visualize.get_silhouette_plot(
+result = visualize.compute_silhouette_curve(
     comps_lf=comps_lf,
     genome="GCF_000269965.1_ASM26996v1_genomic.fna",
     min_comp_len=100000,
 )
+print(result.best_peak)
+print(result.candidate_peaks)
+```
+
+### `plot_silhouette_curve`
+
+- Purpose: plot a precomputed silhouette curve result.
+- Inputs:
+  - `result`
+- Output:
+  - `plotly.graph_objects.Figure`
+
+Example:
+
+```python
+result = visualize.compute_silhouette_curve(
+    comps_lf=comps_lf,
+    genome="GCF_000269965.1_ASM26996v1_genomic.fna",
+    min_comp_len=100000,
+)
+
+fig = visualize.plot_silhouette_curve(result)
 fig.show()
 fig.write_html("silhouette.html")
 ```
+
+### `get_silhouette_plot`
+
+- Purpose: convenience wrapper that computes and plots the silhouette curve in one call.
+- Notes:
+  - Internally this calls `compute_silhouette_curve(...)` and then `plot_silhouette_curve(...)`.
 
 ### `get_cluster_assignments`
 

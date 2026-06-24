@@ -48,14 +48,27 @@ def _sparse_comparison_frame_with_dense_core() -> pl.LazyFrame:
     return pl.DataFrame(rows).lazy()
 
 
-def test_get_silhouette_plot_returns_dense_trace():
-    fig = vz.get_silhouette_plot(_comparison_frame(), genome="genome1", min_comp_len=10000)
+def test_compute_silhouette_curve_returns_curve_and_peak_summary():
+    result = vz.compute_silhouette_curve(_comparison_frame(), genome="genome1", min_comp_len=10000)
 
-    assert len(fig.data) == 1
-    assert len(fig.data[0].x) == 500
-    assert len(fig.data[0].y) == 500
-    assert min(fig.data[0].x) >= 99.0
-    assert max(fig.data[0].x) <= 100.0
+    assert len(result.thresholds) == len(result.scores) == result.curve.height
+    assert 0 < len(result.thresholds) <= 500
+    assert result.curve.columns == ["threshold", "silhouette"]
+    assert min(result.thresholds) >= 99.0
+    assert max(result.thresholds) <= 100.0
+    assert result.candidate_peaks.columns == ["index", "threshold", "silhouette", "prominence"]
+    assert result.best_peak.columns == ["index", "threshold", "silhouette", "source"]
+    assert result.best_peak.height == 1
+    assert float(result.best_peak.get_column("threshold")[0]) > 99.8
+
+
+def test_plot_silhouette_curve_returns_annotated_figure():
+    result = vz.compute_silhouette_curve(_comparison_frame(), genome="genome1", min_comp_len=10000)
+    fig = vz.plot_silhouette_curve(result)
+
+    assert len(fig.data) >= 2
+    assert fig.layout.title.text == "Simple peak finding on silhouette curve"
+    assert fig.data[0].name == "Silhouette score"
 
 
 def test_get_silhouette_plot_warns_when_sklearn_is_unavailable(monkeypatch):
@@ -68,7 +81,7 @@ def test_get_silhouette_plot_warns_when_sklearn_is_unavailable(monkeypatch):
             min_comp_len=10000,
         )
 
-    assert len(fig.data) == 1
+    assert len(fig.data) >= 2
 
 
 def test_get_cluster_assignments_splits_two_clusters():
@@ -212,3 +225,22 @@ def test_silhouette_score_precomputed_falls_back_to_manual(monkeypatch):
     manual_score = vz._silhouette_score_precomputed_manual(distance_matrix, labels)
 
     assert score == pytest.approx(manual_score)
+
+
+def test_summarize_silhouette_curve_finds_best_peak_above_threshold():
+    thresholds = np.array([99.6, 99.7, 99.8, 99.85, 99.9, 99.95, 100.0])
+    scores = np.array([0.10, 0.15, 0.12, 0.25, 0.18, 0.30, 0.20])
+
+    clean_thresholds, clean_scores, candidate_peaks, best_peak = vz._summarize_silhouette_curve(
+        thresholds,
+        scores,
+        min_threshold=99.8,
+        peak_prominence=0.01,
+        peak_distance=1,
+    )
+
+    assert clean_thresholds.tolist() == thresholds.tolist()
+    assert clean_scores.tolist() == scores.tolist()
+    assert candidate_peaks.height >= 1
+    assert float(best_peak.get_column("threshold")[0]) == pytest.approx(99.95)
+    assert float(best_peak.get_column("silhouette")[0]) == pytest.approx(0.30)
