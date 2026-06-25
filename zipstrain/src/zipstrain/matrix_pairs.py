@@ -3609,22 +3609,18 @@ def _max_ibs_from_shared_mask_torch(
     """Return longest consecutive shared-position runs per target on the current torch device."""
     if int(shared_mask.ndim) != 2:
         raise ValueError("shared_mask must be a 2D positions-by-target tensor.")
+    position_count = int(shared_mask.shape[0])
     target_count = int(shared_mask.shape[1])
     if target_count == 0:
         return torch_module.zeros(0, dtype=torch_module.int64, device=shared_mask.device)
-
-    # Work target-major so start/end events are grouped by target and stay on-device.
-    mask_target_major = shared_mask.transpose(0, 1).contiguous()
-    padded = torch_module.nn.functional.pad(mask_target_major.to(torch_module.int8), (1, 1))
-    transitions = padded[:, 1:] - padded[:, :-1]
-    start_targets, start_positions = torch_module.nonzero(transitions == 1, as_tuple=True)
-    if int(start_targets.numel()) == 0:
+    if position_count == 0:
         return torch_module.zeros(target_count, dtype=torch_module.int64, device=shared_mask.device)
-    end_targets, end_positions = torch_module.nonzero(transitions == -1, as_tuple=True)
-    run_lengths = (end_positions - start_positions).to(torch_module.int64)
-    max_runs = torch_module.zeros(target_count, dtype=torch_module.int64, device=shared_mask.device)
-    max_runs.scatter_reduce_(0, start_targets.to(torch_module.int64), run_lengths, reduce="amax")
-    return max_runs
+    nz = shared_mask.to(torch_module.int32)
+    csum = nz.cumsum(dim=0, dtype=torch_module.int32)
+    zero_mask = (~shared_mask).to(torch_module.int32)
+    reset = (csum * zero_mask).cummax(dim=0).values
+    runs = csum - reset
+    return runs.amax(dim=0).to(torch_module.int64)
 
 
 def _shared_mask_to_numpy(shared_mask) -> np.ndarray:

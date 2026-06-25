@@ -3261,3 +3261,17 @@ def test_max_ibs_from_shared_mask_torch_matches_numpy():
     ).cpu().numpy()
 
     assert actual.tolist() == expected.tolist()
+
+
+def test_max_ibs_from_shared_mask_torch_matches_numpy_for_random_masks():
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(0)
+    for rows, cols in [(1, 1), (8, 3), (31, 7), (64, 11)]:
+        shared_mask = rng.integers(0, 2, size=(rows, cols), dtype=np.int8).astype(bool, copy=False)
+        expected = mp._max_ibs_from_shared_mask_numpy(shared_mask)
+        actual = mp._max_ibs_from_shared_mask_torch(
+            torch_module=torch,
+            shared_mask=torch.tensor(shared_mask, dtype=torch.bool),
+        ).cpu().numpy()
+
+        assert actual.tolist() == expected.tolist()
