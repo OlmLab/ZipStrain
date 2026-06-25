@@ -10,6 +10,7 @@ Compared with `0.11.0`:
 - Visualization: added peak summarization for silhouette curves, including candidate peaks and best-peak selection.
 - Visualization: kept `get_silhouette_plot` as a convenience wrapper around the new compute/plot pair.
 - Matrix comparison: reverted the IBS torch path to the 0.11.0 behavior while keeping the visualization split/peak work.
+- Matrix comparison: experimental CUDA/MPS branch now supports transferring large `total_mask`/`shared_mask` batches to host and finalizing ANI/IBS/gene metrics on CPU in the writer thread.
 
 ## 0.11.0
 

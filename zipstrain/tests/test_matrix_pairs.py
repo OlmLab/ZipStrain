@@ -354,6 +354,42 @@ def test_parse_matrix_calculations_supports_all_and_gene_aliases():
     assert mp.parse_matrix_calculations("popani,max_block") == ("ani", "ibs")
 
 
+def test_accumulate_gene_counts_from_full_numpy_masks():
+    total_mask = np.array(
+        [
+            [True, True],
+            [True, True],
+            [False, True],
+            [True, False],
+            [True, True],
+        ],
+        dtype=bool,
+    )
+    shared_mask = np.array(
+        [
+            [True, False],
+            [True, True],
+            [False, False],
+            [True, False],
+            [False, True],
+        ],
+        dtype=bool,
+    )
+    gene_ranges = [
+        mp.GeneRangeSpec(gene_idx=0, gene="gene_a", genome_idx=0, genome="genome1", chrom="chr1", axis_start=0, axis_end=2),
+        mp.GeneRangeSpec(gene_idx=1, gene="gene_b", genome_idx=0, genome="genome1", chrom="chr1", axis_start=3, axis_end=4),
+    ]
+
+    gene_total, gene_shared = mp._accumulate_gene_counts_from_full_numpy_masks(
+        total_mask=total_mask,
+        shared_mask=shared_mask,
+        gene_ranges=gene_ranges,
+    )
+
+    assert gene_total.tolist() == [[2, 3], [2, 1]]
+    assert gene_shared.tolist() == [[2, 1], [1, 1]]
+
+
 def _load_matrix_compare_db(compare_db: Path):
     conn = duckdb.connect(str(compare_db), read_only=True)
     try:
@@ -3221,3 +3257,74 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
 
     assert actual.equals(expected)
     assert actual.get_column("max_consecutive_length").to_list() == [2]
+
+
+def test_write_matrix_compare_mask_transfer_batch(tmp_path):
+    torch = pytest.importorskip("torch")
+    output_file = tmp_path / "mask_transfer_compare.duckdb"
+    conn = duckdb.connect(str(output_file))
+    try:
+        mp._init_matrix_compare_db_schema(conn)
+    finally:
+        conn.close()
+
+    total_mask = torch.tensor(
+        [
+            [True, True],
+            [True, True],
+            [False, True],
+            [True, False],
+            [True, True],
+        ],
+        dtype=torch.bool,
+    )
+    shared_mask = torch.tensor(
+        [
+            [True, False],
+            [True, True],
+            [False, False],
+            [True, False],
+            [False, True],
+        ],
+        dtype=torch.bool,
+    )
+    gene_ranges = [
+        mp.GeneRangeSpec(gene_idx=0, gene="gene_a", genome_idx=0, genome="genome1", chrom="chr1", axis_start=0, axis_end=2),
+        mp.GeneRangeSpec(gene_idx=1, gene="gene_b", genome_idx=0, genome="genome1", chrom="chr1", axis_start=3, axis_end=4),
+    ]
+    batch_rows = mp._write_matrix_compare_mask_transfer_batch(
+        output_file=output_file,
+        batch_items=[
+            {
+                "sample_1_idx": 0,
+                "sample_1": "sample_a",
+                "sample_2_idx": np.array([1, 2], dtype=np.int64),
+                "sample_2": ["sample_b", "sample_c"],
+                "genome_idx": 0,
+                "genome": "genome1",
+                "calculations": ("ani", "ibs", "gene"),
+                "mask_transfer": mp._schedule_torch_mask_transfer(
+                    compute_backend=mp.MatrixPairComputeBackend("torch-cpu"),
+                    total_mask=total_mask,
+                    shared_mask=shared_mask,
+                ),
+                "gene_ranges": gene_ranges,
+                "valid_count": 2,
+            }
+        ],
+    )
+
+    assert batch_rows == 2
+    _metadata, completed_pairs, results = _load_matrix_compare_db(output_file)
+    assert completed_pairs == [(0, 1), (0, 2)]
+    assert results.select(["total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]).rows() == [
+        (4, 3, 75.0, 2),
+        (4, 2, 50.0, 1),
+    ]
+    gene_results = _load_matrix_compare_gene_results(output_file)
+    assert gene_results.select(["sample_2", "gene", "gene_pop_ani"]).rows() == [
+        ("sample_b", "gene_a", 100.0),
+        ("sample_b", "gene_b", 50.0),
+        ("sample_c", "gene_a", 33.33333333333333),
+        ("sample_c", "gene_b", 100.0),
+    ]

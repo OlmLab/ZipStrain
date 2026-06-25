@@ -335,6 +335,14 @@ class MatrixBuildMemoryPlan:
     limiting_scaffold: str
 
 
+@dataclass
+class TorchMaskTransfer:
+    combined_cpu: object
+    event: object | None = None
+    stream: object | None = None
+    source_tensor: object | None = None
+
+
 class TorchBackendMissingError(ImportError):
     pass
 
@@ -1800,6 +1808,127 @@ def _write_matrix_compare_payload_batch(
             target_chunks=int(log_context["target_chunks"]),
         )
     return batch_rows
+
+
+def _accumulate_gene_counts_from_full_numpy_masks(
+    *,
+    total_mask: np.ndarray,
+    shared_mask: np.ndarray,
+    gene_ranges: list[GeneRangeSpec],
+) -> tuple[np.ndarray, np.ndarray]:
+    if not gene_ranges:
+        target_count = int(total_mask.shape[1]) if int(total_mask.ndim) > 1 else 0
+        empty = np.zeros((0, target_count), dtype=np.int64)
+        return empty, empty
+
+    total_mask_np = np.asarray(total_mask, dtype=np.int8)
+    shared_mask_np = np.asarray(shared_mask, dtype=np.int8)
+    total_prefix = total_mask_np.cumsum(axis=0, dtype=np.int32)
+    shared_prefix = shared_mask_np.cumsum(axis=0, dtype=np.int32)
+    gene_starts = np.fromiter((int(gene.axis_start) for gene in gene_ranges), dtype=np.int64)
+    gene_stops = np.fromiter((int(gene.axis_end) for gene in gene_ranges), dtype=np.int64)
+    total_stop = total_prefix[gene_stops, :]
+    shared_stop = shared_prefix[gene_stops, :]
+    start_positions = np.clip(gene_starts - 1, a_min=0, a_max=None)
+    has_start = (gene_starts > 0).astype(np.int32)[:, np.newaxis]
+    total_start = total_prefix[start_positions, :] * has_start
+    shared_start = shared_prefix[start_positions, :] * has_start
+    return (
+        (total_stop - total_start).astype(np.int64, copy=False),
+        (shared_stop - shared_start).astype(np.int64, copy=False),
+    )
+
+
+def _schedule_torch_mask_transfer(
+    *,
+    compute_backend: MatrixPairComputeBackend,
+    total_mask,
+    shared_mask,
+) -> TorchMaskTransfer:
+    torch_module = compute_backend.torch
+    combined = torch_module.stack([total_mask, shared_mask], dim=0).contiguous()
+    if compute_backend.device == "cuda":
+        combined_cpu = torch_module.empty(
+            combined.shape,
+            dtype=combined.dtype,
+            device="cpu",
+            pin_memory=True,
+        )
+        stream = torch_module.cuda.Stream(device=combined.device)
+        with torch_module.cuda.stream(stream):
+            combined_cpu.copy_(combined, non_blocking=True)
+            event = torch_module.cuda.Event()
+            event.record(stream)
+        return TorchMaskTransfer(
+            combined_cpu=combined_cpu,
+            event=event,
+            stream=stream,
+            source_tensor=combined,
+        )
+    return TorchMaskTransfer(
+        combined_cpu=combined.cpu(),
+        source_tensor=None,
+    )
+
+
+def _finalize_torch_mask_transfer(
+    transfer: TorchMaskTransfer,
+) -> tuple[np.ndarray, np.ndarray]:
+    if transfer.event is not None:
+        transfer.event.synchronize()
+    combined_np = transfer.combined_cpu.numpy()
+    total_mask = np.asarray(combined_np[0], dtype=bool)
+    shared_mask = np.asarray(combined_np[1], dtype=bool)
+    transfer.source_tensor = None
+    transfer.stream = None
+    transfer.event = None
+    return total_mask, shared_mask
+
+
+def _write_matrix_compare_mask_transfer_batch(
+    output_file: Path,
+    batch_items: list[dict[str, object]],
+    log_context: Optional[dict[str, object]] = None,
+) -> int:
+    batch_payloads: list[dict[str, object]] = []
+    for item in batch_items:
+        total_mask, shared_mask = _finalize_torch_mask_transfer(item["mask_transfer"])
+        total_positions = total_mask.sum(axis=0, dtype=np.int64)
+        share_allele_pos = shared_mask.sum(axis=0, dtype=np.int64)
+        max_consecutive_length = None
+        if "ibs" in item["calculations"]:
+            max_consecutive_length = _max_ibs_from_shared_mask_numpy(shared_mask)
+        gene_total_positions = None
+        gene_share_allele_pos = None
+        gene_ranges = list(item.get("gene_ranges") or [])
+        if gene_ranges:
+            gene_total_positions, gene_share_allele_pos = _accumulate_gene_counts_from_full_numpy_masks(
+                total_mask=total_mask,
+                shared_mask=shared_mask,
+                gene_ranges=gene_ranges,
+            )
+        batch_payloads.append(
+            {
+                "sample_1_idx": int(item["sample_1_idx"]),
+                "sample_1": str(item["sample_1"]),
+                "sample_2_idx": np.asarray(item["sample_2_idx"], dtype=np.int64),
+                "sample_2": list(item["sample_2"]),
+                "genome_idx": int(item["genome_idx"]),
+                "genome": str(item["genome"]),
+                "calculations": tuple(item["calculations"]),
+                "total_positions": total_positions,
+                "share_allele_pos": share_allele_pos,
+                "max_consecutive_length": max_consecutive_length,
+                "gene_names": [gene.gene for gene in gene_ranges],
+                "gene_total_positions": gene_total_positions,
+                "gene_share_allele_pos": gene_share_allele_pos,
+            }
+        )
+    return _write_matrix_compare_payload_batch(
+        output_file=output_file,
+        batch_payloads=batch_payloads,
+        log_context=log_context,
+    )
 
 
 def _validate_matrix_db_appendable(metadata: dict[str, str]) -> tuple[str, str]:
@@ -3523,6 +3652,22 @@ def _compare_tile_presence_torch_tensors_with_shared_mask(
     return totals, shared, shared_mask
 
 
+def _compare_tile_presence_torch_tensors_masks_only(
+    torch_module,
+    anchor_t,
+    targets_t,
+):
+    anchor_cov = anchor_t.amax(dim=1)
+    target_cov = targets_t.amax(dim=1)
+    total_mask = (anchor_cov.unsqueeze(1) > 0) & (target_cov > 0)
+    shared_mask = _shared_mask_presence_torch_tensors(
+        torch_module=torch_module,
+        anchor_t=anchor_t,
+        targets_t=targets_t,
+    )
+    return total_mask, shared_mask
+
+
 def _accumulate_gene_counts_from_full_torch_masks(
     *,
     torch_module,
@@ -4073,6 +4218,19 @@ def _compare_anchor_against_target_chunk_torch_device(
     return chunk_totals_torch, chunk_shared_torch, max_runs, gene_total_positions, gene_share_allele_pos
 
 
+def _compare_anchor_against_target_chunk_torch_device_masks(
+    compute_backend: MatrixPairComputeBackend,
+    anchor_torch,
+    target_torch,
+    vector_length: int,
+):
+    return _compare_tile_presence_torch_tensors_masks_only(
+        torch_module=compute_backend.torch,
+        anchor_t=anchor_torch[:vector_length, :],
+        targets_t=target_torch[:vector_length, :, :],
+    )
+
+
 def _download_torch_result_tensor_batch(
     compute_backend: MatrixPairComputeBackend,
     totals_tensors: list,
@@ -4163,6 +4321,11 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     target_loader_executor = _build_matrix_io_executor(loader_executor_kind)
     anchor_loader_executor = _build_matrix_io_executor(loader_executor_kind)
     writer_executor = _build_matrix_io_executor(writer_executor_kind)
+    experimental_mask_transfer_pipeline = compute_backend.device in {"cuda", "mps"}
+    if experimental_mask_transfer_pipeline and writer_executor_kind != "thread":
+        raise ValueError(
+            "The experimental CUDA/MPS mask-transfer matrix compare path requires --writer-executor thread."
+        )
     pending_write_futures: deque[tuple[asyncio.Future[int], list[dict[str, object]]]] = deque()
 
     def load_target_block_sync(
@@ -4328,7 +4491,6 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
             processed_pairs_for_block = 0
             target_chunks += 1
             pending_device_results: list[dict[str, object]] = []
-            pending_payloads: list[dict[str, object]] = []
             pending_progress: list[dict[str, object]] = []
 
             def submit_write_batch(
@@ -4369,20 +4531,66 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     )
                 )
 
+            def submit_mask_write_batch(
+                batch_device_results: list[dict[str, object]],
+                batch_progress: list[dict[str, object]],
+            ) -> None:
+                batch_pairs = sum(int(event["delta"]) for event in batch_progress)
+                last_event = batch_progress[-1] if batch_progress else {
+                    "anchor_name": "",
+                    "genome": genome_name,
+                    "targets_completed": 0,
+                    "targets_total": 0,
+                    "target_chunks": target_chunks,
+                }
+                log_context = None
+                if emit_writer_logs and batch_progress:
+                    log_context = {
+                        "start_time": run_start_time,
+                        "completed": completed_work + batch_pairs,
+                        "total": total_work,
+                        "batch_pairs": batch_pairs,
+                        "anchor_name": str(last_event["anchor_name"]),
+                        "genome": str(last_event["genome"]),
+                        "targets_completed": int(last_event["targets_completed"]),
+                        "targets_total": int(last_event["targets_total"]),
+                        "target_chunks": int(last_event["target_chunks"]),
+                    }
+                pending_write_futures.append(
+                    (
+                        loop.run_in_executor(
+                            writer_executor,
+                            _write_matrix_compare_mask_transfer_batch,
+                            output_file,
+                            batch_device_results,
+                            log_context,
+                        ),
+                        batch_progress,
+                    )
+                )
+
             async def flush_pending_device_results() -> None:
-                nonlocal pending_device_results, pending_payloads
+                nonlocal pending_device_results, pending_progress
                 if not pending_device_results:
                     return
                 batch_device_results = pending_device_results
                 pending_device_results = []
+                if experimental_mask_transfer_pipeline:
+                    batch_progress = pending_progress
+                    pending_progress = []
+                    if pending_write_futures:
+                        await drain_writer_results(force_one=True)
+                    submit_mask_write_batch(batch_device_results, batch_progress)
+                    return
                 combined_np = _download_torch_result_tensor_batch(
                     compute_backend=compute_backend,
                     totals_tensors=[item["total_positions"] for item in batch_device_results],
                     shared_tensors=[item["share_allele_pos"] for item in batch_device_results],
                 )
+                batch_payloads: list[dict[str, object]] = []
                 for result_idx, item in enumerate(batch_device_results):
                     valid_count = int(item["valid_count"])
-                    pending_payloads.append(
+                    batch_payloads.append(
                         {
                             "sample_1_idx": int(item["sample_1_idx"]),
                             "sample_1": str(item["sample_1"]),
@@ -4405,21 +4613,20 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                             else np.asarray(item["gene_share_allele_pos"], dtype=np.int64)[:, :valid_count].copy(),
                         }
                     )
-
-            async def flush_pending_block_units() -> None:
-                nonlocal pending_payloads, pending_progress, completed_work
-                await flush_pending_device_results()
-                if not pending_payloads and not pending_progress:
-                    return
-                batch_payloads = pending_payloads
                 batch_progress = pending_progress
-                pending_payloads = []
                 pending_progress = []
                 if batch_payloads:
                     if pending_write_futures:
                         await drain_writer_results(force_one=True)
                     submit_write_batch(batch_payloads, batch_progress)
+
+            async def flush_pending_block_units() -> None:
+                nonlocal pending_progress, completed_work
+                await flush_pending_device_results()
+                if experimental_mask_transfer_pipeline or not pending_progress:
                     return
+                batch_progress = pending_progress
+                pending_progress = []
                 for event in batch_progress:
                     completed_work += int(event["delta"])
                 if batch_progress and progress_callback is not None:
@@ -4497,40 +4704,70 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     matrix=anchor_matrix,
                     matrix_value_semantics=matrix_value_semantics,
                 )
-                total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
-                    compute_backend=compute_backend,
-                    anchor_torch=anchor_torch,
-                    target_torch=target_torch,
-                    vector_length=spec.matrix_length,
-                    matrix_value_semantics=matrix_value_semantics,
-                    need_ibs="ibs" in calculations,
-                    gene_ranges=genome_gene_ranges if "gene" in calculations else None,
-                )
+                if experimental_mask_transfer_pipeline:
+                    total_mask_torch, shared_mask_torch = _compare_anchor_against_target_chunk_torch_device_masks(
+                        compute_backend=compute_backend,
+                        anchor_torch=anchor_torch,
+                        target_torch=target_torch,
+                        vector_length=spec.matrix_length,
+                    )
+                else:
+                    total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
+                        compute_backend=compute_backend,
+                        anchor_torch=anchor_torch,
+                        target_torch=target_torch,
+                        vector_length=spec.matrix_length,
+                        matrix_value_semantics=matrix_value_semantics,
+                        need_ibs="ibs" in calculations,
+                        gene_ranges=genome_gene_ranges if "gene" in calculations else None,
+                    )
                 await drain_anchor_prefetch(force=False)
-                pending_device_results.append(
-                    {
-                        "sample_1_idx": anchor_idx,
-                        "sample_1": samples_by_id[anchor_idx],
-                        "sample_2_idx": block_ids[missing_positions].astype(np.int64, copy=True),
-                        "sample_2": [block_names[pos] for pos in missing_positions],
-                        "genome_idx": spec.genome_idx,
-                        "genome": genome_name,
-                        "calculations": calculations,
-                        "total_positions": total_inc_torch[missing_positions],
-                        "share_allele_pos": shared_inc_torch[missing_positions],
-                        "max_consecutive_length": None
-                        if ibs_inc is None
-                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
-                        "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
-                        "gene_total_positions": None
-                        if gene_total_inc is None
-                        else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
-                        "gene_share_allele_pos": None
-                        if gene_shared_inc is None
-                        else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
-                        "valid_count": len(missing_positions),
-                    }
-                )
+                if experimental_mask_transfer_pipeline:
+                    total_mask_selected = total_mask_torch[:, missing_positions].contiguous()
+                    shared_mask_selected = shared_mask_torch[:, missing_positions].contiguous()
+                    pending_device_results.append(
+                        {
+                            "sample_1_idx": anchor_idx,
+                            "sample_1": samples_by_id[anchor_idx],
+                            "sample_2_idx": block_ids[missing_positions].astype(np.int64, copy=True),
+                            "sample_2": [block_names[pos] for pos in missing_positions],
+                            "genome_idx": spec.genome_idx,
+                            "genome": genome_name,
+                            "calculations": calculations,
+                            "mask_transfer": _schedule_torch_mask_transfer(
+                                compute_backend=compute_backend,
+                                total_mask=total_mask_selected,
+                                shared_mask=shared_mask_selected,
+                            ),
+                            "gene_ranges": list(genome_gene_ranges) if "gene" in calculations else [],
+                            "valid_count": len(missing_positions),
+                        }
+                    )
+                else:
+                    pending_device_results.append(
+                        {
+                            "sample_1_idx": anchor_idx,
+                            "sample_1": samples_by_id[anchor_idx],
+                            "sample_2_idx": block_ids[missing_positions].astype(np.int64, copy=True),
+                            "sample_2": [block_names[pos] for pos in missing_positions],
+                            "genome_idx": spec.genome_idx,
+                            "genome": genome_name,
+                            "calculations": calculations,
+                            "total_positions": total_inc_torch[missing_positions],
+                            "share_allele_pos": shared_inc_torch[missing_positions],
+                            "max_consecutive_length": None
+                            if ibs_inc is None
+                            else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                            "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
+                            "gene_total_positions": None
+                            if gene_total_inc is None
+                            else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
+                            "gene_share_allele_pos": None
+                            if gene_shared_inc is None
+                            else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
+                            "valid_count": len(missing_positions),
+                        }
+                    )
                 processed_pairs_for_block += len(missing_positions)
                 pending_progress.append(
                     {
@@ -4552,41 +4789,71 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 missing_positions = internal_missing_positions.get(local_anchor_pos, [])
                 if not missing_positions:
                     continue
-                total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
-                    compute_backend=compute_backend,
-                    anchor_torch=target_torch[:, :, local_anchor_pos],
-                    target_torch=target_torch[:, :, local_anchor_pos + 1:],
-                    vector_length=spec.matrix_length,
-                    matrix_value_semantics=matrix_value_semantics,
-                    need_ibs="ibs" in calculations,
-                    gene_ranges=genome_gene_ranges if "gene" in calculations else None,
-                )
+                if experimental_mask_transfer_pipeline:
+                    total_mask_torch, shared_mask_torch = _compare_anchor_against_target_chunk_torch_device_masks(
+                        compute_backend=compute_backend,
+                        anchor_torch=target_torch[:, :, local_anchor_pos],
+                        target_torch=target_torch[:, :, local_anchor_pos + 1:],
+                        vector_length=spec.matrix_length,
+                    )
+                else:
+                    total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
+                        compute_backend=compute_backend,
+                        anchor_torch=target_torch[:, :, local_anchor_pos],
+                        target_torch=target_torch[:, :, local_anchor_pos + 1:],
+                        vector_length=spec.matrix_length,
+                        matrix_value_semantics=matrix_value_semantics,
+                        need_ibs="ibs" in calculations,
+                        gene_ranges=genome_gene_ranges if "gene" in calculations else None,
+                    )
                 later_ids = block_ids[local_anchor_pos + 1:]
                 later_names = block_names[local_anchor_pos + 1:]
-                pending_device_results.append(
-                    {
-                        "sample_1_idx": int(block_ids[local_anchor_pos]),
-                        "sample_1": block_names[local_anchor_pos],
-                        "sample_2_idx": later_ids[missing_positions].astype(np.int64, copy=True),
-                        "sample_2": [later_names[pos] for pos in missing_positions],
-                        "genome_idx": spec.genome_idx,
-                        "genome": genome_name,
-                        "calculations": calculations,
-                        "total_positions": total_inc_torch[missing_positions],
-                        "share_allele_pos": shared_inc_torch[missing_positions],
-                        "max_consecutive_length": None
-                        if ibs_inc is None
-                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
-                        "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
-                        "gene_total_positions": None
-                        if gene_total_inc is None
-                        else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
-                        "gene_share_allele_pos": None
-                        if gene_shared_inc is None
-                        else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
-                        "valid_count": len(missing_positions),
-                    }
-                )
+                if experimental_mask_transfer_pipeline:
+                    total_mask_selected = total_mask_torch[:, missing_positions].contiguous()
+                    shared_mask_selected = shared_mask_torch[:, missing_positions].contiguous()
+                    pending_device_results.append(
+                        {
+                            "sample_1_idx": int(block_ids[local_anchor_pos]),
+                            "sample_1": block_names[local_anchor_pos],
+                            "sample_2_idx": later_ids[missing_positions].astype(np.int64, copy=True),
+                            "sample_2": [later_names[pos] for pos in missing_positions],
+                            "genome_idx": spec.genome_idx,
+                            "genome": genome_name,
+                            "calculations": calculations,
+                            "mask_transfer": _schedule_torch_mask_transfer(
+                                compute_backend=compute_backend,
+                                total_mask=total_mask_selected,
+                                shared_mask=shared_mask_selected,
+                            ),
+                            "gene_ranges": list(genome_gene_ranges) if "gene" in calculations else [],
+                            "valid_count": len(missing_positions),
+                        }
+                    )
+                else:
+                    pending_device_results.append(
+                        {
+                            "sample_1_idx": int(block_ids[local_anchor_pos]),
+                            "sample_1": block_names[local_anchor_pos],
+                            "sample_2_idx": later_ids[missing_positions].astype(np.int64, copy=True),
+                            "sample_2": [later_names[pos] for pos in missing_positions],
+                            "genome_idx": spec.genome_idx,
+                            "genome": genome_name,
+                            "calculations": calculations,
+                            "total_positions": total_inc_torch[missing_positions],
+                            "share_allele_pos": shared_inc_torch[missing_positions],
+                            "max_consecutive_length": None
+                            if ibs_inc is None
+                            else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                            "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
+                            "gene_total_positions": None
+                            if gene_total_inc is None
+                            else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
+                            "gene_share_allele_pos": None
+                            if gene_shared_inc is None
+                            else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
+                            "valid_count": len(missing_positions),
+                        }
+                    )
                 processed_pairs_for_block += len(missing_positions)
                 pending_progress.append(
                     {
