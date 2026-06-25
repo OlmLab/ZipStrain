@@ -9,7 +9,7 @@ Compared with `0.11.0`:
 - Visualization: split silhouette analysis into a compute step and a plotting step.
 - Visualization: added peak summarization for silhouette curves, including candidate peaks and best-peak selection.
 - Visualization: kept `get_silhouette_plot` as a convenience wrapper around the new compute/plot pair.
-- Matrix comparison: IBS torch runs now reduce on CPU after transfer, and the shared-mask transfer is bit-packed to cut transfer volume.
+- Matrix comparison: reverted the IBS torch path to the 0.11.0 behavior while keeping the visualization split/peak work.
 
 ## 0.11.0
 

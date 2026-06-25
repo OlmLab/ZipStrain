@@ -2834,16 +2834,12 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
             None,
         )
 
-    def download_stub(compute_backend, totals_tensors, shared_tensors, max_run_tensors=None):
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
         max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        channel_count = 3 if max_run_tensors is not None else 2
-        out = np.zeros((len(totals_tensors), channel_count, max_len), dtype=np.int64)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
         for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
             out[idx, 0, : len(totals_tensor)] = totals_tensor
             out[idx, 1, : len(shared_tensor)] = shared_tensor
-        if max_run_tensors is not None:
-            for idx, max_run_tensor in enumerate(max_run_tensors):
-                out[idx, 2, : len(max_run_tensor)] = max_run_tensor
         return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
@@ -2920,16 +2916,12 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
             None,
         )
 
-    def download_stub(compute_backend, totals_tensors, shared_tensors, max_run_tensors=None):
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
         max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        channel_count = 3 if max_run_tensors is not None else 2
-        out = np.zeros((len(totals_tensors), channel_count, max_len), dtype=np.int64)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
         for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
             out[idx, 0, : len(totals_tensor)] = totals_tensor
             out[idx, 1, : len(shared_tensor)] = shared_tensor
-        if max_run_tensors is not None:
-            for idx, max_run_tensor in enumerate(max_run_tensors):
-                out[idx, 2, : len(max_run_tensor)] = max_run_tensor
         return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
@@ -3007,16 +2999,12 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
             None,
         )
 
-    def download_stub(compute_backend, totals_tensors, shared_tensors, max_run_tensors=None):
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
         max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        channel_count = 3 if max_run_tensors is not None else 2
-        out = np.zeros((len(totals_tensors), channel_count, max_len), dtype=np.int64)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
         for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
             out[idx, 0, : len(totals_tensor)] = totals_tensor
             out[idx, 1, : len(shared_tensor)] = shared_tensor
-        if max_run_tensors is not None:
-            for idx, max_run_tensor in enumerate(max_run_tensors):
-                out[idx, 2, : len(max_run_tensor)] = max_run_tensor
         return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
@@ -3085,16 +3073,12 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
             None,
         )
 
-    def download_stub(compute_backend, totals_tensors, shared_tensors, max_run_tensors=None):
+    def download_stub(compute_backend, totals_tensors, shared_tensors):
         max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        channel_count = 3 if max_run_tensors is not None else 2
-        out = np.zeros((len(totals_tensors), channel_count, max_len), dtype=np.int64)
+        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
         for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
             out[idx, 0, : len(totals_tensor)] = totals_tensor
             out[idx, 1, : len(shared_tensor)] = shared_tensor
-        if max_run_tensors is not None:
-            for idx, max_run_tensor in enumerate(max_run_tensors):
-                out[idx, 2, : len(max_run_tensor)] = max_run_tensor
         return out
 
     original_mark = mp._mark_completed_pair_genomes
@@ -3236,91 +3220,4 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
     )
 
     assert actual.equals(expected)
-
-
-def test_pack_shared_mask_torch_roundtrip_preserves_ibs():
-    torch = pytest.importorskip("torch")
-    shared_mask = np.array(
-        [
-            [True, False, True],
-            [True, True, False],
-            [False, True, False],
-            [True, True, True],
-            [True, False, True],
-            [True, False, True],
-            [False, True, True],
-            [True, True, False],
-        ],
-        dtype=bool,
-    )
-
-    expected = mp._max_ibs_from_shared_mask_numpy(shared_mask)
-    packed = mp._pack_shared_mask_torch(
-        torch_module=torch,
-        shared_mask=torch.tensor(shared_mask, dtype=torch.bool),
-    ).cpu().numpy()
-    actual = mp._max_ibs_from_packed_shared_mask_numpy(
-        packed,
-        position_count=shared_mask.shape[0],
-    )
-
-    assert actual.tolist() == expected.tolist()
-
-
-def test_pack_shared_mask_torch_roundtrip_preserves_ibs_for_random_masks():
-    torch = pytest.importorskip("torch")
-    rng = np.random.default_rng(0)
-    for rows, cols in [(1, 1), (8, 3), (31, 7), (64, 11)]:
-        shared_mask = rng.integers(0, 2, size=(rows, cols), dtype=np.int8).astype(bool, copy=False)
-        expected = mp._max_ibs_from_shared_mask_numpy(shared_mask)
-        packed = mp._pack_shared_mask_torch(
-            torch_module=torch,
-            shared_mask=torch.tensor(shared_mask, dtype=torch.bool),
-        ).cpu().numpy()
-        actual = mp._max_ibs_from_packed_shared_mask_numpy(
-            packed,
-            position_count=rows,
-        )
-
-        assert actual.tolist() == expected.tolist()
-
-
-def test_download_torch_shared_mask_batch_preserves_ibs_for_variable_target_lengths():
-    torch = pytest.importorskip("torch")
-    compute_backend = mp.MatrixPairComputeBackend("torch-cpu")
-    shared_masks = [
-        torch.tensor(
-            [
-                [True, False, True, True],
-                [True, True, False, False],
-                [False, True, False, True],
-                [True, True, True, False],
-                [True, False, True, False],
-            ],
-            dtype=torch.bool,
-        ),
-        torch.tensor(
-            [
-                [False, True],
-                [True, True],
-                [True, False],
-                [False, False],
-                [True, True],
-            ],
-            dtype=torch.bool,
-        ),
-    ]
-
-    packed_masks = mp._download_torch_shared_mask_batch(
-        compute_backend=compute_backend,
-        shared_masks=shared_masks,
-    )
-
-    assert len(packed_masks) == len(shared_masks)
-    for shared_mask, packed_mask in zip(shared_masks, packed_masks):
-        expected = mp._max_ibs_from_shared_mask_numpy(shared_mask.cpu().numpy())
-        actual = mp._max_ibs_from_packed_shared_mask_numpy(
-            packed_mask,
-            position_count=int(shared_mask.shape[0]),
-        )
-        assert actual.tolist() == expected.tolist()
+    assert actual.get_column("max_consecutive_length").to_list() == [2]
