@@ -3238,7 +3238,7 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
     assert actual.equals(expected)
 
 
-def test_max_ibs_from_shared_mask_torch_matches_numpy():
+def test_pack_shared_mask_torch_roundtrip_preserves_ibs():
     torch = pytest.importorskip("torch")
     shared_mask = np.array(
         [
@@ -3255,23 +3255,72 @@ def test_max_ibs_from_shared_mask_torch_matches_numpy():
     )
 
     expected = mp._max_ibs_from_shared_mask_numpy(shared_mask)
-    actual = mp._max_ibs_from_shared_mask_torch(
+    packed = mp._pack_shared_mask_torch(
         torch_module=torch,
         shared_mask=torch.tensor(shared_mask, dtype=torch.bool),
     ).cpu().numpy()
+    actual = mp._max_ibs_from_packed_shared_mask_numpy(
+        packed,
+        position_count=shared_mask.shape[0],
+    )
 
     assert actual.tolist() == expected.tolist()
 
 
-def test_max_ibs_from_shared_mask_torch_matches_numpy_for_random_masks():
+def test_pack_shared_mask_torch_roundtrip_preserves_ibs_for_random_masks():
     torch = pytest.importorskip("torch")
     rng = np.random.default_rng(0)
     for rows, cols in [(1, 1), (8, 3), (31, 7), (64, 11)]:
         shared_mask = rng.integers(0, 2, size=(rows, cols), dtype=np.int8).astype(bool, copy=False)
         expected = mp._max_ibs_from_shared_mask_numpy(shared_mask)
-        actual = mp._max_ibs_from_shared_mask_torch(
+        packed = mp._pack_shared_mask_torch(
             torch_module=torch,
             shared_mask=torch.tensor(shared_mask, dtype=torch.bool),
         ).cpu().numpy()
+        actual = mp._max_ibs_from_packed_shared_mask_numpy(
+            packed,
+            position_count=rows,
+        )
 
+        assert actual.tolist() == expected.tolist()
+
+
+def test_download_torch_shared_mask_batch_preserves_ibs_for_variable_target_lengths():
+    torch = pytest.importorskip("torch")
+    compute_backend = mp.MatrixPairComputeBackend("torch-cpu")
+    shared_masks = [
+        torch.tensor(
+            [
+                [True, False, True, True],
+                [True, True, False, False],
+                [False, True, False, True],
+                [True, True, True, False],
+                [True, False, True, False],
+            ],
+            dtype=torch.bool,
+        ),
+        torch.tensor(
+            [
+                [False, True],
+                [True, True],
+                [True, False],
+                [False, False],
+                [True, True],
+            ],
+            dtype=torch.bool,
+        ),
+    ]
+
+    packed_masks = mp._download_torch_shared_mask_batch(
+        compute_backend=compute_backend,
+        shared_masks=shared_masks,
+    )
+
+    assert len(packed_masks) == len(shared_masks)
+    for shared_mask, packed_mask in zip(shared_masks, packed_masks):
+        expected = mp._max_ibs_from_shared_mask_numpy(shared_mask.cpu().numpy())
+        actual = mp._max_ibs_from_packed_shared_mask_numpy(
+            packed_mask,
+            position_count=int(shared_mask.shape[0]),
+        )
         assert actual.tolist() == expected.tolist()

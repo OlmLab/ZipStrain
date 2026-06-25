@@ -3601,26 +3601,51 @@ def _max_ibs_from_shared_mask_numpy(shared_mask) -> np.ndarray:
     return max_runs
 
 
-def _max_ibs_from_shared_mask_torch(
+def _pack_shared_mask_torch(
     *,
     torch_module,
     shared_mask,
 ):
-    """Return longest consecutive shared-position runs per target on the current torch device."""
+    """Pack a bool shared-mask tensor along the position axis into bytes on the current torch device."""
     if int(shared_mask.ndim) != 2:
         raise ValueError("shared_mask must be a 2D positions-by-target tensor.")
     position_count = int(shared_mask.shape[0])
     target_count = int(shared_mask.shape[1])
     if target_count == 0:
-        return torch_module.zeros(0, dtype=torch_module.int64, device=shared_mask.device)
+        packed_rows = (position_count + 7) // 8
+        return torch_module.zeros((packed_rows, 0), dtype=torch_module.uint8, device=shared_mask.device)
     if position_count == 0:
-        return torch_module.zeros(target_count, dtype=torch_module.int64, device=shared_mask.device)
-    nz = shared_mask.to(torch_module.int32)
-    csum = nz.cumsum(dim=0, dtype=torch_module.int32)
-    zero_mask = (~shared_mask).to(torch_module.int32)
-    reset = (csum * zero_mask).cummax(dim=0).values
-    runs = csum - reset
-    return runs.amax(dim=0).to(torch_module.int64)
+        return torch_module.zeros((0, target_count), dtype=torch_module.uint8, device=shared_mask.device)
+    packed_rows = (position_count + 7) // 8
+    padded_rows = packed_rows * 8
+    shared_mask_u8 = shared_mask.to(torch_module.uint8)
+    if padded_rows != position_count:
+        padded = torch_module.zeros((padded_rows, target_count), dtype=torch_module.uint8, device=shared_mask.device)
+        padded[:position_count, :] = shared_mask_u8
+    else:
+        padded = shared_mask_u8
+    reshaped = padded.reshape(packed_rows, 8, target_count).to(torch_module.int16)
+    weights = (2 ** torch_module.arange(8, dtype=torch_module.int16, device=shared_mask.device)).reshape(1, 8, 1)
+    return (reshaped * weights).sum(dim=1).to(torch_module.uint8)
+
+
+def _max_ibs_from_packed_shared_mask_numpy(
+    packed_shared_mask: np.ndarray,
+    *,
+    position_count: int,
+) -> np.ndarray:
+    packed_shared_mask_np = np.asarray(packed_shared_mask, dtype=np.uint8)
+    if int(packed_shared_mask_np.ndim) != 2:
+        raise ValueError("packed_shared_mask must be a 2D packed-positions-by-target array.")
+    target_count = int(packed_shared_mask_np.shape[1])
+    if target_count == 0:
+        return np.zeros(0, dtype=np.int64)
+    if position_count == 0:
+        return np.zeros(target_count, dtype=np.int64)
+    unpacked = np.unpackbits(packed_shared_mask_np, axis=0, bitorder="little")
+    if unpacked.shape[0] > position_count:
+        unpacked = unpacked[:position_count, :]
+    return _max_ibs_from_shared_mask_numpy(unpacked.astype(bool, copy=False))
 
 
 def _shared_mask_to_numpy(shared_mask) -> np.ndarray:
@@ -4099,21 +4124,16 @@ def _download_torch_result_tensor_batch(
     compute_backend: MatrixPairComputeBackend,
     totals_tensors: list,
     shared_tensors: list,
-    max_run_tensors: Optional[list] = None,
 ) -> np.ndarray:
     if not totals_tensors:
-        channel_count = 3 if max_run_tensors else 2
-        return np.zeros((0, channel_count, 0), dtype=np.int64)
+        return np.zeros((0, 2, 0), dtype=np.int64)
     if len(totals_tensors) != len(shared_tensors):
         raise ValueError("totals_tensors and shared_tensors must have the same length")
-    if max_run_tensors is not None and len(totals_tensors) != len(max_run_tensors):
-        raise ValueError("totals_tensors and max_run_tensors must have the same length")
     torch_module = compute_backend.torch
     lengths = [int(tensor.shape[0]) for tensor in totals_tensors]
     max_length = max(lengths)
     padded_totals = []
     padded_shared = []
-    padded_max_runs = [] if max_run_tensors is not None else None
     for totals_tensor, shared_tensor, length in zip(totals_tensors, shared_tensors, lengths):
         if int(shared_tensor.shape[0]) != length:
             raise ValueError("totals and shared tensors must have matching lengths")
@@ -4124,21 +4144,9 @@ def _download_torch_result_tensor_batch(
         else:
             padded_totals.append(totals_tensor)
             padded_shared.append(shared_tensor)
-    if max_run_tensors is not None and padded_max_runs is not None:
-        for max_run_tensor, length in zip(max_run_tensors, lengths):
-            if int(max_run_tensor.shape[0]) != length:
-                raise ValueError("totals and max-run tensors must have matching lengths")
-            pad_width = max_length - length
-            if pad_width > 0:
-                padded_max_runs.append(torch_module.nn.functional.pad(max_run_tensor, (0, pad_width)))
-            else:
-                padded_max_runs.append(max_run_tensor)
     stacked_totals = torch_module.stack(padded_totals, dim=0)
     stacked_shared = torch_module.stack(padded_shared, dim=0)
-    components = [stacked_totals, stacked_shared]
-    if max_run_tensors is not None and padded_max_runs is not None:
-        components.append(torch_module.stack(padded_max_runs, dim=0))
-    combined = torch_module.stack(components, dim=1)
+    combined = torch_module.stack([stacked_totals, stacked_shared], dim=1)
     if compute_backend.device == "cuda":
         combined_cpu = torch_module.empty(
             combined.shape,
@@ -4152,6 +4160,56 @@ def _download_torch_result_tensor_batch(
     else:
         combined_np = combined.cpu().numpy()
     return combined_np
+
+
+def _download_torch_shared_mask_batch(
+    compute_backend: MatrixPairComputeBackend,
+    shared_masks: list,
+) -> list[np.ndarray]:
+    if not shared_masks:
+        return []
+    torch_module = compute_backend.torch
+    packed_masks = [
+        _pack_shared_mask_torch(
+            torch_module=torch_module,
+            shared_mask=shared_mask,
+        )
+        for shared_mask in shared_masks
+    ]
+    packed_row_counts = [int(mask.shape[0]) for mask in packed_masks]
+    target_counts = [int(mask.shape[1]) for mask in packed_masks]
+    max_packed_rows = max(packed_row_counts, default=0)
+    max_target_count = max(target_counts, default=0)
+    padded_masks = []
+    for packed_mask, packed_rows, target_count in zip(packed_masks, packed_row_counts, target_counts):
+        if packed_rows == max_packed_rows and target_count == max_target_count:
+            padded_masks.append(packed_mask)
+            continue
+        padded = torch_module.zeros(
+            (max_packed_rows, max_target_count),
+            dtype=torch_module.uint8,
+            device=packed_mask.device,
+        )
+        if packed_rows > 0 and target_count > 0:
+            padded[:packed_rows, :target_count] = packed_mask
+        padded_masks.append(padded)
+    stacked_masks = torch_module.stack(padded_masks, dim=0)
+    if compute_backend.device == "cuda":
+        stacked_cpu = torch_module.empty(
+            stacked_masks.shape,
+            dtype=stacked_masks.dtype,
+            device="cpu",
+            pin_memory=True,
+        )
+        stacked_cpu.copy_(stacked_masks, non_blocking=True)
+        torch_module.cuda.current_stream().synchronize()
+        stacked_np = stacked_cpu.numpy()
+    else:
+        stacked_np = stacked_masks.cpu().numpy()
+    return [
+        stacked_np[idx, :packed_rows, :target_count].copy()
+        for idx, (packed_rows, target_count) in enumerate(zip(packed_row_counts, target_counts))
+    ]
 
 
 async def _matrix_compare_reuse_target_chunks_torch_async(
@@ -4414,23 +4472,25 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     return
                 batch_device_results = pending_device_results
                 pending_device_results = []
-                max_run_tensors = None
+                packed_shared_masks = None
                 if batch_device_results and batch_device_results[0]["ibs_shared_mask"] is not None:
-                    max_run_tensors = [
-                        _max_ibs_from_shared_mask_torch(
-                            torch_module=compute_backend.torch,
-                            shared_mask=item["ibs_shared_mask"],
-                        )
-                        for item in batch_device_results
-                    ]
+                    packed_shared_masks = _download_torch_shared_mask_batch(
+                        compute_backend=compute_backend,
+                        shared_masks=[item["ibs_shared_mask"] for item in batch_device_results],
+                    )
                 combined_np = _download_torch_result_tensor_batch(
                     compute_backend=compute_backend,
                     totals_tensors=[item["total_positions"] for item in batch_device_results],
                     shared_tensors=[item["share_allele_pos"] for item in batch_device_results],
-                    max_run_tensors=max_run_tensors,
                 )
                 for result_idx, item in enumerate(batch_device_results):
                     valid_count = int(item["valid_count"])
+                    max_consecutive_length = None
+                    if packed_shared_masks is not None:
+                        max_consecutive_length = _max_ibs_from_packed_shared_mask_numpy(
+                            packed_shared_masks[result_idx],
+                            position_count=int(item["ibs_position_count"]),
+                        )
                     pending_payloads.append(
                         {
                             "sample_1_idx": int(item["sample_1_idx"]),
@@ -4443,8 +4503,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                             "total_positions": combined_np[result_idx, 0, :valid_count].astype(np.int64, copy=True),
                             "share_allele_pos": combined_np[result_idx, 1, :valid_count].astype(np.int64, copy=True),
                             "max_consecutive_length": None
-                            if max_run_tensors is None
-                            else combined_np[result_idx, 2, :valid_count].astype(np.int64, copy=True),
+                            if max_consecutive_length is None
+                            else max_consecutive_length.astype(np.int64, copy=True),
                             "gene_names": list(item.get("gene_names") or []),
                             "gene_total_positions": None
                             if item.get("gene_total_positions") is None
@@ -4570,6 +4630,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "ibs_shared_mask": None
                         if ibs_shared_mask is None
                         else ibs_shared_mask[:, missing_positions].contiguous(),
+                        "ibs_position_count": 0
+                        if ibs_shared_mask is None
+                        else int(ibs_shared_mask.shape[0]),
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None
@@ -4626,6 +4689,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "ibs_shared_mask": None
                         if ibs_shared_mask is None
                         else ibs_shared_mask[:, missing_positions].contiguous(),
+                        "ibs_position_count": 0
+                        if ibs_shared_mask is None
+                        else int(ibs_shared_mask.shape[0]),
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None
