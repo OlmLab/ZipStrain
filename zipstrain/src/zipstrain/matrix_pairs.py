@@ -4056,7 +4056,7 @@ def _compare_anchor_against_target_chunk_torch_device(
         dtype=compute_backend.torch.int64,
         device=compute_backend.device,
     )
-    max_runs = None
+    ibs_shared_mask = None
     gene_total_positions = None
     gene_share_allele_pos = None
     if gene_ranges:
@@ -4074,10 +4074,7 @@ def _compare_anchor_against_target_chunk_torch_device(
             gene_ranges=gene_ranges,
         )
         if need_ibs:
-            max_runs = _max_ibs_from_shared_mask_torch(
-                torch_module=compute_backend.torch,
-                shared_mask=shared_mask,
-            )
+            ibs_shared_mask = shared_mask
     elif need_ibs:
         total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_shared_mask(
             torch_module=compute_backend.torch,
@@ -4086,10 +4083,7 @@ def _compare_anchor_against_target_chunk_torch_device(
         )
         chunk_totals_torch += total_inc
         chunk_shared_torch += shared_inc
-        max_runs = _max_ibs_from_shared_mask_torch(
-            torch_module=compute_backend.torch,
-            shared_mask=shared_mask,
-        )
+        ibs_shared_mask = shared_mask
     else:
         total_inc, shared_inc = _compare_tile_presence_torch_tensors(
             torch_module=compute_backend.torch,
@@ -4098,7 +4092,7 @@ def _compare_anchor_against_target_chunk_torch_device(
         )
         chunk_totals_torch += total_inc
         chunk_shared_torch += shared_inc
-    return chunk_totals_torch, chunk_shared_torch, max_runs, gene_total_positions, gene_share_allele_pos
+    return chunk_totals_torch, chunk_shared_torch, ibs_shared_mask, gene_total_positions, gene_share_allele_pos
 
 
 def _download_torch_result_tensor_batch(
@@ -4421,8 +4415,14 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 batch_device_results = pending_device_results
                 pending_device_results = []
                 max_run_tensors = None
-                if batch_device_results and batch_device_results[0]["max_consecutive_length"] is not None:
-                    max_run_tensors = [item["max_consecutive_length"] for item in batch_device_results]
+                if batch_device_results and batch_device_results[0]["ibs_shared_mask"] is not None:
+                    max_run_tensors = [
+                        _max_ibs_from_shared_mask_torch(
+                            torch_module=compute_backend.torch,
+                            shared_mask=item["ibs_shared_mask"],
+                        )
+                        for item in batch_device_results
+                    ]
                 combined_np = _download_torch_result_tensor_batch(
                     compute_backend=compute_backend,
                     totals_tensors=[item["total_positions"] for item in batch_device_results],
@@ -4546,7 +4546,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     matrix=anchor_matrix,
                     matrix_value_semantics=matrix_value_semantics,
                 )
-                total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
+                total_inc_torch, shared_inc_torch, ibs_shared_mask, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
                     anchor_torch=anchor_torch,
                     target_torch=target_torch,
@@ -4567,9 +4567,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "calculations": calculations,
                         "total_positions": total_inc_torch[missing_positions],
                         "share_allele_pos": shared_inc_torch[missing_positions],
-                        "max_consecutive_length": None
-                        if ibs_inc is None
-                        else ibs_inc[missing_positions].contiguous(),
+                        "ibs_shared_mask": None
+                        if ibs_shared_mask is None
+                        else ibs_shared_mask[:, missing_positions].contiguous(),
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None
@@ -4601,7 +4601,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 missing_positions = internal_missing_positions.get(local_anchor_pos, [])
                 if not missing_positions:
                     continue
-                total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
+                total_inc_torch, shared_inc_torch, ibs_shared_mask, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
                     anchor_torch=target_torch[:, :, local_anchor_pos],
                     target_torch=target_torch[:, :, local_anchor_pos + 1:],
@@ -4623,9 +4623,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "calculations": calculations,
                         "total_positions": total_inc_torch[missing_positions],
                         "share_allele_pos": shared_inc_torch[missing_positions],
-                        "max_consecutive_length": None
-                        if ibs_inc is None
-                        else ibs_inc[missing_positions].contiguous(),
+                        "ibs_shared_mask": None
+                        if ibs_shared_mask is None
+                        else ibs_shared_mask[:, missing_positions].contiguous(),
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None
