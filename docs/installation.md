@@ -1,11 +1,13 @@
 # Installation
 
-Follow the steps below to set up ZipStrain on your system.
+ZipStrain is a python program that works on mac and linux environments. Follow the steps below to set up ZipStrain on your system.
 
 ## Requirements
 
 - **Python 3.12 or higher**
 - **samtools** (not bundled with the pip install — see below)
+
+TODO: Add Nextflow versioning
 
 ## Install using pip
 
