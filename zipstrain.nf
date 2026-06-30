@@ -734,10 +734,10 @@ workflow
             sample_names_list = getProfileSampleNamesTableColumn(input_table)
             profiles=[profile_locations_list,sample_names_list].transpose()
             def profile_pairs = []
-            for (int i = 0; i < profiles.size(); i++) {
-                for (int j = i + 1; j < profiles.size(); j++) {
+            (0..<profiles.size()).each { i ->
+                (i+1..<profiles.size()).each { j ->
                     profile_pairs << (profiles[i] + profiles[j])
-                    }
+                }
             }
             pair_channel=Channel.from(profile_pairs)
         }
@@ -764,10 +764,10 @@ workflow
             sample_names_list = getProfileSampleNamesTableColumn(input_table)
             profiles=[profile_locations_list,sample_names_list].transpose()
             def profile_pairs = []
-            for (int i = 0; i < profiles.size(); i++) {
-                for (int j = i + 1; j < profiles.size(); j++) {
+            (0..<profiles.size()).each { i ->
+                (i+1..<profiles.size()).each { j ->
                     profile_pairs << (profiles[i] + profiles[j])
-                    }
+                }
             }
             pair_channel=Channel.from(profile_pairs)
         }
