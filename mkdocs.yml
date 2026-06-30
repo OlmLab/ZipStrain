@@ -19,6 +19,9 @@ nav:
 markdown_extensions:
   - toc:
       toc_depth: 4
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
 
 plugins:
   - mkdocstrings:

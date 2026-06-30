@@ -2,12 +2,27 @@
 
 ZipStrain is a python program that works on mac and linux environments. Follow the steps below to set up ZipStrain on your system.
 
+TODO: More of an overview of what all these things are, why you would want to use one over the other, and links to each of them
+
 ## Requirements
 
 - **Python 3.12 or higher**
 - **samtools** (not bundled with the pip install — see below)
+- **Nextflow** (only required for the Nextflow pipeline workflow — see below)
 
-TODO: Add Nextflow versioning
+## Installing Nextflow
+
+Nextflow is only needed if you plan to use the [Nextflow pipeline](./NextflowPipeline.md). Install it via conda or Homebrew:
+
+```bash
+conda install -c bioconda nextflow -y
+```
+
+```bash
+brew install nextflow
+```
+
+Verify with `nextflow -version`.
 
 ## Install using pip
 
