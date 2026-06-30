@@ -132,14 +132,12 @@ process build_db_from_Sylph{
     */
     publishDir "${params.output_dir}/db_from_sylph/", mode: params.publish_mode
     containerOptions {
-        switch( workflow.containerEngine ) {
-            case 'docker':
-                return "--volume ${genome_cache_dir}:${genome_cache_dir}"
-            case 'apptainer':
-            case 'singularity':
-                return "--bind ${genome_cache_dir}:${genome_cache_dir}"
-            default:
-                return ''
+        if (workflow.containerEngine == 'docker') {
+            return "--volume ${genome_cache_dir}:${genome_cache_dir}"
+        } else if (workflow.containerEngine == 'apptainer' || workflow.containerEngine == 'singularity') {
+            return "--bind ${genome_cache_dir}:${genome_cache_dir}"
+        } else {
+            return ''
         }
     }
     input:
