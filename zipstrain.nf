@@ -763,7 +763,7 @@ workflow
             profile_locations_list = getProfileLocationsTableColumn(input_table).collect{t->file(t)}
             sample_names_list = getProfileSampleNamesTableColumn(input_table)
             profiles=[profile_locations_list,sample_names_list].transpose()
-            def profile_pairs = []
+            profile_pairs = []
             (0..<profiles.size()).each { i ->
                 (i+1..<profiles.size()).each { j ->
                     profile_pairs << (profiles[i] + profiles[j])
@@ -785,14 +785,6 @@ workflow
         compare_genomes(pair_channel, stb)
 
 }}
-workflow profile_contigs
-{
-    input_table = tableToDict(file(params.input_table))
-    contig_tables = file(params.contig_tables)
-    sample_names = Channel.fromList(input_table['sample_name'])
-    bamfiles = Channel.fromPath(input_table['bamfile'].collect{t->file(t)})
-    get_mpileup_contigs(sample_names, contig_tables, bamfiles, file(params.gene_file))
-}
 
 workflow profile{
     take:
