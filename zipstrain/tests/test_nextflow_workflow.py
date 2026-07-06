@@ -13,15 +13,40 @@ ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 NEXTFLOW_FILE = ROOT_DIR / "zipstrain.nf"
 CONF_FILE = ROOT_DIR / "conf.config"
 
-# Resolve nextflow + its JVM relative to whichever Python environment is
-# running the tests, so this works for any conda env that has both
-# `nextflow` and `openjdk` installed (matches how the zipstrain env is set
-# up), without hardcoding a path.
+# Resolve nextflow + a JVM for it to use. The conda env running these tests
+# (`<env>/bin/nextflow` + `<env>/lib/jvm`) is checked *first* and preferred
+# when present, so a stray/older `nextflow` earlier on a developer's PATH
+# never gets picked up instead of the pinned env copy. Falls back to a plain
+# PATH lookup for environments without that conda layout (e.g. CI, where
+# actions/setup-java + nextflow-io/setup-nextflow put java/nextflow on PATH
+# and export JAVA_HOME directly).
 _ENV_PREFIX = pathlib.Path(sys.prefix)
-_NEXTFLOW_BIN = _ENV_PREFIX / "bin" / "nextflow"
-_JAVA_HOME = _ENV_PREFIX / "lib" / "jvm"
+_CONDA_NEXTFLOW_BIN = _ENV_PREFIX / "bin" / "nextflow"
+_CONDA_JAVA_HOME = _ENV_PREFIX / "lib" / "jvm"
+_CONDA_LAYOUT_AVAILABLE = _CONDA_NEXTFLOW_BIN.exists() and (_CONDA_JAVA_HOME / "bin" / "java").exists()
 
-_NEXTFLOW_AVAILABLE = _NEXTFLOW_BIN.exists() and (_JAVA_HOME / "bin" / "java").exists()
+if _CONDA_LAYOUT_AVAILABLE:
+    _NEXTFLOW_BIN = _CONDA_NEXTFLOW_BIN
+else:
+    _nextflow_on_path = shutil.which("nextflow")
+    _NEXTFLOW_BIN = pathlib.Path(_nextflow_on_path) if _nextflow_on_path else _CONDA_NEXTFLOW_BIN
+
+_JAVA_ON_PATH = shutil.which("java") is not None
+_JAVA_AVAILABLE = _CONDA_LAYOUT_AVAILABLE or _JAVA_ON_PATH
+
+_NEXTFLOW_AVAILABLE = _NEXTFLOW_BIN.exists() and _JAVA_AVAILABLE
+
+
+def _nextflow_subprocess_env() -> dict[str, str]:
+    """Builds the env for running nextflow: sets JAVA_HOME to the conda env's
+    JVM when using the conda layout (its `java` isn't on PATH by itself),
+    and makes sure the resolved nextflow binary's directory is on PATH."""
+    env = dict(os.environ)
+    if _CONDA_LAYOUT_AVAILABLE:
+        env["JAVA_HOME"] = str(_CONDA_JAVA_HOME)
+    nextflow_dir = str(_NEXTFLOW_BIN.parent)
+    env["PATH"] = f"{nextflow_dir}{os.pathsep}{env.get('PATH', '')}"
+    return env
 
 
 def _docker_available() -> bool:
@@ -207,10 +232,6 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
     profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
     output_dir = tmp_path / "out"
 
-    env = dict(os.environ)
-    env["JAVA_HOME"] = str(_JAVA_HOME)
-    env["PATH"] = f"{_ENV_PREFIX / 'bin'}{os.pathsep}{env.get('PATH', '')}"
-
     result = subprocess.run(
         [
             str(_NEXTFLOW_BIN),
@@ -224,7 +245,7 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
             "--output_dir", str(output_dir),
         ],
         cwd=tmp_path,
-        env=env,
+        env=_nextflow_subprocess_env(),
         capture_output=True,
         text=True,
         timeout=180,
@@ -268,10 +289,6 @@ def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
         "}\n"
     )
 
-    env = dict(os.environ)
-    env["JAVA_HOME"] = str(_JAVA_HOME)
-    env["PATH"] = f"{_ENV_PREFIX / 'bin'}{os.pathsep}{env.get('PATH', '')}"
-
     result = subprocess.run(
         [
             str(_NEXTFLOW_BIN),
@@ -288,7 +305,7 @@ def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
             "--output_dir", str(output_dir),
         ],
         cwd=tmp_path,
-        env=env,
+        env=_nextflow_subprocess_env(),
         capture_output=True,
         text=True,
         timeout=300,

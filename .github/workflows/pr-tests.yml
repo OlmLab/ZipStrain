@@ -39,6 +39,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y samtools
 
+      - name: Set up Java for Nextflow
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Set up Nextflow
+        uses: nextflow-io/setup-nextflow@v2
+        with:
+          version: "24.10.0"
+
       - name: Install ZipStrain with test dependencies
         working-directory: zipstrain
         run: |
@@ -52,7 +63,7 @@ jobs:
           OMP_NUM_THREADS: "1"
           MKL_NUM_THREADS: "1"
         run: |
-          python -m pytest tests -q \
+          python -m pytest tests -q -rs \
             --cov=src/zipstrain \
             --cov-report=xml \
             --cov-report=term-missing
