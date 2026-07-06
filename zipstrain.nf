@@ -80,7 +80,7 @@ process download_sylph_db{
     path "*.syldb", emit: sylph_db
     script:
     """
-    curl -L -O ${params.sylph_db_link}
+    wget ${params.sylph_db_link}
     """
 }
 process estimate_abundance_sylph{

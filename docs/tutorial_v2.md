@@ -203,12 +203,12 @@ Find the **Run** accession (starts with `SRR`) for each on those pages, then cre
 
 ```text
 Run
-<SRR_accession_for_N5_271_010G1>
-<SRR_accession_for_N5_271_010G2>
+SRR6262445
+SRR6262448
 ```
 
 ```bash
-printf 'Run\n<SRR_G1>\n<SRR_G2>\n' > sra.csv
+printf 'Run\nSRR6262445\nSRR6262448\n' > sra.csv
 ```
 
 ---
