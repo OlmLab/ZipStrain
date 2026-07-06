@@ -46,9 +46,12 @@ jobs:
           java-version: "21"
 
       - name: Set up Nextflow
-        uses: nextflow-io/setup-nextflow@v2
-        with:
-          version: "24.10.0"
+        env:
+          NXF_VER: "24.10.0"
+        run: |
+          curl -s https://get.nextflow.io | bash
+          sudo mv nextflow /usr/local/bin/
+          nextflow -version
 
       - name: Install ZipStrain with test dependencies
         working-directory: zipstrain
