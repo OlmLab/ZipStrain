@@ -669,3 +669,164 @@ def test_cli_profile_single_bam_without_reference_base_column(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     prof = pl.read_parquet(out_dir / "sample_profile.parquet")
     assert "ref_base_bitmask" not in prof.columns
+
+
+# ---------------------------------------------------------------------------
+# Profiling-asset preparation and caching
+# ---------------------------------------------------------------------------
+
+import json
+
+
+# Building the null model dominates asset-prep runtime; a small max_total_reads
+# keeps these caching-focused tests fast without changing what they verify.
+_FAST_NULL_MAX_READS = 100
+
+
+def _write_reference_and_stb(tmp_path):
+    """Write a tiny 2-scaffold reference FASTA + matching stb, return their paths."""
+    reference = tmp_path / "reference.fna"
+    reference.write_text(">chr1\nACGTACGTAC\n>chr2\nTTTTGGGGCC\n")
+    stb = tmp_path / "reference.stb"
+    stb.write_text("chr1\tgenome1\nchr2\tgenome1\n")
+    return reference, stb
+
+
+def _asset_names(assets_dir):
+    return {p.name for p in assets_dir.iterdir()}
+
+
+def test_prepare_profiling_assets_writes_all_files(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    out_dir = tmp_path / "assets"
+
+    assets = profile.prepare_profiling_assets(
+        reference_fasta=reference,
+        stb_file=stb,
+        output_dir=out_dir,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+
+    for path in (
+        assets.bed_file,
+        assets.gene_range_table,
+        assets.genome_length_file,
+        assets.null_model_file,
+        assets.profiling_contract_file,
+    ):
+        assert path.exists(), path
+
+    # No gene fasta -> empty gene range table, contract records gene hash as missing.
+    contract = json.loads(assets.profiling_contract_file.read_text())
+    assert contract["gene_hash"] == "NA"
+    assert contract["reference_hash"] != "NA"
+
+
+def test_resolve_profiling_assets_auto_generates_into_run_dir(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    assets = profile.resolve_profiling_assets(
+        run_dir=run_dir,
+        reference_fasta=reference,
+        stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+
+    assets_dir = run_dir / profile.DEFAULT_PROFILING_ASSETS_DIRNAME
+    assert assets_dir.is_dir()
+    assert assets.null_model_file == assets_dir / profile.ASSET_NULL_MODEL_FILENAME
+    assert assets.bed_file == assets_dir / profile.ASSET_BED_FILENAME
+    assert (assets_dir / profile.ASSET_CACHE_MANIFEST_FILENAME).exists()
+
+
+def test_resolve_profiling_assets_reuses_cache_when_inputs_unchanged(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    first = profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    null_model_mtime = first.null_model_file.stat().st_mtime_ns
+
+    # Second call with identical inputs must NOT regenerate (mtime unchanged).
+    profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    assert first.null_model_file.stat().st_mtime_ns == null_model_mtime
+
+
+def test_resolve_profiling_assets_regenerates_when_null_model_param_changes(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    first = profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb, error_rate=0.001,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    original_mtime = first.null_model_file.stat().st_mtime_ns
+
+    # A different null-model parameter invalidates the cache -> regeneration.
+    profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb, error_rate=0.05,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    assert first.null_model_file.stat().st_mtime_ns != original_mtime
+
+
+def test_resolve_profiling_assets_force_prepare_regenerates(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    first = profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    original_mtime = first.bed_file.stat().st_mtime_ns
+
+    profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb, force_prepare=True,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    assert first.bed_file.stat().st_mtime_ns != original_mtime
+
+
+def test_resolve_profiling_assets_explicit_paths_win_and_skip_generation(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    explicit_null = tmp_path / "my_null.parquet"
+    explicit_bed = tmp_path / "my.bed"
+    explicit_len = tmp_path / "my_len.parquet"
+    for p in (explicit_null, explicit_bed, explicit_len):
+        p.write_text("placeholder")
+
+    assets = profile.resolve_profiling_assets(
+        run_dir=run_dir,
+        reference_fasta=reference,
+        stb_file=stb,
+        null_model_file=explicit_null,
+        bed_file=explicit_bed,
+        genome_length_file=explicit_len,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+
+    # All three required assets supplied -> nothing generated, no assets dir.
+    assert assets.null_model_file == explicit_null
+    assert assets.bed_file == explicit_bed
+    assert assets.genome_length_file == explicit_len
+    assert not (run_dir / profile.DEFAULT_PROFILING_ASSETS_DIRNAME).exists()
+
+
+def test_resolve_profiling_assets_requires_reference_for_autogen(tmp_path):
+    _, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    with pytest.raises(ValueError, match="reference-fasta is required"):
+        profile.resolve_profiling_assets(
+            run_dir=run_dir,
+            reference_fasta=None,
+            stb_file=stb,
+        )

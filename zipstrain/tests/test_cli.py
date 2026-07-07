@@ -1349,6 +1349,70 @@ def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
     assert captured["read_inclusion"] == "proper-pairs"
 
 
+def test_profile_command_auto_generates_assets_from_minimal_inputs(tmp_path, monkeypatch):
+    """profile with just input-table + reference + stb builds its own assets."""
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    reference = tmp_path / "reference.fna"
+    reference.write_text(">chr1\nACGTACGTAC\n>chr2\nTTTTGGGGCC\n")
+    stb = tmp_path / "reference.stb"
+    stb.write_text("chr1\tgenome1\nchr2\tgenome1\n")
+    run_dir = tmp_path / "run"
+
+    captured = {}
+
+    def _fake_lazy_run_profile(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table", str(input_table),
+            "--reference-fasta", str(reference),
+            "--stb-file", str(stb),
+            "--run-dir", str(run_dir),
+            "--max-total-reads", "100",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    assets_dir = run_dir / cli.pf.DEFAULT_PROFILING_ASSETS_DIRNAME
+    assert assets_dir.is_dir()
+    # The paths handed to profiling point into the generated assets directory
+    # and the files actually exist.
+    assert captured["null_model_file"] == assets_dir / cli.pf.ASSET_NULL_MODEL_FILENAME
+    assert captured["bed_file"] == assets_dir / cli.pf.ASSET_BED_FILENAME
+    assert captured["genome_length_file"] == assets_dir / cli.pf.ASSET_GENOME_LENGTH_FILENAME
+    assert captured["null_model_file"].exists()
+    assert captured["bed_file"].exists()
+    assert captured["genome_length_file"].exists()
+
+
+def test_profile_command_errors_without_reference_when_autogen_needed(tmp_path, monkeypatch):
+    """Missing reference AND missing bed/genome-length is a usage error."""
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    stb = tmp_path / "reference.stb"
+    stb.write_text("chr1\tgenome1\n")
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", lambda **kwargs: None)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table", str(input_table),
+            "--stb-file", str(stb),
+            "--run-dir", str(tmp_path / "run"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "reference-fasta is required" in str(result.exception)
+
+
 def test_profile_command_uses_default_versioned_apptainer_image(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
@@ -2329,3 +2393,29 @@ def test_cli_adjust_sequence_errors_rejects_same_input_output(tmp_path):
 
     assert result.exit_code != 0
     assert "must be different paths" in result.output
+
+
+def test_dash_h_shows_help_globally():
+    runner = CliRunner()
+    for args in (["-h"], ["profile", "-h"], ["utilities", "prepare_profiling", "-h"]):
+        result = runner.invoke(cli.cli, args)
+        assert result.exit_code == 0, result.output
+        assert "Usage:" in result.output
+
+
+def test_profile_help_is_organized_into_sections_with_defaults():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["profile", "--help"])
+    assert result.exit_code == 0, result.output
+    for header in (
+        "Required inputs:",
+        "Optional inputs:",
+        "Optional pre-built assets",
+        "Profiling parameters:",
+        "Running parameters:",
+    ):
+        assert header in result.output
+    # Defaults are surfaced for parameters that have them.
+    assert "[default: 0.001]" in result.output   # --error-rate
+    assert "[default: 8]" in result.output        # --num-procs
+    assert "[default: local]" in result.output    # --execution-mode

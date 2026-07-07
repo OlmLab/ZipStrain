@@ -7,8 +7,10 @@ This is a fundamental step for downstream analysis in zipstrain.
 import pathlib
 import polars as pl
 from typing import Generator, Optional
+from dataclasses import dataclass
 from zipstrain import utils
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -1265,3 +1267,274 @@ def profile_bam(
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
     ))
+
+
+# ---------------------------------------------------------------------------
+# Profiling-asset preparation and caching
+#
+# These helpers let `zipstrain profile` build the intermediate files it needs
+# (bed, gene range table, genome lengths, null model, profiling contract)
+# on the fly, instead of forcing the user to run `prepare_profiling` first.
+# ---------------------------------------------------------------------------
+
+# File names used inside the profiling-assets directory. These match the names
+# produced by the `prepare_profiling` utility so the two paths are compatible.
+ASSET_BED_FILENAME = "genomes_bed_file.bed"
+ASSET_GENE_RANGE_FILENAME = "gene_range_table.tsv"
+ASSET_GENOME_LENGTH_FILENAME = "genome_lengths.parquet"
+ASSET_NULL_MODEL_FILENAME = "null_model.parquet"
+ASSET_CONTRACT_FILENAME = "profiling_contract.json"
+ASSET_CACHE_MANIFEST_FILENAME = "cache_manifest.json"
+
+DEFAULT_PROFILING_ASSETS_DIRNAME = "profiling_assets"
+
+
+@dataclass
+class ProfilingAssets:
+    """Concrete paths to the intermediate files needed to profile a BAM.
+
+    ``gene_range_table`` and ``profiling_contract_file`` may be ``None`` when
+    the caller supplied explicit assets and did not provide those optional
+    files; the auto-preparation path always populates every field.
+    """
+
+    bed_file: pathlib.Path
+    gene_range_table: pathlib.Path | None
+    genome_length_file: pathlib.Path
+    null_model_file: pathlib.Path
+    profiling_contract_file: pathlib.Path | None
+
+
+def _build_null_model_frame(
+    error_rate: float, max_total_reads: int, p_threshold: float, model_type: str
+) -> pl.DataFrame:
+    """Build the null-model DataFrame for the requested model type."""
+    if model_type == "poisson":
+        rows = utils.build_null_poisson(error_rate, max_total_reads, p_threshold)
+    else:
+        raise ValueError(f"Unsupported model type: {model_type}")
+    return pl.DataFrame(rows, schema=["cov", "max_error_count"], orient="row")
+
+
+def prepare_profiling_assets(
+    *,
+    reference_fasta: str | pathlib.Path,
+    stb_file: str | pathlib.Path,
+    output_dir: str | pathlib.Path,
+    gene_fasta: str | pathlib.Path | None = None,
+    error_rate: float = 0.001,
+    max_total_reads: int = 10000,
+    p_threshold: float = 0.05,
+    model_type: str = "poisson",
+) -> ProfilingAssets:
+    """Build every intermediate profiling asset into ``output_dir``.
+
+    This is the shared implementation behind the ``prepare_profiling`` utility
+    and the auto-preparation performed by ``zipstrain profile``. It writes the
+    bed file, gene range table, genome length table, null model, and profiling
+    contract, and returns their paths.
+    """
+    output_dir = pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    bed_path = output_dir / ASSET_BED_FILENAME
+    bed_df = utils.make_the_bed(reference_fasta)
+    bed_df.write_csv(bed_path, separator="\t", include_header=False)
+
+    gene_range_path = output_dir / ASSET_GENE_RANGE_FILENAME
+    if gene_fasta is None:
+        empty_gene_range_table().sink_csv(
+            gene_range_path, separator="\t", include_header=False
+        )
+    else:
+        build_gene_range_table(pathlib.Path(gene_fasta)).write_csv(
+            gene_range_path, separator="\t", include_header=False
+        )
+
+    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
+        pl.col("column_1").alias("scaffold"),
+        pl.col("column_2").alias("genome"),
+    )
+    genome_length_path = output_dir / ASSET_GENOME_LENGTH_FILENAME
+    utils.extract_genome_length(stb, bed_df.lazy()).sink_parquet(
+        genome_length_path, compression="zstd"
+    )
+
+    null_model_path = output_dir / ASSET_NULL_MODEL_FILENAME
+    _build_null_model_frame(
+        error_rate, max_total_reads, p_threshold, model_type
+    ).write_parquet(null_model_path)
+
+    contract = {
+        "reference_hash": utils.sha256_file(reference_fasta),
+        "gene_hash": utils.sha256_file(gene_fasta)
+        if gene_fasta is not None
+        else utils.PROFILE_CONTRACT_MISSING_VALUE,
+        "stb_hash": utils.sha256_file(stb_file),
+        "null_model_hash": utils.sha256_file(null_model_path),
+    }
+    contract_path = output_dir / ASSET_CONTRACT_FILENAME
+    utils.write_profile_contract_file(contract, contract_path)
+
+    return ProfilingAssets(
+        bed_file=bed_path,
+        gene_range_table=gene_range_path,
+        genome_length_file=genome_length_path,
+        null_model_file=null_model_path,
+        profiling_contract_file=contract_path,
+    )
+
+
+def _file_signature(path: str | pathlib.Path) -> dict[str, object]:
+    """Return a lightweight (path, size, mtime) signature for cache checks."""
+    stat = os.stat(path)
+    return {
+        "path": str(pathlib.Path(path).resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _build_cache_manifest(
+    *,
+    reference_fasta: str | pathlib.Path,
+    stb_file: str | pathlib.Path,
+    gene_fasta: str | pathlib.Path | None,
+    error_rate: float,
+    max_total_reads: int,
+    p_threshold: float,
+    model_type: str,
+) -> dict[str, object]:
+    """Build the cache manifest describing the inputs used to generate assets."""
+    return {
+        "reference": _file_signature(reference_fasta),
+        "stb": _file_signature(stb_file),
+        "gene": _file_signature(gene_fasta) if gene_fasta is not None else None,
+        "null_model_params": {
+            "error_rate": error_rate,
+            "max_total_reads": max_total_reads,
+            "p_threshold": p_threshold,
+            "model_type": model_type,
+        },
+    }
+
+
+def _assets_from_dir(assets_dir: pathlib.Path) -> ProfilingAssets:
+    return ProfilingAssets(
+        bed_file=assets_dir / ASSET_BED_FILENAME,
+        gene_range_table=assets_dir / ASSET_GENE_RANGE_FILENAME,
+        genome_length_file=assets_dir / ASSET_GENOME_LENGTH_FILENAME,
+        null_model_file=assets_dir / ASSET_NULL_MODEL_FILENAME,
+        profiling_contract_file=assets_dir / ASSET_CONTRACT_FILENAME,
+    )
+
+
+def _cached_assets_are_valid(
+    assets_dir: pathlib.Path, expected_manifest: dict[str, object]
+) -> bool:
+    """True if the cached assets exist and match the expected input manifest."""
+    manifest_path = assets_dir / ASSET_CACHE_MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return False
+    try:
+        stored = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    if stored != expected_manifest:
+        return False
+    assets = _assets_from_dir(assets_dir)
+    return all(
+        path.exists()
+        for path in (
+            assets.bed_file,
+            assets.gene_range_table,
+            assets.genome_length_file,
+            assets.null_model_file,
+            assets.profiling_contract_file,
+        )
+    )
+
+
+def resolve_profiling_assets(
+    *,
+    run_dir: str | pathlib.Path,
+    reference_fasta: str | pathlib.Path | None,
+    stb_file: str | pathlib.Path,
+    gene_fasta: str | pathlib.Path | None = None,
+    null_model_file: str | pathlib.Path | None = None,
+    bed_file: str | pathlib.Path | None = None,
+    genome_length_file: str | pathlib.Path | None = None,
+    gene_range_table: str | pathlib.Path | None = None,
+    profiling_contract_file: str | pathlib.Path | None = None,
+    error_rate: float = 0.001,
+    max_total_reads: int = 10000,
+    p_threshold: float = 0.05,
+    model_type: str = "poisson",
+    force_prepare: bool = False,
+) -> ProfilingAssets:
+    """Resolve every profiling asset, auto-generating any that weren't supplied.
+
+    Explicitly-provided paths always win. When any of the required assets
+    (bed, genome length, null model) is missing, the full asset set is built
+    into ``run_dir/profiling_assets`` (reusing a valid cached copy when the
+    inputs and null-model parameters are unchanged and ``force_prepare`` is
+    False), and any explicitly-provided paths override the generated ones.
+    """
+    needs_generation = force_prepare or any(
+        value is None
+        for value in (null_model_file, bed_file, genome_length_file)
+    )
+
+    generated: ProfilingAssets | None = None
+    if needs_generation:
+        if reference_fasta is None:
+            raise ValueError(
+                "--reference-fasta is required to auto-generate profiling assets "
+                "(the bed and genome-length files are derived from it). Provide it, "
+                "or pass pre-built --bed-file and --genome-length-file."
+            )
+        assets_dir = pathlib.Path(run_dir) / DEFAULT_PROFILING_ASSETS_DIRNAME
+        expected_manifest = _build_cache_manifest(
+            reference_fasta=reference_fasta,
+            stb_file=stb_file,
+            gene_fasta=gene_fasta,
+            error_rate=error_rate,
+            max_total_reads=max_total_reads,
+            p_threshold=p_threshold,
+            model_type=model_type,
+        )
+        if not force_prepare and _cached_assets_are_valid(assets_dir, expected_manifest):
+            generated = _assets_from_dir(assets_dir)
+        else:
+            generated = prepare_profiling_assets(
+                reference_fasta=reference_fasta,
+                stb_file=stb_file,
+                output_dir=assets_dir,
+                gene_fasta=gene_fasta,
+                error_rate=error_rate,
+                max_total_reads=max_total_reads,
+                p_threshold=p_threshold,
+                model_type=model_type,
+            )
+            (assets_dir / ASSET_CACHE_MANIFEST_FILENAME).write_text(
+                json.dumps(expected_manifest, indent=2, sort_keys=True) + "\n"
+            )
+
+    def _resolve(explicit, generated_path):
+        if explicit is not None:
+            return pathlib.Path(explicit)
+        return generated_path
+
+    generated_bed = generated.bed_file if generated else None
+    generated_gene_range = generated.gene_range_table if generated else None
+    generated_genome_length = generated.genome_length_file if generated else None
+    generated_null_model = generated.null_model_file if generated else None
+    generated_contract = generated.profiling_contract_file if generated else None
+
+    return ProfilingAssets(
+        bed_file=_resolve(bed_file, generated_bed),
+        gene_range_table=_resolve(gene_range_table, generated_gene_range),
+        genome_length_file=_resolve(genome_length_file, generated_genome_length),
+        null_model_file=_resolve(null_model_file, generated_null_model),
+        profiling_contract_file=_resolve(profiling_contract_file, generated_contract),
+    )

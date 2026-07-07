@@ -757,3 +757,109 @@ def test_collect_gene_comps_template_is_retry_safe():
     assert "rm -rf gene_comps" in cmd
     assert '! -path "./gene_comps/*"' in cmd
     assert "cp */*_gene_comparison.parquet gene_comps/" not in cmd
+
+
+def _make_fake_batch_run(run_dir: pathlib.Path, sample_names, batches):
+    """Build a fake raw profile-run tree: run_dir/batch_N/<sample>/ with outputs
+    plus intermediate files, batch-level logs, and a top-level batch_events.log."""
+    (run_dir / task_manager.Batch.RUN_LOG_FILE).write_text("run log\n")
+    for batch_idx, batch_samples in enumerate(batches):
+        batch_dir = run_dir / f"batch_{batch_idx}"
+        batch_dir.mkdir(parents=True)
+        (batch_dir / f"batch_{batch_idx}.sh").write_text("#!/bin/bash\n")
+        (batch_dir / f"batch_{batch_idx}.out").write_text("stdout\n")
+        (batch_dir / f"batch_{batch_idx}.err").write_text("")
+        (batch_dir / ".status").write_text("done\n")
+        (batch_dir / "batch.log").write_text("batch log\n")
+        for sample_name in batch_samples:
+            sample_dir = batch_dir / sample_name
+            sample_dir.mkdir()
+            # Real outputs
+            for suffix in ("_profile.parquet", "_genome_stats.parquet", "_gene_stats.parquet"):
+                (sample_dir / f"{sample_name}{suffix}").write_text("data")
+            # Intermediates
+            (sample_dir / ".status").write_text("done\n")
+            (sample_dir / "input.bam").write_text("bam")
+            (sample_dir / "bed_file.bed").write_text("bed")
+    return sample_names
+
+
+def test_reorganize_profile_run_output_flattens_and_tidies(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    samples = _make_fake_batch_run(run_dir, ["s1", "s2", "s3"], batches=[["s1", "s2"], ["s3"]])
+
+    task_manager._reorganize_profile_run_output(run_dir)
+
+    # No batch directories remain.
+    assert list(run_dir.glob("batch_*")) == []
+
+    # Batch logs collected under profiling_assets/log.
+    log_dir = run_dir / "profiling_assets" / "log"
+    assert (log_dir / "batch_events.log").exists()
+    assert (log_dir / "batch_0.out").exists()
+    assert (log_dir / "batch_1.out").exists()
+    # Colliding names (per-batch .status / batch.log) are all kept: the first
+    # keeps its name, later collisions are prefixed by their batch directory.
+    assert (log_dir / ".status").exists()
+    assert (log_dir / "batch_1_.status").exists()
+    assert (log_dir / "batch.log").exists()
+    assert (log_dir / "batch_1_batch.log").exists()
+
+    for sample_name in samples:
+        sample_dir = run_dir / sample_name
+        top_level = {p.name for p in sample_dir.iterdir()}
+        assert top_level == {
+            f"{sample_name}_profile.parquet",
+            f"{sample_name}_genome_stats.parquet",
+            f"{sample_name}_gene_stats.parquet",
+            "intermediate_files",
+        }
+        intermediates = {p.name for p in (sample_dir / "intermediate_files").iterdir()}
+        assert intermediates == {".status", "input.bam", "bed_file.bed"}
+
+
+def _make_profile_runner(run_dir):
+    generator = _SingleTaskGenerator(
+        WriteOutputTask(
+            id="s1",
+            inputs={},
+            expected_outputs={"output-file": task_manager.FileOutput("s1_ok.txt")},
+            engine=task_manager.LocalEngine(""),
+        )
+    )
+    return task_manager.ProfileRunner(
+        run_dir=run_dir,
+        task_generator=generator,
+        container_engine=task_manager.LocalEngine(""),
+    )
+
+
+def test_final_summary_reports_batch_count_elapsed_and_paths(tmp_path):
+    run_dir = tmp_path / "run"
+    runner = _make_profile_runner(run_dir)
+    runner._success_batches_count = 3
+    runner._failed_batches_count = 0
+    runner._produced_tasks_count = 5
+
+    text = runner._final_summary_text(total_batches=3, elapsed_str="0:01:07")
+
+    assert "Run finished!" in text
+    # Correct batch fraction (not the old total_tasks/tasks_per_batch bug).
+    assert "3/3 batches succeeded." in text
+    assert "Produced tasks: 5" in text
+    assert "Elapsed: 0:01:07" in text
+    assert f"Output: {run_dir.absolute()}" in text
+    assert f"Logs:   {(run_dir / 'profiling_assets' / 'log').absolute()}" in text
+
+
+def test_final_summary_reports_failures(tmp_path):
+    runner = _make_profile_runner(tmp_path / "run")
+    runner._success_batches_count = 2
+    runner._failed_batches_count = 1
+    runner._produced_tasks_count = 3
+
+    text = runner._final_summary_text(total_batches=3, elapsed_str="0:00:30")
+
+    assert "Run finished with failures." in text
+    assert "2/3 batches succeeded (1 failed)." in text

@@ -1207,6 +1207,7 @@ class Runner(ABC):
         and system stats (CPU/RAM) using Rich Live to mirror the Runner presentation.
 
         """
+        run_start = datetime.now(timezone.utc)
         asyncio.create_task(self._batcher())
         asyncio.create_task(self._refill_tasks())
         semaphore = asyncio.Semaphore(self.max_concurrent_batches)
@@ -1355,13 +1356,40 @@ class Runner(ABC):
         # final UI summary
         console.clear()
         total_batches = self._batch_counter + (1 if self._final_batch_created and self.final_batch_factory is not None else 0)
+        elapsed = datetime.now(timezone.utc) - run_start
+        elapsed_str = str(elapsed).split(".")[0]  # drop microseconds -> H:MM:SS
         summary = Panel(
-            f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{self.task_generator.get_total_tasks()/self.tasks_per_batch} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
+            self._final_summary_text(total_batches, elapsed_str),
             expand=True,
             title="Summary",
-            border_style="green",
+            border_style="green" if self._failed_batches_count == 0 else "red",
         )
         console.print(summary)
+
+    def _final_summary_text(self, total_batches: int, elapsed_str: str) -> str:
+        """Build the body text for the end-of-run summary panel."""
+        headline = (
+            "[bold green]Run finished![/]"
+            if self._failed_batches_count == 0
+            else "[bold red]Run finished with failures.[/]"
+        )
+        lines = [
+            headline,
+            "",
+            f"{self._success_batches_count}/{total_batches} batches succeeded"
+            + (f" ({self._failed_batches_count} failed)" if self._failed_batches_count else "")
+            + ".",
+            f"Produced tasks: {self._produced_tasks_count}",
+            f"Elapsed: {elapsed_str}",
+        ]
+        lines.append("")
+        lines.append(f"Output: {pathlib.Path(self.run_dir).absolute()}")
+        lines.append(f"Logs:   {self._log_location().absolute()}")
+        return "\n".join(lines)
+
+    def _log_location(self) -> pathlib.Path:
+        """Directory where this run's logs live once it finishes."""
+        return pathlib.Path(self.run_dir)
     
     async def _update_statuses(self):
         active = [batch for batch in self._active_batches if batch.status not in self.TERMINAL_BATCH_STATES]
@@ -1433,7 +1461,12 @@ class ProfileRunner(Runner):
             batch_type=batch_type,
             slurm_config=slurm_config,
         )
-    
+
+    def _log_location(self) -> pathlib.Path:
+        # A successful profile run relocates its logs into profiling_assets/log
+        # (see _reorganize_profile_run_output).
+        return pathlib.Path(self.run_dir) / PROFILING_ASSETS_DIRNAME / PROFILE_LOG_DIRNAME
+
     async def _batcher(self):
         """
         Defines the batcher coroutine that collects tasks from the tasks_queue, groups them into batches,
@@ -1795,6 +1828,78 @@ class PrepareCompareGenomeRunOutputsSlurmBatch(SlurmBatch):
     pass
 
 
+# Suffixes of the "real" profiling outputs a user cares about. Every other file
+# a task leaves in its directory (symlinks, .status, leftover chunk parquets) is
+# considered an intermediate.
+PROFILE_OUTPUT_SUFFIXES = (
+    "_profile.parquet",
+    "_genome_stats.parquet",
+    "_gene_stats.parquet",
+)
+PROFILE_INTERMEDIATE_DIRNAME = "intermediate_files"
+PROFILE_LOG_DIRNAME = "log"
+PROFILING_ASSETS_DIRNAME = "profiling_assets"
+
+
+def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
+    """Flatten and tidy a completed profile run's output directory.
+
+    Transforms the raw ``run_dir/batch_N/<sample>/`` layout into::
+
+        run_dir/
+            <sample>/
+                <sample>_profile.parquet        # real outputs at the top level
+                <sample>_genome_stats.parquet
+                <sample>_gene_stats.parquet
+                intermediate_files/             # everything else the task left
+            profiling_assets/
+                log/                            # batch_events.log, *.err, *.out, ...
+
+    Only called after a fully successful run, so the per-batch ``.status`` files
+    it removes are no longer needed for resume.
+    """
+    run_dir = pathlib.Path(run_dir)
+    log_dir = run_dir / PROFILING_ASSETS_DIRNAME / PROFILE_LOG_DIRNAME
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    def _move_into(destination_dir: pathlib.Path, source: pathlib.Path) -> None:
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        target = destination_dir / source.name
+        # Prefix on collision (e.g. per-batch ".status"/"batch.log") to avoid clobbering.
+        if target.exists():
+            target = destination_dir / f"{source.parent.name}_{source.name}"
+        shutil.move(str(source), str(target))
+
+    # Top-level run log.
+    run_log = run_dir / Batch.RUN_LOG_FILE
+    if run_log.exists():
+        _move_into(log_dir, run_log)
+
+    for batch_dir in sorted(run_dir.glob("batch_*")):
+        if not batch_dir.is_dir():
+            continue
+        for entry in sorted(batch_dir.iterdir()):
+            if entry.is_dir():
+                # A per-sample task directory: lift it to run_dir/<sample> and tidy.
+                sample_dir = run_dir / entry.name
+                shutil.move(str(entry), str(sample_dir))
+                intermediate_dir = sample_dir / PROFILE_INTERMEDIATE_DIRNAME
+                for item in sorted(sample_dir.iterdir()):
+                    if item.name == PROFILE_INTERMEDIATE_DIRNAME:
+                        continue
+                    if item.is_file() and item.name.endswith(PROFILE_OUTPUT_SUFFIXES):
+                        continue
+                    _move_into(intermediate_dir, item)
+            else:
+                # A batch-level file (batch_N.sh/.err/.out, batch.log, .status).
+                _move_into(log_dir, entry)
+        # The batch directory should now be empty.
+        try:
+            batch_dir.rmdir()
+        except OSError:
+            pass
+
+
 def lazy_run_profile(
     run_dir: str | pathlib.Path,
     container_engine: Engine,
@@ -1852,8 +1957,13 @@ def lazy_run_profile(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
-    
-    
+
+    # Only tidy the output layout when every batch succeeded. On partial failure
+    # we leave the raw batch_N/<sample>/ structure intact so a re-run can resume.
+    if runner._failed_batches_count == 0:
+        _reorganize_profile_run_output(pathlib.Path(run_dir))
+
+
 def lazy_run_compares(
     run_dir: str | pathlib.Path,
     container_engine: Engine,

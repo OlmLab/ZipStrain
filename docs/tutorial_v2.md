@@ -76,66 +76,32 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 
 ### Step 2 — Profile
 
-First, prepare the assets needed for profiling:
-
-```bash
-zipstrain utilities prepare_profiling \
-    --reference-fasta N5_271_010G1_scaffold_min1000.fa \
-    -s N5_271_010G1.maxbin2.stb \
-    -o profile_prep
-```
-
-??? tip "Additional options for `prepare_profiling`"
-    ```bash
-    zipstrain utilities prepare_profiling --help
-    ```
-
-    ```text
-    Usage: zipstrain utilities prepare_profiling [OPTIONS]
-
-      Prepare the files needed for profiling bam files and save them in the
-      specified output directory.
-
-    Options:
-      -r, --reference-fasta TEXT     Path to the reference genome in FASTA format.
-                                     [required]
-      -g, --gene-fasta TEXT          Optional path to the gene annotations in
-                                     FASTA format.
-      -s, --stb-file TEXT            Path to the scaffold-to-genome mapping file.
-                                     [required]
-      -e, --error-rate FLOAT         Error rate for the sequencing technology when
-                                     building the null model.  [default: 0.001]
-      -m, --max-total-reads INTEGER  Maximum coverage to consider when building
-                                     the null model.  [default: 10000]
-      -p, --p-threshold FLOAT        Significance threshold for the null model.
-                                     [default: 0.05]
-      -t, --model-type [poisson]     Type of null model to build.  [default:
-                                     poisson]
-      -o, --output-dir TEXT          Directory to save the profiling database.
-                                     [required]
-      --help                         Show this message and exit.
-    ```
-
-!!! note "Gene profiling"
-    If you'd like to profile genes or adjust SNV-calling parameters, pass `--gene-fasta` to `prepare_profiling` before running `profile`.
-
-Then run `zipstrain profile`:
+`zipstrain profile` needs only your BAM table, the reference FASTA, and the STB file. Any intermediate assets (null model, bed file, genome length table, profiling contract) are generated automatically into a `profiling_assets/` folder inside the run directory and reused on later runs:
 
 ```bash
 zipstrain profile \
     --input-table samples.txt \
     --reference-fasta N5_271_010G1_scaffold_min1000.fa \
     --stb-file N5_271_010G1.maxbin2.stb \
-    --null-model profile_prep/null_model.parquet \
-    --profiling-contract profile_prep/profiling_contract.json \
-    --bed-file profile_prep/genomes_bed_file.bed \
-    --genome-length-file profile_prep/genome_lengths.parquet \
     --run-dir out_profile
 ```
 
 ![zipstrain profile progress](assets/tutorial_profile.gif)
 
-Results will be written to `out_profile/batch_0/`, with one subdirectory per sample containing a `*_genome_stats.parquet` and `*_profile.parquet`.
+Results are written with one subdirectory per sample directly under the run directory, e.g. `out_profile/N5_271_010G1/`, each containing `*_profile.parquet`, `*_genome_stats.parquet`, and `*_gene_stats.parquet`. Per-sample intermediate files are tucked into an `intermediate_files/` subfolder, and the auto-generated profiling assets plus run logs live in `out_profile/profiling_assets/`.
+
+!!! tip "Gene profiling and tuning"
+    Pass `--gene-fasta` to enable gene-level profiling, or the null-model options (`--error-rate`, `--max-total-reads`, `--p-threshold`) to tune SNV calling. Use `--force-prepare` to rebuild the cached assets.
+
+??? note "Preparing assets separately (advanced / cluster use)"
+    You can still build the intermediate files ahead of time with `zipstrain utilities prepare_profiling` and pass them in explicitly via `--null-model`, `--bed-file`, `--genome-length-file`, etc. This is useful on clusters where you prepare once and profile many BAMs across nodes, and it is the path the Nextflow pipeline uses internally.
+
+    ```bash
+    zipstrain utilities prepare_profiling \
+        --reference-fasta N5_271_010G1_scaffold_min1000.fa \
+        -s N5_271_010G1.maxbin2.stb \
+        -o profile_prep
+    ```
 
 ---
 
@@ -144,7 +110,7 @@ Results will be written to `out_profile/batch_0/`, with one subdirectory per sam
 Build a profile database from the profile outputs:
 
 ```bash
-printf 'profile_name,profile_location\nN5_271_010G1,out_profile/batch_0/N5_271_010G1/N5_271_010G1_profile.parquet\nN5_271_010G2,out_profile/batch_0/N5_271_010G2/N5_271_010G2_profile.parquet\n' > profiles.txt
+printf 'profile_name,profile_location\nN5_271_010G1,out_profile/N5_271_010G1/N5_271_010G1_profile.parquet\nN5_271_010G2,out_profile/N5_271_010G2/N5_271_010G2_profile.parquet\n' > profiles.txt
 
 zipstrain utilities build-profile-db \
     --profile-db-csv profiles.txt \

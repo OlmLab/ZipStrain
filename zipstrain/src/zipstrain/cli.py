@@ -27,7 +27,55 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, Sp
 DEFAULT_CONTAINER_REPOSITORY = "parsaghadermazi/zipstrain"
 
 
-@click.group()
+class SectionedCommand(click.Command):
+    """A click.Command that renders its options grouped under section headers.
+
+    Set ``option_sections`` to an ordered mapping of ``section title -> [param
+    names]``. Options are listed under their section in the given order; any
+    option not assigned to a section (e.g. ``--help``) is shown last under
+    "Other options".
+    """
+
+    option_sections: dict[str, list[str]] = {}
+
+    def format_options(self, ctx, formatter):
+        options_by_name = {
+            param.name: param
+            for param in self.get_params(ctx)
+            if isinstance(param, click.Option)
+        }
+        assigned: set[str] = set()
+
+        def _records(names):
+            records = []
+            for name in names:
+                param = options_by_name.get(name)
+                if param is None:
+                    continue
+                record = param.get_help_record(ctx)
+                if record is not None:
+                    records.append(record)
+                    assigned.add(name)
+            return records
+
+        for section_title, names in self.option_sections.items():
+            records = _records(names)
+            if records:
+                with formatter.section(section_title):
+                    formatter.write_dl(records)
+
+        leftover = [
+            record
+            for name, param in options_by_name.items()
+            if name not in assigned
+            and (record := param.get_help_record(ctx)) is not None
+        ]
+        if leftover:
+            with formatter.section("Other options"):
+                formatter.write_dl(leftover)
+
+
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version=__version__, prog_name="zipstrain")
 def cli():
     """ZipStrain CLI"""
@@ -154,11 +202,7 @@ class _ThrottledMatrixLogger:
 
 
 def _build_null_model_frame(error_rate: float, max_total_reads: int, p_threshold: float, model_type: str) -> pl.DataFrame:
-    if model_type == "poisson":
-        rows = ut.build_null_poisson(error_rate, max_total_reads, p_threshold)
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
-    return pl.DataFrame(rows, schema=["cov", "max_error_count"], orient="row")
+    return pf._build_null_model_frame(error_rate, max_total_reads, p_threshold, model_type)
 
 @utilities.command("build-null-model")
 @click.option('--error-rate', '-e', default=0.001, help="Error rate for the sequencing technology.")
@@ -1424,41 +1468,19 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
     """
     Prepare the files needed for profiling bam files and save them in the specified output directory.
     """
-    output_dir=pathlib.Path(output_dir)
+    output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(reference_fasta, output_dir / "reference.fasta")
-    bed_df = ut.make_the_bed(reference_fasta)
-    bed_df.write_csv(output_dir / "genomes_bed_file.bed", separator='\t', include_header=False)
-    if gene_fasta is None:
-        pl.DataFrame(schema={"gene": pl.Utf8, "scaffold": pl.Utf8, "start": pl.Int64, "end": pl.Int64}).write_csv(
-            output_dir / "gene_range_table.tsv",
-            separator='\t',
-            include_header=False,
-        )
-    else:
-        gene_range_table = pf.build_gene_range_table(pathlib.Path(gene_fasta))
-        gene_range_table.write_csv(output_dir / "gene_range_table.tsv", separator='\t', include_header=False)
-    
-    stb = pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
+    pf.prepare_profiling_assets(
+        reference_fasta=reference_fasta,
+        stb_file=stb_file,
+        output_dir=output_dir,
+        gene_fasta=gene_fasta,
+        error_rate=error_rate,
+        max_total_reads=max_total_reads,
+        p_threshold=p_threshold,
+        model_type=model_type,
     )
-
-    bed_df = bed_df.lazy()
-    genome_length = ut.extract_genome_length(stb, bed_df)
-    genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
-
-    null_model_df = _build_null_model_frame(error_rate, max_total_reads, p_threshold, model_type)
-    null_model_path = output_dir / "null_model.parquet"
-    null_model_df.write_parquet(null_model_path)
-
-    contract = {
-        "reference_hash": ut.sha256_file(reference_fasta),
-        "gene_hash": ut.sha256_file(gene_fasta) if gene_fasta is not None else ut.PROFILE_CONTRACT_MISSING_VALUE,
-        "stb_hash": ut.sha256_file(stb_file),
-        "null_model_hash": ut.sha256_file(null_model_path),
-    }
-    ut.write_profile_contract_file(contract, output_dir / "profiling_contract.json")
 
 
 @utilities.command("profile-single")
@@ -1510,78 +1532,92 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
         read_inclusion=read_inclusion,
     )
 
-@cli.command("profile")
+@cli.command("profile", cls=SectionedCommand)
 @click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
-@click.option('--reference-fasta', '-f', default=None, help="Optional reference FASTA used for mpileup during profiling. When provided, ref_base_bitmask is added to each profile.")
+@click.option('--reference-fasta', '-f', default=None, help="Reference FASTA. Used for mpileup (adds ref_base_bitmask) and required to auto-generate the bed/genome-length assets when they are not supplied.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model', '-u', required=True, help="Path to the null model parquet file.")
-@click.option('--gene-range-table', '-g', default=None, help="Optional path to the gene range table file.")
-@click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into each profile parquet metadata.")
-@click.option('--bed-file', '-b', required=True, help="Path to the BED file for profiling regions.")
-@click.option('--genome-length-file', '-l', required=True, help="Path to the genome length file.")
-@click.option('--run-dir', '-r', required=True, help="Directory to save the run data.")
-@click.option('--num-procs', '-n', default=8, help="Number of processors to use for each profiling task.")
-@click.option('--max-concurrent-batches', '-m', default=5, help="Maximum number of concurrent batches to run.")
-@click.option('--poll-interval', '-p', default=1, help="Polling interval in seconds to check the status of batches.")
-@click.option('--execution-mode', '-e', default="local", help="Execution mode: 'local' or 'slurm'.")
-@click.option('--slurm-config', '-c', default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
-@click.option('--container-engine', '-o', default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
-@click.option('--container-address', default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
-@click.option('--task-per-batch', '-t', default=10, help="Number of tasks to include in each batch.")
+@click.option('--run-dir', '-r', required=True, help="Directory to save the run data (sample outputs, profiling_assets, and logs).")
+@click.option('--null-model', '-u', default=None, help="Pre-built null model parquet file. Auto-generated into <run-dir>/profiling_assets if not provided.")
+@click.option('--gene-fasta', default=None, help="Gene FASTA. When provided, a gene range table is auto-generated from it for gene-level profiling.")
+@click.option('--gene-range-table', '-g', default=None, help="Pre-built gene range table file. Overrides --gene-fasta auto-generation.")
+@click.option('--profiling-contract', default=None, help="Pre-built profiling_contract.json. When provided, its hashes are written into each profile parquet metadata. Auto-generated otherwise.")
+@click.option('--bed-file', '-b', default=None, help="Pre-built BED file for profiling regions. Auto-generated into <run-dir>/profiling_assets if not provided.")
+@click.option('--genome-length-file', '-l', default=None, help="Pre-built genome length file. Auto-generated into <run-dir>/profiling_assets if not provided.")
+@click.option('--error-rate', default=0.001, show_default=True, help="Error rate used when auto-generating the null model.")
+@click.option('--max-total-reads', default=10000, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
+@click.option('--p-threshold', default=0.05, show_default=True, help="Significance threshold used when auto-generating the null model.")
+@click.option('--model-type', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Null model type used when auto-generating the null model.")
+@click.option('--force-prepare', is_flag=True, default=False, show_default=True, help="Regenerate all auto-generated profiling assets even if valid cached copies exist.")
 @click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-read-ani', default=None, type=float, help="Optional minimum read ANI proxy based on the NM tag and aligned query span.")
+@click.option('--min-read-ani', default=None, type=float, help="Minimum read ANI proxy based on the NM tag and aligned query span.")
 @click.option('--read-inclusion', default=pf.READ_INCLUSION_ALL_MAPPED, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible for profiling.")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_range_table, profiling_contract, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion):
+@click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
+@click.option('--max-concurrent-batches', '-m', default=5, show_default=True, help="Maximum number of concurrent batches to run.")
+@click.option('--poll-interval', '-p', default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
+@click.option('--task-per-batch', '-t', default=10, show_default=True, help="Number of tasks to include in each batch.")
+@click.option('--execution-mode', '-e', default="local", show_default=True, help="Execution mode: 'local' or 'slurm'.")
+@click.option('--slurm-config', '-c', default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
+@click.option('--container-engine', '-o', default="local", show_default=True, help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option('--container-address', default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
-    Args:
-    input_table (str): Path to the input table in TSV format containing sample names and BAM file paths.
-    stb_file (str): Path to the scaffold-to-genome mapping file.
-    null_model (str): Path to the null model parquet file.
-    gene_range_table (str | None): Optional path to the gene range table file.
-    bed_file (str): Path to the BED file for profiling regions.
-    genome_length_file (str): Path to the genome length file.
-    run_dir (str): Directory to save the run data.
-    num_procs (int): Number of processors to use for each profiling task.
-    max_concurrent_batches (int): Maximum number of concurrent batches to run.
-    poll_interval (int): Polling interval in seconds to check the status of batches.
-    execution_mode (str): Execution mode: 'local' or 'slurm'.
-    slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
-    container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
-    task_per_batch (int): Number of tasks to include in each batch.
+    Any profiling assets (null model, bed file, genome length table, gene range
+    table, profiling contract) that are not supplied explicitly are generated
+    automatically into a ``profiling_assets`` directory inside ``run-dir`` and
+    reused on subsequent runs when the inputs are unchanged. This means a
+    minimal run needs only ``--input-table``, ``--reference-fasta``, and
+    ``--stb-file``.
     """
     # Load the BAM files table
     bams_lf = pl.scan_csv(input_table)
-    
+
     # Validate required columns exist
     required_columns = {"sample_name", "bamfile"}
     actual_columns = set(bams_lf.collect_schema().names())
     if not required_columns.issubset(actual_columns):
         missing = required_columns - actual_columns
         raise ValueError(f"Input table missing required columns: {missing}")
-    
+
     run_dir = pathlib.Path(run_dir)
     slurm_conf = None
     if execution_mode == "slurm":
         if slurm_config is None:
             raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
         slurm_conf = tm.SlurmConfig.from_json(slurm_config)
-    
+
+    assets = pf.resolve_profiling_assets(
+        run_dir=run_dir,
+        reference_fasta=reference_fasta,
+        stb_file=stb_file,
+        gene_fasta=gene_fasta,
+        null_model_file=null_model,
+        bed_file=bed_file,
+        genome_length_file=genome_length_file,
+        gene_range_table=gene_range_table,
+        profiling_contract_file=profiling_contract,
+        error_rate=error_rate,
+        max_total_reads=max_total_reads,
+        p_threshold=p_threshold,
+        model_type=model_type,
+        force_prepare=force_prepare,
+    )
+
     container_engine_obj = _build_container_engine(container_engine, container_address)
-    
+
     tm.lazy_run_profile(
         run_dir=run_dir,
         container_engine=container_engine_obj,
         bams_lf=bams_lf,
         reference_fasta_file=pathlib.Path(reference_fasta) if reference_fasta is not None else None,
         stb_file=pathlib.Path(stb_file),
-        null_model_file=pathlib.Path(null_model),
-        gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
-        profiling_contract_file=pathlib.Path(profiling_contract) if profiling_contract is not None else None,
-        bed_file=pathlib.Path(bed_file),
-        genome_length_file=pathlib.Path(genome_length_file),
+        null_model_file=assets.null_model_file,
+        gene_range_table=assets.gene_range_table,
+        profiling_contract_file=assets.profiling_contract_file,
+        bed_file=assets.bed_file,
+        genome_length_file=assets.genome_length_file,
         num_procs=num_procs,
         min_mapq=min_mapq,
         min_baseq=min_baseq,
@@ -1593,6 +1629,47 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_range_table
         execution_mode=execution_mode,
         slurm_config=slurm_conf,
     )
+
+
+profile.option_sections = {
+    "Required inputs": [
+        "input_table",
+        "reference_fasta",
+        "stb_file",
+        "run_dir",
+    ],
+    "Optional inputs": [
+        "gene_fasta",
+    ],
+    "Optional pre-built assets (auto-generated if omitted)": [
+        "null_model",
+        "gene_range_table",
+        "profiling_contract",
+        "bed_file",
+        "genome_length_file",
+    ],
+    "Profiling parameters": [
+        "error_rate",
+        "max_total_reads",
+        "p_threshold",
+        "model_type",
+        "force_prepare",
+        "min_mapq",
+        "min_baseq",
+        "min_read_ani",
+        "read_inclusion",
+    ],
+    "Running parameters": [
+        "num_procs",
+        "max_concurrent_batches",
+        "poll_interval",
+        "task_per_batch",
+        "execution_mode",
+        "slurm_config",
+        "container_engine",
+        "container_address",
+    ],
+}
 
 
 @compare.command("genomes")
