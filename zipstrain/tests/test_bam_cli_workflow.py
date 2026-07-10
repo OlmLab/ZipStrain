@@ -335,13 +335,18 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
     for sample_name in SAMPLE_SEQUENCES:
         sample_dir = run_dir / sample_name
         assert sample_dir.exists()
-        # Only the three real outputs live at the top of the sample dir; every
-        # other artifact (status files, symlinks, ...) is tucked into intermediate_files/.
+        # The real output parquets live at the top of the sample dir, with companion
+        # CSVs for the stats/SNV tables and an SNV table; everything else is in
+        # intermediate_files/.
         top_level = {p.name for p in sample_dir.iterdir()}
         assert top_level == {
             f"{sample_name}_profile.parquet",
             f"{sample_name}_genome_stats.parquet",
+            f"{sample_name}_genome_stats.csv",
             f"{sample_name}_gene_stats.parquet",
+            f"{sample_name}_gene_stats.csv",
+            f"{sample_name}_SNVs.parquet",
+            f"{sample_name}_SNVs.csv",
             "intermediate_files",
         }
         assert (sample_dir / "intermediate_files").is_dir()

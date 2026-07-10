@@ -692,26 +692,25 @@ class CallPresence:
                        lf:pl.LazyFrame,
                        ber:float=0.5,
                        fug:float=0.5,
-                       min_cov_use_fug:int=0.1
+                       min_cov_use_fug:int=0.1,
                        )->pl.LazyFrame:
         """
         Call presence/absence of genomes based on breadth, coverage, ber, and fug.
         Parameters:
         lf (pl.LazyFrame): Input LazyFrame with genome statistics.
         ber (float): Breadth error rate threshold.
-        fug (float): Fragmented unassembled genome threshold.
-        min_cov_use_fug (int): Minimum coverage to use fug for presence call.
+        fug (float): FUG threshold; present requires fug above this (higher fug = more uniform coverage = present).
+        min_cov_use_fug (int): Coverage above which BER is used alone; below it FUG is also required.
         Returns:
         pl.LazyFrame: LazyFrame with presence/absence calls.
         """
-        lf=lf.with_columns(
+        ber_fug_call = (
             pl.when(pl.col("coverage") > min_cov_use_fug)
-            .then(
-                pl.col("ber") > ber
-                ).otherwise(
-                    (pl.col("fug")/0.632 < fug) &
-                    (pl.col("ber") > ber)
-                ).fill_null(False).alias("is_present"))
+            .then(pl.col("ber") > ber)
+            .otherwise(((pl.col("fug") / 0.632) > fug) & (pl.col("ber") > ber))
+            .fill_null(False)
+        )
+        lf=lf.with_columns(ber_fug_call.alias("is_present"))
         return lf.select(
             pl.col("genome"),
             pl.col("coverage"),

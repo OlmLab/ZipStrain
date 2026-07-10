@@ -22,10 +22,12 @@ def test_collect_health_report_all_ready():
     checks = _check_map(report)
 
     assert checks[("External tools", "samtools")].status == "ok"
+    assert checks[("External tools", "bowtie2")].status == "ok"
     assert checks[("External tools", "prodigal")].status == "ok"
     assert checks[("External tools", "sylph")].status == "ok"
     assert checks[("Python packages", "torch")].status == "ok"
     assert checks[("Python packages", "h5py")].status == "ok"
+    assert checks[("Workflow readiness", "Read mapping (map)")].status == "ok"
     assert checks[("Workflow readiness", "BAM profiling")].status == "ok"
     assert checks[("Workflow readiness", "Standard comparison")].status == "ok"
     assert checks[("Workflow readiness", "Matrix comparison")].status == "ok"
@@ -47,10 +49,12 @@ def test_collect_health_report_marks_optional_and_workflow_gaps():
     checks = _check_map(report)
 
     assert checks[("External tools", "samtools")].status == "missing"
+    assert checks[("External tools", "bowtie2")].status == "missing"
     assert checks[("External tools", "prodigal")].status == "missing"
     assert checks[("External tools", "sylph")].status == "missing"
     assert checks[("Python packages", "torch")].status == "missing"
     assert checks[("Python packages", "h5py")].status == "missing"
+    assert checks[("Workflow readiness", "Read mapping (map)")].status == "warn"
     assert checks[("Workflow readiness", "BAM profiling")].status == "warn"
     assert checks[("Workflow readiness", "Standard comparison")].status == "ok"
     assert checks[("Workflow readiness", "Matrix comparison")].status == "warn"

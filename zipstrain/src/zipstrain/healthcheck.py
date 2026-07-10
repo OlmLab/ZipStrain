@@ -69,6 +69,7 @@ def collect_health_report(
     checks: list[HealthCheck] = []
 
     samtools_ok, samtools_detail = executable_probe("samtools")
+    bowtie2_ok, bowtie2_detail = executable_probe("bowtie2")
     prodigal_ok, prodigal_detail = executable_probe("prodigal")
     sylph_ok, sylph_detail = executable_probe("sylph")
     torch_ok, torch_detail = package_probe("torch", "torch")
@@ -81,21 +82,28 @@ def collect_health_report(
                 name="samtools",
                 status="ok" if samtools_ok else "missing",
                 detail=samtools_detail,
-                note="Required for BAM -> profile workflows.",
+                note="Required for BAM -> profile workflows and for `zipstrain map`.",
+            ),
+            HealthCheck(
+                category="External tools",
+                name="bowtie2",
+                status="ok" if bowtie2_ok else "missing",
+                detail=bowtie2_detail,
+                note="Optional. Needed for `zipstrain map` (read alignment).",
             ),
             HealthCheck(
                 category="External tools",
                 name="prodigal",
                 status="ok" if prodigal_ok else "missing",
                 detail=prodigal_detail,
-                note="Optional. Helpful when you need to generate gene annotations from reference FASTA files.",
+                note="Optional. Needed for `zipstrain map --predict-genes` and for generating gene annotations.",
             ),
             HealthCheck(
                 category="External tools",
                 name="sylph",
                 status="ok" if sylph_ok else "missing",
                 detail=sylph_detail,
-                note="Optional. Needed only for the Sylph-based reference-build route.",
+                note="Optional. Needed for `zipstrain map` auto-reference (Sylph-based reference build).",
             ),
             HealthCheck(
                 category="Python packages",
@@ -114,8 +122,21 @@ def collect_health_report(
         ]
     )
 
+    map_ready = bowtie2_ok and samtools_ok
     checks.extend(
         [
+            HealthCheck(
+                category="Workflow readiness",
+                name="Read mapping (map)",
+                status="ok" if map_ready else "warn",
+                detail="ready" if map_ready else "not ready",
+                note=(
+                    "You can run `zipstrain map` on reads."
+                    + ("" if sylph_ok else " (Install sylph for the auto-reference route.)")
+                    if map_ready
+                    else "Needs bowtie2 and samtools in PATH for `zipstrain map`."
+                ),
+            ),
             HealthCheck(
                 category="Workflow readiness",
                 name="BAM profiling",

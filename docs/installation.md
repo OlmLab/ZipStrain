@@ -8,7 +8,34 @@ TODO: More of an overview of what all these things are, why you would want to us
 
 - **Python 3.12 or higher**
 - **samtools** (not bundled with the pip install — see below)
+- **bowtie2** and **sylph** (only required for `zipstrain map` — see below)
+- **prodigal** (only required for `zipstrain map --predict-genes`)
 - **Nextflow** (only required for the Nextflow pipeline workflow — see below)
+
+## Tools for `zipstrain map`
+
+`zipstrain map` turns reads into BAMs by shelling out to external aligners. It is
+the only part of the Python CLI that needs these — profiling and comparison do
+not. Install them from bioconda:
+
+```bash
+conda install -c bioconda bowtie2 samtools sylph
+```
+
+`prodigal` is additionally needed only if you pass `--predict-genes` to emit a
+gene FASTA:
+
+```bash
+conda install -c bioconda prodigal
+```
+
+When `zipstrain map` is run without `--reference-fasta`, it uses Sylph to pick
+reference genomes automatically. The Sylph database is downloaded to the path you
+pass as `--sylph-db` if it does not already exist (the default GTDB database is
+~14 GB), and genomes it selects are cached under `--genome-cache-dir` for reuse.
+The GTDB taxonomy tables are also downloaded (once, cached under
+`--genome-cache-dir`) so `zipstrain profile` can add a `genome_taxonomy` column
+to `genome_stats`.
 
 ## Installing Nextflow
 

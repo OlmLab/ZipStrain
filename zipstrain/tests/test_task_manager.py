@@ -863,3 +863,60 @@ def test_final_summary_reports_failures(tmp_path):
 
     assert "Run finished with failures." in text
     assert "2/3 batches succeeded (1 failed)." in text
+
+
+def _make_fake_compare_run(run_dir, batch_name, output_filename):
+    """Build a fake raw compare-run tree: a work batch + an Outputs final batch."""
+    (run_dir / task_manager.Batch.RUN_LOG_FILE).write_text("run log\n")
+
+    work = run_dir / batch_name
+    (work / "concat_parquet").mkdir(parents=True)
+    (work / f"{batch_name}.err").write_text("")
+    (work / f"{batch_name}.out").write_text("out")
+    (work / f"{batch_name}.sh").write_text("#!/bin/bash\n")
+    (work / "batch.log").write_text("log")
+    (work / ".status").write_text("done\n")
+    (work / "concat_parquet" / ".status").write_text("done\n")
+    (work / "concat_parquet" / f"Merged_{batch_name}.parquet").write_text("data")
+
+    outputs = run_dir / "Outputs"
+    (outputs / "prepare_outputs").mkdir(parents=True)
+    (outputs / output_filename).write_text("MERGED")  # the real output
+    (outputs / "Outputs.err").write_text("")
+    (outputs / "Outputs.out").write_text("out")
+    (outputs / "Outputs.sh").write_text("#!/bin/bash\n")
+    (outputs / "batch.log").write_text("log")
+    (outputs / ".status").write_text("done\n")
+    (outputs / "prepare_outputs" / ".status").write_text("done\n")
+
+
+@pytest.mark.parametrize(
+    "batch_name,output_filename",
+    [("batch_0", "all_comparisons.parquet"), ("gene_batch_0", "all_gene_comparisons.parquet")],
+)
+def test_reorganize_compare_run_output_flattens_and_tidies(tmp_path, batch_name, output_filename):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _make_fake_compare_run(run_dir, batch_name, output_filename)
+
+    task_manager._reorganize_compare_run_output(run_dir)
+
+    # The real merged output is lifted to the top of run_dir.
+    assert (run_dir / output_filename).read_text() == "MERGED"
+
+    # No batch-like directories remain at the top level.
+    assert not (run_dir / batch_name).exists()
+    assert not (run_dir / "Outputs").exists()
+
+    # Logs collected under run_dir/log (with collisions prefixed).
+    log_dir = run_dir / "log"
+    assert (log_dir / "batch_events.log").exists()
+    assert (log_dir / f"{batch_name}.out").exists()
+    assert (log_dir / "Outputs.out").exists()
+    assert (log_dir / "batch.log").exists()
+    assert (log_dir / "Outputs_batch.log").exists()
+
+    # Intermediate task dirs preserved under intermediate_files/<batch>/.
+    inter = run_dir / "intermediate_files"
+    assert (inter / batch_name / "concat_parquet" / f"Merged_{batch_name}.parquet").exists()
+    assert (inter / "Outputs" / "prepare_outputs" / ".status").exists()

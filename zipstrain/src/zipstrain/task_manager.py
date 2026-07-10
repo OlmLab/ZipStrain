@@ -1465,7 +1465,7 @@ class ProfileRunner(Runner):
     def _log_location(self) -> pathlib.Path:
         # A successful profile run relocates its logs into profiling_assets/log
         # (see _reorganize_profile_run_output).
-        return pathlib.Path(self.run_dir) / PROFILING_ASSETS_DIRNAME / PROFILE_LOG_DIRNAME
+        return pathlib.Path(self.run_dir) / PROFILING_ASSETS_DIRNAME / LOG_DIRNAME
 
     async def _batcher(self):
         """
@@ -1569,8 +1569,10 @@ class CompareRunner(Runner):
             slurm_config=slurm_config,
         )
 
-
-
+    def _log_location(self) -> pathlib.Path:
+        # A successful compare run relocates its logs into run_dir/log
+        # (see _reorganize_compare_run_output).
+        return pathlib.Path(self.run_dir) / LOG_DIRNAME
 
     async def _batcher(self):
         """
@@ -1836,9 +1838,25 @@ PROFILE_OUTPUT_SUFFIXES = (
     "_genome_stats.parquet",
     "_gene_stats.parquet",
 )
-PROFILE_INTERMEDIATE_DIRNAME = "intermediate_files"
-PROFILE_LOG_DIRNAME = "log"
+INTERMEDIATE_FILES_DIRNAME = "intermediate_files"
+LOG_DIRNAME = "log"
 PROFILING_ASSETS_DIRNAME = "profiling_assets"
+# Directory name of the final "prepare outputs" batch for compare runs, and the
+# extension of the real merged comparison output(s) it produces.
+COMPARE_FINAL_BATCH_DIRNAME = "Outputs"
+
+
+def _move_into(destination_dir: pathlib.Path, source: pathlib.Path) -> None:
+    """Move ``source`` into ``destination_dir``, prefixing on name collision.
+
+    Colliding names (e.g. per-batch ``.status`` / ``batch.log`` files) are kept
+    by prefixing later ones with their parent directory name.
+    """
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    target = destination_dir / source.name
+    if target.exists():
+        target = destination_dir / f"{source.parent.name}_{source.name}"
+    shutil.move(str(source), str(target))
 
 
 def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
@@ -1859,16 +1877,8 @@ def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
     it removes are no longer needed for resume.
     """
     run_dir = pathlib.Path(run_dir)
-    log_dir = run_dir / PROFILING_ASSETS_DIRNAME / PROFILE_LOG_DIRNAME
+    log_dir = run_dir / PROFILING_ASSETS_DIRNAME / LOG_DIRNAME
     log_dir.mkdir(parents=True, exist_ok=True)
-
-    def _move_into(destination_dir: pathlib.Path, source: pathlib.Path) -> None:
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        target = destination_dir / source.name
-        # Prefix on collision (e.g. per-batch ".status"/"batch.log") to avoid clobbering.
-        if target.exists():
-            target = destination_dir / f"{source.parent.name}_{source.name}"
-        shutil.move(str(source), str(target))
 
     # Top-level run log.
     run_log = run_dir / Batch.RUN_LOG_FILE
@@ -1883,9 +1893,9 @@ def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
                 # A per-sample task directory: lift it to run_dir/<sample> and tidy.
                 sample_dir = run_dir / entry.name
                 shutil.move(str(entry), str(sample_dir))
-                intermediate_dir = sample_dir / PROFILE_INTERMEDIATE_DIRNAME
+                intermediate_dir = sample_dir / INTERMEDIATE_FILES_DIRNAME
                 for item in sorted(sample_dir.iterdir()):
-                    if item.name == PROFILE_INTERMEDIATE_DIRNAME:
+                    if item.name == INTERMEDIATE_FILES_DIRNAME:
                         continue
                     if item.is_file() and item.name.endswith(PROFILE_OUTPUT_SUFFIXES):
                         continue
@@ -1898,6 +1908,63 @@ def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
             batch_dir.rmdir()
         except OSError:
             pass
+
+
+def _reorganize_compare_run_output(run_dir: pathlib.Path) -> None:
+    """Flatten and tidy a completed compare run's output directory.
+
+    Transforms the raw layout (``batch_N/<task>/...`` plus an ``Outputs/`` final
+    batch holding the merged parquet) into::
+
+        run_dir/
+            all_comparisons.parquet        # (or all_gene_comparisons.parquet)
+            log/                           # batch_events.log, *.err, *.out, .status
+            intermediate_files/
+                batch_0/...                # per-pair comparison parquets, etc.
+                Outputs/...                # final-batch scaffolding tasks
+
+    Only called after a fully successful run.
+    """
+    run_dir = pathlib.Path(run_dir)
+    log_dir = run_dir / LOG_DIRNAME
+    intermediate_dir = run_dir / INTERMEDIATE_FILES_DIRNAME
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Top-level run log.
+    run_log = run_dir / Batch.RUN_LOG_FILE
+    if run_log.exists():
+        _move_into(log_dir, run_log)
+
+    # The real merged output(s) are the top-level parquet files in the final batch.
+    final_batch_dir = run_dir / COMPARE_FINAL_BATCH_DIRNAME
+    if final_batch_dir.is_dir():
+        for parquet in sorted(final_batch_dir.glob("*.parquet")):
+            _move_into(run_dir, parquet)
+
+    # Every batch-like directory (genome batches `batch_N`, gene batches
+    # `gene_batch_N`, plus the final Outputs batch): its loose files are
+    # logs/scaffolding, its subdirectories are intermediates.
+    batch_dirs = [
+        entry
+        for entry in sorted(run_dir.iterdir())
+        if entry.is_dir() and re.fullmatch(r"(gene_)?batch_\d+", entry.name)
+    ]
+    if final_batch_dir.is_dir():
+        batch_dirs.append(final_batch_dir)
+    for batch_dir in batch_dirs:
+        if not batch_dir.is_dir():
+            continue
+        for entry in sorted(batch_dir.iterdir()):
+            if entry.is_file():
+                _move_into(log_dir, entry)
+        # Whatever remains (task subdirectories) is intermediate output.
+        if any(batch_dir.iterdir()):
+            shutil.move(str(batch_dir), str(intermediate_dir / batch_dir.name))
+        else:
+            try:
+                batch_dir.rmdir()
+            except OSError:
+                pass
 
 
 def lazy_run_profile(
@@ -2022,6 +2089,11 @@ def lazy_run_compares(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
+
+    # Only tidy the output layout when every batch succeeded, so a partial
+    # failure keeps the raw batch structure available for a resuming re-run.
+    if runner._failed_batches_count == 0:
+        _reorganize_compare_run_output(pathlib.Path(run_dir))
 
 
 class FastGeneCompareTask(Task):
@@ -2174,6 +2246,11 @@ class GeneCompareRunner(Runner):
             batch_type=batch_type,
             slurm_config=slurm_config,
         )
+
+    def _log_location(self) -> pathlib.Path:
+        # A successful compare run relocates its logs into run_dir/log
+        # (see _reorganize_compare_run_output).
+        return pathlib.Path(self.run_dir) / LOG_DIRNAME
 
     async def _batcher(self):
         """
@@ -2390,3 +2467,8 @@ def lazy_run_gene_compares(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
+
+    # Only tidy the output layout when every batch succeeded, so a partial
+    # failure keeps the raw batch structure available for a resuming re-run.
+    if runner._failed_batches_count == 0:
+        _reorganize_compare_run_output(pathlib.Path(run_dir))

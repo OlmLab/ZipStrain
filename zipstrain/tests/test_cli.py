@@ -158,7 +158,25 @@ def stb()->pl.LazyFrame:
 
 def test_cli_top_level_layout():
     commands = set(cli.cli.commands)
-    assert {"compare", "profile", "test", "utilities"} == commands
+    assert {"compare", "map", "profile", "test", "utilities"} == commands
+
+
+def test_cli_top_level_help_order_and_branding():
+    import click as _click
+
+    ctx = _click.Context(cli.cli)
+    assert cli.cli.list_commands(ctx) == ["test", "map", "profile", "compare", "utilities"]
+
+    result = CliRunner().invoke(cli.cli, ["-h"])
+    assert result.exit_code == 0
+    out = result.output
+    # Collapse whitespace since the help text wraps across terminal-width lines.
+    normalized = " ".join(out.split())
+    assert "Parsa Ghadermazi and Matt Olm" in normalized
+    assert "University of Colorado Boulder" in normalized
+    assert "https://github.com/OlmLab/ZipStrain" in normalized
+    # Commands appear in the curated order, not alphabetically.
+    assert out.index("\n  test") < out.index("\n  map") < out.index("\n  profile") < out.index("\n  compare")
 
 
 def test_cli_version_flag():
@@ -1117,7 +1135,6 @@ def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
         cli.cli,
         [
             "compare",
-            "genomes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1153,7 +1170,6 @@ def test_compare_genomes_uses_default_versioned_docker_image(tmp_path, monkeypat
         cli.cli,
         [
             "compare",
-            "genomes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1180,7 +1196,6 @@ def test_compare_genomes_honors_container_address_override(tmp_path, monkeypatch
         cli.cli,
         [
             "compare",
-            "genomes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1209,7 +1224,7 @@ def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
         cli.cli,
         [
             "compare",
-            "genes",
+            "--compare-genes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1240,7 +1255,7 @@ def test_compare_genes_honors_apptainer_container_address_override(tmp_path, mon
         cli.cli,
         [
             "compare",
-            "genes",
+            "--compare-genes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1254,6 +1269,100 @@ def test_compare_genes_honors_apptainer_container_address_override(tmp_path, mon
     assert result.exit_code == 0
     assert isinstance(captured["container_engine"], cli.tm.ApptainerEngine)
     assert captured["container_engine"].address == "/scratch/containers/zipstrain-0.10.1.img"
+
+
+def _write_profiles_csv_for_compare(tmp_path):
+    """A profiles CSV (profile_name,profile_location) pointing at real profile parquets."""
+    _profile_db_parquet, profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    csv_path = tmp_path / "profiles.csv"
+    lines = ["profile_name,profile_location"]
+    lines += [f"{name},{path}" for name, path in profile_paths.items()]
+    csv_path.write_text("\n".join(lines) + "\n")
+    return csv_path
+
+
+def test_compare_accepts_profiles_csv_without_build_profile_db(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    captured = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", lambda **kwargs: captured.update(kwargs))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        ["compare", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
+    )
+    assert result.exit_code == 0, result.output
+    # Routed to the genome path by default, with the CSV loaded into a profile db.
+    assert isinstance(captured["comps_db"], cli.db.GenomeComparisonDatabase)
+
+
+def test_compare_genes_flag_routes_to_gene_compare(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    captured = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", lambda **kwargs: captured.update(kwargs))
+    # Genome path must NOT be called in gene mode.
+    monkeypatch.setattr(
+        cli.tm, "lazy_run_compares",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("genome path called in gene mode")),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
+    )
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["comps_db"], cli.db.GeneComparisonDatabase)
+
+
+def test_compare_method_matrix_routes_to_matrix_workflow(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    captured = {}
+
+    def _fake_run_matrix_compare(**kwargs):
+        captured.update(kwargs)
+        out = Path(kwargs["run_dir"]) / "all_comparisons.parquet"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"genome": ["g"], "genome_pop_ani": [100.0]}).write_parquet(out)
+        return out
+
+    monkeypatch.setattr(cli.matrix_workflow, "run_matrix_compare", _fake_run_matrix_compare)
+    # Standard path must not run in matrix mode.
+    monkeypatch.setattr(
+        cli.tm, "lazy_run_compares",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("standard path called in matrix mode")),
+    )
+
+    result = CliRunner().invoke(
+        cli.cli,
+        [
+            "compare", "--method", "matrix",
+            "--profile-db", str(csv_path),
+            "--stb-file", str(tmp_path / "ref.stb"),
+            "--backend", "numpy",
+            "--run-dir", str(tmp_path / "run"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Profiles were passed as (name, location) pairs, and matrix knobs propagated.
+    assert [name for name, _loc in captured["profiles"]] == ["sample_a", "sample_b", "sample_c"]
+    assert captured["backend"] == "numpy"
+    assert captured["compare_genes"] is False
+
+
+def test_compare_default_scope_differs_by_mode(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+
+    genome_db = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", lambda **kwargs: genome_db.update(comps_db=kwargs["comps_db"]))
+    runner = CliRunner()
+    assert runner.invoke(cli.cli, ["compare", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "g")]).exit_code == 0
+    assert genome_db["comps_db"].config.scope == "all"
+
+    gene_db = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", lambda **kwargs: gene_db.update(comps_db=kwargs["comps_db"]))
+    assert runner.invoke(cli.cli, ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "gene")]).exit_code == 0
+    assert gene_db["comps_db"].config.scope == "all:all"
 
 
 def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
@@ -2419,3 +2528,131 @@ def test_profile_help_is_organized_into_sections_with_defaults():
     assert "[default: 0.001]" in result.output   # --error-rate
     assert "[default: 8]" in result.output        # --num-procs
     assert "[default: local]" in result.output    # --execution-mode
+
+
+def _write_small_parquet(path, rows=3):
+    pl.DataFrame({"genome": ["g"] * rows, "genome_pop_ani": [100.0] * rows}).write_parquet(path)
+
+
+def test_maybe_write_csv_writes_small_and_respects_flags(tmp_path):
+    pq = tmp_path / "all_comparisons.parquet"
+    _write_small_parquet(pq)
+
+    # Default: small parquet gets a companion csv.
+    out = cli._maybe_write_csv(pq, no_csv=False, force_csv=False)
+    assert out == tmp_path / "all_comparisons.csv"
+    assert out.exists()
+    out.unlink()
+
+    # --no-csv: nothing written.
+    assert cli._maybe_write_csv(pq, no_csv=True, force_csv=False) is None
+    assert not (tmp_path / "all_comparisons.csv").exists()
+
+
+def test_maybe_write_csv_skips_huge_unless_forced(tmp_path, monkeypatch):
+    pq = tmp_path / "big.parquet"
+    _write_small_parquet(pq)
+    # Pretend the estimate is over the threshold.
+    monkeypatch.setattr(cli, "_estimated_csv_mb", lambda p: cli.CSV_SIZE_THRESHOLD_MB + 1)
+
+    assert cli._maybe_write_csv(pq, no_csv=False, force_csv=False) is None
+    assert not (tmp_path / "big.csv").exists()
+
+    forced = cli._maybe_write_csv(pq, no_csv=False, force_csv=True)
+    assert forced is not None and forced.exists()
+
+
+def test_finalize_profile_outputs_writes_stat_csvs(tmp_path):
+    sample = tmp_path / "sampleA"
+    sample.mkdir()
+    # genome_stats needs the presence-input columns.
+    pl.DataFrame({"genome": ["g"], "coverage": [10.0], "breadth": [1.0], "ber": [1.0], "fug": [0.1]}).write_parquet(
+        sample / "sampleA_genome_stats.parquet"
+    )
+    _write_small_parquet(sample / "sampleA_gene_stats.parquet")
+    _write_small_parquet(sample / "sampleA_profile.parquet")  # no ref bitmask -> no SNVs, no csv
+
+    cli._finalize_profile_outputs(
+        tmp_path,
+        no_csv=False,
+        force_csv=False,
+        emit_snvs=True,
+        snv_min_cov=5,
+        presence_ber=0.5,
+        presence_fug=2.0,
+        presence_min_cov_use_fug=2.0,
+        presence_min_coverage=0.1,
+    )
+
+    assert (sample / "sampleA_genome_stats.csv").exists()
+    assert (sample / "sampleA_gene_stats.csv").exists()
+    assert not (sample / "sampleA_profile.csv").exists()
+    # Presence column was added to the genome stats table.
+    assert "presence" in pl.read_parquet(sample / "sampleA_genome_stats.parquet").columns
+    # No reference bitmask in the profile -> SNV calling skipped without error.
+    assert not (sample / "sampleA_SNVs.parquet").exists()
+
+
+def test_add_presence_column_calls_present_and_absent(tmp_path):
+    stats = pl.DataFrame(
+        {
+            "genome": ["present_one", "absent_one"],
+            "coverage": [10.0, 0.0],
+            "breadth": [1.0, 0.0],
+            "ber": [1.0, 0.0],
+            "fug": [0.1, 5.0],
+        }
+    )
+    out = cli._add_presence_column(stats, ber=0.5, fug=1.0, min_cov_use_fug=2.0, min_coverage=0.1)
+    by_genome = {row["genome"]: row["presence"] for row in out.iter_rows(named=True)}
+    assert by_genome == {"present_one": "present", "absent_one": "absent"}
+
+
+def test_presence_fug_direction_and_coverage():
+    # coverage 0.5 is between min_coverage (0.1) and min_cov_use_fug (2), so these
+    # rows go through the FUG path; low_cov is below the coverage floor.
+    stats = pl.DataFrame(
+        {
+            "genome": ["hi_fug", "lo_fug", "low_cov"],
+            "coverage": [0.5, 0.5, 0.05],
+            "ber":      [0.9, 0.9, 0.9],
+            "fug":      [0.8, 0.3, 0.8],   # 0.8/0.632=1.27 > 1; 0.3/0.632=0.47 < 1
+        }
+    )
+    out = cli._add_presence_column(stats, ber=0.5, fug=1.0, min_cov_use_fug=2.0, min_coverage=0.1)
+    calls = {r["genome"]: r["presence"] for r in out.iter_rows(named=True)}
+    assert calls["hi_fug"] == "present"     # fug/0.632 = 1.27 > 1 -> present (correct direction)
+    assert calls["lo_fug"] == "absent"      # fug/0.632 = 0.47 < 1 -> absent
+    assert calls["low_cov"] == "absent"     # coverage 0.05 < 0.1 floor
+
+
+def test_discover_taxonomy_file_next_to_reference_and_stb(tmp_path):
+    ref = tmp_path / "reference_genomes.fna"; ref.write_text(">x\nA\n")
+    stb = tmp_path / "reference_genomes.stb"; stb.write_text("x\tg\n")
+    tax = tmp_path / "reference_genomes_taxonomy.tsv"; tax.write_text("genome\tgenome_taxonomy\ng\td__Bacteria\n")
+    assert cli._discover_taxonomy_file(str(ref), str(stb), None) == tax
+    # explicit wins
+    other = tmp_path / "custom.tsv"; other.write_text("genome\tgenome_taxonomy\n")
+    assert cli._discover_taxonomy_file(str(ref), str(stb), str(other)) == other
+    # none when absent
+    tax.unlink()
+    assert cli._discover_taxonomy_file(str(ref), str(stb), None) is None
+
+
+def test_finalize_adds_genome_taxonomy_column(tmp_path):
+    sample = tmp_path / "sampleA"; sample.mkdir()
+    pl.DataFrame({"genome": ["GCF_1.1", "GCF_2.1"], "coverage": [10.0, 10.0], "ber": [1.0, 1.0], "fug": [1.0, 1.0]}).write_parquet(
+        sample / "sampleA_genome_stats.parquet"
+    )
+    tax = tmp_path / "tax.tsv"; tax.write_text("genome\tgenome_taxonomy\nGCF_1.1\td__Bacteria;s__Foo\n")
+
+    cli._finalize_profile_outputs(
+        tmp_path, no_csv=True, force_csv=False, emit_snvs=False, snv_min_cov=5,
+        presence_ber=0.5, presence_fug=1.0, presence_min_cov_use_fug=2.0, presence_min_coverage=0.1,
+        taxonomy_file=tax,
+    )
+    d = pl.read_parquet(sample / "sampleA_genome_stats.parquet")
+    assert "genome_taxonomy" in d.columns
+    by = {r["genome"]: r["genome_taxonomy"] for r in d.iter_rows(named=True)}
+    assert by["GCF_1.1"] == "d__Bacteria;s__Foo"
+    assert by["GCF_2.1"] is None  # unmatched -> null
