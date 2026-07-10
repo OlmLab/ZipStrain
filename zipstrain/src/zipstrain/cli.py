@@ -15,6 +15,7 @@ import zipstrain.matrix_pairs as mp
 import zipstrain.healthcheck as hc
 import zipstrain.mapping as mapping
 import zipstrain.matrix_workflow as matrix_workflow
+from zipstrain.run_logger import RunLogger
 import polars as pl
 import pathlib
 import shutil
@@ -1742,23 +1743,24 @@ def map_command(reads_table, output_dir, reference_fasta, stb_file, sylph_db, sy
         console.print(f"[bold cyan]›[/] [{step_number['n']}] {message}")
 
     console.print(Panel.fit("[bold magenta]ZipStrain map[/]", border_style="magenta"))
-    try:
-        results = mapping.run_map(
-            reads_table=reads_table,
-            output_dir=output_dir,
-            reference_fasta=reference_fasta,
-            stb_file=stb_file,
-            sylph_db=sylph_db,
-            sylph_db_url=sylph_db_url,
-            genome_cache_dir=genome_cache_dir,
-            threads=threads,
-            predict_genes_flag=predict_genes,
-            non_competitive=non_competitive,
-            force=force,
-            progress_callback=_on_step,
-        )
-    except (ValueError, RuntimeError) as exc:
-        raise click.UsageError(str(exc)) from exc
+    with RunLogger(output_dir, command="map", argv=sys.argv) as run_log:
+        try:
+            results = mapping.run_map(
+                reads_table=reads_table,
+                output_dir=output_dir,
+                reference_fasta=reference_fasta,
+                stb_file=stb_file,
+                sylph_db=sylph_db,
+                sylph_db_url=sylph_db_url,
+                genome_cache_dir=genome_cache_dir,
+                threads=threads,
+                predict_genes_flag=predict_genes,
+                non_competitive=non_competitive,
+                force=force,
+                progress_callback=run_log.as_callback(_on_step),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise click.UsageError(str(exc)) from exc
 
     elapsed = time.monotonic() - start
     elapsed_str = f"{int(elapsed // 3600)}:{int(elapsed % 3600 // 60):02d}:{int(elapsed % 60):02d}"
@@ -1866,67 +1868,71 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
         raise ValueError(f"Input table missing required columns: {missing}")
 
     run_dir = pathlib.Path(run_dir)
-    slurm_conf = None
-    if execution_mode == "slurm":
-        if slurm_config is None:
-            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+    with RunLogger(run_dir, command="profile", argv=sys.argv) as run_log:
+        slurm_conf = None
+        if execution_mode == "slurm":
+            if slurm_config is None:
+                raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
 
-    assets = pf.resolve_profiling_assets(
-        run_dir=run_dir,
-        reference_fasta=reference_fasta,
-        stb_file=stb_file,
-        gene_fasta=gene_fasta,
-        null_model_file=null_model,
-        bed_file=bed_file,
-        genome_length_file=genome_length_file,
-        gene_range_table=gene_range_table,
-        profiling_contract_file=profiling_contract,
-        error_rate=error_rate,
-        max_total_reads=max_total_reads,
-        p_threshold=p_threshold,
-        model_type=model_type,
-        force_prepare=force_prepare,
-    )
+        run_log.step("Resolving profiling assets")
+        assets = pf.resolve_profiling_assets(
+            run_dir=run_dir,
+            reference_fasta=reference_fasta,
+            stb_file=stb_file,
+            gene_fasta=gene_fasta,
+            null_model_file=null_model,
+            bed_file=bed_file,
+            genome_length_file=genome_length_file,
+            gene_range_table=gene_range_table,
+            profiling_contract_file=profiling_contract,
+            error_rate=error_rate,
+            max_total_reads=max_total_reads,
+            p_threshold=p_threshold,
+            model_type=model_type,
+            force_prepare=force_prepare,
+        )
 
-    container_engine_obj = _build_container_engine(container_engine, container_address)
+        container_engine_obj = _build_container_engine(container_engine, container_address)
 
-    tm.lazy_run_profile(
-        run_dir=run_dir,
-        container_engine=container_engine_obj,
-        bams_lf=bams_lf,
-        reference_fasta_file=pathlib.Path(reference_fasta) if reference_fasta is not None else None,
-        stb_file=pathlib.Path(stb_file),
-        null_model_file=assets.null_model_file,
-        gene_range_table=assets.gene_range_table,
-        profiling_contract_file=assets.profiling_contract_file,
-        bed_file=assets.bed_file,
-        genome_length_file=assets.genome_length_file,
-        num_procs=num_procs,
-        min_mapq=min_mapq,
-        min_baseq=min_baseq,
-        min_read_ani=min_read_ani,
-        read_inclusion=read_inclusion,
-        tasks_per_batch=task_per_batch,
-        max_concurrent_batches=max_concurrent_batches,
-        poll_interval=poll_interval,
-        execution_mode=execution_mode,
-        slurm_config=slurm_conf,
-    )
+        run_log.step("Profiling BAM files")
+        tm.lazy_run_profile(
+            run_dir=run_dir,
+            container_engine=container_engine_obj,
+            bams_lf=bams_lf,
+            reference_fasta_file=pathlib.Path(reference_fasta) if reference_fasta is not None else None,
+            stb_file=pathlib.Path(stb_file),
+            null_model_file=assets.null_model_file,
+            gene_range_table=assets.gene_range_table,
+            profiling_contract_file=assets.profiling_contract_file,
+            bed_file=assets.bed_file,
+            genome_length_file=assets.genome_length_file,
+            num_procs=num_procs,
+            min_mapq=min_mapq,
+            min_baseq=min_baseq,
+            min_read_ani=min_read_ani,
+            read_inclusion=read_inclusion,
+            tasks_per_batch=task_per_batch,
+            max_concurrent_batches=max_concurrent_batches,
+            poll_interval=poll_interval,
+            execution_mode=execution_mode,
+            slurm_config=slurm_conf,
+        )
 
-    _finalize_profile_outputs(
-        run_dir,
-        no_csv=no_csv,
-        force_csv=force_csv,
-        emit_snvs=not no_snvs,
-        snv_min_cov=snv_min_cov,
-        presence_ber=presence_ber,
-        presence_fug=presence_fug,
-        presence_min_cov_use_fug=presence_min_cov_use_fug,
-        presence_min_coverage=presence_min_coverage,
-        taxonomy_file=_discover_taxonomy_file(reference_fasta, stb_file, genome_taxonomy),
-        console=Console(),
-    )
+        run_log.step("Finalizing outputs (presence, SNVs, taxonomy, CSVs)")
+        _finalize_profile_outputs(
+            run_dir,
+            no_csv=no_csv,
+            force_csv=force_csv,
+            emit_snvs=not no_snvs,
+            snv_min_cov=snv_min_cov,
+            presence_ber=presence_ber,
+            presence_fug=presence_fug,
+            presence_min_cov_use_fug=presence_min_cov_use_fug,
+            presence_min_coverage=presence_min_coverage,
+            taxonomy_file=_discover_taxonomy_file(reference_fasta, stb_file, genome_taxonomy),
+            console=Console(),
+        )
 
 
 profile.option_sections = {
@@ -1996,6 +2002,7 @@ def _run_matrix_compare_method(
     compare_genes,
     no_csv=False,
     force_csv=False,
+    run_log=None,
 ):
     """Drive the matrix-store comparison route with progress + a summary panel."""
     profiles = [
@@ -2010,6 +2017,8 @@ def _run_matrix_compare_method(
     def _on_step(message: str) -> None:
         step_number["n"] += 1
         console.print(f"[bold cyan]›[/] [{step_number['n']}] {message}")
+        if run_log is not None:
+            run_log.step(message)
 
     console.print(Panel.fit("[bold magenta]ZipStrain compare (matrix)[/]", border_style="magenta"))
     try:
@@ -2097,99 +2106,105 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
     same ``--run-dir`` and a profiles table that includes new samples extends the
     existing comparison, computing only the new pairs.
     """
-    profile_database = _load_profile_database(profile_db, allow_mismatch=allow_mismatch)
     run_dir = pathlib.Path(run_dir)
+    with RunLogger(run_dir, command="compare", argv=sys.argv) as run_log:
+        run_log.step("Loading profile database")
+        profile_database = _load_profile_database(profile_db, allow_mismatch=allow_mismatch)
 
-    if method == "matrix":
-        _run_matrix_compare_method(
-            profile_database=profile_database,
-            run_dir=run_dir,
-            stb_file=stb_file,
-            bed_file=bed_file,
-            gene_range_table=gene_range_table,
-            scope=scope,
-            backend=backend,
-            memory_limit_gb=memory_limit_gb,
-            compare_genes=compare_genes,
-            no_csv=no_csv,
-            force_csv=force_csv,
-        )
-        return
+        if method == "matrix":
+            _run_matrix_compare_method(
+                profile_database=profile_database,
+                run_dir=run_dir,
+                stb_file=stb_file,
+                bed_file=bed_file,
+                gene_range_table=gene_range_table,
+                scope=scope,
+                backend=backend,
+                memory_limit_gb=memory_limit_gb,
+                compare_genes=compare_genes,
+                no_csv=no_csv,
+                force_csv=force_csv,
+                run_log=run_log,
+            )
+            return
 
-    if duckdb_threads is not None and duckdb_threads < 1:
-        raise ValueError("--duckdb-threads must be >= 1")
-    slurm_conf = None
-    if execution_mode == "slurm":
-        if slurm_config is None:
-            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+        if duckdb_threads is not None and duckdb_threads < 1:
+            raise ValueError("--duckdb-threads must be >= 1")
+        slurm_conf = None
+        if execution_mode == "slurm":
+            if slurm_config is None:
+                raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
 
-    # Standard method: auto-resume from a prior run in the same run-dir when the
-    # user did not pass an explicit comparison to extend.
-    if comp_db_file is None:
-        existing_output = run_dir / ("all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet")
-        if existing_output.exists():
-            comp_db_file = str(existing_output)
+        # Standard method: auto-resume from a prior run in the same run-dir when the
+        # user did not pass an explicit comparison to extend.
+        if comp_db_file is None:
+            existing_output = run_dir / ("all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet")
+            if existing_output.exists():
+                comp_db_file = str(existing_output)
 
-    container_engine_obj = _build_container_engine(container_engine, container_address)
+        container_engine_obj = _build_container_engine(container_engine, container_address)
 
-    if compare_genes:
-        resolved_scope = scope if scope is not None else "all:all"
-        comps_db = db.GeneComparisonDatabase(
-            profile_db=profile_database,
-            config=db.GeneComparisonConfig(
-                scope=resolved_scope,
-                min_cov=min_cov,
-                min_gene_compare_len=min_gene_compare_len,
-                stb_file_loc=stb_file,
-            ),
-            comp_db_loc=comp_db_file,
-        )
-        tm.lazy_run_gene_compares(
-            comps_db=comps_db,
-            container_engine=container_engine_obj,
-            run_dir=run_dir,
-            max_concurrent_batches=max_concurrent_batches,
-            execution_mode=execution_mode,
-            slurm_config=slurm_conf,
-            compare_engine=engine,
-            tasks_per_batch=task_per_batch,
-            poll_interval=poll_interval,
-            ani_method=ani_method,
-            duckdb_memory_limit=duckdb_memory_limit,
-            duckdb_threads=duckdb_threads,
-        )
-    else:
-        resolved_scope = scope if scope is not None else "all"
-        cp.parse_genome_calculations(calculate)
-        comps_db = db.GenomeComparisonDatabase(
-            profile_db=profile_database,
-            config=db.GenomeComparisonConfig(
-                scope=resolved_scope,
-                min_cov=min_cov,
-                min_gene_compare_len=min_gene_compare_len,
-                stb_file_loc=stb_file,
-            ),
-            comp_db_loc=comp_db_file,
-        )
-        tm.lazy_run_compares(
-            comps_db=comps_db,
-            container_engine=container_engine_obj,
-            run_dir=run_dir,
-            max_concurrent_batches=max_concurrent_batches,
-            execution_mode=execution_mode,
-            slurm_config=slurm_conf,
-            ani_method=ani_method,
-            compare_engine=engine,
-            calculate=calculate,
-            duckdb_memory_limit=duckdb_memory_limit,
-            duckdb_threads=duckdb_threads,
-            tasks_per_batch=task_per_batch,
-            poll_interval=poll_interval,
-        )
+        if compare_genes:
+            resolved_scope = scope if scope is not None else "all:all"
+            comps_db = db.GeneComparisonDatabase(
+                profile_db=profile_database,
+                config=db.GeneComparisonConfig(
+                    scope=resolved_scope,
+                    min_cov=min_cov,
+                    min_gene_compare_len=min_gene_compare_len,
+                    stb_file_loc=stb_file,
+                ),
+                comp_db_loc=comp_db_file,
+            )
+            run_log.step("Comparing genes across sample pairs")
+            tm.lazy_run_gene_compares(
+                comps_db=comps_db,
+                container_engine=container_engine_obj,
+                run_dir=run_dir,
+                max_concurrent_batches=max_concurrent_batches,
+                execution_mode=execution_mode,
+                slurm_config=slurm_conf,
+                compare_engine=engine,
+                tasks_per_batch=task_per_batch,
+                poll_interval=poll_interval,
+                ani_method=ani_method,
+                duckdb_memory_limit=duckdb_memory_limit,
+                duckdb_threads=duckdb_threads,
+            )
+        else:
+            resolved_scope = scope if scope is not None else "all"
+            cp.parse_genome_calculations(calculate)
+            comps_db = db.GenomeComparisonDatabase(
+                profile_db=profile_database,
+                config=db.GenomeComparisonConfig(
+                    scope=resolved_scope,
+                    min_cov=min_cov,
+                    min_gene_compare_len=min_gene_compare_len,
+                    stb_file_loc=stb_file,
+                ),
+                comp_db_loc=comp_db_file,
+            )
+            run_log.step("Comparing genomes across sample pairs")
+            tm.lazy_run_compares(
+                comps_db=comps_db,
+                container_engine=container_engine_obj,
+                run_dir=run_dir,
+                max_concurrent_batches=max_concurrent_batches,
+                execution_mode=execution_mode,
+                slurm_config=slurm_conf,
+                ani_method=ani_method,
+                compare_engine=engine,
+                calculate=calculate,
+                duckdb_memory_limit=duckdb_memory_limit,
+                duckdb_threads=duckdb_threads,
+                tasks_per_batch=task_per_batch,
+                poll_interval=poll_interval,
+            )
 
-    output_name = "all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet"
-    _maybe_write_csv(run_dir / output_name, no_csv=no_csv, force_csv=force_csv, console=Console())
+        run_log.step("Writing comparison outputs")
+        output_name = "all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet"
+        _maybe_write_csv(run_dir / output_name, no_csv=no_csv, force_csv=force_csv, console=Console())
 
 
 compare.option_sections = {
