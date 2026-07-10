@@ -72,6 +72,24 @@ Commands:
 
 </details>
 
+### Run logging
+
+Every `map`, `profile`, and `compare` run writes two logging files into its output directory (`--output-dir` for `map`, `--run-dir` for `profile`/`compare`), so you can tell at a glance whether a run is still going, finished, or crashed:
+
+- **`zipstrain_run.log`** — a human-readable, append-only timeline: a header (ZipStrain version, full command, working directory, process id, start time) followed by a timestamped line for each step. On success it ends with `COMPLETED`; on failure it ends with `CRASHED` (or `ABORTED` for a Ctrl-C), the step that was running, and the full Python traceback.
+- **`zipstrain_status.json`** — a machine-readable snapshot with `status` (`running` / `completed` / `crashed` / `aborted`), `last_step`, `pid`, timestamps, `elapsed_seconds`, and — on failure — `error_type`, `error_message`, and `failed_during_step`.
+
+A quick way to check on a run:
+
+```bash
+# What is (or was) it doing?
+grep -E 'RUNNING|STEP|COMPLETED|CRASHED|ABORTED' out_dir/zipstrain_run.log | tail
+# Just the status
+python -c "import json; print(json.load(open('out_dir/zipstrain_status.json'))['status'])"
+```
+
+If `status` is `running` but nothing has updated for a long time, use the recorded `pid` to check whether the process is still alive (e.g. `ps -p <pid>`). Because the log is append-only, re-running in the same directory (for example to [resume `map`](#map)) adds a fresh block rather than overwriting the previous run's history.
+
 ### Map
 
 #### `zipstrain map`
