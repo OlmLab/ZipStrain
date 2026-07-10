@@ -1,8 +1,8 @@
 # ZipStrain
 
-ZipStrain is a strain-resolution metagenomics toolkit for profiling mapped reads
-into nucleotide-count tables and comparing samples at genome and gene
-resolution.
+Fast strain-level metagenomics in three commands: **`map`** reads to BAMs,
+**`profile`** them into per-position nucleotide-count tables, and **`compare`**
+samples by ANI to tell whether they share a strain.
 
 Documentation:
 
@@ -11,13 +11,20 @@ Documentation:
 
 ## Install
 
-Base install:
+Conda is the easiest path — it brings in `samtools` and the `map` aligners too:
+
+```bash
+conda create -n zipstrain -c conda-forge -c bioconda \
+  python=3.12 zipstrain bowtie2 samtools sylph
+```
+
+Or with pip (into a fresh virtual environment):
 
 ```bash
 pip install zipstrain
 ```
 
-Matrix-store workflow dependencies:
+Matrix-store comparison dependencies (`compare --method matrix`):
 
 ```bash
 pip install "zipstrain[matrix]"
@@ -25,7 +32,10 @@ pip install "zipstrain[matrix]"
 
 Notes:
 
-- Apple Silicon can use the standard `torch` wheel with the MPS backend.
+- With pip, install `samtools` separately (profiling needs it); `zipstrain map`
+  additionally needs `bowtie2` and `sylph` (and `prodigal` for `--predict-genes`).
+- On Apple Silicon, use a native `osx-arm64` Conda so dependencies install
+  natively; the standard `torch` wheel uses the MPS backend.
 - Linux CUDA installs should replace Torch with the matching CUDA wheel from
   PyTorch:
 
@@ -34,7 +44,8 @@ Notes:
   pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu124
   ```
 
-- Profiling requires `samtools` to be installed separately when using pip.
+See the [installation guide](https://OlmLab.github.io/ZipStrain/installation/)
+for full details.
 
 ## Verify
 
