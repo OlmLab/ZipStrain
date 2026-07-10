@@ -314,7 +314,7 @@ Key columns:
 This tutorial runs the same two samples as Tutorial #1, but pulls them directly from SRA and automatically builds a reference genome database using Sylph — no manual downloads or mapping required. This is the recommended route for larger studies or cluster environments.
 
 !!! note "Prerequisites"
-    Nextflow and Docker must be installed. See [Installation](./installation.md) for Nextflow setup. The `zipstrain.nf` pipeline file and `conf.config` are included in the [ZipStrain GitHub repo](https://github.com/OlmLab/ZipStrain).
+    Nextflow and Docker must be installed. See [Installation](./installation.md) for Nextflow setup. The commands below run the pipeline straight from GitHub (`nextflow run OlmLab/ZipStrain`) with Docker enabled by default — nothing to clone. On a cluster, add `-profile fiji` (or `gutbot`/`alpine`/`blanca`) to use Singularity instead.
 
 ### Step 1 — Create the SRA input table
 
@@ -337,30 +337,42 @@ printf 'Run\nSRR6262445\nSRR6262448\n' > sra.csv
 
 ---
 
-### Step 2 — Profile (SRA to profile in one step)
+### Step 2 — Download the Sylph database (once)
 
-This mode downloads reads from SRA, auto-builds a reference genome database via Sylph, maps reads, and generates profiles — all in one command:
+To auto-build a reference, the pipeline needs the Sylph GTDB database (~13 GB). **Download it once yourself and reuse it**, rather than letting the pipeline re-download it on every run — that download is large and, on a laptop, a very long-running task that some Nextflow versions kill mid-way:
 
 ```bash
-nextflow run zipstrain.nf \
+mkdir -p ~/sylph_db
+wget -P ~/sylph_db http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb
+```
+
+You then pass it with `--sylph_db` (Step 3). If you skip this step, the pipeline will download the database itself into a work directory, but you may hit the long-download failure described above.
+
+---
+
+### Step 3 — Profile (SRA to profile in one step)
+
+This mode downloads reads from SRA, auto-builds a reference genome database via Sylph, maps reads, and generates profiles — all in one command. Point `--sylph_db` at the database you downloaded in Step 2:
+
+```bash
+nextflow run OlmLab/ZipStrain \
   --mode from_sra_to_profile \
   --input_table sra.csv \
   --output_dir out_sra_profile \
-  -c conf.config \
-  -profile docker \
+  --sylph_db ~/sylph_db/gtdb-r220-c200-dbv1.syldb \
   -resume
 ```
 
 !!! tip "Auto-built genome database"
-    Because no `--reference_genome` is provided, the pipeline runs Sylph on each sample to identify likely organisms and automatically downloads and builds the reference genome database. Results are cached in `--genome_db_cache_dir` (default: `genome_cache/`) so re-runs are fast.
+    Because no `--reference_genome` is provided, the pipeline runs Sylph on each sample to identify likely organisms and automatically builds the reference genome database from the genomes it detects. The built database is cached in `--genome_db_cache_dir` (default: `genome_cache/`) so re-runs are fast.
 
 Profiles are written to `out_sra_profile/profiles/`, one subdirectory per sample.
 
 ---
 
-### Step 3 — Compare
+### Step 4 — Compare
 
-Build a profile table pointing at the outputs from Step 2:
+Build a profile table pointing at the outputs from Step 3:
 
 ```bash
 printf 'sample_name,profile_location\nN5_271_010G1,out_sra_profile/profiles/N5_271_010G1_profile.parquet\nN5_271_010G2,out_sra_profile/profiles/N5_271_010G2_profile.parquet\n' > profiles.csv
@@ -369,7 +381,7 @@ printf 'sample_name,profile_location\nN5_271_010G1,out_sra_profile/profiles/N5_2
 Then run genome comparison:
 
 ```bash
-nextflow run zipstrain.nf \
+nextflow run OlmLab/ZipStrain \
   --mode compare_genomes \
   --input_type profile_table \
   --input_table profiles.csv \
@@ -378,8 +390,6 @@ nextflow run zipstrain.nf \
   --compare_ani_method popani \
   --compare_engine duckdb \
   --output_dir out_sra_compare \
-  -c conf.config \
-  -profile docker \
   -resume
 ```
 

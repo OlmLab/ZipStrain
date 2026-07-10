@@ -1,6 +1,6 @@
 # Expected output
 
-This page describes every file ZipStrain writes, the columns in each, and how to read them. All tables are written as parquet, and — when small enough — a matching `.csv` (see `--no-csv` / `--force-csv`). The examples below come from [Tutorial #3](./tutorial_v2.md) (three replicates of the ZymoBIOMICS standard, Sylph route).
+This page describes every file ZipStrain writes, the columns in each, and how to read them. All tables are written as parquet, and — when small enough — a matching `.csv` (see `--no-csv` / `--force-csv`). The examples below come from [Tutorial #3](./Tutorial.md) (three replicates of the ZymoBIOMICS standard, Sylph route).
 
 ---
 
@@ -37,7 +37,7 @@ One row per genome: how well it was covered, whether it is present, and its iden
 | `fug` | Read-distribution uniformity (fraction of non-excess gaps); ~0.632 under a random distribution |
 | `reads_mapped` | Reads mapped to the genome |
 | `ref_ani` | ANI of the sample to the reference genome (%) |
-| `presence` | Automated `present` / `absent` call (see [Tutorial #3](./tutorial_v2.md#interpreting-the-benchmarks)) |
+| `presence` | Automated `present` / `absent` call (see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks)) |
 | `genome_taxonomy` | GTDB lineage — **Sylph route only** |
 
 Example (one present genome):
@@ -123,4 +123,4 @@ sample_1     sample_2     genome           total_positions  share_allele_pos  ge
 SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           100.0           768237
 ```
 
-**Interpreting popANI.** `genome_pop_ani` near **100.0** means the same strain is present in both samples. A common same-strain threshold is **≥ 99.999%** — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses *population* ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see [Tutorial #3](./tutorial_v2.md#interpreting-the-benchmarks) for the popANI-vs-consensus-ANI discussion.
+**Interpreting popANI.** `genome_pop_ani` near **100.0** means the same strain is present in both samples. A common same-strain threshold is **≥ 99.999%** — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses *population* ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks) for the popANI-vs-consensus-ANI discussion.

@@ -45,7 +45,7 @@ These power the CLI commands:
 - `zipstrain utilities matrix-compare`
 - `zipstrain utilities matrix-compare-export`
 
-For usage patterns and examples, see the [Tutorial](./Tutorial.md) and [CLI Reference](./cli.md).
+For usage patterns and examples, see the [Tutorial](./Tutorial.md) and the [CLI reference](./usermanual.md#zipstrain-command-line-interface).
 
 ## Task Manager
 

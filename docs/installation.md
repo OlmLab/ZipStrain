@@ -3,7 +3,7 @@
 ZipStrain runs on **Linux and macOS** (including Apple Silicon). There are two ways to use it, and they install differently — pick the one you need:
 
 - the **Python CLI** (`zipstrain map | profile | compare`) — install ZipStrain plus a few external tools. See [Python CLI Installation](#python-cli-installation).
-- the **Nextflow pipeline** (`nextflow run zipstrain.nf`) — install Nextflow and a container engine, which then pull ZipStrain and its tools for you. See [Nextflow Installation](#nextflow-installation).
+- the **Nextflow pipeline** (`nextflow run OlmLab/ZipStrain`) — install Nextflow and a container engine, which then pull ZipStrain and its tools for you. See [Nextflow Installation](#nextflow-installation).
 
 For the difference between the two, see the [User Manual](./usermanual.md#zipstrain-command-line-interface). Whichever you choose, finish by confirming it works.
 
@@ -43,11 +43,35 @@ zipstrain test
 
 Add `prodigal` to that list if you plan to use `zipstrain map --predict-genes`.
 
+Always list the channels in this order — `conda-forge` before `bioconda` — as [Bioconda requires](https://bioconda.github.io/). Do not add the `defaults` channel. If solving is slow, [Miniforge](https://github.com/conda-forge/miniforge) (which ships the fast `mamba` solver and defaults to conda-forge) is a good base; swap `conda` for `mamba` in the commands above.
+
+!!! note "Apple Silicon (M1/M2/M3…)"
+    ZipStrain is a `noarch` (pure-Python) package, and its dependencies — `samtools`, `bowtie2`, `sylph`, `prodigal` — all have native `osx-arm64` builds on Bioconda, so a **native Apple Silicon environment is fully supported and preferred** (faster, no emulation).
+
+    The catch is that a Conda installed as **Intel (osx-64)** builds every environment as Intel-under-Rosetta, even on an Apple-Silicon Mac. Check yours:
+
+    ```bash
+    conda info | grep platform
+    ```
+
+    - `platform : osx-arm64` → you are already native; the command above installs the Apple Silicon builds. ✅
+    - `platform : osx-64` on an Apple-Silicon Mac → either install a **native arm64 Conda** ([Miniforge](https://github.com/conda-forge/miniforge) arm64 is the easiest), or force this one environment to arm64:
+
+      ```bash
+      CONDA_SUBDIR=osx-arm64 conda create -n zipstrain -c conda-forge -c bioconda \
+        python=3.12 zipstrain bowtie2 samtools sylph
+      conda activate zipstrain
+      conda config --env --set subdir osx-arm64   # keep future installs in this env native
+      zipstrain test
+      ```
+
 #### Option B — pip
 
-The pip wheel installs ZipStrain and all of its **Python** dependencies, but **not samtools** (or the other external tools):
+The pip wheel installs ZipStrain and all of its **Python** dependencies, but **not samtools** (or the other external tools). Install into a fresh virtual environment so ZipStrain's pinned dependencies don't clash with other projects:
 
 ```bash
+python3.12 -m venv zipstrain-env
+source zipstrain-env/bin/activate
 pip install zipstrain
 ```
 
@@ -84,9 +108,9 @@ After installing the extra, `zipstrain test` confirms the matrix dependencies ar
 `zipstrain map` turns reads into BAMs by shelling out to external aligners; it is the only part of the CLI that needs them. Install from bioconda:
 
 ```bash
-conda install -c bioconda bowtie2 samtools sylph
+conda install -c conda-forge -c bioconda bowtie2 samtools sylph
 # only if you use --predict-genes:
-conda install -c bioconda prodigal
+conda install -c conda-forge -c bioconda prodigal
 ```
 
 When `zipstrain map` runs **without** `--reference-fasta`, it uses Sylph to pick reference genomes automatically:
@@ -195,13 +219,13 @@ The pipeline runs each step inside a ZipStrain container, so you need one of:
 - **Docker** — on a laptop/workstation;
 - **Singularity / Apptainer** — on most HPC systems (no root needed).
 
-The bundled `conf.config` defines execution profiles (`docker`, and cluster/Singularity profiles). Point your run at it and select a profile:
+The repo ships a `nextflow.config` that enables **Docker by default**, so a laptop run needs no profile — you can run the pipeline straight from GitHub:
 
 ```bash
-nextflow run zipstrain.nf --mode ... -c conf.config -profile docker -resume
+nextflow run OlmLab/ZipStrain --mode ... --input_table ... --output_dir ... -resume
 ```
 
-Review the container tag/paths in `conf.config` before running on a new system (the published image is `parsaghadermazi/zipstrain:<version>`).
+On a cluster, add `-profile fiji` (or `gutbot`/`alpine`/`blanca`) to switch to a Singularity/Slurm profile from the bundled `conf.config`. Review the container tag/paths there before running on a new system (the published image is `parsaghadermazi/zipstrain:<version>`).
 
 ### Confirmed working versions
 
