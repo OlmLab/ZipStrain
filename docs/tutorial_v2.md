@@ -391,6 +391,12 @@ Results are written to `out_sra_compare/Outputs/all_comparisons.parquet` in the 
 
 A compact, end-to-end example using three technical replicates of the [ZymoBIOMICS Microbial Community Standard](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA648136) (the same 8-species community sequenced three times, so every comparison should be ~100% ANI). It uses the Sylph auto-reference route and the matrix comparison method, adding the third sample after comparing the first two.
 
+!!! warning "This is a real, deep dataset — expect a long run"
+    Unlike Tutorial #1's tiny test data, these are full metagenomes (~30–50M read pairs each). Sylph loads the ~14 GB database, ZipStrain downloads reference genomes, and mapping/profiling runs over billions of bases — this takes hours on a laptop. **Running on an HPC cluster is strongly recommended.**
+
+!!! tip "Benchmark your own tools too"
+    This dataset is a clean, ground-truth benchmark, so feel free to run your favorite profilers/strain comparators on it alongside ZipStrain. The task looks trivial — three sequencings of one defined community — but many programs struggle to report the expected ~100% ANI and the correct set of species (see the [inStrain benchmarks](https://instrain.readthedocs.io/en/latest/benchmarks.html)).
+
 **1. Download the three samples** (paired FASTQs):
 
 ```bash

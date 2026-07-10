@@ -1721,8 +1721,9 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
 @click.option('--genome-cache-dir', default=None, help="Directory that caches genome FASTAs downloaded during Sylph-based reference building. Required when no --reference-fasta is given.")
 @click.option('--predict-genes', is_flag=True, default=False, show_default=True, help="Also run prodigal to emit a gene FASTA (for gene-level profiling via `profile --gene-fasta`).")
 @click.option('--non-competitive', is_flag=True, default=False, show_default=True, help="Pass -a to Bowtie2 for non-competitive mapping (report all alignments).")
+@click.option('--force', is_flag=True, default=False, show_default=True, help="Redo every step from scratch, ignoring cached outputs. By default `map` resumes: completed Sylph tables, reference, index, and BAMs are reused.")
 @click.option('--threads', '-t', default=4, show_default=True, help="Threads for Sylph, Bowtie2, and samtools.")
-def map_command(reads_table, output_dir, reference_fasta, stb_file, sylph_db, sylph_db_url, genome_cache_dir, predict_genes, non_competitive, threads):
+def map_command(reads_table, output_dir, reference_fasta, stb_file, sylph_db, sylph_db_url, genome_cache_dir, predict_genes, non_competitive, force, threads):
     """
     Map sequencing reads to BAM files, ready for `zipstrain profile`.
 
@@ -1753,6 +1754,7 @@ def map_command(reads_table, output_dir, reference_fasta, stb_file, sylph_db, sy
             threads=threads,
             predict_genes_flag=predict_genes,
             non_competitive=non_competitive,
+            force=force,
             progress_callback=_on_step,
         )
     except (ValueError, RuntimeError) as exc:
@@ -1799,6 +1801,7 @@ map_command.option_sections = {
     "Options": [
         "predict_genes",
         "non_competitive",
+        "force",
         "threads",
     ],
 }

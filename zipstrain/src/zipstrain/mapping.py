@@ -155,9 +155,22 @@ def ensure_sylph_db(sylph_db: str | pathlib.Path, url: str = DEFAULT_SYLPH_DB_UR
 
 
 def run_sylph_profile(
-    *, sylph_db: pathlib.Path, sample: ReadSample, output_tsv: pathlib.Path, threads: int
-) -> pathlib.Path:
-    """Run ``sylph profile`` for one sample, writing its abundance TSV."""
+    *,
+    sylph_db: pathlib.Path,
+    sample: ReadSample,
+    output_tsv: pathlib.Path,
+    threads: int,
+    resume: bool = True,
+) -> tuple[pathlib.Path, bool]:
+    """Run ``sylph profile`` for one sample, writing its abundance TSV.
+
+    Returns ``(output_tsv, ran)`` where ``ran`` is ``False`` when a complete
+    result already existed and profiling was skipped. The output is written to a
+    temporary ``.part`` file and renamed on success, so a run interrupted
+    mid-write never leaves a truncated TSV that a later ``resume`` would trust.
+    """
+    if resume and output_tsv.exists() and output_tsv.stat().st_size > 0:
+        return output_tsv, False
     sylph = require_tool("sylph")
     command = [sylph, "profile", str(sylph_db), "-t", str(threads)]
     if sample.is_paired:
@@ -165,9 +178,11 @@ def run_sylph_profile(
     else:
         command += ["-U", str(sample.reads1)]
     output_tsv.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_tsv, "wb") as handle:
+    tmp_tsv = output_tsv.with_suffix(output_tsv.suffix + ".part")
+    with open(tmp_tsv, "wb") as handle:
         _run(command, stdout=handle)
-    return output_tsv
+    tmp_tsv.replace(output_tsv)
+    return output_tsv, True
 
 
 def merge_sylph_abundances(tsvs: list[pathlib.Path], output_tsv: pathlib.Path) -> pathlib.Path:
@@ -195,12 +210,41 @@ def predict_genes(*, reference_fasta: pathlib.Path, output_gene_fasta: pathlib.P
     return output_gene_fasta
 
 
-def build_bowtie2_index(*, reference_fasta: pathlib.Path, index_prefix: pathlib.Path, threads: int) -> pathlib.Path:
-    """Build a Bowtie2 index for ``reference_fasta`` at ``index_prefix``."""
+def _bowtie2_index_sentinel(index_prefix: pathlib.Path) -> pathlib.Path:
+    """Path of the marker written once a Bowtie2 index has finished building."""
+    return index_prefix.parent / f"{index_prefix.name}.bt2_complete"
+
+
+def build_bowtie2_index(
+    *, reference_fasta: pathlib.Path, index_prefix: pathlib.Path, threads: int, resume: bool = True
+) -> tuple[pathlib.Path, bool]:
+    """Build a Bowtie2 index for ``reference_fasta`` at ``index_prefix``.
+
+    Returns ``(index_prefix, built)`` where ``built`` is ``False`` when a
+    completed index was reused. A sentinel file is written only after the index
+    finishes, so a crash partway through never leaves a half-built index that a
+    later ``resume`` would treat as usable.
+    """
+    sentinel = _bowtie2_index_sentinel(index_prefix)
+    if resume and sentinel.exists():
+        return index_prefix, False
     bowtie2_build = require_tool("bowtie2-build")
     index_prefix.parent.mkdir(parents=True, exist_ok=True)
     _run([bowtie2_build, "--threads", str(threads), str(reference_fasta), str(index_prefix)])
-    return index_prefix
+    sentinel.write_text(reference_fasta.name + "\n")
+    return index_prefix, True
+
+
+def _bam_is_complete(output_bam: pathlib.Path) -> bool:
+    """A BAM counts as finished only once its ``.bai`` index exists.
+
+    ``map_sample`` sorts into ``output_bam`` and indexes it afterwards, so the
+    index is written last. If a run is interrupted mid-map the sorted BAM may be
+    truncated but the index will be absent, so requiring the ``.bai`` avoids
+    reusing a partial BAM on resume.
+    """
+    bai = output_bam.with_suffix(output_bam.suffix + ".bai")
+    return output_bam.exists() and output_bam.stat().st_size > 0 and bai.exists()
 
 
 def map_sample(
@@ -210,11 +254,22 @@ def map_sample(
     output_bam: pathlib.Path,
     threads: int,
     non_competitive: bool = False,
-) -> pathlib.Path:
-    """Map one sample's reads with Bowtie2, producing a sorted, indexed BAM."""
+    resume: bool = True,
+) -> tuple[pathlib.Path, bool]:
+    """Map one sample's reads with Bowtie2, producing a sorted, indexed BAM.
+
+    Returns ``(output_bam, mapped)`` where ``mapped`` is ``False`` when a
+    completed BAM (with its index) already existed and mapping was skipped.
+    """
+    if resume and _bam_is_complete(output_bam):
+        return output_bam, False
     bowtie2 = require_tool("bowtie2")
     samtools = require_tool("samtools")
     output_bam.parent.mkdir(parents=True, exist_ok=True)
+    # Drop any stale/partial index from an interrupted run before re-mapping.
+    bai = output_bam.with_suffix(output_bam.suffix + ".bai")
+    if bai.exists():
+        bai.unlink()
 
     q = shlex.quote
     competitiveness = "-a" if non_competitive else ""
@@ -231,7 +286,7 @@ def map_sample(
     )
     _run_shell(pipeline)
     _run([samtools, "index", str(output_bam)])
-    return output_bam
+    return output_bam, True
 
 
 def build_reference_with_sylph(
@@ -242,57 +297,77 @@ def build_reference_with_sylph(
     output_dir: pathlib.Path,
     intermediate_dir: pathlib.Path,
     threads: int,
+    resume: bool = True,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path]:
     """Run Sylph per sample, merge, and build a reference FASTA + STB.
 
-    Returns ``(reference_fasta, stb_file)`` written into ``output_dir``.
+    Returns ``(reference_fasta, stb_file)`` written into ``output_dir``. When
+    ``resume`` is set, per-sample Sylph results and a previously completed
+    reference are reused instead of being recomputed.
     """
     abundance_dir = intermediate_dir / "sylph_abundance"
     per_sample_tsvs = []
     for index, sample in enumerate(samples, start=1):
-        _notify(progress_callback, f"Sylph profiling {sample.sample_name} ({index}/{len(samples)})")
-        tsv = run_sylph_profile(
-            sylph_db=sylph_db,
-            sample=sample,
-            output_tsv=abundance_dir / f"{sample.sample_name}_sylph_abundance.tsv",
-            threads=threads,
-        )
+        tsv = abundance_dir / f"{sample.sample_name}_sylph_abundance.tsv"
+        will_skip = resume and tsv.exists() and tsv.stat().st_size > 0
+        suffix = " — already done, skipping" if will_skip else ""
+        _notify(progress_callback, f"Sylph profiling {sample.sample_name} ({index}/{len(samples)}){suffix}")
+        run_sylph_profile(sylph_db=sylph_db, sample=sample, output_tsv=tsv, threads=threads, resume=resume)
         per_sample_tsvs.append(tsv)
 
-    _notify(progress_callback, "Building reference from Sylph abundances (downloading genomes as needed)")
-    merged = merge_sylph_abundances(per_sample_tsvs, abundance_dir / "sylph_abundance.tsv")
+    out_fasta = pathlib.Path(output_dir) / REFERENCE_FASTA_NAME
+    out_stb = pathlib.Path(output_dir) / REFERENCE_STB_NAME
+    reference_sentinel = intermediate_dir / ".reference_complete"
 
-    out_fasta, out_stb, _extracted, _report, _summary = bdb.build_reference_from_abundance(
-        tool_name="sylph",
-        abundance_table=merged,
-        cache_dir=genome_cache_dir,
-        output_dir=output_dir,
-        download_workers=max(1, threads),
+    reference_ready = (
+        resume
+        and reference_sentinel.exists()
+        and out_fasta.exists()
+        and out_fasta.stat().st_size > 0
+        and out_stb.exists()
     )
-    out_fasta = pathlib.Path(out_fasta)
-    if not out_fasta.exists() or out_fasta.stat().st_size == 0:
-        raise RuntimeError(
-            "Sylph did not detect any reference genomes in these reads, so the "
-            "reference is empty and there is nothing to map against. This usually "
-            "means the reads are too shallow, or the organisms are absent from the "
-            f"Sylph database. Per-sample abundance tables are in {abundance_dir}. "
-            "Try deeper reads, a different Sylph database, or provide "
-            "--reference-fasta / --stb-file directly."
+    if reference_ready:
+        _notify(progress_callback, "Building reference from Sylph abundances — already done, skipping")
+    else:
+        _notify(progress_callback, "Building reference from Sylph abundances (downloading genomes as needed)")
+        merged = merge_sylph_abundances(per_sample_tsvs, abundance_dir / "sylph_abundance.tsv")
+        built_fasta, built_stb, _extracted, _report, _summary = bdb.build_reference_from_abundance(
+            tool_name="sylph",
+            abundance_table=merged,
+            cache_dir=genome_cache_dir,
+            output_dir=output_dir,
+            download_workers=max(1, threads),
         )
+        out_fasta = pathlib.Path(built_fasta)
+        out_stb = pathlib.Path(built_stb)
+        if not out_fasta.exists() or out_fasta.stat().st_size == 0:
+            raise RuntimeError(
+                "Sylph did not detect any reference genomes in these reads, so the "
+                "reference is empty and there is nothing to map against. This usually "
+                "means the reads are too shallow, or the organisms are absent from the "
+                f"Sylph database. Per-sample abundance tables are in {abundance_dir}. "
+                "Try deeper reads, a different Sylph database, or provide "
+                "--reference-fasta / --stb-file directly."
+            )
+        reference_sentinel.write_text(out_fasta.name + "\n")
 
     # Best-effort GTDB taxonomy for the detected genomes. Never fail the map over it.
-    try:
-        _notify(progress_callback, "Annotating reference genomes with GTDB taxonomy")
-        write_reference_taxonomy(
-            stb_file=pathlib.Path(out_stb),
-            cache_dir=pathlib.Path(genome_cache_dir),
-            output_file=pathlib.Path(output_dir) / REFERENCE_TAXONOMY_NAME,
-        )
-    except Exception as exc:  # noqa: BLE001 - taxonomy is optional
-        print(f"Warning: could not build GTDB taxonomy table ({exc}); continuing without it.")
+    taxonomy_file = pathlib.Path(output_dir) / REFERENCE_TAXONOMY_NAME
+    if resume and taxonomy_file.exists() and taxonomy_file.stat().st_size > 0:
+        _notify(progress_callback, "Annotating reference genomes with GTDB taxonomy — already done, skipping")
+    else:
+        try:
+            _notify(progress_callback, "Annotating reference genomes with GTDB taxonomy")
+            write_reference_taxonomy(
+                stb_file=out_stb,
+                cache_dir=pathlib.Path(genome_cache_dir),
+                output_file=taxonomy_file,
+            )
+        except Exception as exc:  # noqa: BLE001 - taxonomy is optional
+            print(f"Warning: could not build GTDB taxonomy table ({exc}); continuing without it.")
 
-    return out_fasta, pathlib.Path(out_stb)
+    return out_fasta, out_stb
 
 
 def ensure_gtdb_taxonomy(cache_dir: pathlib.Path, urls=GTDB_TAXONOMY_URLS) -> list[pathlib.Path]:
@@ -365,6 +440,7 @@ def run_map(
     threads: int = 4,
     predict_genes_flag: bool = False,
     non_competitive: bool = False,
+    force: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, pathlib.Path]:
     """End-to-end map: reads -> reference (Sylph or supplied) -> sorted BAMs.
@@ -372,7 +448,13 @@ def run_map(
     Returns a dict with keys ``reference_fasta``, ``stb_file``, ``samples_table``
     (and ``gene_fasta`` when ``predict_genes_flag`` is set). ``progress_callback``
     is invoked with a short message as each step begins.
+
+    By default the run is resumable: any stage whose output already exists and is
+    complete (per-sample Sylph tables, the reference, the Bowtie2 index, and each
+    sorted+indexed BAM) is skipped, so re-running after a crash only does the
+    work that is left. Pass ``force=True`` to redo every stage from scratch.
     """
+    resume = not force
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     intermediate_dir = output_dir / INTERMEDIATE_DIRNAME
@@ -406,6 +488,7 @@ def run_map(
             output_dir=output_dir,
             intermediate_dir=intermediate_dir,
             threads=threads,
+            resume=resume,
             progress_callback=progress_callback,
         )
 
@@ -413,27 +496,37 @@ def run_map(
 
     # 2. Optional gene prediction.
     if predict_genes_flag:
-        _notify(progress_callback, "Predicting genes with prodigal")
-        results["gene_fasta"] = predict_genes(
-            reference_fasta=ref_fasta,
-            output_gene_fasta=output_dir / REFERENCE_GENE_FASTA_NAME,
-        )
+        gene_fasta = output_dir / REFERENCE_GENE_FASTA_NAME
+        gene_ready = resume and gene_fasta.exists() and gene_fasta.stat().st_size > 0
+        suffix = " — already done, skipping" if gene_ready else ""
+        _notify(progress_callback, f"Predicting genes with prodigal{suffix}")
+        if not gene_ready:
+            predict_genes(reference_fasta=ref_fasta, output_gene_fasta=gene_fasta)
+        results["gene_fasta"] = gene_fasta
 
     # 3. Build the Bowtie2 index (kept in intermediate_files/bt2, not the CWD).
-    _notify(progress_callback, "Building Bowtie2 index")
     index_prefix = intermediate_dir / "bt2" / ref_fasta.name
-    build_bowtie2_index(reference_fasta=ref_fasta, index_prefix=index_prefix, threads=threads)
+    index_ready = resume and _bowtie2_index_sentinel(index_prefix).exists()
+    _notify(
+        progress_callback,
+        "Building Bowtie2 index" + (" — already done, skipping" if index_ready else ""),
+    )
+    build_bowtie2_index(reference_fasta=ref_fasta, index_prefix=index_prefix, threads=threads, resume=resume)
 
     # 4. Map every sample to a sorted, indexed BAM.
     sample_bams: list[tuple[str, pathlib.Path]] = []
     for index, sample in enumerate(samples, start=1):
-        _notify(progress_callback, f"Mapping {sample.sample_name} ({index}/{len(samples)})")
-        bam = map_sample(
+        output_bam = output_dir / f"{sample.sample_name}.bam"
+        will_skip = resume and _bam_is_complete(output_bam)
+        suffix = " — already done, skipping" if will_skip else ""
+        _notify(progress_callback, f"Mapping {sample.sample_name} ({index}/{len(samples)}){suffix}")
+        bam, _mapped = map_sample(
             sample=sample,
             index_prefix=index_prefix,
-            output_bam=output_dir / f"{sample.sample_name}.bam",
+            output_bam=output_bam,
             threads=threads,
             non_competitive=non_competitive,
+            resume=resume,
         )
         sample_bams.append((sample.sample_name, bam))
 

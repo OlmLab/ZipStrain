@@ -97,16 +97,16 @@ def test_run_map_provided_reference_orchestration(tmp_path, monkeypatch):
 
     calls = {"index": 0, "mapped": [], "index_prefix": None}
 
-    def _fake_index(*, reference_fasta, index_prefix, threads):
+    def _fake_index(*, reference_fasta, index_prefix, threads, resume=True):
         calls["index"] += 1
         calls["index_prefix"] = index_prefix
-        return index_prefix
+        return index_prefix, True
 
-    def _fake_map(*, sample, index_prefix, output_bam, threads, non_competitive=False):
+    def _fake_map(*, sample, index_prefix, output_bam, threads, non_competitive=False, resume=True):
         output_bam.parent.mkdir(parents=True, exist_ok=True)
         output_bam.write_text("bam")
         calls["mapped"].append(sample.sample_name)
-        return output_bam
+        return output_bam, True
 
     monkeypatch.setattr(mapping, "build_bowtie2_index", _fake_index)
     monkeypatch.setattr(mapping, "map_sample", _fake_map)
@@ -141,6 +141,91 @@ def test_run_map_provided_reference_orchestration(tmp_path, monkeypatch):
     assert samples_txt[2].startswith("s2,")
 
 
+def test_map_sample_resumes_when_bam_complete(tmp_path, monkeypatch):
+    """A finished BAM (with its .bai) is reused; --force (resume=False) remaps."""
+    sample = mapping.ReadSample("s1", tmp_path / "r1.fq", tmp_path / "r2.fq")
+    out_bam = tmp_path / "s1.bam"
+    calls = {"shell": 0}
+    monkeypatch.setattr(mapping, "require_tool", lambda name: name)
+
+    def _fake_shell(pipeline, *, cwd=None):
+        calls["shell"] += 1
+        out_bam.write_text("bam")
+
+    def _fake_run(command, *, stdout=mapping.subprocess.PIPE, cwd=None):
+        # stands in for `samtools index`, which writes the .bai
+        out_bam.with_suffix(out_bam.suffix + ".bai").write_text("bai")
+
+    monkeypatch.setattr(mapping, "_run_shell", _fake_shell)
+    monkeypatch.setattr(mapping, "_run", _fake_run)
+
+    _, mapped = mapping.map_sample(sample=sample, index_prefix=tmp_path / "idx", output_bam=out_bam, threads=1)
+    assert mapped is True and calls["shell"] == 1
+
+    _, mapped_again = mapping.map_sample(sample=sample, index_prefix=tmp_path / "idx", output_bam=out_bam, threads=1)
+    assert mapped_again is False and calls["shell"] == 1  # not remapped
+
+    _, forced = mapping.map_sample(
+        sample=sample, index_prefix=tmp_path / "idx", output_bam=out_bam, threads=1, resume=False
+    )
+    assert forced is True and calls["shell"] == 2
+
+
+def test_map_sample_does_not_reuse_partial_bam_without_index(tmp_path, monkeypatch):
+    """A BAM left behind without its .bai (crash mid-map) is not trusted."""
+    sample = mapping.ReadSample("s1", tmp_path / "r1.fq")
+    out_bam = tmp_path / "s1.bam"
+    out_bam.write_text("truncated")  # partial BAM, no .bai
+    calls = {"shell": 0}
+    monkeypatch.setattr(mapping, "require_tool", lambda name: name)
+
+    def _fake_shell(pipeline, *, cwd=None):
+        calls["shell"] += 1
+        out_bam.write_text("bam")
+
+    monkeypatch.setattr(mapping, "_run_shell", _fake_shell)
+    monkeypatch.setattr(
+        mapping, "_run", lambda *a, **k: out_bam.with_suffix(out_bam.suffix + ".bai").write_text("bai")
+    )
+
+    _, mapped = mapping.map_sample(sample=sample, index_prefix=tmp_path / "idx", output_bam=out_bam, threads=1)
+    assert mapped is True and calls["shell"] == 1
+
+
+def test_build_bowtie2_index_resumes(tmp_path, monkeypatch):
+    ref = tmp_path / "ref.fna"
+    ref.write_text(">c\nACGT\n")
+    prefix = tmp_path / "bt2" / "ref.fna"
+    calls = {"n": 0}
+    monkeypatch.setattr(mapping, "require_tool", lambda name: name)
+    monkeypatch.setattr(mapping, "_run", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+
+    _, built = mapping.build_bowtie2_index(reference_fasta=ref, index_prefix=prefix, threads=1)
+    assert built is True and calls["n"] == 1
+
+    _, built_again = mapping.build_bowtie2_index(reference_fasta=ref, index_prefix=prefix, threads=1)
+    assert built_again is False and calls["n"] == 1  # sentinel present -> skipped
+
+
+def test_run_sylph_profile_resumes(tmp_path, monkeypatch):
+    sample = mapping.ReadSample("s1", tmp_path / "r1.fq")
+    tsv = tmp_path / "abund" / "s1.tsv"
+    calls = {"n": 0}
+    monkeypatch.setattr(mapping, "require_tool", lambda name: name)
+
+    def _fake_run(command, *, stdout=mapping.subprocess.PIPE, cwd=None):
+        calls["n"] += 1
+        stdout.write(b"header\ndata\n")
+
+    monkeypatch.setattr(mapping, "_run", _fake_run)
+
+    _, ran = mapping.run_sylph_profile(sylph_db=tmp_path / "db", sample=sample, output_tsv=tsv, threads=1)
+    assert ran is True and calls["n"] == 1 and tsv.exists()
+
+    _, ran_again = mapping.run_sylph_profile(sylph_db=tmp_path / "db", sample=sample, output_tsv=tsv, threads=1)
+    assert ran_again is False and calls["n"] == 1
+
+
 def test_ensure_sylph_db_reuses_existing(tmp_path):
     db = tmp_path / "existing.syldb"
     db.write_text("already here")
@@ -156,10 +241,10 @@ def test_run_map_sylph_empty_reference_raises_clear_error(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mapping, "ensure_sylph_db", lambda sylph_db, url=None: pathlib.Path(sylph_db))
 
-    def _fake_sylph_profile(*, sylph_db, sample, output_tsv, threads):
+    def _fake_sylph_profile(*, sylph_db, sample, output_tsv, threads, resume=True):
         output_tsv.parent.mkdir(parents=True, exist_ok=True)
         output_tsv.write_text("header\n")  # header only -> nothing detected
-        return output_tsv
+        return output_tsv, True
 
     monkeypatch.setattr(mapping, "run_sylph_profile", _fake_sylph_profile)
 
