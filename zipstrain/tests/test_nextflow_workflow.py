@@ -232,11 +232,25 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
     profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
     output_dir = tmp_path / "out"
 
+    # The repo's nextflow.config enables Docker by default and includes conf.config,
+    # which sizes these processes at 8 cpus for cluster nodes. This test is meant to
+    # run container-free with the local `zipstrain` CLI on PATH, so disable Docker and
+    # shrink the cpu/memory requests to something a 4-core CI runner can satisfy.
+    override = tmp_path / "test_local_resources.config"
+    override.write_text(
+        "docker { enabled = false }\n"
+        "process {\n"
+        "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
+        "}\n"
+    )
+
     result = subprocess.run(
         [
             str(_NEXTFLOW_BIN),
             "run",
             str(NEXTFLOW_FILE),
+            "-c", str(override),
             "--mode", "compare_genomes",
             "--input_type", "profile_table",
             "--input_table", str(profiles_csv),
