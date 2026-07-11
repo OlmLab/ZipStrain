@@ -23,6 +23,7 @@ PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 PROFILE_WRITE_BATCH_SIZE = 10_000
 MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
+PROFILE_SUBPROCESS_STDERR_TAIL_BYTES = 64 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 PROFILE_MIN_MAPQ_DEFAULT = 0
 PROFILE_MIN_BASEQ_DEFAULT = 13
@@ -57,6 +58,32 @@ PROFILE_PARQUET_BASE_FIELDS = [
     ("T", pa.int32()),
 ]
 MPILEUP_INDEL_RE = re.compile(r"\^.|[\$]|[+-](\d+)")
+VCF_SNP_BASE_ORDER = ("A", "C", "G", "T")
+
+
+async def _read_stream_bounded_tail(
+    stream,
+    *,
+    tail_bytes: int = PROFILE_SUBPROCESS_STDERR_TAIL_BYTES,
+    chunk_size: int = 8192,
+) -> bytes:
+    """Drain an async subprocess stream while retaining only a bounded tail.
+
+    Some tools, notably ``samtools mpileup``, can write warnings to stderr while
+    streaming large stdout. If stderr is piped but not drained concurrently, the
+    child process can block forever once the OS pipe buffer fills.
+    """
+    if stream is None:
+        return b""
+    tail = bytearray()
+    while True:
+        chunk = await stream.read(chunk_size)
+        if not chunk:
+            break
+        tail.extend(chunk)
+        if len(tail) > tail_bytes:
+            del tail[: len(tail) - tail_bytes]
+    return bytes(tail)
 
 
 def _validate_profile_filter_settings(
@@ -584,6 +611,7 @@ async def _stream_profile_mpileup_chunk_to_parquet(
         limit=MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES,
         cwd=output_parquet.parent,
     )
+    stderr_task = asyncio.create_task(_read_stream_bounded_tail(proc.stderr))
 
     chroms: list[str] = []
     positions: list[int] = []
@@ -642,12 +670,19 @@ async def _stream_profile_mpileup_chunk_to_parquet(
                 ref_base_bitmasks.append(utils.encode_reference_base_bitmask(ref_base))
             if len(chroms) >= batch_size:
                 flush_batch()
-        stderr = await proc.stderr.read()
-        if await proc.wait() != 0:
-            raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+        returncode = await proc.wait()
+        stderr = await stderr_task
+        if returncode != 0:
+            raise Exception(f"Command failed with error: {stderr.decode(errors='replace').strip()}")
         flush_batch()
         success = True
     finally:
+        if not stderr_task.done():
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except asyncio.CancelledError:
+                pass
         writer.close()
         if not success:
             output_parquet.unlink(missing_ok=True)
@@ -971,6 +1006,99 @@ def get_reference_snps(
         .select(input_columns)
         .sort(["chrom", "pos"])
     )
+
+
+def _reference_snp_alt_bases(row: dict[str, object], ref_base: str) -> list[str]:
+    return [
+        base
+        for base in VCF_SNP_BASE_ORDER
+        if base != ref_base and int(row[base]) > 0
+    ]
+
+
+def _write_reference_snps_vcf_from_parquet(
+    *,
+    snp_parquet: pathlib.Path,
+    output_file: pathlib.Path,
+    min_cov: int,
+) -> None:
+    parquet_file = pq.ParquetFile(snp_parquet)
+    with output_file.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("##fileformat=VCFv4.3\n")
+        handle.write("##source=zipstrain get-snp-reference\n")
+        handle.write(f"##zipstrain_min_cov={min_cov}\n")
+        handle.write(
+            '##FILTER=<ID=PASS,Description="Site passes ZipStrain reference SNP filters">\n'
+        )
+        handle.write(
+            '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total adjusted coverage at the site">\n'
+        )
+        handle.write(
+            '##INFO=<ID=ACGT,Number=4,Type=Integer,Description="Adjusted A,C,G,T counts in the profile row">\n'
+        )
+        handle.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        for batch in parquet_file.iter_batches():
+            for row in pl.from_arrow(batch).iter_rows(named=True):
+                ref_base = utils.decode_reference_base_bitmask(row[utils.REF_BASE_BITMASK_COLUMN])
+                if ref_base is None:
+                    raise ValueError(
+                        "Reference SNP VCF export encountered an unknown ref_base_bitmask value."
+                    )
+                alt_bases = _reference_snp_alt_bases(row, ref_base)
+                if not alt_bases:
+                    raise ValueError(
+                        "Reference SNP VCF export encountered a row without alternate alleles."
+                    )
+                dp = sum(int(row[base]) for base in VCF_SNP_BASE_ORDER)
+                info = (
+                    f"DP={dp};ACGT="
+                    f"{int(row['A'])},{int(row['C'])},{int(row['G'])},{int(row['T'])}"
+                )
+                handle.write(
+                    "\t".join(
+                        [
+                            str(row["chrom"]),
+                            str(int(row["pos"])),
+                            ".",
+                            ref_base,
+                            ",".join(alt_bases),
+                            ".",
+                            "PASS",
+                            info,
+                        ]
+                    )
+                    + "\n"
+                )
+
+
+def write_reference_snps(
+    profile: pl.LazyFrame,
+    *,
+    output_file: str | pathlib.Path,
+    min_cov: int = 5,
+    fmt: str = "parquet",
+) -> pathlib.Path:
+    output_path = pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    snps = get_reference_snps(profile, min_cov=min_cov)
+    if fmt == "parquet":
+        snps.sink_parquet(output_path, compression="zstd")
+        return output_path
+    if fmt != "vcf":
+        raise ValueError("fmt must be one of: parquet, vcf")
+
+    with tempfile.TemporaryDirectory(prefix=f"{output_path.stem}.snps.", dir=output_path.parent) as work_dir_str:
+        work_dir = pathlib.Path(work_dir_str)
+        snp_parquet = work_dir / "reference_snps.parquet"
+        rendered_vcf = work_dir / output_path.name
+        snps.sink_parquet(snp_parquet, compression="zstd")
+        _write_reference_snps_vcf_from_parquet(
+            snp_parquet=snp_parquet,
+            output_file=rendered_vcf,
+            min_cov=min_cov,
+        )
+        os.replace(rendered_vcf, output_path)
+    return output_path
 
 
 

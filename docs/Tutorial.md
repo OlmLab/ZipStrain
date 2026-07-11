@@ -1560,6 +1560,9 @@ Notes:
 - `ref_base_bitmask` is an optional extra column when profiling includes `--reference-fasta`
 - rows are expected to be sorted by `(chrom, pos)`
 - `A/C/G/T` are post-adjustment counts
+- reference-relative SNPs can be exported later with `zipstrain utilities get-snp-reference`
+  - `--fmt parquet` preserves the profile-like row structure
+  - `--fmt vcf` writes a site-only VCF with the required fixed columns
 
 Example:
 

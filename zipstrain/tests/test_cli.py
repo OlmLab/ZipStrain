@@ -109,6 +109,48 @@ def _reference_profile_frame() -> pl.DataFrame:
         }
     )
 
+
+def _reference_profile_frame_with_multiallelic() -> pl.DataFrame:
+    return pl.concat(
+        [
+            _reference_profile_frame(),
+            pl.DataFrame(
+                {
+                    "chrom": ["chr3"],
+                    "genome": ["genome3"],
+                    "gene": ["gene3"],
+                    "pos": [1],
+                    "A": [2],
+                    "C": [0],
+                    "G": [3],
+                    "T": [0],
+                    cli.ut.REF_BASE_BITMASK_COLUMN: [2],
+                }
+            ),
+        ],
+        how="vertical",
+    )
+
+
+def _parse_site_only_vcf(vcf_path: Path) -> tuple[list[str], list[str], list[dict[str, str]]]:
+    meta: list[str] = []
+    header: list[str] = []
+    rows: list[dict[str, str]] = []
+    with vcf_path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if line.startswith("##"):
+                meta.append(line)
+                continue
+            if line.startswith("#"):
+                header = line.split("\t")
+                continue
+            if not line:
+                continue
+            values = line.split("\t")
+            rows.append(dict(zip(header, values, strict=True)))
+    return meta, header, rows
+
 @pytest.fixture
 def profile_1()->pl.LazyFrame:
     return pl.DataFrame({
@@ -773,6 +815,112 @@ def test_get_snp_reference_cli_respects_min_cov(tmp_path):
             "G": 0,
             "T": 0,
             cli.ut.REF_BASE_BITMASK_COLUMN: 8,
+        },
+    ]
+
+
+def test_get_snp_reference_cli_outputs_site_only_vcf_with_required_fields(tmp_path):
+    profile_path = tmp_path / "profile_with_ref.parquet"
+    output_path = tmp_path / "reference_snps.vcf"
+    _reference_profile_frame_with_multiallelic().write_parquet(profile_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "get-snp-reference",
+            "--profile-file",
+            str(profile_path),
+            "--min-cov",
+            "5",
+            "--fmt",
+            "vcf",
+            "--output-file",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    meta, header, rows = _parse_site_only_vcf(output_path)
+    assert meta == [
+        "##fileformat=VCFv4.3",
+        "##source=zipstrain get-snp-reference",
+        "##zipstrain_min_cov=5",
+        '##FILTER=<ID=PASS,Description="Site passes ZipStrain reference SNP filters">',
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total adjusted coverage at the site">',
+        '##INFO=<ID=ACGT,Number=4,Type=Integer,Description="Adjusted A,C,G,T counts in the profile row">',
+    ]
+    assert header == ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
+    assert rows == [
+        {
+            "#CHROM": "chr1",
+            "POS": "2",
+            "ID": ".",
+            "REF": "A",
+            "ALT": "C",
+            "QUAL": ".",
+            "FILTER": "PASS",
+            "INFO": "DP=6;ACGT=0,6,0,0",
+        },
+        {
+            "#CHROM": "chr2",
+            "POS": "1",
+            "ID": ".",
+            "REF": "T",
+            "ALT": "A",
+            "QUAL": ".",
+            "FILTER": "PASS",
+            "INFO": "DP=10;ACGT=10,0,0,0",
+        },
+        {
+            "#CHROM": "chr3",
+            "POS": "1",
+            "ID": ".",
+            "REF": "C",
+            "ALT": "A,G",
+            "QUAL": ".",
+            "FILTER": "PASS",
+            "INFO": "DP=5;ACGT=2,0,3,0",
+        },
+    ]
+
+
+def test_get_snp_reference_cli_vcf_respects_min_cov(tmp_path):
+    profile_path = tmp_path / "profile_with_ref.parquet"
+    output_path = tmp_path / "reference_snps_min_cov.vcf"
+    _reference_profile_frame_with_multiallelic().write_parquet(profile_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "get-snp-reference",
+            "--profile-file",
+            str(profile_path),
+            "--min-cov",
+            "7",
+            "--fmt",
+            "vcf",
+            "--output-file",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    _meta, header, rows = _parse_site_only_vcf(output_path)
+    assert header == ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
+    assert rows == [
+        {
+            "#CHROM": "chr2",
+            "POS": "1",
+            "ID": ".",
+            "REF": "T",
+            "ALT": "A",
+            "QUAL": ".",
+            "FILTER": "PASS",
+            "INFO": "DP=10;ACGT=10,0,0,0",
         },
     ]
 

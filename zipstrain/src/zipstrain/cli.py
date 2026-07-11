@@ -452,20 +452,22 @@ def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output
 @utilities.command("get-snp-reference")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
 @click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage required for a site to contribute.")
-@click.option('--output-file', '-o', required=True, help="Path to save the SNP-only Parquet file.")
-def get_snp_reference(profile_file, min_cov, output_file):
+@click.option('--fmt', default="parquet", show_default=True, type=click.Choice(["parquet", "vcf"]), help="Output format for the SNP-only result.")
+@click.option('--output-file', '-o', required=True, help="Path to save the SNP-only output file.")
+def get_snp_reference(profile_file, min_cov, fmt, output_file):
     """
     Emit profile-like rows that are SNPs relative to the reference.
     """
     profile = pl.scan_parquet(profile_file)
     try:
-        snps = pf.get_reference_snps(
+        pf.write_reference_snps(
             profile,
+            output_file=output_file,
             min_cov=min_cov,
+            fmt=fmt,
         )
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
-    snps.sink_parquet(output_file, compression='zstd')
 
 @utilities.command("build-profile-db")
 @click.option('--profile-db-csv', '-p', required=True, help="Path to the profile database CSV file.")

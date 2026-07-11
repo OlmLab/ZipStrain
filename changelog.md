@@ -10,6 +10,8 @@ Compared with `0.11.0`:
 - Visualization: added peak summarization for silhouette curves, including candidate peaks and best-peak selection.
 - Visualization: kept `get_silhouette_plot` as a convenience wrapper around the new compute/plot pair.
 - Matrix comparison: reverted the IBS torch path to the 0.11.0 behavior while keeping the visualization split/peak work.
+- Reference SNP export: `zipstrain utilities get-snp-reference` can now emit either profile-like parquet or site-only VCF output.
+- Visualization: clustering helpers now accept a configurable hierarchical linkage method while keeping `average` as the default.
 
 ## 0.11.0
 

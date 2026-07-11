@@ -31,6 +31,7 @@ REF_BASE_BIT_VALUES = {
     "G": 4,
     "T": 8,
 }
+REF_BASE_FROM_BITMASK = {value: base for base, value in REF_BASE_BIT_VALUES.items()}
 GENOME_PAIR_TABLE_SCHEMA = pa.schema(
     [
         pa.field("sample_name_1", pa.string()),
@@ -890,6 +891,19 @@ def encode_reference_base_bitmask(base: str) -> int:
     - any other value -> 0
     """
     return REF_BASE_BIT_VALUES.get(str(base).upper(), 0)
+
+
+def decode_reference_base_bitmask(bitmask: int) -> str | None:
+    """
+    Decode a one-hot reference-base bitmask to the corresponding base.
+
+    Returns ``None`` when the bitmask does not represent a known single A/C/G/T
+    reference base.
+    """
+    try:
+        return REF_BASE_FROM_BITMASK.get(int(bitmask))
+    except (TypeError, ValueError):
+        return None
 
 def count_bases(bases: str):
     """

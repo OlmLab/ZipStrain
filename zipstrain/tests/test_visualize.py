@@ -103,6 +103,69 @@ def test_get_cluster_assignments_splits_two_clusters():
     assert cluster_map["sample_a"] != cluster_map["sample_c"]
 
 
+def test_get_cluster_assignments_forwards_linkage_method(monkeypatch):
+    captured: dict[str, str] = {}
+    original_linkage = vz.linkage
+
+    def _capture_linkage(*args, **kwargs):
+        captured["method"] = kwargs["method"]
+        return original_linkage(*args, **kwargs)
+
+    monkeypatch.setattr(vz, "linkage", _capture_linkage)
+
+    cluster_df = vz.get_cluster_assignments(
+        _comparison_frame(),
+        clonal_cluster_threshold=99.8,
+        strain_cluster_threshold=99.8,
+        linkage_method="complete",
+    )
+
+    assert cluster_df.height == 4
+    assert captured["method"] == "complete"
+
+
+def test_other_visual_cluster_helpers_forward_linkage_method(monkeypatch):
+    captured: list[str] = []
+    original_prepare = vz._prepare_similarity_matrix
+
+    def _capture_prepare(*args, **kwargs):
+        captured.append(kwargs["linkage_method"])
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(vz, "_prepare_similarity_matrix", _capture_prepare)
+
+    _ = vz.compute_silhouette_curve(
+        _comparison_frame(),
+        genome="genome1",
+        min_comp_len=10000,
+        linkage_method="complete",
+    )
+    _ = vz.get_silhouette_plot(
+        _comparison_frame(),
+        genome="genome1",
+        min_comp_len=10000,
+        linkage_method="complete",
+    )
+    fig = vz.plot_dendo(
+        _comparison_frame(),
+        genome="genome1",
+        sample_to_population=_sample_to_population(),
+        linkage_method="complete",
+    )
+    grid = vz.get_clustermap(
+        _comparison_frame(),
+        genome="genome1",
+        sample_to_population=_sample_to_population(),
+        linkage_method="complete",
+    )
+
+    try:
+        assert captured == ["complete", "complete", "complete", "complete"]
+    finally:
+        plt.close(fig)
+        plt.close(grid.fig)
+
+
 def test_get_cluster_assignments_requires_one_genome_scope():
     with pytest.raises(ValueError, match="Multiple genomes are present"):
         vz.get_cluster_assignments(_multi_genome_comparison_frame())

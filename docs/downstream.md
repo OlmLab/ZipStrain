@@ -374,6 +374,7 @@ result = visualize.compute_silhouette_curve(
     comps_lf=comps_lf,
     genome="GCF_000269965.1_ASM26996v1_genomic.fna",
     min_comp_len=100000,
+    linkage_method="average",
 )
 print(result.best_peak)
 print(result.candidate_peaks)
@@ -406,6 +407,7 @@ fig.write_html("silhouette.html")
 - Purpose: convenience wrapper that computes and plots the silhouette curve in one call.
 - Notes:
   - Internally this calls `compute_silhouette_curve(...)` and then `plot_silhouette_curve(...)`.
+  - It accepts the same `linkage_method` argument, defaulting to `"average"`.
 
 ### `get_cluster_assignments`
 
@@ -444,11 +446,18 @@ cluster_df = visualize.get_cluster_assignments(
     comps_lf=single_genome_lf,
     clonal_cluster_threshold=99.93,
     strain_cluster_threshold=99.8,
+    linkage_method="average",
 )
 
 print(cluster_df)
 cluster_df.write_csv("cluster_assignments.csv")
 ```
+
+Notes:
+
+- `linkage_method` defaults to `"average"`
+- this is passed directly to SciPy hierarchical clustering
+- if you want stricter cluster semantics, you can also try `"complete"`
 
 ### `plot_dendo`
 
@@ -485,6 +494,7 @@ fig = visualize.plot_dendo(
     comps_lf=comps_lf,
     genome="GCF_000269965.1_ASM26996v1_genomic.fna",
     sample_to_population=sample_to_population,
+    linkage_method="average",
     include_fraction_null=True,
 )
 fig.savefig("dendrogram.png", dpi=200, bbox_inches="tight")
@@ -516,6 +526,7 @@ grid = visualize.get_clustermap(
     comps_lf=comps_lf,
     genome="GCF_000269965.1_ASM26996v1_genomic.fna",
     sample_to_population=sample_to_population,
+    linkage_method="average",
 )
 grid.fig.suptitle("ANI clustermap", y=1.02)
 grid.fig.savefig("clustermap.png", dpi=200, bbox_inches="tight")

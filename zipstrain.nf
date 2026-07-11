@@ -16,6 +16,7 @@ params.compare_genome_scope="all"
 params.compare_gene_scope="all:all"
 params.compare_genome_calculate="all"
 params.compare_ani_method="popani"
+params.bowtie2_sensitivity=""
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
 params.sylph_db = null
@@ -75,6 +76,18 @@ def getProfileSampleNamesTableColumn(input_table) {
     throw new IllegalArgumentException("Profile-table input must include a 'sample_name' column.")
 }
 
+def getBowtie2SensitivityArg() {
+    def value = params.bowtie2_sensitivity
+    if (value == null) {
+        return ""
+    }
+    value = value.toString().trim()
+    if (!value || value == "default") {
+        return ""
+    }
+    return value.startsWith("--") ? value : "--${value}"
+}
+
 process download_sylph_db{
     output:
     path "*.syldb", emit: sylph_db
@@ -132,15 +145,13 @@ process build_db_from_Sylph{
     */
     publishDir "${params.output_dir}/db_from_sylph/", mode: params.publish_mode
     containerOptions {
-        switch( workflow.containerEngine ) {
-            case 'docker':
-                return "--volume ${genome_cache_dir}:${genome_cache_dir}"
-            case 'apptainer':
-            case 'singularity':
-                return "--bind ${genome_cache_dir}:${genome_cache_dir}"
-            default:
-                return ''
+        if (workflow.containerEngine == 'docker') {
+            return "--volume ${genome_cache_dir}:${genome_cache_dir}"
         }
+        if (workflow.containerEngine == 'apptainer' || workflow.containerEngine == 'singularity') {
+            return "--bind ${genome_cache_dir}:${genome_cache_dir}"
+        }
+        return ''
     }
     input:
     path sylph_abundance
@@ -220,6 +231,7 @@ process map_reads{
     path "${sample_name}.bam", emit: bamfile
     script:
     def competitiveness= (params.bowtie2_non_competitive_mapping) ? "-a" : ""
+    def sensitivity = getBowtie2SensitivityArg()
     if (reads.size() == 2) {
     """
     bowtie2 \\
@@ -227,6 +239,7 @@ process map_reads{
             -1 ${reads[0]} \\
             -2 ${reads[1]} \\
             ${competitiveness} \\
+            ${sensitivity} \\
             --threads ${task.cpus} \\
             | samtools view -bS -F 4 - \\
             | samtools sort -@ ${task.cpus} -o ${sample_name}.bam -
@@ -237,6 +250,7 @@ process map_reads{
                 -x ${reference_genome} \\
                 -U ${reads[0]} \\
                 ${competitiveness} \\
+                ${sensitivity} \\
                 --threads ${task.cpus} \\
                 | samtools view -bS -F 4 - \\
                 | samtools sort -@ ${task.cpus} -o ${sample_name}.bam -
@@ -512,15 +526,16 @@ process fromSRAtoProfile{
     path "${sra_id}_gene_stats.parquet", emit: gene_stats
     val sra_id, emit: sample_name
     script:
+    def sensitivity = getBowtie2SensitivityArg()
     """
     prefetch --max-size 200g ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
     rm -rf ${sra_id}/${sra_id}.sra
     num_seq_files=\$(ls ${sra_id}/*.fastq | wc -l)
     if [ \$num_seq_files -eq 2 ]; then
-    bowtie2 -x ${reference_genome} -1 ${sra_id}/${sra_id}_1.fastq -2 ${sra_id}/${sra_id}_2.fastq --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
+    bowtie2 -x ${reference_genome} -1 ${sra_id}/${sra_id}_1.fastq -2 ${sra_id}/${sra_id}_2.fastq ${sensitivity} --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
     else
-    bowtie2 -x ${reference_genome} -U ${sra_id}/${sra_id}*.fastq --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
+    bowtie2 -x ${reference_genome} -U ${sra_id}/${sra_id}*.fastq ${sensitivity} --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
     fi
     zipstrain utilities profile-single \\
                         --bam-file ${sra_id}.bam \\
@@ -571,6 +586,7 @@ process fromSRAtoProfileBuildDb{
     path "${sra_id}_sylph_abundance.tsv", emit: sylph_abundance
     val sra_id, emit: sample_name
     script:
+    def sensitivity = getBowtie2SensitivityArg()
     """
     prefetch --max-size 200g ${sra_id}
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -598,7 +614,7 @@ process fromSRAtoProfileBuildDb{
         --stb-file reference_genomes.stb \\
         --output-dir .
 
-    bowtie2 -x reference_genomes.fna \$bowtie_reads --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
+    bowtie2 -x reference_genomes.fna \$bowtie_reads ${sensitivity} --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
 
     zipstrain utilities profile-single \\
         --bam-file ${sra_id}.bam \\

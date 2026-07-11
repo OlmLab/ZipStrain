@@ -46,6 +46,7 @@ Review the container paths or tags in your config before running on a new system
 - `--compare_engine`: comparison engine for standard compare tasks (`polars` or `duckdb`). Default: `polars`
 - `--compare_duckdb_memory_limit`: forwarded to single compare commands
 - `--compare_calculate`: genome metrics for genome compare (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations). Default: `all`
+- `--bowtie2_sensitivity`: optional Bowtie 2 sensitivity preset for mapping tasks. Examples: `sensitive`, `very-sensitive`, `fast`. Leave unset to keep Bowtie 2's current default behavior.
 
 ## 1) Map Reads (`mode=map_reads`)
 
@@ -94,6 +95,7 @@ Optional:
 
 - `--index_files` to reuse existing Bowtie2 index files
 - `--bowtie2_non_competitive_mapping true` to pass `-a` to Bowtie2
+- `--bowtie2_sensitivity very-sensitive` to forward `--very-sensitive` to Bowtie2
 
 ### B) Build Reference from Sylph Automatically
 
@@ -157,6 +159,14 @@ nextflow run zipstrain.nf \
 - `<output_dir>/*_profile.parquet`
 - `<output_dir>/*_genome_stats.parquet`
 - `<output_dir>/*_gene_stats.parquet`
+
+If mapping is part of your workflow, you can optionally forward a Bowtie 2 sensitivity preset:
+
+```bash
+--bowtie2_sensitivity sensitive
+```
+
+The pipeline normalizes values like `sensitive` to `--sensitive`. If this parameter is unset, the workflow leaves the Bowtie 2 sensitivity unset as well, which preserves the current behavior.
 
 Because the current Nextflow profiling modes pass a reference FASTA into profiling, these outputs normally include the reference-aware fields:
 

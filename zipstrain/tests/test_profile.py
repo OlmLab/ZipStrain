@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 from pathlib import Path
+import asyncio
 import re
 
 
@@ -306,7 +307,7 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
             self._line_index += 1
             return line
 
-        async def read(self):
+        async def read(self, n=-1):
             if self._lines:
                 if self._line_index >= len(self._lines):
                     return b""
@@ -457,6 +458,19 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert by_genome["genome2"]["breadth"] == pytest.approx(1.0)
     assert by_genome["genome1"]["ref_ani"] == pytest.approx(100.0)
     assert by_genome["genome2"]["ref_ani"] == pytest.approx(100.0)
+
+
+def test_read_stream_bounded_tail_drains_chunks_and_keeps_tail():
+    class ChunkedStream:
+        def __init__(self):
+            self._chunks = [b"alpha", b"beta", b"gamma", b""]
+
+        async def read(self, n=-1):
+            return self._chunks.pop(0)
+
+    tail = asyncio.run(profile._read_stream_bounded_tail(ChunkedStream(), tail_bytes=7, chunk_size=2))
+
+    assert tail == b"tagamma"
 
 
 def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

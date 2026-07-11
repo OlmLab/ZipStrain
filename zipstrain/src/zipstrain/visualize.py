@@ -162,6 +162,7 @@ def _prepare_similarity_matrix(
     min_comp_len: int = 10000,
     impute_method: float = 97.0,
     max_null_samples: int = 500,
+    linkage_method: str = "average",
 ) -> _SimilarityMatrixBundle:
     """Build a square ANI similarity matrix and clustering inputs."""
     schema_names = set(comps_lf.collect_schema().names())
@@ -287,7 +288,7 @@ def _prepare_similarity_matrix(
     )
     distance_matrix = 1 - (similarity_matrix / 100.0)
     np.fill_diagonal(distance_matrix, 0.0)
-    linkage_matrix = linkage(squareform(distance_matrix, checks=False), method="average")
+    linkage_matrix = linkage(squareform(distance_matrix, checks=False), method=linkage_method)
     return _SimilarityMatrixBundle(
         clustermap_data=clustermap_data,
         null_fraction=null_fraction,
@@ -805,6 +806,7 @@ def compute_silhouette_curve(
     min_comp_len: int = 100000,
     impute_method: float = 97.0,
     max_null_samples: int = 500,
+    linkage_method: str = "average",
     min_threshold: float = 99.8,
     peak_prominence: float = 0.001,
     peak_distance: int = 3,
@@ -816,6 +818,7 @@ def compute_silhouette_curve(
         min_comp_len=min_comp_len,
         impute_method=impute_method,
         max_null_samples=max_null_samples,
+        linkage_method=linkage_method,
     )
     distances = np.linspace(0.01, 0.0, 500)
     scores: list[float] = []
@@ -973,6 +976,7 @@ def get_silhouette_plot(
     min_comp_len: int = 100000,
     impute_method: float = 97.0,
     max_null_samples: int = 500,
+    linkage_method: str = "average",
     min_threshold: float = 99.8,
     peak_prominence: float = 0.001,
     peak_distance: int = 3,
@@ -985,6 +989,7 @@ def get_silhouette_plot(
             min_comp_len=min_comp_len,
             impute_method=impute_method,
             max_null_samples=max_null_samples,
+            linkage_method=linkage_method,
             min_threshold=min_threshold,
             peak_prominence=peak_prominence,
             peak_distance=peak_distance,
@@ -999,6 +1004,7 @@ def get_cluster_assignments(
     max_null_samples: int = 500,
     clonal_cluster_threshold: float = 99.93,
     strain_cluster_threshold: float = 99.8,
+    linkage_method: str = "average",
 ):
     """Get clonal and strain-level cluster assignments from a genome-scoped comparison table."""
     bundle = _prepare_similarity_matrix(
@@ -1007,6 +1013,7 @@ def get_cluster_assignments(
         min_comp_len=min_comp_len,
         impute_method=impute_method,
         max_null_samples=max_null_samples,
+        linkage_method=linkage_method,
     )
     clonal_clusters = fcluster(
         bundle.linkage_matrix,
@@ -1034,6 +1041,7 @@ def plot_dendo(
     min_comp_len: int = 10000,
     impute_method: float = 97.0,
     max_null_samples: int = 500,
+    linkage_method: str = "average",
     color_map: dict | None = None,
     inches_per_sample: float = 0.15,
     font_size: int = 8,
@@ -1050,6 +1058,7 @@ def plot_dendo(
         min_comp_len=min_comp_len,
         impute_method=impute_method,
         max_null_samples=max_null_samples,
+        linkage_method=linkage_method,
     )
     sample_population = _resolve_population_mapping(sample_to_population, bundle.samples)
     sample_population_dict = dict(zip(sample_population["sample_1"], sample_population["population"]))
@@ -1135,6 +1144,7 @@ def get_clustermap(
     min_comp_len: int = 10000,
     impute_method: float = 97.0,
     max_null_samples: int = 500,
+    linkage_method: str = "average",
     color_map: dict | None = None,
 ):
     """Return a seaborn clustermap for one genome."""
@@ -1144,6 +1154,7 @@ def get_clustermap(
         min_comp_len=min_comp_len,
         impute_method=impute_method,
         max_null_samples=max_null_samples,
+        linkage_method=linkage_method,
     )
     sample_population = _resolve_population_mapping(sample_to_population, bundle.samples)
     color_map, row_colors = _resolve_population_colors(sample_population, color_map=color_map)

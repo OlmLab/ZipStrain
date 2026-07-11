@@ -178,6 +178,7 @@ Emit profile-like rows that are SNPs relative to the reference from a classic pr
 zipstrain utilities get-snp-reference \
   --profile-file sample_profile.parquet \
   --min-cov 5 \
+  --fmt parquet \
   --output-file sample_reference_snps.parquet
 ```
 
@@ -185,15 +186,36 @@ Options:
 
 - `-p, --profile-file` (required)
 - `-c, --min-cov` (default: `5`)
+- `--fmt` (`parquet` or `vcf`, default: `parquet`)
 - `-o, --output-file` (required)
 
-The output preserves the input profile-like columns and includes only positions that:
+When `--fmt parquet`, the output preserves the input profile-like columns and includes only positions that:
 
 - have coverage `>= min_cov`
 - have a known reference base in `ref_base_bitmask`
 - do not retain the reference allele after profile sequence-error adjustment
 
 This uses the same reference-sharing logic used to populate `ref_ani` in the gene and genome stat tables.
+
+When `--fmt vcf`, ZipStrain writes a site-only VCF with the required fixed columns:
+
+- `#CHROM`
+- `POS`
+- `ID`
+- `REF`
+- `ALT`
+- `QUAL`
+- `FILTER`
+- `INFO`
+
+Current VCF behavior:
+
+- `ID` is written as `.`
+- `QUAL` is written as `.`
+- `FILTER` is written as `PASS`
+- `INFO` contains:
+  - `DP`: total adjusted coverage at the site
+  - `ACGT`: adjusted `A,C,G,T` counts in profile order
 
 ## Comparison
 
