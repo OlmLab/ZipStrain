@@ -1881,7 +1881,29 @@ def get_genome_stats(
                         THEN 1
                         ELSE 0
                       END
-                    )::BIGINT AS ref_share_consensus_pos"""
+                    )::BIGINT AS ref_share_consensus_pos,
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                         AND ((A > 0)::INT + (C > 0)::INT + (G > 0)::INT + (T > 0)::INT) = 1
+                         AND NOT (
+                           (ref_base_bitmask = 1 AND A = max_base_count)
+                           OR (ref_base_bitmask = 2 AND C = max_base_count)
+                           OR (ref_base_bitmask = 4 AND G = max_base_count)
+                           OR (ref_base_bitmask = 8 AND T = max_base_count)
+                         )
+                        THEN 1 ELSE 0
+                      END
+                    )::BIGINT AS sns_count,
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                         AND ((A > 0)::INT + (C > 0)::INT + (G > 0)::INT + (T > 0)::INT) >= 2
+                        THEN 1 ELSE 0
+                      END
+                    )::BIGINT AS snv_count"""
                 ref_select_sql = """
                   ,
                   CASE
@@ -1893,7 +1915,9 @@ def get_genome_stats(
                     WHEN p.ref_total_positions > 0
                     THEN p.ref_share_consensus_pos::DOUBLE / p.ref_total_positions * 100.0
                     ELSE NULL
-                  END AS conANI_reference"""
+                  END AS conANI_reference,
+                  COALESCE(p.sns_count, 0) AS SNS_count,
+                  COALESCE(p.snv_count, 0) AS SNV_count"""
             table = conn.execute(
                 f"""
                 WITH profile_rows AS (

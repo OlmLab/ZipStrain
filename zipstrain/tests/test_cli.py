@@ -742,30 +742,19 @@ def test_get_snp_reference_cli_outputs_only_reference_snps(tmp_path):
 
     assert result.exit_code == 0, result.output
     out = pl.read_parquet(output_path).sort(["chrom", "pos"])
-    assert out.to_dicts() == [
-        {
-            "chrom": "chr1",
-            "genome": "genome1",
-            "gene": "gene1",
-            "pos": 2,
-            "A": 0,
-            "C": 6,
-            "G": 0,
-            "T": 0,
-            cli.ut.REF_BASE_BITMASK_COLUMN: 1,
-        },
-        {
-            "chrom": "chr2",
-            "genome": "genome2",
-            "gene": "gene2",
-            "pos": 1,
-            "A": 10,
-            "C": 0,
-            "G": 0,
-            "T": 0,
-            cli.ut.REF_BASE_BITMASK_COLUMN: 8,
-        },
+    # Full classified SNV table: monomorphic reference matches (chr1 pos1) are
+    # omitted; chr1 pos2 / chr2 pos1 are fixed substitutions (SNS); chr1 pos3 is
+    # a consensus SNP that still carries the reference allele (con_SNV).
+    assert out.select(["chrom", "pos", "ref_base", "con_base", "class"]).to_dicts() == [
+        {"chrom": "chr1", "pos": 2, "ref_base": "A", "con_base": "C", "class": "SNS"},
+        {"chrom": "chr1", "pos": 3, "ref_base": "C", "con_base": "A", "class": "con_SNV"},
+        {"chrom": "chr2", "pos": 1, "ref_base": "T", "con_base": "A", "class": "SNS"},
     ]
+    row = out.filter(pl.col("pos") == 3).row(0, named=True)
+    assert row["allele_count"] == 2
+    assert row["position_coverage"] == 5
+    assert row["ref_freq"] == pytest.approx(0.4)
+    assert row["con_freq"] == pytest.approx(0.6)
 
 
 def test_get_snp_reference_cli_respects_min_cov(tmp_path):
@@ -790,18 +779,9 @@ def test_get_snp_reference_cli_respects_min_cov(tmp_path):
 
     assert result.exit_code == 0, result.output
     out = pl.read_parquet(output_path).sort(["chrom", "pos"])
-    assert out.to_dicts() == [
-        {
-            "chrom": "chr2",
-            "genome": "genome2",
-            "gene": "gene2",
-            "pos": 1,
-            "A": 10,
-            "C": 0,
-            "G": 0,
-            "T": 0,
-            cli.ut.REF_BASE_BITMASK_COLUMN: 8,
-        },
+    # min_cov=7 drops chr1 pos2 (cov 6) and pos3 (cov 5); only chr2 pos1 remains.
+    assert out.select(["chrom", "pos", "class"]).to_dicts() == [
+        {"chrom": "chr2", "pos": 1, "class": "SNS"},
     ]
 
 

@@ -39,6 +39,7 @@ One row per genome: how well it was covered, whether it is present, and its iden
 | `reads_mapped` | Reads mapped to the genome |
 | `ref_ani` | **Population** ANI of the sample to the reference genome (%) — a position counts as matching if the reference allele is present among the reads |
 | `conANI_reference` | **Consensus** ANI to the reference (%) — a position counts as matching only if the reference base is the sample's consensus (majority) base. Lower than `ref_ani` at polymorphic sites. Both are reported only when `--reference-fasta` is used |
+| `SNS_count`, `SNV_count` | Number of fixed substitutions (`SNS`) and polymorphic sites (`SNV`+`con_SNV`+`pop_SNV`) — the per-genome totals of the SNV table. Reference route only |
 | `presence` | Automated `present` / `absent` call (see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks)) |
 | `genome_taxonomy` | GTDB lineage — **Sylph route only** |
 
@@ -87,15 +88,28 @@ GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 
 ### `<sample>_SNVs.parquet`
 
-SNPs relative to the reference: the subset of `profile` positions that pass coverage (`--snv-min-cov`) and no longer retain the reference allele after sequence-error adjustment. Same columns as `profile`. Skipped without `--reference-fasta` (or with `--no-snvs`).
+Every covered position that is **divergent** from the reference — either polymorphic or a substitution — classified in the style of inStrain's `SNVs.tsv`. Skipped without `--reference-fasta` (or with `--no-snvs`). Because the profile counts are sequence-error adjusted, a base with `count > 0` is a "passing" allele.
 
-Read an SNV like this: `ref_base_bitmask = 2` (reference C) with `T = 5` and `C = 0` means the reference base C was replaced by T — a SNP.
+| Column | Meaning |
+|--------|---------|
+| `chrom`, `genome`, `gene`, `pos` | Location (`pos` is 1-based) |
+| `position_coverage` | Total (error-adjusted) depth at the position |
+| `allele_count` | Number of passing alleles (bases with count > 0) |
+| `ref_base`, `con_base`, `var_base` | Reference, consensus (majority), and top variant base |
+| `ref_freq`, `con_freq`, `var_freq` | Frequencies of those bases over `position_coverage` |
+| `A`, `C`, `G`, `T` | Per-base counts |
+| `cryptic` | Always `False` (ZipStrain profiles a single mismatch level) |
+| `class` | SNP classification (below) |
+| `ref_base_bitmask` | Reference base bitmask (A=1, C=2, G=4, T=8) |
 
-```text
-chrom                    genome           gene  pos  A  C  G  T  ref_base_bitmask
-GCA_018376995.1__JAHAAF… GCA_018376995.1  NA    632  0  0  0  5  2      # ref C -> T
-GCA_018376995.1__JAHAAF… GCA_018376995.1  NA    634  0  0  5  0  1      # ref A -> G
-```
+`class` values (with `alleles` = passing bases, `con` = consensus, `ref` = reference):
+
+- **`SNS`** — one allele, `con ≠ ref`: a fixed substitution.
+- **`SNV`** — ≥2 alleles, `con == ref`: reference is the majority, with a minor variant.
+- **`con_SNV`** — ≥2 alleles, `con ≠ ref`, reference **still present** among the alleles.
+- **`pop_SNV`** — ≥2 alleles, `con ≠ ref`, reference **absent**: population-divergent (these are what pull `ref_ani`/popANI below 100%).
+
+Monomorphic reference matches are not emitted. The per-genome `SNS_count` and `SNV_count` (= `SNV`+`con_SNV`+`pop_SNV`) in `genome_stats` are the totals of these.
 
 !!! note "Coordinates are 1-based (comparing with inStrain)"
     ZipStrain reports `pos` as **1-based** (the samtools/mpileup convention), whereas inStrain's `SNVs.tsv` uses **0-based** `position`. When intersecting the two tables, add 1 to inStrain's `position` (or subtract 1 from ZipStrain's `pos`) before matching, or every position will appear to disagree.

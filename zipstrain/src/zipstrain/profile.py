@@ -971,29 +971,102 @@ def get_reference_ani(
     return result.sort(sort_cols)
 
 
+SNV_TABLE_COLUMNS = [
+    "chrom", "genome", "gene", "pos", "position_coverage", "allele_count",
+    "ref_base", "con_base", "var_base", "ref_freq", "con_freq", "var_freq",
+    "A", "C", "G", "T", "cryptic", "class", "ref_base_bitmask",
+]
+
+
 def get_reference_snps(
     profile: pl.LazyFrame,
     *,
     min_cov: int = 5,
 ) -> pl.LazyFrame:
-    """
-    Return profile-like rows that are SNPs relative to the reference.
+    """Classify variant sites relative to the reference (inStrain-parity table).
 
-    A row is emitted when it passes ``min_cov``, has a known reference base,
-    and does not retain the reference allele after profile sequence-error
-    adjustment. This matches the reference-sharing logic used by
-    ``get_reference_ani``.
+    One row per covered position that is *divergent* — i.e. not a monomorphic
+    match to the reference. Because the profile counts are already sequence-error
+    adjusted, a base with ``count > 0`` is a "passing" allele. With
+    ``alleles`` = the passing bases, ``con`` = the consensus (most common) base
+    and ``ref`` = the reference base, each site is labelled:
+
+    - ``SNS``     : one allele, ``con != ref`` (fixed substitution)
+    - ``SNV``     : ≥2 alleles, ``con == ref`` (reference is majority; minor variant)
+    - ``con_SNV`` : ≥2 alleles, ``con != ref``, reference still among the alleles
+    - ``pop_SNV`` : ≥2 alleles, ``con != ref``, reference absent from the alleles
+
+    Monomorphic reference sites (one allele equal to the reference) are omitted.
+    Frequencies are over the (error-adjusted) position coverage. ``cryptic`` is
+    always ``False`` (ZipStrain profiles a single mismatch level). Requires a
+    profile carrying ``ref_base_bitmask`` (i.e. ``--reference-fasta``).
     """
-    prepared, input_columns = _reference_sharing_prepared_profile(
-        profile,
-        min_cov=min_cov,
-        consumer_name="get-snp-reference",
+    schema_names = profile.collect_schema().names()
+    if utils.REF_BASE_BITMASK_COLUMN not in schema_names:
+        raise ValueError(
+            "Profile parquet is missing the required ref_base_bitmask column. "
+            "Re-run profiling with --reference-fasta to call SNVs."
+        )
+    bm = pl.col(utils.REF_BASE_BITMASK_COLUMN)
+    cov = (pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T"))
+    base_order = ["A", "C", "G", "T"]
+    max_count = pl.max_horizontal("A", "C", "G", "T")
+
+    def _first_base(cond_counts):
+        # Pick the first base (A,C,G,T order) whose count equals the target.
+        expr = pl.lit(None, dtype=pl.Utf8)
+        for base, val in reversed(cond_counts):
+            expr = pl.when(val).then(pl.lit(base)).otherwise(expr)
+        return expr
+
+    prepared = (
+        profile.with_columns(cov.alias("position_coverage"))
+        .filter((pl.col("position_coverage") >= min_cov) & (bm > 0))
+        .with_columns(
+            ref_base=pl.when(bm == 1).then(pl.lit("A")).when(bm == 2).then(pl.lit("C"))
+            .when(bm == 4).then(pl.lit("G")).when(bm == 8).then(pl.lit("T")).otherwise(pl.lit("N")),
+            ref_count=pl.when(bm == 1).then(pl.col("A")).when(bm == 2).then(pl.col("C"))
+            .when(bm == 4).then(pl.col("G")).when(bm == 8).then(pl.col("T")).otherwise(pl.lit(0)),
+            con_base=_first_base([(b, pl.col(b) == max_count) for b in base_order]),
+            con_count=max_count,
+            allele_count=((pl.col("A") > 0).cast(pl.Int64) + (pl.col("C") > 0).cast(pl.Int64)
+                          + (pl.col("G") > 0).cast(pl.Int64) + (pl.col("T") > 0).cast(pl.Int64)),
+        )
+        # var_base = highest-count base other than the consensus.
+        .with_columns(
+            _va=pl.when(pl.col("con_base") != "A").then(pl.col("A")).otherwise(pl.lit(-1)),
+            _vc=pl.when(pl.col("con_base") != "C").then(pl.col("C")).otherwise(pl.lit(-1)),
+            _vg=pl.when(pl.col("con_base") != "G").then(pl.col("G")).otherwise(pl.lit(-1)),
+            _vt=pl.when(pl.col("con_base") != "T").then(pl.col("T")).otherwise(pl.lit(-1)),
+        )
+        .with_columns(_var_max=pl.max_horizontal("_va", "_vc", "_vg", "_vt"))
+        .with_columns(
+            var_base=_first_base([
+                ("A", pl.col("_va") == pl.col("_var_max")),
+                ("C", pl.col("_vc") == pl.col("_var_max")),
+                ("G", pl.col("_vg") == pl.col("_var_max")),
+                ("T", pl.col("_vt") == pl.col("_var_max")),
+            ]),
+            var_count=pl.max_horizontal(pl.col("_var_max"), pl.lit(0)),
+        )
+        .with_columns(
+            ref_freq=pl.col("ref_count") / pl.col("position_coverage"),
+            con_freq=pl.col("con_count") / pl.col("position_coverage"),
+            var_freq=pl.col("var_count") / pl.col("position_coverage"),
+            cryptic=pl.lit(False),
+            **{"class": pl.when((pl.col("allele_count") == 1) & (pl.col("con_base") != pl.col("ref_base")))
+                .then(pl.lit("SNS"))
+                .when((pl.col("allele_count") >= 2) & (pl.col("con_base") == pl.col("ref_base")))
+                .then(pl.lit("SNV"))
+                .when((pl.col("allele_count") >= 2) & (pl.col("con_base") != pl.col("ref_base")) & (pl.col("ref_count") > 0))
+                .then(pl.lit("con_SNV"))
+                .when((pl.col("allele_count") >= 2) & (pl.col("con_base") != pl.col("ref_base")) & (pl.col("ref_count") == 0))
+                .then(pl.lit("pop_SNV"))
+                .otherwise(pl.lit(None))},
+        )
+        .filter(pl.col("class").is_not_null())
     )
-    return (
-        prepared.filter(pl.col("share_ref_site") == 0)
-        .select(input_columns)
-        .sort(["chrom", "pos"])
-    )
+    return prepared.select(SNV_TABLE_COLUMNS).sort(["chrom", "pos"])
 
 
 
