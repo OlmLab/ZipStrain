@@ -177,6 +177,102 @@ def _discover_taxonomy_file(reference_fasta, stb_file, explicit) -> pathlib.Path
     return None
 
 
+def _discover_genome_lengths(run_dir, profile_locations) -> pathlib.Path | None:
+    """Locate a genome_lengths.parquet asset for percent_compared.
+
+    Checks the run's own profiling_assets, then the profiling_assets next to each
+    input profile (profiles live at <run>/<sample>/<sample>_profile.parquet, so
+    the assets sit two levels up).
+    """
+    candidates = [pathlib.Path(run_dir) / "profiling_assets" / pf.ASSET_GENOME_LENGTH_FILENAME]
+    for loc in profile_locations:
+        loc = pathlib.Path(loc)
+        candidates.append(loc.parent.parent / "profiling_assets" / pf.ASSET_GENOME_LENGTH_FILENAME)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _add_percent_compared(comparison_parquet, genome_lengths_file) -> None:
+    """Add ``percent_compared`` (= total_positions / genome_length) in place.
+
+    A no-op when the genome-length asset is missing or the comparison has no
+    ``total_positions`` column. Works on the final parquet regardless of engine
+    (standard or matrix), so it never touches the compare compute paths.
+    """
+    comparison_parquet = pathlib.Path(comparison_parquet)
+    if genome_lengths_file is None or not comparison_parquet.exists():
+        return
+    comp = pl.read_parquet(comparison_parquet)
+    if "total_positions" not in comp.columns or "percent_compared" in comp.columns:
+        return
+    lengths = (
+        pl.read_parquet(genome_lengths_file)
+        .select(["genome", "genome_length"])
+        .unique(subset=["genome"])
+    )
+    comp = comp.join(lengths, on="genome", how="left").with_columns(
+        percent_compared=(
+            pl.col("total_positions") / pl.col("genome_length")
+        ).cast(pl.Float64)
+    ).drop("genome_length")
+    comp.write_parquet(comparison_parquet, compression="zstd")
+
+
+def _add_coverage_overlap(comparison_parquet, profiles) -> None:
+    """Add ``coverage_overlap`` in place: compared / positions-covered-in-either.
+
+    Per-sample covered-position counts come from each sample's genome_stats
+    (the ``Nx_cov_sites`` column, a sibling of its profile). A no-op when those
+    tables or the ``sample_1``/``sample_2`` columns are unavailable. Exact when
+    the compare ``--min-cov`` matches the profiling coverage cutoff (both 5 by
+    default); otherwise approximate.
+    """
+    comparison_parquet = pathlib.Path(comparison_parquet)
+    if not comparison_parquet.exists():
+        return
+    comp = pl.read_parquet(comparison_parquet)
+    needed = {"sample_1", "sample_2", "genome", "total_positions"}
+    if not needed.issubset(comp.columns) or "coverage_overlap" in comp.columns:
+        return
+    covered_frames = []
+    for name, location in profiles:
+        gs_path = pathlib.Path(str(location).replace("_profile.parquet", "_genome_stats.parquet"))
+        if not gs_path.exists():
+            return  # need every sample's stats to be faithful; skip otherwise
+        gs = pl.read_parquet(gs_path)
+        cov_cols = [c for c in gs.columns if c.endswith("x_cov_sites")]
+        if not cov_cols:
+            return
+        covered_frames.append(
+            gs.select(
+                pl.lit(name).alias("sample"),
+                pl.col("genome"),
+                pl.col(cov_cols[0]).cast(pl.Int64).alias("covered"),
+            )
+        )
+    covered = pl.concat(covered_frames)
+    comp = (
+        comp.join(
+            covered.rename({"sample": "sample_1", "covered": "covered_1"}),
+            on=["sample_1", "genome"], how="left",
+        )
+        .join(
+            covered.rename({"sample": "sample_2", "covered": "covered_2"}),
+            on=["sample_2", "genome"], how="left",
+        )
+        .with_columns(
+            coverage_overlap=(
+                pl.col("total_positions")
+                / (pl.col("covered_1") + pl.col("covered_2") - pl.col("total_positions"))
+            ).cast(pl.Float64)
+        )
+        .drop(["covered_1", "covered_2"])
+    )
+    comp.write_parquet(comparison_parquet, compression="zstd")
+
+
 def _add_presence_column(
     genome_stats: pl.DataFrame,
     *,
@@ -2030,6 +2126,12 @@ def _run_matrix_compare_method(
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
         raise click.UsageError(str(exc)) from exc
 
+    if not compare_genes:
+        _add_percent_compared(
+            output,
+            _discover_genome_lengths(run_dir, [loc for _name, loc in profiles]),
+        )
+        _add_coverage_overlap(output, profiles)
     _maybe_write_csv(output, no_csv=no_csv, force_csv=force_csv, console=console)
 
     elapsed = time.monotonic() - start
@@ -2192,6 +2294,14 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
 
         run_log.step("Writing comparison outputs")
         output_name = "all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet"
+        if not compare_genes:
+            db_rows = profile_database.db.select(["profile_name", "profile_location"]).collect()
+            profile_pairs = list(zip(db_rows["profile_name"].to_list(), db_rows["profile_location"].to_list()))
+            _add_percent_compared(
+                run_dir / output_name,
+                _discover_genome_lengths(run_dir, [loc for _n, loc in profile_pairs]),
+            )
+            _add_coverage_overlap(run_dir / output_name, profile_pairs)
         _maybe_write_csv(run_dir / output_name, no_csv=no_csv, force_csv=force_csv, console=Console())
 
 

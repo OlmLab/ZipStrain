@@ -2646,3 +2646,36 @@ def test_finalize_adds_genome_taxonomy_column(tmp_path):
     by = {r["genome"]: r["genome_taxonomy"] for r in d.iter_rows(named=True)}
     assert by["GCF_1.1"] == "d__Bacteria;s__Foo"
     assert by["GCF_2.1"] is None  # unmatched -> null
+
+
+def test_add_percent_compared_and_coverage_overlap(tmp_path):
+    import pathlib
+    # A run dir with two samples' genome_stats + a genome_lengths asset.
+    (tmp_path / "profiling_assets").mkdir()
+    pl.DataFrame({"genome": ["g1"], "genome_length": [1000]}).write_parquet(
+        tmp_path / "profiling_assets" / "genome_lengths.parquet"
+    )
+    profiles = []
+    for name, covered in [("s1", 800), ("s2", 600)]:
+        d = tmp_path / name
+        d.mkdir()
+        prof = d / f"{name}_profile.parquet"
+        pl.DataFrame({"genome": ["g1"]}).write_parquet(prof)  # placeholder
+        pl.DataFrame({"genome": ["g1"], "5x_cov_sites": [covered]}).write_parquet(
+            d / f"{name}_genome_stats.parquet"
+        )
+        profiles.append((name, str(prof)))
+
+    comp_path = tmp_path / "all_comparisons.parquet"
+    pl.DataFrame(
+        {"sample_1": ["s1"], "sample_2": ["s2"], "genome": ["g1"], "total_positions": [500]}
+    ).write_parquet(comp_path)
+
+    cli._add_percent_compared(comp_path, cli._discover_genome_lengths(tmp_path, [p for _n, p in profiles]))
+    cli._add_coverage_overlap(comp_path, profiles)
+
+    out = pl.read_parquet(comp_path)
+    # percent_compared = 500 / 1000
+    assert out["percent_compared"][0] == pytest.approx(0.5)
+    # coverage_overlap = 500 / (800 + 600 - 500) = 500/900
+    assert out["coverage_overlap"][0] == pytest.approx(500 / 900)

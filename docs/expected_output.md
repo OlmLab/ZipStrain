@@ -135,6 +135,8 @@ One row per genome, per pair of samples.
 | `consensus_SNPs` | Positions where the consensus bases differ (= `total_positions` − `share_consensus_pos`) |
 | `genome_con_ani` | **Consensus** ANI (%) = `share_consensus_pos` / `total_positions` × 100. Stricter than `genome_pop_ani`; the gap between them flags shared populations with a different dominant strain |
 | `max_consecutive_length` | Longest run of consecutive shared positions (an identical-by-state / IBS measure) |
+| `percent_compared` | `total_positions` / genome length — the fraction of the genome that was compared. Added when a `genome_lengths.parquet` asset is discoverable (from `profiling_assets`) |
+| `coverage_overlap` | `total_positions` / positions covered in **either** sample — how much of the covered territory the two samples share. Added when the per-sample `genome_stats` are alongside the profiles; exact when `--min-cov` matches the profiling coverage cutoff (both 5 by default) |
 
 The consensus columns come from the `conani` calculation, which is included in the default `--calculate all`. With gene ranges available (or `--compare-genes`), gene-level columns are added: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
 
