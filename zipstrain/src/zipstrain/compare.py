@@ -15,11 +15,14 @@ PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 
 
-GENOME_COMPARISON_CALCULATIONS = ("ani", "ibs", "identical_genes")
-GENOME_COMPARISON_DEFAULT_CALCULATIONS = GENOME_COMPARISON_CALCULATIONS
+GENOME_COMPARISON_CALCULATIONS = ("ani", "conani", "ibs", "identical_genes")
+# conani is opt-in (not in the default) so the common popANI path adds nothing.
+GENOME_COMPARISON_DEFAULT_CALCULATIONS = ("ani", "ibs", "identical_genes")
 GENOME_COMPARISON_CALCULATION_ALIASES = {
     "ani": "ani",
     "popani": "ani",
+    "conani": "conani",
+    "consensus_ani": "conani",
     "ibs": "ibs",
     "max_block": "ibs",
     "max_consecutive_length": "ibs",
@@ -70,6 +73,8 @@ def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] 
     cols = ["genome"]
     if "ani" in calculations:
         cols.extend(["total_positions", "share_allele_pos", "genome_pop_ani"])
+    if "conani" in calculations:
+        cols.extend(["share_consensus_pos", "consensus_SNPs", "genome_con_ani"])
     if "ibs" in calculations:
         cols.append("max_consecutive_length")
     if "identical_genes" in calculations:
@@ -216,6 +221,7 @@ def _duckdb_shared_query(
     gene_scope: str = "all",
 ) -> str:
     ani_expr = _duckdb_ani_expression(ani_method)
+    con_expr = _duckdb_ani_expression("conani")
     genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
     gene_scope_sql = _duckdb_quote_sql_string(gene_scope)
     return f"""
@@ -251,6 +257,7 @@ def _duckdb_shared_query(
     )
     SELECT
       {ani_expr} AS surr,
+      {con_expr} AS con_surr,
       p1.chrom AS scaffold,
       p1.pos,
       p1.gene,
@@ -277,7 +284,7 @@ def _join_stb_requested_genomes(
 ) -> pl.LazyFrame:
     genomes_utf8 = (
         pl.scan_csv(stb_file, separator="\t", has_header=False)
-        .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
+        .select(pl.col("column_2").cast(pl.Utf8).str.strip_chars().alias("genome"))
         .unique()
     )
     genome_dtype = genome_comp.collect_schema().get("genome")
@@ -302,9 +309,9 @@ def _join_stb_requested_genomes(
 def _duckdb_genomes_scope_cte(stb_sql: str, genome_scope_sql: str) -> str:
     return f"""
 genomes AS (
-  SELECT DISTINCT CAST(column1 AS VARCHAR) AS genome
+  SELECT DISTINCT trim(CAST(column1 AS VARCHAR)) AS genome
   FROM read_csv('{stb_sql}', delim='\\t', header=false)
-  WHERE ('{genome_scope_sql}' = 'all' OR CAST(column1 AS VARCHAR) = '{genome_scope_sql}')
+  WHERE ('{genome_scope_sql}' = 'all' OR trim(CAST(column1 AS VARCHAR)) = '{genome_scope_sql}')
 )""".strip()
 
 
@@ -418,6 +425,7 @@ def _duckdb_genome_compare_query(
 ) -> str:
     calculations = parse_genome_calculations(calculate)
     need_ani = "ani" in calculations
+    need_conani = "conani" in calculations
     need_ibs = "ibs" in calculations
     need_identical_genes = "identical_genes" in calculations
 
@@ -437,6 +445,19 @@ def _duckdb_genome_compare_query(
                 include_max_blocks=need_ibs,
             )
         )
+    if need_conani:
+        ctes.append(
+            """
+con AS (
+  SELECT
+    genome,
+    SUM(CASE WHEN con_surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_consensus_pos,
+    (COUNT(*) - SUM(CASE WHEN con_surr > 0 THEN 1 ELSE 0 END))::BIGINT AS consensus_SNPs,
+    SUM(CASE WHEN con_surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_con_ani
+  FROM shared
+  GROUP BY genome
+)""".strip()
+        )
     if need_identical_genes:
         ctes.extend(_duckdb_gene_stats_ctes(min_gene_compare_len=min_gene_compare_len, contig_source="shared"))
 
@@ -451,6 +472,15 @@ def _duckdb_genome_compare_query(
             ]
         )
         joins.append("LEFT JOIN pop p ON g.genome = p.genome")
+    if need_conani:
+        select_parts.extend(
+            [
+                "COALESCE(c.share_consensus_pos, 0)::BIGINT AS share_consensus_pos",
+                "COALESCE(c.consensus_SNPs, 0)::BIGINT AS consensus_SNPs",
+                "COALESCE(c.genome_con_ani, 0.0)::DOUBLE AS genome_con_ani",
+            ]
+        )
+        joins.append("LEFT JOIN con c ON g.genome = c.genome")
     if need_ibs:
         select_parts.append("COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length")
         joins.append("LEFT JOIN max_blocks m ON g.genome = m.genome")
@@ -523,6 +553,7 @@ def _shared_loci_polars(
     ani_method: str = "popani",
 ) -> pl.LazyFrame:
     ani_expr = getattr(PolarsANIExpressions(), ani_method)()
+    con_expr = PolarsANIExpressions().conani()
     p1, p2 = _filter_profiles_polars(
         mpile1=mpile1,
         mpile2=mpile2,
@@ -538,9 +569,10 @@ def _shared_loci_polars(
             how="inner",
             suffix="_2",
         )
-        .with_columns(ani_expr.alias("surr"))
+        .with_columns(ani_expr.alias("surr"), con_expr.alias("con_surr"))
         .select(
             pl.col("surr"),
+            pl.col("con_surr"),
             scaffold=pl.col("chrom"),
             pos=pl.col("pos"),
             gene=pl.col("gene"),
@@ -876,6 +908,20 @@ def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
             genome_pop_ani=pl.col("share_allele_pos")/pl.col("total_positions")*100,
         )
 
+def calculate_con_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
+    """Consensus ANI: a position matches when both samples' consensus base agrees.
+
+    ``con_surr`` is 1 when the consensus (majority) bases match, else 0.
+    """
+    return mpile_contig.group_by("genome").agg(
+            total_positions=pl.len(),
+            share_consensus_pos=(pl.col("con_surr") > 0).sum(),
+        ).with_columns(
+            share_consensus_pos=pl.col("share_consensus_pos").cast(pl.Int64),
+            consensus_SNPs=(pl.col("total_positions") - pl.col("share_consensus_pos")).cast(pl.Int64),
+            genome_con_ani=pl.col("share_consensus_pos")/pl.col("total_positions")*100,
+        ).select(["genome", "share_consensus_pos", "consensus_SNPs", "genome_con_ani"])
+
 def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     """
     Calculates the longest consecutive blocks for each genome in the mpileup LazyFrame for any genome.
@@ -958,6 +1004,8 @@ def compare_genomes_polars(
     genome_comp_parts: list[pl.LazyFrame] = []
     if "ani" in calculations:
         genome_comp_parts.append(calculate_pop_ani(shared))
+    if "conani" in calculations:
+        genome_comp_parts.append(calculate_con_ani(shared))
     if "ibs" in calculations:
         genome_comp_parts.append(get_longest_consecutive_blocks(add_contiguity_info(shared)))
     if "identical_genes" in calculations:
@@ -984,6 +1032,14 @@ def compare_genomes_polars(
                 pl.col("total_positions").fill_null(0).cast(pl.Int64),
                 pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
                 pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
+            ]
+        )
+    if "conani" in calculations:
+        casts.extend(
+            [
+                pl.col("share_consensus_pos").fill_null(0).cast(pl.Int64),
+                pl.col("consensus_SNPs").fill_null(0).cast(pl.Int64),
+                pl.col("genome_con_ani").fill_null(0.0).cast(pl.Float64),
             ]
         )
     if "ibs" in calculations:

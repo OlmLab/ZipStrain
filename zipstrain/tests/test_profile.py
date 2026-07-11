@@ -244,8 +244,20 @@ def test_profile_filter_helpers_handle_read_inclusion_and_read_ani():
         min_read_ani=0.97,
         read_inclusion=profile.READ_INCLUSION_PAIRED,
     )
-    assert not profile._sam_alignment_passes_profile_filters(
+    # 'paired' is single-end-safe: a genuinely single-end read (not flagged
+    # paired) is kept, since it cannot be part of a discordant pair.
+    assert profile._sam_alignment_passes_profile_filters(
         flag=0,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+    )
+    # ...but a half-mapped orphan (paired flag + mate unmapped) is dropped.
+    assert not profile._sam_alignment_passes_profile_filters(
+        flag=profile.SAM_FLAG_PAIRED | profile.SAM_FLAG_MUNMAP,
         mapq=42,
         cigar="100M",
         optional_fields=["NM:i:2"],
@@ -262,6 +274,33 @@ def test_profile_filter_helpers_handle_read_inclusion_and_read_ani():
         min_read_ani=0.97,
         read_inclusion=profile.READ_INCLUSION_ALL_MAPPED,
     )
+    # A read without an NM tag is kept rather than failing the run when a
+    # read-ANI floor is set (mappers that omit NM just don't get ANI filtering).
+    assert profile._sam_alignment_passes_profile_filters(
+        flag=0,
+        mapq=42,
+        cigar="100M",
+        optional_fields=[],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_ALL_MAPPED,
+    )
+
+
+def test_read_stb_strips_whitespace(tmp_path):
+    # An STB with stray spaces around the tab (which inStrain tolerates) must
+    # still yield clean scaffold/genome names so scaffolds are not dropped.
+    stb = tmp_path / "padded.stb"
+    stb.write_text("scaffold_0 \t genomeA\nscaffold_1\tgenomeA \n")
+    df = profile.read_stb(stb).collect()
+    assert df.columns == ["scaffold", "genome"]
+    assert df["scaffold"].to_list() == ["scaffold_0", "scaffold_1"]
+    assert df["genome"].to_list() == ["genomeA", "genomeA"]
+
+
+def test_profile_defaults_match_instrain_leaning_filters():
+    assert profile.PROFILE_MIN_READ_ANI_DEFAULT == 0.95
+    assert profile.PROFILE_READ_INCLUSION_DEFAULT == profile.READ_INCLUSION_PAIRED
 
 
 def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, pl.LazyFrame]:
@@ -392,6 +431,16 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
         raise AssertionError(f"Unexpected command in fake subprocess: {command}")
 
     monkeypatch.setattr(profile.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
+
+    # The default profiling filters now trigger a samtools prefilter pass; these
+    # fake-subprocess tests don't exercise real samtools, so no-op it. Tests that
+    # want to observe the prefilter override this setattr afterwards.
+    def _noop_filter_bam_for_profiling(**kwargs):
+        kwargs["output_bam"].write_bytes(kwargs["input_bam"].read_bytes())
+        bai = kwargs["output_bam"].with_suffix(kwargs["output_bam"].suffix + ".bai")
+        bai.write_text("")
+
+    monkeypatch.setattr(profile, "_filter_bam_for_profiling", _noop_filter_bam_for_profiling)
     return observed_limits, observed_reference_flags
 
 

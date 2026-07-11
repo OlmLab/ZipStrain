@@ -27,7 +27,8 @@ One row per genome: how well it was covered, whether it is present, and its iden
 | Column | Meaning |
 |--------|---------|
 | `genome` | Genome identifier (a GTDB accession on the Sylph route) |
-| `coverage` | Mean read depth across the genome |
+| `coverage` | Mean read depth across the genome (over its full length) |
+| `coverage_median`, `coverage_std` | Median and std. dev. of depth across covered positions |
 | `breadth` | Fraction of the genome covered by ≥ 1 read |
 | `genome_length` | Genome length (bp) |
 | `gap_mean`, `gap_std` | Mean / std. dev. of the gap length between consecutive mapped reads |
@@ -36,7 +37,8 @@ One row per genome: how well it was covered, whether it is present, and its iden
 | `ber` | Breadth-error ratio: observed breadth ÷ breadth expected at this coverage (~1 for an evenly-covered genome) |
 | `fug` | Read-distribution uniformity (fraction of non-excess gaps); ~0.632 under a random distribution |
 | `reads_mapped` | Reads mapped to the genome |
-| `ref_ani` | ANI of the sample to the reference genome (%) |
+| `ref_ani` | **Population** ANI of the sample to the reference genome (%) — a position counts as matching if the reference allele is present among the reads |
+| `conANI_reference` | **Consensus** ANI to the reference (%) — a position counts as matching only if the reference base is the sample's consensus (majority) base. Lower than `ref_ani` at polymorphic sites. Both are reported only when `--reference-fasta` is used |
 | `presence` | Automated `present` / `absent` call (see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks)) |
 | `genome_taxonomy` | GTDB lineage — **Sylph route only** |
 
@@ -71,7 +73,7 @@ The core output: one row per reference position with the observed base counts. T
 | `chrom` | Scaffold / contig name |
 | `genome` | Genome the scaffold belongs to (`NA` if unbinned) |
 | `gene` | Gene at this position (`NA` if none / unannotated) |
-| `pos` | Position on the scaffold |
+| `pos` | Position on the scaffold (**1-based**) |
 | `A`, `C`, `G`, `T` | Read counts of each base at this position |
 | `ref_base_bitmask` | Reference base as a bitmask: **A = 1, C = 2, G = 4, T = 8** (`0` = reference base unknown). Only present when `--reference-fasta` was used |
 
@@ -95,6 +97,9 @@ GCA_018376995.1__JAHAAF… GCA_018376995.1  NA    632  0  0  0  5  2      # ref 
 GCA_018376995.1__JAHAAF… GCA_018376995.1  NA    634  0  0  5  0  1      # ref A -> G
 ```
 
+!!! note "Coordinates are 1-based (comparing with inStrain)"
+    ZipStrain reports `pos` as **1-based** (the samtools/mpileup convention), whereas inStrain's `SNVs.tsv` uses **0-based** `position`. When intersecting the two tables, add 1 to inStrain's `position` (or subtract 1 from ZipStrain's `pos`) before matching, or every position will appear to disagree.
+
 ---
 
 ## `zipstrain compare`
@@ -111,10 +116,16 @@ One row per genome, per pair of samples.
 | `genome` | Genome compared between them |
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
 | `share_allele_pos` | Of those, positions where the two samples share an allele (the popANI numerator) |
-| `genome_pop_ani` | Population ANI (%) = `share_allele_pos` / `total_positions` × 100 |
+| `genome_pop_ani` | **Population** ANI (%) = `share_allele_pos` / `total_positions` × 100 — a position matches if any read supports a shared base |
+| `share_consensus_pos` | Positions where the two samples' **consensus** (majority) base agrees |
+| `consensus_SNPs` | Positions where the consensus bases differ (= `total_positions` − `share_consensus_pos`) |
+| `genome_con_ani` | **Consensus** ANI (%) = `share_consensus_pos` / `total_positions` × 100. Stricter than `genome_pop_ani`; the gap between them flags shared populations with a different dominant strain |
 | `max_consecutive_length` | Longest run of consecutive shared positions (an identical-by-state / IBS measure) |
 
-With gene ranges available (or `--compare-genes`), gene-level columns are added: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
+The consensus columns come from the `conani` calculation, which is included in the default `--calculate all`. With gene ranges available (or `--compare-genes`), gene-level columns are added: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
+
+!!! note "conANI is standard-method only"
+    `genome_con_ani` / `share_consensus_pos` / `consensus_SNPs` are produced by `--method standard`. The `--method matrix` store keeps only per-base **presence** (which base is present, not its count) to make popANI a fast boolean operation, and consensus can't be recovered from presence — so matrix mode reports popANI + IBS (+ gene ANI) but not conANI.
 
 Example (same-strain replicates → 100% popANI):
 

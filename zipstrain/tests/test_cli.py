@@ -263,7 +263,17 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     ])
     lf1_duckdb = pl.read_parquet(tmp_path/"output_duckdb.parquet")
     assert result.exit_code == 0
-    assert lf1.sort("genome").equals(lf1_duckdb.sort("genome"))
+    # The two engines agree, but derived percentages (e.g. genome_con_ani) can
+    # differ by ~1 ULP due to float non-associativity, so compare non-float
+    # columns exactly and float columns with tolerance.
+    a = lf1.sort("genome")
+    b = lf1_duckdb.sort("genome")
+    assert a.columns == b.columns
+    for col, dtype in a.schema.items():
+        if dtype.is_float():
+            assert a[col].to_list() == pytest.approx(b[col].to_list(), abs=1e-9, nan_ok=True)
+        else:
+            assert a[col].equals(b[col])
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome", 
@@ -1408,8 +1418,8 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["profiling_contract_file"] is None
     assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
     assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
-    assert captured["min_read_ani"] is None
-    assert captured["read_inclusion"] == cli.pf.READ_INCLUSION_ALL_MAPPED
+    assert captured["min_read_ani"] == cli.pf.PROFILE_MIN_READ_ANI_DEFAULT
+    assert captured["read_inclusion"] == cli.pf.PROFILE_READ_INCLUSION_DEFAULT
 
 
 def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
@@ -1840,8 +1850,8 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
     }
     assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
     assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
-    assert captured["min_read_ani"] is None
-    assert captured["read_inclusion"] == cli.pf.READ_INCLUSION_ALL_MAPPED
+    assert captured["min_read_ani"] == cli.pf.PROFILE_MIN_READ_ANI_DEFAULT
+    assert captured["read_inclusion"] == cli.pf.PROFILE_READ_INCLUSION_DEFAULT
 
 
 def test_profile_single_passes_custom_read_filters_to_profile_bam(tmp_path, monkeypatch):

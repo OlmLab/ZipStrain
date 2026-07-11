@@ -524,10 +524,7 @@ def get_genome_lengths(stb_file, bed_file, output_file):
     bed_file (str): Path to the BED file containing genomic regions.
     output_file (str): Path to save the output Parquet file.
     """
-    stb = pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    )
+    stb = pf.read_stb(stb_file)
     
     bed_table = pl.scan_csv(bed_file, separator='\t',has_header=False).with_columns(
         pl.col("column_1").alias("scaffold"),
@@ -613,7 +610,7 @@ def generate_genome_pairs(profile_dir, output_file, write_batch_size):
 @click.option('--min-gene-compare-len', '-l', default=100, show_default=True, help="Minimum gene length to consider for comparison.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--ani-method', '-a', default="popani", show_default=True, help="ANI calculation method to use.")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, conani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (for scoped filtering or duckdb engine).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
@@ -670,10 +667,7 @@ def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output
     output_file (str): Path to save the output Parquet file.
     """
     profile = pl.scan_parquet(profile_file)
-    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    ).select(["scaffold", "genome"])
+    stb = pf.read_stb(stb_file)
     
     het_profile = pf.get_strain_hetrogeneity(profile, stb, min_cov=min_cov, freq_threshold=freq_threshold)
     het_profile.sink_parquet(output_file, compression='zstd')
@@ -1364,10 +1358,7 @@ def presence_profile(profile_file, stb_file, bed_file, read_loc_file, min_cov_fu
     output_file (str): Path to save the output Parquet file.
     """
     profile = pl.scan_parquet(profile_file)
-    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    ).select(["scaffold", "genome"])
+    stb = pf.read_stb(stb_file)
     bed = pl.scan_csv(bed_file, separator="\t", has_header=False).with_columns(
         pl.col("column_1").alias("scaffold"),
         pl.col("column_2").cast(pl.Int64).alias("start"),
@@ -1449,7 +1440,7 @@ def get_gene_range_table(gene_file, output_file):
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, conani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
@@ -1675,8 +1666,8 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
 @click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-read-ani', default=None, type=float, help="Optional minimum read ANI proxy based on the NM tag and aligned query span.")
-@click.option('--read-inclusion', default=pf.READ_INCLUSION_ALL_MAPPED, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible for profiling.")
+@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' keeps single-end reads and concordant pairs but drops half-mapped orphans; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
 def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_read_ani, read_inclusion, output_dir):
     """
@@ -1685,10 +1676,7 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
     """
     output_dir=pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stb= pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    )
+    stb= pf.read_stb(stb_file)
     null_model=pl.scan_parquet(null_model)
     profile_contract_values = (
         ut.read_profile_contract_file(profiling_contract)
@@ -1827,8 +1815,8 @@ map_command.option_sections = {
 @click.option('--force-prepare', is_flag=True, default=False, show_default=True, help="Regenerate all auto-generated profiling assets even if valid cached copies exist.")
 @click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-read-ani', default=None, type=float, help="Minimum read ANI proxy based on the NM tag and aligned query span.")
-@click.option('--read-inclusion', default=pf.READ_INCLUSION_ALL_MAPPED, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible for profiling.")
+@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' keeps single-end reads and concordant pairs but drops half-mapped orphans; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
 @click.option('--max-concurrent-batches', '-m', default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option('--poll-interval', '-p', default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
@@ -2078,7 +2066,7 @@ def _run_matrix_compare_method(
 @click.option("--allow-mismatch", is_flag=True, default=False, show_default=True, help="Skip profile contract validation when building the profile database from a CSV.")
 @click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for standard compare tasks.")
-@click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute (genome mode only): ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute (genome mode only): ani, conani, ibs, identical_genes. Combine with '+', or use all.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-range-table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")

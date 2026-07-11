@@ -202,7 +202,7 @@ Major options:
 - `-i, --input-table`, `-f, --reference-fasta`, `-s, --stb-file`, `-r, --run-dir` (required)
 - `--gene-fasta` — enables gene-level profiling (auto-generates a gene range table)
 - `-u/-b/-l/-g/--profiling-contract` — supply pre-built assets to override auto-generation; `--force-prepare` regenerates them all
-- Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani`, `--read-inclusion` (`all-mapped`)
+- Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain); pass `--min-read-ani 0 --read-inclusion all-mapped` for the old permissive behavior
 - Presence & SNVs: `--no-snvs`, `--snv-min-cov` (5), `--presence-ber` (0.5), `--presence-fug` (1.0), `--presence-min-cov-use-fug` (2.0), `--presence-min-coverage` (0.1), `--genome-taxonomy`
 - Output: `--no-csv` / `--force-csv` (companion CSVs; 100 MB cap by default)
 - Execution: `-n, --num-procs` (8), `-m, --max-concurrent-batches` (5), `-t, --task-per-batch` (10), `-e, --execution-mode` (`local`/`slurm`), `-c, --slurm-config`, `-o, --container-engine`, `--container-address`
@@ -271,11 +271,16 @@ Profiling parameters:
                                   used during profiling.  [default: 0]
   --min-baseq INTEGER             Minimum base quality for a base to be
                                   counted during profiling.  [default: 13]
-  --min-read-ani FLOAT            Minimum read ANI proxy based on the NM tag
-                                  and aligned query span.
+  --min-read-ani FLOAT            Minimum read ANI (from the NM tag / aligned
+                                  span) to use a read; filters low-identity/mis-
+                                  mapped reads. Reads lacking an NM tag are
+                                  kept. Pass 0 to disable.  [default: 0.95]
   --read-inclusion [proper-pairs|paired|all-mapped]
-                                  Which mapped reads are eligible for
-                                  profiling.  [default: all-mapped]
+                                  Which mapped reads are eligible: 'paired'
+                                  keeps single-end reads and concordant pairs
+                                  but drops half-mapped orphans; 'proper-pairs'
+                                  keeps only proper pairs; 'all-mapped' keeps
+                                  every mapped read.  [default: paired]
 
 SNV calling and presence:
   --no-snvs                       Do not call SNVs/SNPs (per-sample
@@ -630,14 +635,14 @@ Options:
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
 - `--min-mapq` (default: `0`)
 - `--min-baseq` (default: `13`)
-- `--min-read-ani` (optional) — filters reads before pileup using the BAM `NM` tag and aligned query span
-- `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `all-mapped`)
+- `--min-read-ani` (default: `0.95`) — filters low-identity / mis-mapped reads before pileup using the BAM `NM` tag and aligned query span; reads without an `NM` tag are kept; pass `0` to disable
+- `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `paired`)
 - `-o, --output-dir` (required)
 
 Read-inclusion modes:
 
 - `proper-pairs`: keep only mapped read pairs carrying the aligner `PROPER_PAIR` flag
-- `paired`: keep mapped paired-end reads even if they are discordant
+- `paired` (default): keep single-end reads and concordant pairs, but drop half-mapped orphan pairs (mate unmapped) — matches inStrain's `non_discordant` intent
 - `all-mapped`: keep any mapped read, whether paired or single-end
 
 Outputs include:

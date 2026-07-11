@@ -1867,14 +1867,33 @@ def get_genome_stats(
                         THEN 1
                         ELSE 0
                       END
-                    )::BIGINT AS ref_share_allele_pos"""
+                    )::BIGINT AS ref_share_allele_pos,
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                         AND (
+                           (ref_base_bitmask = 1 AND A = max_base_count)
+                           OR (ref_base_bitmask = 2 AND C = max_base_count)
+                           OR (ref_base_bitmask = 4 AND G = max_base_count)
+                           OR (ref_base_bitmask = 8 AND T = max_base_count)
+                         )
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_share_consensus_pos"""
                 ref_select_sql = """
                   ,
                   CASE
                     WHEN p.ref_total_positions > 0
                     THEN p.ref_share_allele_pos::DOUBLE / p.ref_total_positions * 100.0
                     ELSE NULL
-                  END AS ref_ani"""
+                  END AS ref_ani,
+                  CASE
+                    WHEN p.ref_total_positions > 0
+                    THEN p.ref_share_consensus_pos::DOUBLE / p.ref_total_positions * 100.0
+                    ELSE NULL
+                  END AS conANI_reference"""
             table = conn.execute(
                 f"""
                 WITH profile_rows AS (
@@ -1899,6 +1918,8 @@ def get_genome_stats(
                     genome,
                     COUNT(*)::BIGINT AS total_covered_sites,
                     SUM(coverage)::DOUBLE AS covered_bases,
+                    MEDIAN(coverage)::DOUBLE AS coverage_median,
+                    STDDEV_SAMP(coverage)::DOUBLE AS coverage_std,
                     SUM(CASE WHEN coverage >= {int(comp_min_cov_breadth)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites,
                     SUM(
                       CASE
@@ -1919,6 +1940,8 @@ def get_genome_stats(
                 SELECT
                   CAST(p.genome AS VARCHAR) AS genome,
                   p.covered_bases / gl.genome_length AS coverage,
+                  CAST(p.coverage_median AS DOUBLE) AS coverage_median,
+                  CAST(p.coverage_std AS DOUBLE) AS coverage_std,
                   p.total_covered_sites::DOUBLE / gl.genome_length AS breadth,
                   CAST(gl.genome_length AS BIGINT) AS genome_length,
                   CAST(gg.gap_mean AS DOUBLE) AS gap_mean,

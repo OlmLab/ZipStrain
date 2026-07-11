@@ -28,6 +28,9 @@ MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 PROFILE_MIN_MAPQ_DEFAULT = 0
 PROFILE_MIN_BASEQ_DEFAULT = 13
+# Read-ANI floor applied by default so low-identity (typically mis-mapped) reads
+# do not inflate SNV calls; matches inStrain's default of 0.95.
+PROFILE_MIN_READ_ANI_DEFAULT = 0.95
 READ_INCLUSION_ALL_MAPPED = "all-mapped"
 READ_INCLUSION_PAIRED = "paired"
 READ_INCLUSION_PROPER_PAIRS = "proper-pairs"
@@ -36,10 +39,27 @@ PROFILE_READ_INCLUSION_CHOICES = (
     READ_INCLUSION_PAIRED,
     READ_INCLUSION_ALL_MAPPED,
 )
+# Default eligibility: exclude half-mapped/orphan paired reads (inStrain's
+# "non_discordant" intent) while keeping genuinely single-end reads.
+PROFILE_READ_INCLUSION_DEFAULT = READ_INCLUSION_PAIRED
 SAM_FLAG_PAIRED = 0x1
 SAM_FLAG_PROPER_PAIR = 0x2
 SAM_FLAG_UNMAP = 0x4
 SAM_FLAG_MUNMAP = 0x8
+
+
+def read_stb(stb_file) -> pl.LazyFrame:
+    """Scan a scaffold-to-genome (STB) TSV as ``scaffold, genome``.
+
+    Leading/trailing whitespace around the columns is stripped so scaffold names
+    match the BAM/FASTA exactly. Some STB files (which inStrain tolerates) carry
+    stray spaces around the tab; without stripping, those scaffolds fail to join
+    and are silently dropped to genome ``NA``.
+    """
+    return pl.scan_csv(stb_file, separator="\t", has_header=False).select(
+        pl.col("column_1").cast(pl.Utf8).str.strip_chars().alias("scaffold"),
+        pl.col("column_2").cast(pl.Utf8).str.strip_chars().alias("genome"),
+    )
 RAW_PROFILE_PARQUET_FIELDS = [
     ("chrom", pa.string()),
     ("pos", pa.int32()),
@@ -111,9 +131,9 @@ def _sam_alignment_passes_profile_filters(
         return False
 
     if read_inclusion == READ_INCLUSION_PAIRED:
-        if not (flag & SAM_FLAG_PAIRED):
-            return False
-        if flag & SAM_FLAG_MUNMAP:
+        # Single-end reads (not flagged paired) can't be discordant, so keep
+        # them; for paired reads, drop half-mapped orphans (mate unmapped).
+        if (flag & SAM_FLAG_PAIRED) and (flag & SAM_FLAG_MUNMAP):
             return False
     elif read_inclusion == READ_INCLUSION_PROPER_PAIRS:
         if not (flag & SAM_FLAG_PAIRED):
@@ -129,9 +149,10 @@ def _sam_alignment_passes_profile_filters(
     if min_read_ani is not None:
         nm = _extract_nm_from_optional_fields(optional_fields)
         if nm is None:
-            raise ValueError(
-                "min_read_ani filtering requires NM tags in the BAM alignments."
-            )
+            # No NM tag on this alignment: we can't estimate read ANI, so leave
+            # the read unfiltered rather than failing the run. (BAMs from a
+            # mapper that omits NM simply don't get ANI filtering.)
+            return True
         aligned_query_bases = _aligned_query_bases_from_cigar(cigar)
         if aligned_query_bases <= 0:
             return False
@@ -1351,10 +1372,7 @@ def prepare_profiling_assets(
             gene_range_path, separator="\t", include_header=False
         )
 
-    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome"),
-    )
+    stb = read_stb(stb_file)
     genome_length_path = output_dir / ASSET_GENOME_LENGTH_FILENAME
     utils.extract_genome_length(stb, bed_df.lazy()).sink_parquet(
         genome_length_path, compression="zstd"
