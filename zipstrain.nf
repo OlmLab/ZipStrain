@@ -17,6 +17,10 @@ params.compare_gene_scope="all:all"
 params.compare_genome_calculate="all"
 params.compare_ani_method="popani"
 params.bowtie2_sensitivity=""
+params.min_mapq=0
+params.min_baseq=13
+params.min_read_ani=null
+params.read_inclusion="all-mapped"
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
 params.sylph_db = null
@@ -86,6 +90,15 @@ def getBowtie2SensitivityArg() {
         return ""
     }
     return value.startsWith("--") ? value : "--${value}"
+}
+
+def getOptionalReadAniArg() {
+    def value = params.min_read_ani
+    if (value == null) {
+        return ""
+    }
+    value = value.toString().trim()
+    return value ? "--min-read-ani ${value}" : ""
 }
 
 process download_sylph_db{
@@ -305,6 +318,7 @@ process profile_bam {
     path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats
     val sample_name, emit: sample_name
     script:
+    def min_read_ani_arg = getOptionalReadAniArg()
     """
     zipstrain utilities profile-single \\
                         --bam-file ${bamfile} \\
@@ -314,6 +328,48 @@ process profile_bam {
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
                         --profiling-contract ${profiling_contract} \\
+                        --min-mapq ${params.min_mapq} \\
+                        --min-baseq ${params.min_baseq} \\
+                        ${min_read_ani_arg} \\
+                        --read-inclusion ${params.read_inclusion} \\
+                        --max-concurrency ${task.cpus} \\
+                        --output-dir .
+    """
+}
+
+process profile_bam_no_reference {
+    /*
+    * This process generates profiles from BAM files without passing a reference FASTA.
+    * In this mode the profile parquet will not include ref_base_bitmask.
+    */
+    publishDir "${params.output_dir}", mode: params.publish_mode
+    input:
+    val sample_name
+    path bamfile
+    path bed_file
+    path stb_file
+    path gene_range_table
+    path null_model
+    path profiling_contract
+    output:
+    path "${bamfile.baseName}_profile.parquet", emit: profile
+    path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
+    path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats
+    val sample_name, emit: sample_name
+    script:
+    def min_read_ani_arg = getOptionalReadAniArg()
+    """
+    zipstrain utilities profile-single \\
+                        --bam-file ${bamfile} \\
+                        --bed-file ${bed_file} \\
+                        --gene-range-table ${gene_range_table} \\
+                        --stb-file ${stb_file} \\
+                        --null-model ${null_model} \\
+                        --profiling-contract ${profiling_contract} \\
+                        --min-mapq ${params.min_mapq} \\
+                        --min-baseq ${params.min_baseq} \\
+                        ${min_read_ani_arg} \\
+                        --read-inclusion ${params.read_inclusion} \\
                         --max-concurrency ${task.cpus} \\
                         --output-dir .
     """
@@ -516,7 +572,6 @@ process fromSRAtoProfile{
     path index_files
     path bed_file
     path gene_range_file
-    path genome_length_file
     path stb_file
     path null_model
     path profiling_contract
@@ -527,6 +582,7 @@ process fromSRAtoProfile{
     val sra_id, emit: sample_name
     script:
     def sensitivity = getBowtie2SensitivityArg()
+    def min_read_ani_arg = getOptionalReadAniArg()
     """
     prefetch --max-size 200g ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -545,6 +601,10 @@ process fromSRAtoProfile{
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
                         --profiling-contract ${profiling_contract} \\
+                        --min-mapq ${params.min_mapq} \\
+                        --min-baseq ${params.min_baseq} \\
+                        ${min_read_ani_arg} \\
+                        --read-inclusion ${params.read_inclusion} \\
                         --max-concurrency ${task.cpus} \\
                         --output-dir .
     rm -rf ${sra_id}
@@ -587,6 +647,7 @@ process fromSRAtoProfileBuildDb{
     val sra_id, emit: sample_name
     script:
     def sensitivity = getBowtie2SensitivityArg()
+    def min_read_ani_arg = getOptionalReadAniArg()
     """
     prefetch --max-size 200g ${sra_id}
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -623,6 +684,10 @@ process fromSRAtoProfileBuildDb{
         --stb-file reference_genomes.stb \\
         --null-model null_model.parquet \\
         --profiling-contract profiling_contract.json \\
+        --min-mapq ${params.min_mapq} \\
+        --min-baseq ${params.min_baseq} \\
+        ${min_read_ani_arg} \\
+        --read-inclusion ${params.read_inclusion} \\
         --max-concurrency ${task.cpus} \\
         --output-dir .
 
@@ -731,16 +796,65 @@ workflow
                 null_model = prepare_profile_no_genes.out.null_model
                 profiling_contract = prepare_profile_no_genes.out.profiling_contract
             }
-            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, genome_lengths, file(params.stb), null_model, profiling_contract)
+            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, file(params.stb), null_model, profiling_contract)
         }
     }
     if (params.mode =='profile') {
         input_table = tableToDict(file(params.input_table))
         bamfiles = Channel.fromPath(input_table['bamfile'].collect{t->file(t)})
         sample_names = Channel.fromList(input_table['sample_name'])
-        gene_file = params.gene_file ? file(params.gene_file) : null
-        reference_genome = file(params.reference_genome)
-        profile(bamfiles, sample_names, gene_file, reference_genome)
+        profile_uses_prepared_assets = params.bed_file || params.gene_range_table || params.null_model || params.profiling_contract
+        if (profile_uses_prepared_assets) {
+            required_profile_asset_params = ["stb", "bed_file", "gene_range_table", "null_model", "profiling_contract"]
+            missing_profile_asset_params = required_profile_asset_params.findAll { !params[it] }
+            if (missing_profile_asset_params) {
+                throw new IllegalArgumentException("mode=profile with precomputed profiling assets requires these parameters: ${missing_profile_asset_params.join(', ')}")
+            }
+            reference_genome = params.reference_genome ? file(params.reference_genome) : null
+            profile(
+                bamfiles,
+                sample_names,
+                reference_genome,
+                file(params.bed_file),
+                file(params.stb),
+                file(params.gene_range_table),
+                file(params.null_model),
+                file(params.profiling_contract),
+            )
+        }
+        else {
+            if (!params.reference_genome) {
+                throw new IllegalArgumentException("mode=profile requires --reference_genome unless you provide precomputed profiling assets.")
+            }
+            reference_genome = file(params.reference_genome)
+            if (params.gene_file) {
+                gene_file = file(params.gene_file)
+                prepare_profile(reference_genome, gene_file, file(params.stb))
+                genome_bed = prepare_profile.out.genome_bed
+                gene_range_table = prepare_profile.out.gene_range_table
+                genome_lengths = prepare_profile.out.genome_lengths
+                null_model = prepare_profile.out.null_model
+                profiling_contract = prepare_profile.out.profiling_contract
+            }
+            else {
+                prepare_profile_no_genes(reference_genome, file(params.stb))
+                genome_bed = prepare_profile_no_genes.out.genome_bed
+                gene_range_table = prepare_profile_no_genes.out.gene_range_table
+                genome_lengths = prepare_profile_no_genes.out.genome_lengths
+                null_model = prepare_profile_no_genes.out.null_model
+                profiling_contract = prepare_profile_no_genes.out.profiling_contract
+            }
+            profile(
+                bamfiles,
+                sample_names,
+                reference_genome,
+                genome_bed,
+                file(params.stb),
+                gene_range_table,
+                null_model,
+                profiling_contract,
+            )
+        }
     }
     
     else if (params.mode =="compare_genes")
@@ -816,24 +930,19 @@ workflow profile{
     take:
     bamfiles
     sample_names
-    gene_file
     reference_genome
+    bed_file
+    stb_file
+    gene_range_table
+    null_model
+    profiling_contract
     main:
-    if (gene_file) {
-        prepare_profile(reference_genome, gene_file, file(params.stb))
-        genome_bed = prepare_profile.out.genome_bed
-        gene_range_table = prepare_profile.out.gene_range_table
-        null_model = prepare_profile.out.null_model
-        profiling_contract = prepare_profile.out.profiling_contract
+    if (reference_genome != null) {
+        profile_bam(sample_names, bamfiles, reference_genome, bed_file, stb_file, gene_range_table, null_model, profiling_contract)
     }
     else {
-        prepare_profile_no_genes(reference_genome, file(params.stb))
-        genome_bed = prepare_profile_no_genes.out.genome_bed
-        gene_range_table = prepare_profile_no_genes.out.gene_range_table
-        null_model = prepare_profile_no_genes.out.null_model
-        profiling_contract = prepare_profile_no_genes.out.profiling_contract
+        profile_bam_no_reference(sample_names, bamfiles, bed_file, stb_file, gene_range_table, null_model, profiling_contract)
     }
-    profile_bam(sample_names, bamfiles, reference_genome, genome_bed, file(params.stb), gene_range_table, null_model, profiling_contract)
 }
 
 

@@ -47,6 +47,10 @@ Review the container paths or tags in your config before running on a new system
 - `--compare_duckdb_memory_limit`: forwarded to single compare commands
 - `--compare_calculate`: genome metrics for genome compare (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations). Default: `all`
 - `--bowtie2_sensitivity`: optional Bowtie 2 sensitivity preset for mapping tasks. Examples: `sensitive`, `very-sensitive`, `fast`. Leave unset to keep Bowtie 2's current default behavior.
+- `--min_mapq`: minimum mapping quality forwarded to profiling tasks. Default: `0`
+- `--min_baseq`: minimum base quality forwarded to profiling tasks. Default: `13`
+- `--min_read_ani`: optional minimum read ANI proxy forwarded to profiling tasks
+- `--read_inclusion`: read eligibility mode forwarded to profiling tasks (`proper-pairs`, `paired`, `all-mapped`)
 
 ## 1) Map Reads (`mode=map_reads`)
 
@@ -139,7 +143,7 @@ S1,/data/S1.bam
 S2,/data/S2.bam
 ```
 
-### Command
+### Command A: Build Profiling Assets from a Reference
 
 ```bash
 nextflow run zipstrain.nf \
@@ -154,11 +158,57 @@ nextflow run zipstrain.nf \
   -resume
 ```
 
+This path regenerates:
+
+- `genomes_bed_file.bed`
+- `gene_range_table.tsv`
+- `genome_lengths.parquet`
+- `null_model.parquet`
+- `profiling_contract.json`
+
+from `--reference_genome`, `--gene_file` (optional), and `--stb`.
+
+### Command B: Reuse an Existing Preprofile Asset Bundle
+
+If you already have the outputs of `zipstrain utilities prepare_profiling`, you can point Nextflow at them directly instead of rebuilding them:
+
+```bash
+nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table phase2_bams.csv \
+  --stb zipstrain_preprofile/reference_genomes.stb \
+  --null_model zipstrain_preprofile/null_model.parquet \
+  --gene_range_table zipstrain_preprofile/gene_range_table.tsv \
+  --profiling_contract zipstrain_preprofile/profiling_contract.json \
+  --bed_file zipstrain_preprofile/genomes_bed_file.bed \
+  --output_dir phase2_profile_run \
+  --min_baseq 20 \
+  --min_read_ani 0.95 \
+  -c conf.config \
+  -profile blanca \
+  -resume
+```
+
+Notes:
+
+- `--reference_genome` is optional in this mode.
+- if you omit `--reference_genome`, profiles are generated without `ref_base_bitmask`, and gene/genome stat tables do not include `ref_ani`
+- if you provide `--reference_genome` in addition to the precomputed asset bundle, Nextflow forwards it to `profile-single`, so the outputs include `ref_base_bitmask` and `ref_ani`
+
 ### Profile Outputs
 
 - `<output_dir>/*_profile.parquet`
 - `<output_dir>/*_genome_stats.parquet`
 - `<output_dir>/*_gene_stats.parquet`
+
+You can also forward the same profiling read filters used by the CLI:
+
+```bash
+--min_mapq 0 \
+--min_baseq 20 \
+--min_read_ani 0.95 \
+--read_inclusion all-mapped
+```
 
 If mapping is part of your workflow, you can optionally forward a Bowtie 2 sensitivity preset:
 

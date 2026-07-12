@@ -31,6 +31,11 @@ def test_profile_bam_process_emits_gene_stats():
     assert 'path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats' in output_section
 
 
+def test_profile_bam_no_reference_process_emits_gene_stats():
+    output_section = _extract_output_section("profile_bam_no_reference")
+    assert 'path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats' in output_section
+
+
 def test_from_sra_to_profile_process_emits_gene_stats():
     output_section = _extract_output_section("fromSRAtoProfile")
     assert 'path "${sra_id}_gene_stats.parquet", emit: gene_stats' in output_section
@@ -78,12 +83,14 @@ def test_nextflow_has_no_gene_prepare_profile_path():
     assert "prepare_profile_no_genes(reference_genome, file(params.stb))" in text
 
 
-def test_profile_mode_uses_profile_workflow_and_supports_no_gene_path():
+def test_profile_mode_supports_precomputed_assets_or_reference_prep():
     text = NEXTFLOW_FILE.read_text()
     assert "workflow profile{" in text
     assert "fast_profile(" not in text
-    assert "profile(bamfiles, sample_names, gene_file, reference_genome)" in text
-    assert "gene_file = params.gene_file ? file(params.gene_file) : null" in text
+    assert "profile_uses_prepared_assets = params.bed_file || params.gene_range_table || params.null_model || params.profiling_contract" in text
+    assert 'required_profile_asset_params = ["stb", "bed_file", "gene_range_table", "null_model", "profiling_contract"]' in text
+    assert "mode=profile requires --reference_genome unless you provide precomputed profiling assets." in text
+    assert "profile_bam_no_reference(sample_names, bamfiles, bed_file, stb_file, gene_range_table, null_model, profiling_contract)" in text
 
 
 def test_prepare_profile_process_emits_contract_and_null_model():
@@ -100,11 +107,14 @@ def test_prepare_profile_no_genes_process_emits_contract_and_null_model():
 
 def test_nextflow_profile_processes_pass_profiling_contract():
     text = NEXTFLOW_FILE.read_text()
-    assert "--reference-fasta ${reference_fasta}" in text
     assert "--reference-fasta ${reference_genome}" in text
     assert "--reference-fasta reference_genomes.fna" in text
     assert "--profiling-contract ${profiling_contract}" in text
     assert "--profiling-contract profiling_contract.json" in text
+    assert "--min-mapq ${params.min_mapq}" in text
+    assert "--min-baseq ${params.min_baseq}" in text
+    assert "--read-inclusion ${params.read_inclusion}" in text
+    assert "getOptionalReadAniArg" in text
     assert "prepare_profile.out.profiling_contract" in text
     assert "prepare_profile_no_genes.out.profiling_contract" in text
 

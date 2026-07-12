@@ -12,6 +12,9 @@ Compared with `0.11.0`:
 - Matrix comparison: reverted the IBS torch path to the 0.11.0 behavior while keeping the visualization split/peak work.
 - Reference SNP export: `zipstrain utilities get-snp-reference` can now emit either profile-like parquet or site-only VCF output.
 - Visualization: clustering helpers now accept a configurable hierarchical linkage method while keeping `average` as the default.
+- Nextflow: `mode=profile` can now reuse an existing profiling asset bundle instead of regenerating it, and profiling read filters are forwarded through the pipeline.
+- Nextflow: precomputed profiling assets no longer require `genome_lengths.parquet`, because the profiling tasks do not consume it.
+- Profiling: split async raw chunk generation from Polars/sort/annotation so all chunk subprocesses finish draining before CPU-heavy postprocessing begins.
 
 ## 0.11.0
 

@@ -1100,26 +1100,34 @@ def write_reference_snps(
         os.replace(rendered_vcf, output_path)
     return output_path
 
-
-
-async def _profile_chunk_task(
-    bed_file:pathlib.Path,
-    bam_file:pathlib.Path,
-    reference_fasta: pathlib.Path | None,
-    scaffold_to_genome: pl.LazyFrame,
-    gene_range: pl.LazyFrame,
-    null_model: pl.LazyFrame,
-    output_dir:pathlib.Path,
-    chunk_id:int,
-    min_mapq: int,
-    min_baseq: int,
-)->None:
-    include_reference_base = reference_fasta is not None
+def _profile_chunk_paths(
+    *,
+    bam_file: pathlib.Path,
+    output_dir: pathlib.Path,
+    chunk_id: int,
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
     raw_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.parquet"
     raw_sorted_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.sorted.parquet"
     candidate_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.candidate.parquet"
     final_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.parquet"
+    read_locs_path = output_dir / f"{bam_file.stem}_read_locs_{chunk_id}.parquet"
+    return raw_chunk_path, raw_sorted_path, candidate_chunk_path, final_chunk_path, read_locs_path
 
+
+async def _generate_profile_raw_chunk_task(
+    bed_file: pathlib.Path,
+    bam_file: pathlib.Path,
+    reference_fasta: pathlib.Path | None,
+    output_dir: pathlib.Path,
+    chunk_id: int,
+    min_mapq: int,
+    min_baseq: int,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    raw_chunk_path, _, _, _, read_locs_path = _profile_chunk_paths(
+        bam_file=bam_file,
+        output_dir=output_dir,
+        chunk_id=chunk_id,
+    )
     await _stream_profile_mpileup_chunk_to_parquet(
         bed_file=bed_file,
         bam_file=bam_file,
@@ -1127,6 +1135,50 @@ async def _profile_chunk_task(
         output_parquet=raw_chunk_path,
         min_mapq=min_mapq,
         min_baseq=min_baseq,
+    )
+
+    cmd = [
+        "samtools",
+        "view",
+        "-F",
+        "132",
+        "-L",
+        str(bed_file.absolute()),
+        str(bam_file.absolute()),
+        "|",
+        "zipstrain",
+        "utilities",
+        "process-read-locs",
+        "--output-file",
+        read_locs_path.name,
+    ]
+    proc = await asyncio.create_subprocess_shell(
+        " ".join(cmd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=output_dir,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+    return raw_chunk_path, read_locs_path
+
+
+def _postprocess_profile_raw_chunk(
+    *,
+    bam_file: pathlib.Path,
+    reference_fasta: pathlib.Path | None,
+    scaffold_to_genome: pl.LazyFrame,
+    gene_range: pl.LazyFrame,
+    null_model: pl.LazyFrame,
+    output_dir: pathlib.Path,
+    chunk_id: int,
+) -> pathlib.Path:
+    include_reference_base = reference_fasta is not None
+    raw_chunk_path, raw_sorted_path, candidate_chunk_path, final_chunk_path, _ = _profile_chunk_paths(
+        bam_file=bam_file,
+        output_dir=output_dir,
+        chunk_id=chunk_id,
     )
     raw_for_processing = raw_chunk_path
     if not _parquet_rows_are_coordinate_sorted(raw_chunk_path):
@@ -1153,41 +1205,26 @@ async def _profile_chunk_task(
             output_file=final_chunk_path,
             tmp_dir=output_dir,
         )
+    return final_chunk_path
 
-    cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
-    proc = await asyncio.create_subprocess_shell(
-                " ".join(cmd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=output_dir
-            )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
 
-async def _run_profile_chunk_with_semaphore(
+async def _run_profile_raw_chunk_with_semaphore(
     semaphore: asyncio.Semaphore,
     *,
     bed_file: pathlib.Path,
     bam_file: pathlib.Path,
     reference_fasta: pathlib.Path | None,
-    scaffold_to_genome: pl.LazyFrame,
-    gene_range: pl.LazyFrame,
-    null_model: pl.LazyFrame,
     output_dir: pathlib.Path,
     chunk_id: int,
     min_mapq: int,
     min_baseq: int,
-) -> None:
-    """Bound chunk-level profiling concurrency."""
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Bound chunk-level subprocess work."""
     async with semaphore:
-        await _profile_chunk_task(
+        return await _generate_profile_raw_chunk_task(
             bed_file=bed_file,
             bam_file=bam_file,
             reference_fasta=reference_fasta,
-            scaffold_to_genome=scaffold_to_genome,
-            gene_range=gene_range,
-            null_model=null_model,
             output_dir=output_dir,
             chunk_id=chunk_id,
             min_mapq=min_mapq,
@@ -1275,24 +1312,41 @@ async def profile_bam_in_chunks(
     for chunk_id, bed_file in enumerate(bed_chunks):
         bed_file.sink_csv(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
         bed_chunk_files.append(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed")
-    tasks = []
+    raw_tasks = []
     semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
     for chunk_id, bed_chunk_file in enumerate(bed_chunk_files):
-        tasks.append(_run_profile_chunk_with_semaphore(
-            semaphore,
-            bed_file=bed_chunk_file,
+        raw_tasks.append(
+            _run_profile_raw_chunk_with_semaphore(
+                semaphore,
+                bed_file=bed_chunk_file,
+                bam_file=effective_bam_file,
+                reference_fasta=reference_fasta,
+                output_dir=output_dir / "tmp",
+                chunk_id=chunk_id,
+                min_mapq=min_mapq,
+                min_baseq=min_baseq,
+            )
+        )
+    await asyncio.gather(*raw_tasks)
+
+    for chunk_id in range(len(bed_chunk_files)):
+        _postprocess_profile_raw_chunk(
             bam_file=effective_bam_file,
             reference_fasta=reference_fasta,
             scaffold_to_genome=stb,
             gene_range=gene_range_lf,
             null_model=null_model,
-            output_dir=output_dir/"tmp",
+            output_dir=output_dir / "tmp",
             chunk_id=chunk_id,
-            min_mapq=min_mapq,
-            min_baseq=min_baseq,
-        ))
-    await asyncio.gather(*tasks) 
-    pfs=[(output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.parquet", output_dir/"tmp"/f"{effective_bam_file.stem}_read_locs_{chunk_id}.parquet" ) for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.parquet").exists()]
+        )
+    pfs = [
+        (
+            output_dir / "tmp" / f"{effective_bam_file.stem}_{chunk_id}.parquet",
+            output_dir / "tmp" / f"{effective_bam_file.stem}_read_locs_{chunk_id}.parquet",
+        )
+        for chunk_id in range(len(bed_chunk_files))
+        if (output_dir / "tmp" / f"{effective_bam_file.stem}_{chunk_id}.parquet").exists()
+    ]
 
     mpile_container: list[pl.LazyFrame] = []
     read_loc_pfs: list[pl.LazyFrame] = []

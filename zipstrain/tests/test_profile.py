@@ -460,6 +460,48 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert by_genome["genome2"]["ref_ani"] == pytest.approx(100.0)
 
 
+def test_profile_bam_postprocess_waits_for_all_raw_chunk_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed_commands: list[str] = []
+    _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
+    bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
+    original_postprocess = profile._postprocess_profile_raw_chunk
+    postprocessed_chunks: list[int] = []
+
+    def _observed_postprocess(**kwargs):
+        chunk_id = kwargs["chunk_id"]
+        output_dir = kwargs["output_dir"]
+        bam_stem = kwargs["bam_file"].stem
+
+        assert sum(cmd.startswith("samtools mpileup") for cmd in observed_commands) == 2
+        assert sum("process-read-locs" in cmd for cmd in observed_commands) == 2
+        for expected_chunk_id in range(2):
+            assert (output_dir / f"{bam_stem}_{expected_chunk_id}.raw.parquet").exists()
+            assert (output_dir / f"{bam_stem}_read_locs_{expected_chunk_id}.parquet").exists()
+
+        postprocessed_chunks.append(chunk_id)
+        return original_postprocess(**kwargs)
+
+    monkeypatch.setattr(profile, "_postprocess_profile_raw_chunk", _observed_postprocess)
+
+    profile.profile_bam(
+        bed_file=str(bed_file),
+        bam_file=str(bam_file),
+        reference_fasta=str(reference_fasta),
+        gene_range_table=str(gene_range_table),
+        stb=stb_lf,
+        null_model=pl.scan_parquet(null_model_file),
+        output_dir=str(tmp_path),
+        num_chunks=2,
+        max_concurrency=2,
+    )
+
+    assert postprocessed_chunks == [0, 1]
+    assert (tmp_path / "sample_profile.parquet").exists()
+
+
 def test_read_stream_bounded_tail_drains_chunks_and_keeps_tail():
     class ChunkedStream:
         def __init__(self):
