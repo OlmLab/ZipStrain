@@ -2,6 +2,14 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 0.11.2
+
+Compared with `0.11.1`:
+
+- Nextflow: `mode=profile` can now reuse an existing profiling asset bundle instead of regenerating it, and profiling read filters are forwarded through the pipeline.
+- Nextflow: precomputed profiling assets no longer require `genome_lengths.parquet`, because the profiling tasks do not consume it.
+- Profiling: replaced asyncio subprocess orchestration with thread-pooled synchronous subprocess pipelines for raw mpileup/read-location chunk generation before CPU-heavy postprocessing begins.
+
 ## 0.11.1
 
 Compared with `0.11.0`:
@@ -12,9 +20,6 @@ Compared with `0.11.0`:
 - Matrix comparison: reverted the IBS torch path to the 0.11.0 behavior while keeping the visualization split/peak work.
 - Reference SNP export: `zipstrain utilities get-snp-reference` can now emit either profile-like parquet or site-only VCF output.
 - Visualization: clustering helpers now accept a configurable hierarchical linkage method while keeping `average` as the default.
-- Nextflow: `mode=profile` can now reuse an existing profiling asset bundle instead of regenerating it, and profiling read filters are forwarded through the pipeline.
-- Nextflow: precomputed profiling assets no longer require `genome_lengths.parquet`, because the profiling tasks do not consume it.
-- Profiling: replaced asyncio subprocess orchestration with thread-pooled synchronous subprocess pipelines for raw mpileup/read-location chunk generation before CPU-heavy postprocessing begins.
 
 ## 0.11.0
 
