@@ -8,9 +8,10 @@ import pathlib
 import polars as pl
 from typing import Generator, Optional
 from zipstrain import utils
-import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import re
+import signal
 import shutil
 import shlex
 import duckdb
@@ -23,8 +24,9 @@ import pyarrow.parquet as pq
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 PROFILE_WRITE_BATCH_SIZE = 10_000
-MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_SUBPROCESS_STDERR_TAIL_BYTES = 64 * 1024
+PROFILE_SUBPROCESS_TIMEOUT_SECONDS = 6 * 60 * 60
+PROFILE_SUBPROCESS_MAX_RETRIES = 1
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 PROFILE_MIN_MAPQ_DEFAULT = 0
 PROFILE_MIN_BASEQ_DEFAULT = 13
@@ -62,68 +64,76 @@ MPILEUP_INDEL_RE = re.compile(r"\^.|[\$]|[+-](\d+)")
 VCF_SNP_BASE_ORDER = ("A", "C", "G", "T")
 
 
-async def _read_stream_bounded_tail(
-    stream,
-    *,
-    tail_bytes: int = PROFILE_SUBPROCESS_STDERR_TAIL_BYTES,
-    chunk_size: int = 8192,
-) -> bytes:
-    """Drain an async subprocess stream while retaining only a bounded tail.
-
-    Some tools, notably ``samtools mpileup``, can write warnings to stderr while
-    streaming large stdout. If stderr is piped but not drained concurrently, the
-    child process can block forever once the OS pipe buffer fills.
-    """
-    if stream is None:
-        return b""
-    tail = bytearray()
-    while True:
-        chunk = await stream.read(chunk_size)
-        if not chunk:
-            break
-        tail.extend(chunk)
-        if len(tail) > tail_bytes:
-            del tail[: len(tail) - tail_bytes]
-    return bytes(tail)
-
-
 def _shell_join(args: list[str | pathlib.Path]) -> str:
     return " ".join(shlex.quote(str(arg)) for arg in args)
 
 
-async def _run_profile_shell_pipeline(
+def _read_file_tail(handle, tail_bytes: int = PROFILE_SUBPROCESS_STDERR_TAIL_BYTES) -> bytes:
+    handle.flush()
+    handle.seek(0, os.SEEK_END)
+    size = handle.tell()
+    handle.seek(max(0, size - tail_bytes), os.SEEK_SET)
+    return handle.read()
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+
+def _run_profile_shell_pipeline(
     command: str,
     *,
     cwd: pathlib.Path,
     output_file: pathlib.Path | None = None,
+    timeout_seconds: int | float | None = PROFILE_SUBPROCESS_TIMEOUT_SECONDS,
+    max_retries: int = PROFILE_SUBPROCESS_MAX_RETRIES,
 ) -> None:
-    proc = await asyncio.create_subprocess_shell(
-        f"bash -o pipefail -c {shlex.quote(command)}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        limit=MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES,
-        cwd=cwd,
-    )
-    stdout_task = asyncio.create_task(_read_stream_bounded_tail(proc.stdout))
-    stderr_task = asyncio.create_task(_read_stream_bounded_tail(proc.stderr))
-    try:
-        returncode = await proc.wait()
-        stdout_tail, stderr_tail = await asyncio.gather(stdout_task, stderr_task)
-        if returncode != 0:
+    for attempt in range(max(0, max_retries) + 1):
+        if output_file is not None:
+            output_file.unlink(missing_ok=True)
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            proc = subprocess.Popen(
+                ["bash", "-o", "pipefail", "-c", command],
+                stdout=stdout_file,
+                stderr=stderr_file,
+                cwd=cwd,
+                close_fds=True,
+                start_new_session=True,
+            )
+            timed_out = False
+            try:
+                returncode = proc.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _kill_process_group(proc)
+                returncode = proc.wait()
+
+            stdout_tail = _read_file_tail(stdout_file)
+            stderr_tail = _read_file_tail(stderr_file)
+
+            if timed_out and attempt < max_retries:
+                if output_file is not None:
+                    output_file.unlink(missing_ok=True)
+                continue
+            if timed_out:
+                if output_file is not None:
+                    output_file.unlink(missing_ok=True)
+                stderr_text = stderr_tail.decode(errors="replace").strip()
+                stdout_text = stdout_tail.decode(errors="replace").strip()
+                details = stderr_text or stdout_text or f"timed out after {timeout_seconds} seconds"
+                raise TimeoutError(f"Command timed out: {details}")
+            if returncode == 0:
+                return
+
             if output_file is not None:
                 output_file.unlink(missing_ok=True)
             stderr_text = stderr_tail.decode(errors="replace").strip()
             stdout_text = stdout_tail.decode(errors="replace").strip()
             details = stderr_text or stdout_text or f"exit status {returncode}"
             raise Exception(f"Command failed with error: {details}")
-    finally:
-        for task in (stdout_task, stderr_task):
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
 
 
 def _validate_profile_filter_settings(
@@ -619,7 +629,7 @@ def _parquet_rows_are_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
     )
 
 
-async def _stream_profile_mpileup_chunk_to_parquet(
+def _stream_profile_mpileup_chunk_to_parquet(
     *,
     bed_file: pathlib.Path,
     bam_file: pathlib.Path,
@@ -659,7 +669,7 @@ async def _stream_profile_mpileup_chunk_to_parquet(
     if include_reference_base:
         converter_cmd.append("--include-reference-base")
 
-    await _run_profile_shell_pipeline(
+    _run_profile_shell_pipeline(
         f"{_shell_join(mpileup_cmd)} | {_shell_join(converter_cmd)}",
         cwd=output_parquet.parent,
         output_file=output_parquet,
@@ -1092,7 +1102,7 @@ def _profile_chunk_paths(
     return raw_chunk_path, raw_sorted_path, candidate_chunk_path, final_chunk_path, read_locs_path
 
 
-async def _generate_profile_raw_chunk_task(
+def _generate_profile_raw_chunk_task(
     bed_file: pathlib.Path,
     bam_file: pathlib.Path,
     reference_fasta: pathlib.Path | None,
@@ -1106,7 +1116,7 @@ async def _generate_profile_raw_chunk_task(
         output_dir=output_dir,
         chunk_id=chunk_id,
     )
-    await _stream_profile_mpileup_chunk_to_parquet(
+    _stream_profile_mpileup_chunk_to_parquet(
         bed_file=bed_file,
         bam_file=bam_file,
         reference_fasta=reference_fasta,
@@ -1131,7 +1141,7 @@ async def _generate_profile_raw_chunk_task(
         "--output-file",
         read_locs_path.name,
     ]
-    await _run_profile_shell_pipeline(
+    _run_profile_shell_pipeline(
         f"{_shell_join(view_cmd)} | {_shell_join(read_locs_cmd)}",
         cwd=output_dir,
         output_file=read_locs_path,
@@ -1182,31 +1192,7 @@ def _postprocess_profile_raw_chunk(
         )
     return final_chunk_path
 
-
-async def _run_profile_raw_chunk_with_semaphore(
-    semaphore: asyncio.Semaphore,
-    *,
-    bed_file: pathlib.Path,
-    bam_file: pathlib.Path,
-    reference_fasta: pathlib.Path | None,
-    output_dir: pathlib.Path,
-    chunk_id: int,
-    min_mapq: int,
-    min_baseq: int,
-) -> tuple[pathlib.Path, pathlib.Path]:
-    """Bound chunk-level subprocess work."""
-    async with semaphore:
-        return await _generate_profile_raw_chunk_task(
-            bed_file=bed_file,
-            bam_file=bam_file,
-            reference_fasta=reference_fasta,
-            output_dir=output_dir,
-            chunk_id=chunk_id,
-            min_mapq=min_mapq,
-            min_baseq=min_baseq,
-        )
-
-async def profile_bam_in_chunks(
+def profile_bam_in_chunks(
     bed_file:str,
     bam_file:str,
     reference_fasta: Optional[str],
@@ -1287,12 +1273,10 @@ async def profile_bam_in_chunks(
     for chunk_id, bed_file in enumerate(bed_chunks):
         bed_file.sink_csv(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
         bed_chunk_files.append(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed")
-    raw_tasks = []
-    semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
-    for chunk_id, bed_chunk_file in enumerate(bed_chunk_files):
-        raw_tasks.append(
-            _run_profile_raw_chunk_with_semaphore(
-                semaphore,
+    with ThreadPoolExecutor(max_workers=max(1, int(max_concurrency))) as executor:
+        raw_futures = [
+            executor.submit(
+                _generate_profile_raw_chunk_task,
                 bed_file=bed_chunk_file,
                 bam_file=effective_bam_file,
                 reference_fasta=reference_fasta,
@@ -1301,8 +1285,10 @@ async def profile_bam_in_chunks(
                 min_mapq=min_mapq,
                 min_baseq=min_baseq,
             )
-        )
-    await asyncio.gather(*raw_tasks)
+            for chunk_id, bed_chunk_file in enumerate(bed_chunk_files)
+        ]
+        for future in as_completed(raw_futures):
+            future.result()
 
     for chunk_id in range(len(bed_chunk_files)):
         _postprocess_profile_raw_chunk(
@@ -1406,7 +1392,7 @@ def profile_bam(
     num_chunks (int): Number of BED chunks to create.
     max_concurrency (int): Maximum number of chunks to process concurrently.
     """
-    asyncio.run(profile_bam_in_chunks(
+    profile_bam_in_chunks(
         bed_file=bed_file,
         bam_file=bam_file,
         reference_fasta=reference_fasta,
@@ -1421,4 +1407,4 @@ def profile_bam(
         min_baseq=min_baseq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
-    ))
+    )

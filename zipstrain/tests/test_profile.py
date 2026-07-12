@@ -4,7 +4,6 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 from pathlib import Path
-import asyncio
 import re
 
 
@@ -291,44 +290,7 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
 
 
 def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_commands: list[str] | None = None):
-    observed_limits: list[int | None] = []
     observed_reference_flags: list[bool] = []
-
-    class _FakeStream:
-        def __init__(self, *, lines: list[bytes] | None = None, blob: bytes = b""):
-            self._lines = list(lines or [])
-            self._line_index = 0
-            self._blob = blob
-
-        async def readline(self):
-            if self._line_index >= len(self._lines):
-                return b""
-            line = self._lines[self._line_index]
-            self._line_index += 1
-            return line
-
-        async def read(self, n=-1):
-            if self._lines:
-                if self._line_index >= len(self._lines):
-                    return b""
-                remaining = b"".join(self._lines[self._line_index :])
-                self._line_index = len(self._lines)
-                return remaining
-            blob = self._blob
-            self._blob = b""
-            return blob
-
-    class _FakeProc:
-        def __init__(self, *, stdout_lines: list[bytes] | None = None, stderr: bytes = b"", returncode: int = 0):
-            self.returncode = returncode
-            self.stdout = _FakeStream(lines=stdout_lines)
-            self.stderr = _FakeStream(blob=stderr)
-
-        async def communicate(self):
-            return await self.stdout.read(), await self.stderr.read()
-
-        async def wait(self):
-            return self.returncode
 
     def _read_scaffolds_from_bed(bed_path: Path) -> list[str]:
         return [line.strip().split("\t")[0] for line in bed_path.read_text().splitlines() if line.strip()]
@@ -355,18 +317,10 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
             {"chrom": scaffold, "pos": 3},
         ]
 
-    def _fake_mpileup_line(row: dict, *, use_reference_matches: bool) -> bytes:
-        bases = row["bases"] if use_reference_matches else row["ref"] * len(row["bases"])
-        depth = len(bases)
-        return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
-
     def _shell_token_to_path(token: str) -> Path:
         return Path(token.strip("'\""))
 
-    def _write_fake_raw_profile_parquet(command: str, cwd: Path, rows: list[dict], *, include_reference_base: bool) -> None:
-        out_match = re.search(r"--output-file\s+([^\s]+)", command)
-        assert out_match is not None, command
-        output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
+    def _write_fake_raw_profile_parquet(output_file: Path, rows: list[dict], *, include_reference_base: bool) -> None:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         frame = pl.DataFrame(rows).select(["chrom", "pos", "A", "C", "G", "T"])
         if include_reference_base:
@@ -389,11 +343,10 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
         )
         frame.write_parquet(output_file)
 
-    async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None, limit=None):
+    def _fake_run_profile_shell_pipeline(command: str, *, cwd: Path, output_file: Path | None = None, **kwargs):
         if observed_commands is not None:
             observed_commands.append(command)
         if "samtools mpileup" in command:
-            observed_limits.append(limit)
             has_reference_fasta = re.search(r"-f\s+([^\s]+)", command) is not None
             observed_reference_flags.append(has_reference_fasta)
             bed_match = re.search(r"-l\s+([^\s]+)", command)
@@ -402,22 +355,21 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
             rows = []
             for scaffold in scaffolds:
                 rows.extend(_fake_mpileup_rows(scaffold))
-            if "process_mpileup" in command:
-                _write_fake_raw_profile_parquet(
-                    command,
-                    Path(cwd),
-                    rows,
-                    include_reference_base="--include-reference-base" in command,
-                )
-                return _FakeProc()
-            lines = []
-            for row in rows:
-                lines.append(_fake_mpileup_line(row, use_reference_matches=has_reference_fasta))
-            return _FakeProc(stdout_lines=lines)
+            if output_file is None:
+                out_match = re.search(r"--output-file\s+([^\s]+)", command)
+                assert out_match is not None, command
+                output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
+            _write_fake_raw_profile_parquet(
+                Path(output_file),
+                rows,
+                include_reference_base="--include-reference-base" in command,
+            )
+            return
         if "process-read-locs" in command:
-            out_match = re.search(r"--output-file\s+([^\s]+)", command)
-            assert out_match is not None, command
-            output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
+            if output_file is None:
+                out_match = re.search(r"--output-file\s+([^\s]+)", command)
+                assert out_match is not None, command
+                output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
             output_file.parent.mkdir(parents=True, exist_ok=True)
             bed_match = re.search(r"-L\s+([^\s]+)", command)
             assert bed_match is not None, command
@@ -426,15 +378,15 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
             for scaffold in scaffolds:
                 rows.extend(_fake_read_loc_rows(scaffold))
             pl.DataFrame(rows).write_parquet(output_file)
-            return _FakeProc()
+            return
         raise AssertionError(f"Unexpected command in fake subprocess: {command}")
 
-    monkeypatch.setattr(profile.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
-    return observed_limits, observed_reference_flags
+    monkeypatch.setattr(profile, "_run_profile_shell_pipeline", _fake_run_profile_shell_pipeline)
+    return observed_commands, observed_reference_flags
 
 
 def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    observed_limits, observed_reference_flags = _install_fake_profile_subprocess(monkeypatch)
+    observed_commands, observed_reference_flags = _install_fake_profile_subprocess(monkeypatch, observed_commands=[])
     bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
     profile.profile_bam(
         bed_file=str(bed_file),
@@ -461,10 +413,9 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert prof.height == 6
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
-    assert observed_limits
+    assert observed_commands
     assert observed_reference_flags
     assert all(observed_reference_flags)
-    assert all(limit == profile.MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES for limit in observed_limits)
     assert prof.schema["gene"] == pl.Utf8
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()
@@ -539,19 +490,6 @@ def test_profile_bam_postprocess_waits_for_all_raw_chunk_outputs(
     assert (tmp_path / "sample_profile.parquet").exists()
 
 
-def test_read_stream_bounded_tail_drains_chunks_and_keeps_tail():
-    class ChunkedStream:
-        def __init__(self):
-            self._chunks = [b"alpha", b"beta", b"gamma", b""]
-
-        async def read(self, n=-1):
-            return self._chunks.pop(0)
-
-    tail = asyncio.run(profile._read_stream_bounded_tail(ChunkedStream(), tail_bytes=7, chunk_size=2))
-
-    assert tail == b"tagamma"
-
-
 def test_cli_process_mpileup_can_emit_reference_base_bitmask(tmp_path: Path):
     output_file = tmp_path / "raw.parquet"
 
@@ -588,7 +526,7 @@ def test_cli_process_mpileup_can_emit_reference_base_bitmask(tmp_path: Path):
 
 def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     observed_commands: list[str] = []
-    observed_limits, _ = _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
+    _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
     bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
 
     captured_prefilter = {}
@@ -625,7 +563,6 @@ def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_pa
     assert all("-q 7" in cmd for cmd in mpileup_commands)
     assert all("-Q 23" in cmd for cmd in mpileup_commands)
     assert all(".filtered.bam" in cmd for cmd in mpileup_commands)
-    assert observed_limits
 
 
 def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

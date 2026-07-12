@@ -14,7 +14,7 @@ Compared with `0.11.0`:
 - Visualization: clustering helpers now accept a configurable hierarchical linkage method while keeping `average` as the default.
 - Nextflow: `mode=profile` can now reuse an existing profiling asset bundle instead of regenerating it, and profiling read filters are forwarded through the pipeline.
 - Nextflow: precomputed profiling assets no longer require `genome_lengths.parquet`, because the profiling tasks do not consume it.
-- Profiling: split async raw chunk generation from Polars/sort/annotation and run raw mpileup conversion as a subprocess pipeline, so all chunk subprocesses finish draining before CPU-heavy postprocessing begins.
+- Profiling: replaced asyncio subprocess orchestration with thread-pooled synchronous subprocess pipelines for raw mpileup/read-location chunk generation before CPU-heavy postprocessing begins.
 
 ## 0.11.0
 
