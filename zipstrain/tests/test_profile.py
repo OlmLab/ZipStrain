@@ -360,27 +360,64 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
         depth = len(bases)
         return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
 
+    def _shell_token_to_path(token: str) -> Path:
+        return Path(token.strip("'\""))
+
+    def _write_fake_raw_profile_parquet(command: str, cwd: Path, rows: list[dict], *, include_reference_base: bool) -> None:
+        out_match = re.search(r"--output-file\s+([^\s]+)", command)
+        assert out_match is not None, command
+        output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        frame = pl.DataFrame(rows).select(["chrom", "pos", "A", "C", "G", "T"])
+        if include_reference_base:
+            frame = frame.with_columns(
+                pl.Series(
+                    "ref_base_bitmask",
+                    [
+                        {"A": 1, "C": 2, "G": 4, "T": 8}.get(str(row["ref"]).upper(), 0)
+                        for row in rows
+                    ],
+                    dtype=pl.UInt8,
+                )
+            )
+        frame = frame.with_columns(
+            pl.col("pos").cast(pl.Int32),
+            pl.col("A").cast(pl.Int32),
+            pl.col("C").cast(pl.Int32),
+            pl.col("G").cast(pl.Int32),
+            pl.col("T").cast(pl.Int32),
+        )
+        frame.write_parquet(output_file)
+
     async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None, limit=None):
         if observed_commands is not None:
             observed_commands.append(command)
-        if command.startswith("samtools mpileup"):
+        if "samtools mpileup" in command:
             observed_limits.append(limit)
             has_reference_fasta = re.search(r"-f\s+([^\s]+)", command) is not None
             observed_reference_flags.append(has_reference_fasta)
             bed_match = re.search(r"-l\s+([^\s]+)", command)
             assert bed_match is not None, command
             scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
-            lines = []
+            rows = []
             for scaffold in scaffolds:
-                lines.extend(
-                    _fake_mpileup_line(row, use_reference_matches=has_reference_fasta)
-                    for row in _fake_mpileup_rows(scaffold)
+                rows.extend(_fake_mpileup_rows(scaffold))
+            if "process_mpileup" in command:
+                _write_fake_raw_profile_parquet(
+                    command,
+                    Path(cwd),
+                    rows,
+                    include_reference_base="--include-reference-base" in command,
                 )
+                return _FakeProc()
+            lines = []
+            for row in rows:
+                lines.append(_fake_mpileup_line(row, use_reference_matches=has_reference_fasta))
             return _FakeProc(stdout_lines=lines)
         if "process-read-locs" in command:
             out_match = re.search(r"--output-file\s+([^\s]+)", command)
             assert out_match is not None, command
-            output_file = Path(cwd) / out_match.group(1)
+            output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
             output_file.parent.mkdir(parents=True, exist_ok=True)
             bed_match = re.search(r"-L\s+([^\s]+)", command)
             assert bed_match is not None, command
@@ -475,7 +512,7 @@ def test_profile_bam_postprocess_waits_for_all_raw_chunk_outputs(
         output_dir = kwargs["output_dir"]
         bam_stem = kwargs["bam_file"].stem
 
-        assert sum(cmd.startswith("samtools mpileup") for cmd in observed_commands) == 2
+        assert sum("samtools mpileup" in cmd for cmd in observed_commands) == 2
         assert sum("process-read-locs" in cmd for cmd in observed_commands) == 2
         for expected_chunk_id in range(2):
             assert (output_dir / f"{bam_stem}_{expected_chunk_id}.raw.parquet").exists()
@@ -515,6 +552,40 @@ def test_read_stream_bounded_tail_drains_chunks_and_keeps_tail():
     assert tail == b"tagamma"
 
 
+def test_cli_process_mpileup_can_emit_reference_base_bitmask(tmp_path: Path):
+    output_file = tmp_path / "raw.parquet"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "utilities",
+            "process_mpileup",
+            "--output-file",
+            str(output_file),
+            "--include-reference-base",
+        ],
+        input="chr1\t1\tA\t3\t.,T\t*\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    got = pl.read_parquet(output_file)
+    assert got.columns == ["chrom", "pos", "A", "C", "G", "T", "ref_base_bitmask"]
+    assert got.to_dicts() == [
+        {
+            "chrom": "chr1",
+            "pos": 1,
+            "A": 2,
+            "C": 0,
+            "G": 0,
+            "T": 1,
+            "ref_base_bitmask": 1,
+        }
+    ]
+    assert got.schema["A"] == pl.Int32
+    assert got.schema["ref_base_bitmask"] == pl.UInt8
+
+
 def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     observed_commands: list[str] = []
     observed_limits, _ = _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
@@ -549,7 +620,7 @@ def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_pa
     assert captured_prefilter["min_read_ani"] == 0.96
     assert captured_prefilter["read_inclusion"] == profile.READ_INCLUSION_PAIRED
     assert captured_prefilter["output_bam"].name.endswith(".filtered.bam")
-    mpileup_commands = [cmd for cmd in observed_commands if cmd.startswith("samtools mpileup")]
+    mpileup_commands = [cmd for cmd in observed_commands if "samtools mpileup" in cmd]
     assert mpileup_commands
     assert all("-q 7" in cmd for cmd in mpileup_commands)
     assert all("-Q 23" in cmd for cmd in mpileup_commands)

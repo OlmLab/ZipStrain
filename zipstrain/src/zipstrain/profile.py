@@ -12,6 +12,7 @@ import asyncio
 import os
 import re
 import shutil
+import shlex
 import duckdb
 import tempfile
 import subprocess
@@ -84,6 +85,45 @@ async def _read_stream_bounded_tail(
         if len(tail) > tail_bytes:
             del tail[: len(tail) - tail_bytes]
     return bytes(tail)
+
+
+def _shell_join(args: list[str | pathlib.Path]) -> str:
+    return " ".join(shlex.quote(str(arg)) for arg in args)
+
+
+async def _run_profile_shell_pipeline(
+    command: str,
+    *,
+    cwd: pathlib.Path,
+    output_file: pathlib.Path | None = None,
+) -> None:
+    proc = await asyncio.create_subprocess_shell(
+        f"bash -o pipefail -c {shlex.quote(command)}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES,
+        cwd=cwd,
+    )
+    stdout_task = asyncio.create_task(_read_stream_bounded_tail(proc.stdout))
+    stderr_task = asyncio.create_task(_read_stream_bounded_tail(proc.stderr))
+    try:
+        returncode = await proc.wait()
+        stdout_tail, stderr_tail = await asyncio.gather(stdout_task, stderr_task)
+        if returncode != 0:
+            if output_file is not None:
+                output_file.unlink(missing_ok=True)
+            stderr_text = stderr_tail.decode(errors="replace").strip()
+            stdout_text = stdout_tail.decode(errors="replace").strip()
+            details = stderr_text or stdout_text or f"exit status {returncode}"
+            raise Exception(f"Command failed with error: {details}")
+    finally:
+        for task in (stdout_task, stderr_task):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 
 def _validate_profile_filter_settings(
@@ -194,47 +234,50 @@ def _filter_bam_for_profiling(
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
     )
-    samtools_view_in = subprocess.Popen(
-        ["samtools", "view", "-h", str(input_bam)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    samtools_view_out = subprocess.Popen(
-        ["samtools", "view", "-b", "-o", str(output_bam), "-"],
-        stdin=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert samtools_view_in.stdout is not None
-    assert samtools_view_out.stdin is not None
+    with tempfile.TemporaryFile(mode="w+t") as in_stderr_file, tempfile.TemporaryFile(mode="w+t") as out_stderr_file:
+        samtools_view_in = subprocess.Popen(
+            ["samtools", "view", "-h", str(input_bam)],
+            stdout=subprocess.PIPE,
+            stderr=in_stderr_file,
+            text=True,
+        )
+        samtools_view_out = subprocess.Popen(
+            ["samtools", "view", "-b", "-o", str(output_bam), "-"],
+            stdin=subprocess.PIPE,
+            stderr=out_stderr_file,
+            text=True,
+        )
+        assert samtools_view_in.stdout is not None
+        assert samtools_view_out.stdin is not None
 
-    try:
-        for line in samtools_view_in.stdout:
-            if line.startswith("@"):
-                samtools_view_out.stdin.write(line)
-                continue
-            fields = line.rstrip("\n").split("\t")
-            if len(fields) < 11:
-                continue
-            if _sam_alignment_passes_profile_filters(
-                flag=int(fields[1]),
-                mapq=int(fields[4]),
-                cigar=fields[5],
-                optional_fields=fields[11:],
-                min_mapq=min_mapq,
-                min_read_ani=min_read_ani,
-                read_inclusion=read_inclusion,
-            ):
-                samtools_view_out.stdin.write(line)
-    finally:
-        samtools_view_in.stdout.close()
-        samtools_view_out.stdin.close()
+        try:
+            for line in samtools_view_in.stdout:
+                if line.startswith("@"):
+                    samtools_view_out.stdin.write(line)
+                    continue
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) < 11:
+                    continue
+                if _sam_alignment_passes_profile_filters(
+                    flag=int(fields[1]),
+                    mapq=int(fields[4]),
+                    cigar=fields[5],
+                    optional_fields=fields[11:],
+                    min_mapq=min_mapq,
+                    min_read_ani=min_read_ani,
+                    read_inclusion=read_inclusion,
+                ):
+                    samtools_view_out.stdin.write(line)
+        finally:
+            samtools_view_in.stdout.close()
+            samtools_view_out.stdin.close()
 
-    in_stderr = samtools_view_in.stderr.read() if samtools_view_in.stderr is not None else ""
-    out_stderr = samtools_view_out.stderr.read() if samtools_view_out.stderr is not None else ""
-    in_rc = samtools_view_in.wait()
-    out_rc = samtools_view_out.wait()
+        in_rc = samtools_view_in.wait()
+        out_rc = samtools_view_out.wait()
+        in_stderr_file.seek(0)
+        out_stderr_file.seek(0)
+        in_stderr = in_stderr_file.read()
+        out_stderr = out_stderr_file.read()
     if in_rc != 0:
         raise RuntimeError(f"samtools view failed while reading BAM: {in_stderr.strip()}")
     if out_rc != 0:
@@ -588,7 +631,7 @@ async def _stream_profile_mpileup_chunk_to_parquet(
 ) -> None:
     """Stream one mpileup chunk into a raw counts parquet file."""
     include_reference_base = reference_fasta is not None
-    cmd = [
+    mpileup_cmd = [
         "samtools",
         "mpileup",
         "-A",
@@ -598,94 +641,29 @@ async def _stream_profile_mpileup_chunk_to_parquet(
         str(min_baseq),
     ]
     if reference_fasta is not None:
-        cmd.extend(["-f", str(reference_fasta.absolute())])
-    cmd.extend([
+        mpileup_cmd.extend(["-f", str(reference_fasta.absolute())])
+    mpileup_cmd.extend([
         "-l",
         str(bed_file.absolute()),
         str(bam_file.absolute()),
     ])
-    proc = await asyncio.create_subprocess_shell(
-        " ".join(cmd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        limit=MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES,
+    converter_cmd = [
+        "zipstrain",
+        "utilities",
+        "process_mpileup",
+        "--batch-size",
+        str(batch_size),
+        "--output-file",
+        output_parquet.name,
+    ]
+    if include_reference_base:
+        converter_cmd.append("--include-reference-base")
+
+    await _run_profile_shell_pipeline(
+        f"{_shell_join(mpileup_cmd)} | {_shell_join(converter_cmd)}",
         cwd=output_parquet.parent,
+        output_file=output_parquet,
     )
-    stderr_task = asyncio.create_task(_read_stream_bounded_tail(proc.stderr))
-
-    chroms: list[str] = []
-    positions: list[int] = []
-    As: list[int] = []
-    Cs: list[int] = []
-    Gs: list[int] = []
-    Ts: list[int] = []
-    ref_base_bitmasks: list[int] = []
-    parquet_schema = raw_profile_parquet_schema(include_reference_base=include_reference_base)
-    writer = pq.ParquetWriter(str(output_parquet), parquet_schema, compression="zstd")
-    success = False
-
-    def flush_batch() -> None:
-        if not chroms:
-            return
-        arrays = [
-            pa.array(chroms, type=pa.string()),
-            pa.array(positions, type=pa.int32()),
-            pa.array(As, type=pa.int32()),
-            pa.array(Cs, type=pa.int32()),
-            pa.array(Gs, type=pa.int32()),
-            pa.array(Ts, type=pa.int32()),
-        ]
-        if include_reference_base:
-            arrays.append(pa.array(ref_base_bitmasks, type=pa.uint8()))
-        batch = pa.RecordBatch.from_arrays(arrays, schema=parquet_schema)
-        writer.write_table(pa.Table.from_batches([batch]))
-        chroms.clear()
-        positions.clear()
-        As.clear()
-        Cs.clear()
-        Gs.clear()
-        Ts.clear()
-        ref_base_bitmasks.clear()
-
-    try:
-        while True:
-            raw_line = await proc.stdout.readline()
-            if not raw_line:
-                break
-            line = raw_line.decode().strip()
-            if not line:
-                continue
-            fields = line.split("\t")
-            if len(fields) < 5:
-                continue
-            chrom, pos_str, ref_base, _, bases = fields[:5]
-            counts = utils.count_mpileup_bases(bases, ref_base, MPILEUP_INDEL_RE)
-            chroms.append(chrom)
-            positions.append(int(pos_str))
-            As.append(counts["A"])
-            Cs.append(counts["C"])
-            Gs.append(counts["G"])
-            Ts.append(counts["T"])
-            if include_reference_base:
-                ref_base_bitmasks.append(utils.encode_reference_base_bitmask(ref_base))
-            if len(chroms) >= batch_size:
-                flush_batch()
-        returncode = await proc.wait()
-        stderr = await stderr_task
-        if returncode != 0:
-            raise Exception(f"Command failed with error: {stderr.decode(errors='replace').strip()}")
-        flush_batch()
-        success = True
-    finally:
-        if not stderr_task.done():
-            stderr_task.cancel()
-            try:
-                await stderr_task
-            except asyncio.CancelledError:
-                pass
-        writer.close()
-        if not success:
-            output_parquet.unlink(missing_ok=True)
 
 
 def _process_raw_profile_chunk_with_polars(
@@ -1137,7 +1115,7 @@ async def _generate_profile_raw_chunk_task(
         min_baseq=min_baseq,
     )
 
-    cmd = [
+    view_cmd = [
         "samtools",
         "view",
         "-F",
@@ -1145,22 +1123,19 @@ async def _generate_profile_raw_chunk_task(
         "-L",
         str(bed_file.absolute()),
         str(bam_file.absolute()),
-        "|",
+    ]
+    read_locs_cmd = [
         "zipstrain",
         "utilities",
         "process-read-locs",
         "--output-file",
         read_locs_path.name,
     ]
-    proc = await asyncio.create_subprocess_shell(
-        " ".join(cmd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    await _run_profile_shell_pipeline(
+        f"{_shell_join(view_cmd)} | {_shell_join(read_locs_cmd)}",
         cwd=output_dir,
+        output_file=read_locs_path,
     )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
     return raw_chunk_path, read_locs_path
 
 

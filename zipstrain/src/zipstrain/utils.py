@@ -940,7 +940,7 @@ def count_mpileup_bases(bases: str, ref_base: str, indel_re: re.Pattern) -> dict
         translated.append(base.upper())
     return count_bases("".join(translated))
 
-def process_mpileup_function(batch_size, output_file):
+def process_mpileup_function(batch_size, output_file, include_reference_base: bool = False):
     """
     Process mpileup files and save the results in a Parquet file.
 
@@ -953,14 +953,17 @@ def process_mpileup_function(batch_size, output_file):
     indel_re = re.compile(r'\^.|[\$]|[+-](\d+)')
 
 
-    schema = pa.schema([
+    fields = [
         ('chrom', pa.string()),
         ('pos', pa.int32()),
-        ('A', pa.uint16()),
-        ('C', pa.uint16()),
-        ('G', pa.uint16()),
-        ('T', pa.uint16()),
-    ])
+        ('A', pa.int32()),
+        ('C', pa.int32()),
+        ('G', pa.int32()),
+        ('T', pa.int32()),
+    ]
+    if include_reference_base:
+        fields.append((REF_BASE_BITMASK_COLUMN, pa.uint8()))
+    schema = pa.schema(fields)
 
     chroms = []
     positions = []
@@ -968,24 +971,24 @@ def process_mpileup_function(batch_size, output_file):
     Cs = []
     Gs = []
     Ts = []
+    ref_base_bitmasks = []
 
-    writer = None
+    writer = pq.ParquetWriter(output_file, schema, compression='zstd')
     def flush_batch():
-        nonlocal writer
         if not chroms:
             return
-        batch = pa.RecordBatch.from_arrays([
+        arrays = [
             pa.array(chroms, type=pa.string()),
             pa.array(positions, type=pa.int32()),
-            pa.array(As, type=pa.uint16()),
-            pa.array(Cs, type=pa.uint16()),
-            pa.array(Gs, type=pa.uint16()),
-            pa.array(Ts, type=pa.uint16()),
-        ], schema=schema)
+            pa.array(As, type=pa.int32()),
+            pa.array(Cs, type=pa.int32()),
+            pa.array(Gs, type=pa.int32()),
+            pa.array(Ts, type=pa.int32()),
+        ]
+        if include_reference_base:
+            arrays.append(pa.array(ref_base_bitmasks, type=pa.uint8()))
+        batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
 
-        if writer is None:
-            # Open writer for the first time
-            writer = pq.ParquetWriter(output_file, schema, compression='zstd')
         writer.write_table(pa.Table.from_batches([batch]))
 
         # Clear buffers
@@ -995,29 +998,32 @@ def process_mpileup_function(batch_size, output_file):
         Cs.clear()
         Gs.clear()
         Ts.clear()
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        fields = line.strip().split('\t')
-        if len(fields) < 5:
-            continue
-        chrom, pos, ref_base, _, bases = fields[:5]
-        counts = count_mpileup_bases(bases, ref_base, indel_re)
+        ref_base_bitmasks.clear()
+    try:
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            fields = line.strip().split('\t')
+            if len(fields) < 5:
+                continue
+            chrom, pos, ref_base, _, bases = fields[:5]
+            counts = count_mpileup_bases(bases, ref_base, indel_re)
 
-        chroms.append(chrom)
-        positions.append(int(pos))
-        As.append(counts['A'])
-        Cs.append(counts['C'])
-        Gs.append(counts['G'])
-        Ts.append(counts['T'])
+            chroms.append(chrom)
+            positions.append(int(pos))
+            As.append(counts['A'])
+            Cs.append(counts['C'])
+            Gs.append(counts['G'])
+            Ts.append(counts['T'])
+            if include_reference_base:
+                ref_base_bitmasks.append(encode_reference_base_bitmask(ref_base))
 
-        if len(chroms) >= batch_size:
-            flush_batch()
+            if len(chroms) >= batch_size:
+                flush_batch()
 
-    # Flush remaining data
-    flush_batch()
-
-    if writer:
+        # Flush remaining data
+        flush_batch()
+    finally:
         writer.close()
 
 def process_read_location(output_file:str, batch_size:int=10000)->None:

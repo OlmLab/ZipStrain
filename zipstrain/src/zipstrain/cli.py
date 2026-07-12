@@ -255,7 +255,13 @@ def sort_profile(input_profile, tmp_dir):
 @utilities.command("process_mpileup")
 @click.option('--batch-size', '-s', default=10000, help="Buffer size for processing stdin from samtools.")
 @click.option('--output-file', '-o', required=True, help="Location to save the output Parquet file.")
-def process_mpileup(batch_size, output_file):
+@click.option(
+    '--include-reference-base',
+    is_flag=True,
+    default=False,
+    help="Include a ref_base_bitmask column encoded from the mpileup reference base field.",
+)
+def process_mpileup(batch_size, output_file, include_reference_base):
     """
     Process mpileup files and save the results in a Parquet file.
 
@@ -264,7 +270,11 @@ def process_mpileup(batch_size, output_file):
     batch_bed (str): Path to the batch BED file.
     output_file (str): Path to save the output Parquet file.
     """
-    ut.process_mpileup_function(batch_size, output_file)
+    ut.process_mpileup_function(
+        batch_size,
+        output_file,
+        include_reference_base=include_reference_base,
+    )
     
 @utilities.command("make_bed")
 @click.option('--db-fasta-dir', '-d', required=True, help="Path to the database in fasta format.")
