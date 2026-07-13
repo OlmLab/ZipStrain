@@ -2,6 +2,13 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 0.11.3
+
+Compared with `0.11.2`:
+
+- Profiling: each profiling run now uses a private run-local reference FASTA path and waits for `samtools faidx` before launching parallel mpileup chunks, avoiding shared `.fai` races.
+- Docker: stabilized the Conda install step by using explicit strict `conda-forge`/`bioconda` channel order in a single solve.
+
 ## 0.11.2
 
 Compared with `0.11.1`:
@@ -9,7 +16,6 @@ Compared with `0.11.1`:
 - Nextflow: `mode=profile` can now reuse an existing profiling asset bundle instead of regenerating it, and profiling read filters are forwarded through the pipeline.
 - Nextflow: precomputed profiling assets no longer require `genome_lengths.parquet`, because the profiling tasks do not consume it.
 - Profiling: replaced asyncio subprocess orchestration with thread-pooled synchronous subprocess pipelines for raw mpileup/read-location chunk generation before CPU-heavy postprocessing begins.
-- Profiling: each profiling run now uses a private run-local reference FASTA path and waits for `samtools faidx` before launching parallel mpileup chunks, avoiding shared `.fai` races.
 
 ## 0.11.1
 
