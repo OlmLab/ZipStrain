@@ -346,6 +346,11 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
     def _fake_run_profile_shell_pipeline(command: str, *, cwd: Path, output_file: Path | None = None, **kwargs):
         if observed_commands is not None:
             observed_commands.append(command)
+        if command.startswith("samtools faidx"):
+            assert output_file is not None
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text("chr1\t3\t6\t3\t4\nchr2\t3\t16\t3\t4\n")
+            return
         if "samtools mpileup" in command:
             has_reference_fasta = re.search(r"-f\s+([^\s]+)", command) is not None
             observed_reference_flags.append(has_reference_fasta)
@@ -416,6 +421,12 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert observed_commands
     assert observed_reference_flags
     assert all(observed_reference_flags)
+    faidx_commands = [cmd for cmd in observed_commands if cmd.startswith("samtools faidx")]
+    mpileup_commands = [cmd for cmd in observed_commands if "samtools mpileup" in cmd]
+    assert len(faidx_commands) == 1
+    assert observed_commands[0].startswith("samtools faidx")
+    assert all(str(reference_fasta) not in cmd for cmd in mpileup_commands)
+    assert all(f"-f {tmp_path / 'tmp' / reference_fasta.name}" in cmd for cmd in mpileup_commands)
     assert prof.schema["gene"] == pl.Utf8
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()

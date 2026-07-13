@@ -136,6 +136,34 @@ def _run_profile_shell_pipeline(
             raise Exception(f"Command failed with error: {details}")
 
 
+def _private_profile_reference_fasta(
+    reference_fasta: pathlib.Path | None,
+    tmp_dir: pathlib.Path,
+) -> pathlib.Path | None:
+    if reference_fasta is None:
+        return None
+
+    tmp_dir = tmp_dir.expanduser().resolve()
+    source = reference_fasta.expanduser().resolve()
+    private_reference = tmp_dir / source.name
+    private_index = pathlib.Path(f"{private_reference}.fai")
+    if private_reference.exists() or private_reference.is_symlink():
+        private_reference.unlink()
+    private_index.unlink(missing_ok=True)
+
+    try:
+        private_reference.symlink_to(source)
+    except OSError:
+        shutil.copy2(source, private_reference)
+
+    _run_profile_shell_pipeline(
+        _shell_join(["samtools", "faidx", private_reference]),
+        cwd=tmp_dir,
+        output_file=private_index,
+    )
+    return private_reference
+
+
 def _validate_profile_filter_settings(
     *,
     min_mapq: int,
@@ -1236,7 +1264,9 @@ def profile_bam_in_chunks(
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir/"tmp").mkdir(exist_ok=True)
+    tmp_dir = output_dir / "tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    mpileup_reference_fasta = _private_profile_reference_fasta(reference_fasta, tmp_dir)
     filtered_bam_file: pathlib.Path | None = None
     effective_bam_file = bam_file
     if _profile_alignment_filters_require_prefilter(
@@ -1244,7 +1274,7 @@ def profile_bam_in_chunks(
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
     ):
-        filtered_bam_file = output_dir / "tmp" / f"{bam_file.stem}.filtered.bam"
+        filtered_bam_file = tmp_dir / f"{bam_file.stem}.filtered.bam"
         _filter_bam_for_profiling(
             input_bam=bam_file,
             output_bam=filtered_bam_file,
@@ -1271,16 +1301,16 @@ def profile_bam_in_chunks(
     bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
     for chunk_id, bed_file in enumerate(bed_chunks):
-        bed_file.sink_csv(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
-        bed_chunk_files.append(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed")
+        bed_file.sink_csv(tmp_dir/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
+        bed_chunk_files.append(tmp_dir/f"bed_chunk_{chunk_id}.bed")
     with ThreadPoolExecutor(max_workers=max(1, int(max_concurrency))) as executor:
         raw_futures = [
             executor.submit(
                 _generate_profile_raw_chunk_task,
                 bed_file=bed_chunk_file,
                 bam_file=effective_bam_file,
-                reference_fasta=reference_fasta,
-                output_dir=output_dir / "tmp",
+                reference_fasta=mpileup_reference_fasta,
+                output_dir=tmp_dir,
                 chunk_id=chunk_id,
                 min_mapq=min_mapq,
                 min_baseq=min_baseq,
@@ -1293,20 +1323,20 @@ def profile_bam_in_chunks(
     for chunk_id in range(len(bed_chunk_files)):
         _postprocess_profile_raw_chunk(
             bam_file=effective_bam_file,
-            reference_fasta=reference_fasta,
+            reference_fasta=mpileup_reference_fasta,
             scaffold_to_genome=stb,
             gene_range=gene_range_lf,
             null_model=null_model,
-            output_dir=output_dir / "tmp",
+            output_dir=tmp_dir,
             chunk_id=chunk_id,
         )
     pfs = [
         (
-            output_dir / "tmp" / f"{effective_bam_file.stem}_{chunk_id}.parquet",
-            output_dir / "tmp" / f"{effective_bam_file.stem}_read_locs_{chunk_id}.parquet",
+            tmp_dir / f"{effective_bam_file.stem}_{chunk_id}.parquet",
+            tmp_dir / f"{effective_bam_file.stem}_read_locs_{chunk_id}.parquet",
         )
         for chunk_id in range(len(bed_chunk_files))
-        if (output_dir / "tmp" / f"{effective_bam_file.stem}_{chunk_id}.parquet").exists()
+        if (tmp_dir / f"{effective_bam_file.stem}_{chunk_id}.parquet").exists()
     ]
 
     mpile_container: list[pl.LazyFrame] = []
@@ -1324,7 +1354,7 @@ def profile_bam_in_chunks(
         _write_sorted_profile_with_metadata(
             profile_lf=mpileup_df,
             output_file=output_dir / f"{bam_file.stem}_profile.parquet",
-            tmp_dir=output_dir / "tmp",
+            tmp_dir=tmp_dir,
             metadata=utils.profile_contract_metadata_from_values(profile_contract),
         )
         if gene_range_table_path is None:
@@ -1361,7 +1391,7 @@ def profile_bam_in_chunks(
         ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
     
     
-    shutil.rmtree(output_dir / "tmp", ignore_errors=True)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def profile_bam(
     bed_file:str,
