@@ -373,8 +373,12 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
         def __init__(self, *, stdout_lines: list[bytes] | None = None, returncode: int = 0):
             self.returncode = returncode
             self.stdout = _FakeStdout(stdout_lines)
+            self.pid = -1
 
-        def wait(self):
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
             return self.returncode
 
     class _FakeCompleted:

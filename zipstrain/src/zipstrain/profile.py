@@ -12,6 +12,7 @@ from zipstrain import utils
 import asyncio
 import json
 import os
+import signal
 import re
 import shutil
 import duckdb
@@ -49,6 +50,21 @@ SAM_FLAG_PROPER_PAIR = 0x2
 SAM_FLAG_UNMAP = 0x4
 SAM_FLAG_MUNMAP = 0x8
 VCF_SNP_BASE_ORDER = ("A", "C", "G", "T")
+# Per-subprocess wall-clock ceiling for profiling shell-outs (samtools mpileup /
+# read-locs). A hung child is killed as a group so no orphaned processes linger.
+PROFILE_SUBPROCESS_TIMEOUT_SECONDS = 6 * 60 * 60
+
+
+def _kill_process_group(proc: "subprocess.Popen") -> None:
+    """SIGKILL the whole process group of ``proc`` (launched with start_new_session).
+
+    Used to clean up a hung/timed-out samtools pipeline together with any children,
+    rather than leaving orphaned processes behind.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return
 
 
 def read_stb(stb_file) -> pl.LazyFrame:
@@ -660,9 +676,12 @@ def _stream_profile_mpileup_chunk_to_parquet(
 
     # stderr goes to a temp file (not a pipe) so it can never fill a pipe buffer and
     # deadlock the stdout stream; it is only read back if samtools exits non-zero.
+    proc = None
     try:
         with tempfile.TemporaryFile() as errf:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf)
+            # start_new_session=True puts samtools in its own process group so it (and
+            # any children) can be killed together on timeout or error.
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, start_new_session=True)
             try:
                 for raw_line in proc.stdout:
                     line = raw_line.decode().strip()
@@ -685,13 +704,23 @@ def _stream_profile_mpileup_chunk_to_parquet(
                         flush_batch()
             finally:
                 proc.stdout.close()
-            if proc.wait() != 0:
+            try:
+                returncode = proc.wait(timeout=PROFILE_SUBPROCESS_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(proc)
+                raise Exception(
+                    f"samtools mpileup timed out after {PROFILE_SUBPROCESS_TIMEOUT_SECONDS} seconds"
+                )
+            if returncode != 0:
                 errf.seek(0)
                 err_text = errf.read().decode(errors="replace").strip()
                 raise Exception(f"Command failed with error: {err_text}")
             flush_batch()
             success = True
     finally:
+        # Ensure a hung/failed samtools process group never leaks past this chunk.
+        if proc is not None and proc.poll() is None:
+            _kill_process_group(proc)
         writer.close()
         if not success:
             output_parquet.unlink(missing_ok=True)
