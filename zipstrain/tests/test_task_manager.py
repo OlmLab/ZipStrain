@@ -560,6 +560,57 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani"
 
 
+def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path):
+    # Regression: the batched standard-compare path used to reject any
+    # --calculate value other than {"all", "ani"}, even though the per-pair
+    # single_compare_genome subprocess understands '+'/','-joined combos.
+    profile_1 = tmp_path / "sample_1.parquet"
+    profile_2 = tmp_path / "sample_2.parquet"
+    profile_1.write_text("dummy")
+    profile_2.write_text("dummy")
+
+    data = pl.DataFrame(
+        {
+            "sample_name_1": ["s1"],
+            "sample_name_2": ["s2"],
+            "profile_location_1": [str(profile_1)],
+            "profile_location_2": [str(profile_2)],
+        }
+    ).lazy()
+    config = database.GenomeComparisonConfig(
+        scope="all",
+        min_cov=5,
+        min_gene_compare_len=100,
+        stb_file_loc=None,
+    )
+    generator = task_manager.CompareTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        comp_config=config,
+        calculate="ani+ibs+identical_genes",
+    )
+
+    async def _collect():
+        out = []
+        async for chunk in generator.generate_tasks():
+            out.extend(chunk)
+        return out
+
+    tasks = asyncio.run(_collect())
+    assert len(tasks) == 1
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani+ibs+identical_genes"
+
+    with pytest.raises(ValueError):
+        task_manager.CompareTaskGenerator(
+            data=data,
+            yield_size=1,
+            container_engine=task_manager.LocalEngine(""),
+            comp_config=config,
+            calculate="ani+bogus",
+        )
+
+
 def test_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path):
     profile_1 = tmp_path / "sample_1.parquet"
     profile_2 = tmp_path / "sample_2.parquet"

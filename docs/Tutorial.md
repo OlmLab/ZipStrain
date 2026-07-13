@@ -38,8 +38,7 @@ Optionally, you may also have:
 - or a scaffold-relative gene range table
 
 If you need installation details first, see [installation](./installation.md).
-If you need pipeline-specific details, see [NextflowPipeline](./NextflowPipeline.md).
-If you want command-by-command help, see [cli](./cli.md).
+If you want command-by-command help (CLI reference and the Nextflow pipeline), see the [User Manual](./usermanual.md).
 
 ## Workflow Overview
 
@@ -351,31 +350,44 @@ ref_base_bitmask
 Depending on which command you use, the immediate inputs are:
 
 - one pair of profile parquets for `single_compare_genome`
-- a profile DB plus direct compare arguments for `zipstrain compare genomes`
+- a profile DB plus direct compare arguments for `zipstrain compare`
 - optionally an STB when you want the requested genome universe carried through explicitly
 
 ### Standard Route Outputs
 
-Genome-level standard comparison tables contain one row per `sample_1`, `sample_2`, `genome` combination.
+Both routes write a single genome-level table, `<run-dir>/all_comparisons.parquet` (plus a companion `.csv`), with one row per `sample_1`, `sample_2`, `genome` combination.
 
-When ANI is requested, the output columns include:
+Always present:
 
 - `sample_1`
 - `sample_2`
 - `genome`
+- `percent_compared` (added when a `genome_lengths.parquet` asset is discoverable)
+- `coverage_overlap` (added when per-sample `genome_stats` sit alongside the profiles)
+
+When ANI is requested (`ani`, in the default `all`):
+
 - `total_positions`
 - `share_allele_pos`
-- `genome_pop_ani`
+- `genome_pop_ani` (population ANI)
 
-When IBS is also requested, add:
+When conANI is requested (`conani`, in the default `all`; **standard method only**):
+
+- `share_consensus_pos`
+- `consensus_SNPs`
+- `genome_con_ani` (consensus ANI)
+
+When IBS is also requested:
 
 - `max_consecutive_length`
 
-When `identical_genes` is also requested, add:
+When `identical_genes` is also requested:
 
 - `shared_genes_count`
 - `identical_gene_count`
 - `perc_id_genes`
+
+See [expected output](./expected_output.md#zipstrain-compare) for the authoritative column-by-column reference.
 
 ### Single Pair Compare
 
@@ -397,7 +409,7 @@ For many standard comparisons, the direct profile-table workflow is still:
 
 1. build a profile DB
 2. optionally point at an existing comparison parquet
-3. run `zipstrain compare genomes`
+3. run `zipstrain compare`
 
 Example:
 
@@ -408,7 +420,7 @@ zipstrain utilities build-profile-db \
 ```
 
 ```bash
-zipstrain compare genomes \
+zipstrain compare \
   --profile-db profile_db.parquet \
   --scope all \
   --min-cov 5 \
@@ -643,14 +655,12 @@ Those parquets contain per-position nucleotide counts and annotation columns:
 
 Standard genome comparison outputs are parquet tables with one row per sample pair and genome.
 
-Core genome ANI columns:
+Core columns:
 
-- `sample_1`
-- `sample_2`
-- `genome`
-- `total_positions`
-- `share_allele_pos`
-- `genome_pop_ani`
+- `sample_1`, `sample_2`, `genome`
+- `total_positions`, `share_allele_pos`, `genome_pop_ani` (population ANI)
+- `share_consensus_pos`, `consensus_SNPs`, `genome_con_ani` (consensus ANI; from the `conani` calculation)
+- `percent_compared`, `coverage_overlap`
 
 Optional additional columns:
 
@@ -658,6 +668,8 @@ Optional additional columns:
 - `shared_genes_count`
 - `identical_gene_count`
 - `perc_id_genes` for identical-gene summaries
+
+The exact set of metric columns depends on `--calculate`. See [expected output](./expected_output.md#zipstrain-compare) for the full reference.
 
 ### Matrix Store Input
 
@@ -828,7 +840,7 @@ zipstrain utilities build-profile-db \
 ### 5. Run the standard compare
 
 ```bash
-zipstrain compare genomes \
+zipstrain compare \
   --profile-db outputs/profile_db.parquet \
   --scope all \
   --min-cov 5 \
@@ -1128,7 +1140,7 @@ This gives you the not-yet-completed sample pairs implied by the updated profile
 #### 3. Rerun standard compare
 
 ```bash
-zipstrain compare genomes \
+zipstrain compare \
   --profile-db outputs/profile_db.parquet \
   --comp-db-file outputs/standard_compare/genome_compare_results.parquet \
   --scope all \
@@ -1743,25 +1755,27 @@ Important:
 
 What it is:
 
-- the standard genome-level comparison output
+- the genome-level comparison output, `all_comparisons.parquet`
 
 Core columns:
 
 ```text
-genome | total_positions | share_allele_pos | sample_1 | sample_2
+sample_1 | sample_2 | genome | percent_compared | coverage_overlap
 ```
 
-Common additional columns:
+Common additional columns (depending on `--calculate`):
 
 ```text
-genome_pop_ani | max_consecutive_length | shared_genes_count | identical_gene_count | perc_id_genes
+total_positions | share_allele_pos | genome_pop_ani | share_consensus_pos | consensus_SNPs | genome_con_ani | max_consecutive_length | shared_genes_count | identical_gene_count | perc_id_genes
 ```
 
 Important:
 
 - the exact set of metric columns depends on `--calculate`
+- consensus (`conani`) columns are produced by the standard method only
 - sample pairs are represented by `sample_1` and `sample_2`
 - one row usually corresponds to one sample-pair/genome result
+- see [expected output](./expected_output.md#zipstrain-compare) for the authoritative reference
 
 ### Gene Comparison Parquet
 
@@ -1803,7 +1817,7 @@ zipstrain utilities matrix-compare-export \
 
 ## Further Reading
 
-- [CLI Reference](./cli.md)
+- [User Manual](./usermanual.md) — full CLI reference and the Nextflow pipeline
 - [Installation](./installation.md)
-- [Nextflow Pipeline](./NextflowPipeline.md)
+- [Expected output](./expected_output.md)
 - [API Reference](./api.md)
