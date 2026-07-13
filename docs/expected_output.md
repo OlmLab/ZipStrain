@@ -40,7 +40,7 @@ One row per genome: how well it was covered, whether it is present, and its iden
 | `ref_ani` | **Population** ANI of the sample to the reference genome (%) — a position counts as matching if the reference allele is present among the reads |
 | `conANI_reference` | **Consensus** ANI to the reference (%) — a position counts as matching only if the reference base is the sample's consensus (majority) base. Lower than `ref_ani` at polymorphic sites. Both are reported only when `--reference-fasta` is used |
 | `SNS_count`, `SNV_count` | Number of fixed substitutions (`SNS`) and polymorphic sites (`SNV`+`con_SNV`+`pop_SNV`) — the per-genome totals of the SNV table. Reference route only |
-| `presence` | Automated `present` / `absent` call (see [Tutorial #3](./Tutorial.md)) |
+| `presence` | Automated `present` / `absent` call (see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks)) |
 | `genome_taxonomy` | GTDB lineage — **Sylph route only** |
 
 Example (one present genome):
@@ -150,4 +150,4 @@ sample_1     sample_2     genome           total_positions  share_allele_pos  ge
 SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           100.0           768237
 ```
 
-**Interpreting popANI.** `genome_pop_ani` near **100.0** means the same strain is present in both samples. A common same-strain threshold is **≥ 99.999%** — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses *population* ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see [Tutorial #3](./Tutorial.md) for the popANI-vs-consensus-ANI discussion.
+**Interpreting popANI.** `genome_pop_ani` near **100.0** means the same strain is present in both samples. A common same-strain threshold is **≥ 99.999%** — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses *population* ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks) for the popANI-vs-consensus-ANI discussion.
