@@ -2679,3 +2679,47 @@ def test_add_percent_compared_and_coverage_overlap(tmp_path):
     assert out["percent_compared"][0] == pytest.approx(0.5)
     # coverage_overlap = 500 / (800 + 600 - 500) = 500/900
     assert out["coverage_overlap"][0] == pytest.approx(500 / 900)
+
+
+def test_get_snp_reference_cli_vcf_includes_subconsensus_snv_sites(tmp_path):
+    """`--fmt vcf` emits any site with a non-reference allele, including SNV sites
+    where the reference is still the consensus (the superset definition)."""
+    from zipstrain import utils
+
+    # pos 1: ref=A, counts A=1 C=7 -> consensus C (differs from ref)  [con != ref]
+    # pos 2: ref=A, counts A=8 C=2 -> consensus A (== ref), minor C   [SNV: con == ref]
+    profile_path = tmp_path / "profile_subconsensus.parquet"
+    pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1"],
+            "genome": ["g", "g"],
+            "gene": ["NA", "NA"],
+            "pos": [1, 2],
+            "A": [1, 8],
+            "C": [7, 2],
+            "G": [0, 0],
+            "T": [0, 0],
+            utils.REF_BASE_BITMASK_COLUMN: [1, 1],
+        }
+    ).write_parquet(profile_path)
+    output_path = tmp_path / "reference_snps.vcf"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities", "get-snp-reference",
+            "--profile-file", str(profile_path),
+            "--min-cov", "5",
+            "--fmt", "vcf",
+            "--output-file", str(output_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    positions = [
+        line.split("\t")[1]
+        for line in output_path.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    # Superset: both the consensus-differs site (1) AND the sub-consensus SNV site (2).
+    assert positions == ["1", "2"], positions
