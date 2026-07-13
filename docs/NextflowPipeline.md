@@ -1,0 +1,331 @@
+# Nextflow Pipeline for ZipStrain
+
+This page reflects the current `zipstrain.nf` workflow in this repository.
+
+Important scope note:
+
+- the standard profile-based compare workflows are available in Nextflow
+- the newer matrix-store workflow is currently CLI-driven and is documented in [Tutorial](./Tutorial.md) and [CLI](./cli.md)
+- if you want a worked standard example, the [Tutorial](./Tutorial.md) now includes both a Python/CLI route and a Nextflow route
+
+## What the Pipeline Supports
+
+- Read mapping with Bowtie2 (`map_reads`)
+- Profile generation from BAM files (`profile`)
+- End-to-end SRA to profile (`from_sra_to_profile`)
+- Pairwise genome comparison across profiles (`compare_genomes`)
+- Pairwise gene comparison across profiles (`compare_genes`)
+
+## Running Pattern
+
+```bash
+nextflow run zipstrain.nf \
+  --mode <mode> \
+  --input_table <path/to/input.csv> \
+  --output_dir <path/to/output_dir> \
+  -c conf.config \
+  -profile <docker|alpine|gutbot|blanca|fiji> \
+  -resume
+```
+
+`conf.config` already defines resources for the current process set and includes example execution profiles.
+The `fiji` profile is configured for Slurm plus Singularity, which is useful on clusters that provide Singularity rather than Apptainer.
+Review the container paths or tags in your config before running on a new system.
+
+## Key Pipeline Parameters
+
+- `--mode`: `map_reads`, `profile`, `from_sra_to_profile`, `compare_genomes`, `compare_genes`
+- `--input_type`: depends on mode (`local`, `sra`, `profile_table`, `pair_table`)
+- `--parallel_mode`: `single` or `batched` for comparison workflows
+- `--batch_size`: number of pairs per batch when `--parallel_mode batched`
+- `--batch_compare_n_parallel`: parallel jobs inside each batched comparison task
+- `--compare_genome_scope`: genome scope for genome comparisons (`all` or genome ID)
+- `--compare_genome_calculate`: genome metrics to compute (`all` or `ani`)
+- `--compare_gene_scope`: gene scope for gene comparisons (`all:all`, `<genome>:all`, `all:<gene>`, `<genome>:<gene>`)
+- `--compare_ani_method`: ANI method forwarded to compare tasks (`popani`, `conani`, `cosani_<threshold>`)
+- `--compare_engine`: comparison engine for standard compare tasks (`polars` or `duckdb`). Default: `polars`
+- `--compare_duckdb_memory_limit`: forwarded to single compare commands
+- `--compare_calculate`: genome metrics for genome compare (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations). Default: `all`
+- `--bowtie2_sensitivity`: optional Bowtie 2 sensitivity preset for mapping tasks. Examples: `sensitive`, `very-sensitive`, `fast`. Leave unset to keep Bowtie 2's current default behavior.
+- `--min_mapq`: minimum mapping quality forwarded to profiling tasks. Default: `0`
+- `--min_baseq`: minimum base quality forwarded to profiling tasks. Default: `13`
+- `--min_read_ani`: optional minimum read ANI proxy forwarded to profiling tasks
+- `--read_inclusion`: read eligibility mode forwarded to profiling tasks (`proper-pairs`, `paired`, `all-mapped`)
+
+## 1) Map Reads (`mode=map_reads`)
+
+### Input Table (`--input_type local`)
+
+Paired-end:
+
+```csv
+sample_name,reads1,reads2
+S1,/data/S1_R1.fastq.gz,/data/S1_R2.fastq.gz
+S2,/data/S2_R1.fastq.gz,/data/S2_R2.fastq.gz
+```
+
+Single-end:
+
+```csv
+sample_name,reads1
+S1,/data/S1.fastq.gz
+S2,/data/S2.fastq.gz
+```
+
+### Input Table (`--input_type sra`)
+
+```csv
+Run
+SRR12345678
+SRR12345679
+```
+
+### A) Use Existing Reference Genome
+
+```bash
+nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --reference_genome reference_genomes.fna \
+  --stb reference_genomes.stb \
+  --output_dir out_map \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+Optional:
+
+- `--index_files` to reuse existing Bowtie2 index files
+- `--bowtie2_non_competitive_mapping true` to pass `-a` to Bowtie2
+- `--bowtie2_sensitivity very-sensitive` to forward `--very-sensitive` to Bowtie2
+
+### B) Build Reference from Sylph Automatically
+
+If `--reference_genome` is not provided, the pipeline does:
+
+1. per-sample `sylph profile`
+2. merge all per-sample Sylph abundance tables
+3. `zipstrain utilities build-genome-db --tool sylph ...`
+4. `prodigal` gene prediction on the generated reference FASTA
+5. Bowtie2 indexing
+6. mapping
+
+```bash
+nextflow run zipstrain.nf \
+  --mode map_reads \
+  --input_type local \
+  --input_table reads.csv \
+  --output_dir out_map \
+  --genome_db_cache_dir genome_cache \
+  --sylph_db /path/to/custom.syldb \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+If `--sylph_db` is omitted, `--sylph_db_link` is used for download.
+
+### Map Outputs
+
+- BAM files: `<output_dir>/*.bam`
+- Sylph tables: `<output_dir>/sylph_abundance/`
+- Built reference bundle (when auto-built): `<output_dir>/db_from_sylph/`
+
+## 2) Generate Profiles from BAM (`mode=profile`)
+
+### Input Table
+
+```csv
+sample_name,bamfile
+S1,/data/S1.bam
+S2,/data/S2.bam
+```
+
+### Command A: Build Profiling Assets from a Reference
+
+```bash
+nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table bams.csv \
+  --reference_genome reference_genomes.fna \
+  --gene_file reference_genomes_gene.fasta \
+  --stb reference_genomes.stb \
+  --output_dir out_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+This path regenerates:
+
+- `genomes_bed_file.bed`
+- `gene_range_table.tsv`
+- `genome_lengths.parquet`
+- `null_model.parquet`
+- `profiling_contract.json`
+
+from `--reference_genome`, `--gene_file` (optional), and `--stb`.
+
+### Command B: Reuse an Existing Preprofile Asset Bundle
+
+If you already have the outputs of `zipstrain utilities prepare_profiling`, you can point Nextflow at them directly instead of rebuilding them:
+
+```bash
+nextflow run zipstrain.nf \
+  --mode profile \
+  --input_table phase2_bams.csv \
+  --stb zipstrain_preprofile/reference_genomes.stb \
+  --null_model zipstrain_preprofile/null_model.parquet \
+  --gene_range_table zipstrain_preprofile/gene_range_table.tsv \
+  --profiling_contract zipstrain_preprofile/profiling_contract.json \
+  --bed_file zipstrain_preprofile/genomes_bed_file.bed \
+  --output_dir phase2_profile_run \
+  --min_baseq 20 \
+  --min_read_ani 0.95 \
+  -c conf.config \
+  -profile blanca \
+  -resume
+```
+
+Notes:
+
+- `--reference_genome` is optional in this mode.
+- if you omit `--reference_genome`, profiles are generated without `ref_base_bitmask`, and gene/genome stat tables do not include `ref_ani`
+- if you provide `--reference_genome` in addition to the precomputed asset bundle, Nextflow forwards it to `profile-single`, so the outputs include `ref_base_bitmask` and `ref_ani`
+
+### Profile Outputs
+
+- `<output_dir>/*_profile.parquet`
+- `<output_dir>/*_genome_stats.parquet`
+- `<output_dir>/*_gene_stats.parquet`
+
+You can also forward the same profiling read filters used by the CLI:
+
+```bash
+--min_mapq 0 \
+--min_baseq 20 \
+--min_read_ani 0.95 \
+--read_inclusion all-mapped
+```
+
+If mapping is part of your workflow, you can optionally forward a Bowtie 2 sensitivity preset:
+
+```bash
+--bowtie2_sensitivity sensitive
+```
+
+The pipeline normalizes values like `sensitive` to `--sensitive`. If this parameter is unset, the workflow leaves the Bowtie 2 sensitivity unset as well, which preserves the current behavior.
+
+Because the current Nextflow profiling modes pass a reference FASTA into profiling, these outputs normally include the reference-aware fields:
+
+- profiles include `ref_base_bitmask`
+- gene/genome stat tables include `ref_ani`
+
+## 3) End-to-End SRA to Profile (`mode=from_sra_to_profile`)
+
+### Input Table
+
+```csv
+Run
+SRR12345678
+SRR12345679
+```
+
+### Command
+
+```bash
+nextflow run zipstrain.nf \
+  --mode from_sra_to_profile \
+  --input_table sra.csv \
+  --reference_genome reference_genomes.fna \
+  --gene_file reference_genomes_gene.fasta \
+  --stb reference_genomes.stb \
+  --output_dir out_sra_profile \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+### Outputs
+
+- `<output_dir>/profiles/*_profile.parquet`
+- `<output_dir>/profiles/*_genome_stats.parquet`
+- `<output_dir>/profiles/*_gene_stats.parquet`
+
+## 4) Compare Genomes (`mode=compare_genomes`)
+
+### Input Option A: All-vs-All from Profile List (`--input_type profile_table`)
+
+```csv
+sample_name,profile_location
+S1,/profiles/S1_profile.parquet
+S2,/profiles/S2_profile.parquet
+S3,/profiles/S3_profile.parquet
+```
+
+### Input Option B: Explicit Pairs (`--input_type pair_table`)
+
+```csv
+sample_name_1,sample_name_2,profile_location_1,profile_location_2
+S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
+S1,S3,/profiles/S1_profile.parquet,/profiles/S3_profile.parquet
+```
+
+### Command
+
+```bash
+nextflow run zipstrain.nf \
+  --mode compare_genomes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference_genomes.stb \
+  --compare_engine polars \
+  --compare_genome_scope all \
+  --compare_calculate ani+ibs+identical_genes \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --output_dir out_compare_genomes \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+## 5) Compare Genes (`mode=compare_genes`)
+
+Input-table formats are the same as genome compare (`profile_table` or `pair_table`).
+
+### Command
+
+```bash
+nextflow run zipstrain.nf \
+  --mode compare_genes \
+  --input_type profile_table \
+  --input_table profiles.csv \
+  --stb reference_genomes.stb \
+  --compare_engine polars \
+  --compare_gene_scope all:all \
+  --compare_ani_method popani \
+  --parallel_mode batched \
+  --batch_size 1000 \
+  --batch_compare_n_parallel 4 \
+  --output_dir out_compare_genes \
+  -c conf.config \
+  -profile docker \
+  -resume
+```
+
+## Comparison Outputs
+
+- Final merged table: `<output_dir>/merged_comparisons.parquet`
+- Intermediate batched outputs (when `parallel_mode=batched`): `<output_dir>/batch_comparisons/`
+
+## Important Notes
+
+- For `--input_type profile_table`, use `sample_name` and `profile_location`.
+- For `--input_type pair_table`, use `sample_name_1`, `sample_name_2`, `profile_location_1`, and `profile_location_2`.
+- `--compare_duckdb_memory_limit` is only relevant when `--compare_engine duckdb`.
+- The current Nextflow profiling workflow uses the default profiling read filters unless you edit `zipstrain.nf` directly.
+- For auto-built references, genome selection comes from the merged Sylph abundance table through `zipstrain utilities build-genome-db`.

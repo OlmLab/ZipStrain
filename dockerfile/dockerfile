@@ -9,9 +9,23 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /opt
 
-RUN conda config --add channels conda-forge \
-    && conda install -y python=3.12 pip parallel pigz wget \
-    && conda install -y -c bioconda samtools bowtie2 prodigal sylph \
+RUN printf '%s\n' \
+        'channels:' \
+        '  - conda-forge' \
+        '  - bioconda' \
+        'channel_priority: strict' \
+    > /root/.condarc
+
+RUN conda install -y \
+        python=3.12 \
+        pip \
+        parallel \
+        pigz \
+        wget \
+        samtools \
+        bowtie2 \
+        prodigal \
+        sylph \
     && conda clean -afy
 
 COPY zipstrain ${ZIPSTRAIN_PROJECT_DIR}

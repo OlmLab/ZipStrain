@@ -48,6 +48,7 @@ SAM_FLAG_PAIRED = 0x1
 SAM_FLAG_PROPER_PAIR = 0x2
 SAM_FLAG_UNMAP = 0x4
 SAM_FLAG_MUNMAP = 0x8
+VCF_SNP_BASE_ORDER = ("A", "C", "G", "T")
 
 
 def read_stb(stb_file) -> pl.LazyFrame:
@@ -1088,6 +1089,99 @@ def get_reference_snps(
     )
     return prepared.select(SNV_TABLE_COLUMNS).sort(["chrom", "pos"])
 
+
+
+def _reference_snp_alt_bases(row: dict[str, object], ref_base: str) -> list[str]:
+    return [
+        base
+        for base in VCF_SNP_BASE_ORDER
+        if base != ref_base and int(row[base]) > 0
+    ]
+
+
+def _write_reference_snps_vcf_from_parquet(
+    *,
+    snp_parquet: pathlib.Path,
+    output_file: pathlib.Path,
+    min_cov: int,
+) -> None:
+    parquet_file = pq.ParquetFile(snp_parquet)
+    with output_file.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("##fileformat=VCFv4.3\n")
+        handle.write("##source=zipstrain get-snp-reference\n")
+        handle.write(f"##zipstrain_min_cov={min_cov}\n")
+        handle.write(
+            '##FILTER=<ID=PASS,Description="Site passes ZipStrain reference SNP filters">\n'
+        )
+        handle.write(
+            '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total adjusted coverage at the site">\n'
+        )
+        handle.write(
+            '##INFO=<ID=ACGT,Number=4,Type=Integer,Description="Adjusted A,C,G,T counts in the profile row">\n'
+        )
+        handle.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        for batch in parquet_file.iter_batches():
+            for row in pl.from_arrow(batch).iter_rows(named=True):
+                ref_base = utils.decode_reference_base_bitmask(row[utils.REF_BASE_BITMASK_COLUMN])
+                if ref_base is None:
+                    raise ValueError(
+                        "Reference SNP VCF export encountered an unknown ref_base_bitmask value."
+                    )
+                alt_bases = _reference_snp_alt_bases(row, ref_base)
+                if not alt_bases:
+                    raise ValueError(
+                        "Reference SNP VCF export encountered a row without alternate alleles."
+                    )
+                dp = sum(int(row[base]) for base in VCF_SNP_BASE_ORDER)
+                info = (
+                    f"DP={dp};ACGT="
+                    f"{int(row['A'])},{int(row['C'])},{int(row['G'])},{int(row['T'])}"
+                )
+                handle.write(
+                    "\t".join(
+                        [
+                            str(row["chrom"]),
+                            str(int(row["pos"])),
+                            ".",
+                            ref_base,
+                            ",".join(alt_bases),
+                            ".",
+                            "PASS",
+                            info,
+                        ]
+                    )
+                    + "\n"
+                )
+
+
+def write_reference_snps(
+    profile: pl.LazyFrame,
+    *,
+    output_file: str | pathlib.Path,
+    min_cov: int = 5,
+    fmt: str = "parquet",
+) -> pathlib.Path:
+    output_path = pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    snps = get_reference_snps(profile, min_cov=min_cov)
+    if fmt == "parquet":
+        snps.sink_parquet(output_path, compression="zstd")
+        return output_path
+    if fmt != "vcf":
+        raise ValueError("fmt must be one of: parquet, vcf")
+
+    with tempfile.TemporaryDirectory(prefix=f"{output_path.stem}.snps.", dir=output_path.parent) as work_dir_str:
+        work_dir = pathlib.Path(work_dir_str)
+        snp_parquet = work_dir / "reference_snps.parquet"
+        rendered_vcf = work_dir / output_path.name
+        snps.sink_parquet(snp_parquet, compression="zstd")
+        _write_reference_snps_vcf_from_parquet(
+            snp_parquet=snp_parquet,
+            output_file=rendered_vcf,
+            min_cov=min_cov,
+        )
+        os.replace(rendered_vcf, output_path)
+    return output_path
 
 
 def _profile_chunk_task(

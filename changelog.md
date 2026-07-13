@@ -2,6 +2,20 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 0.11.3
+
+Compared with `0.11.2`:
+
+- Profiling: each profiling run now uses a private run-local reference FASTA path and waits for `samtools faidx` before launching parallel mpileup chunks, avoiding shared `.fai` races.
+- Docker: stabilized the Conda install step by using explicit strict `conda-forge`/`bioconda` channel order in a single solve.
+
+## 0.11.2
+
+Compared with `0.11.1`:
+
+- Profiling: replaced asyncio subprocess orchestration with thread-pooled synchronous subprocess pipelines for raw mpileup/read-location chunk generation before CPU-heavy postprocessing begins.
+- Different linkage method support for vizualization module
+
 ## 0.11.1
 
 Compared with `0.11.0`:
@@ -10,6 +24,8 @@ Compared with `0.11.0`:
 - Visualization: added peak summarization for silhouette curves, including candidate peaks and best-peak selection.
 - Visualization: kept `get_silhouette_plot` as a convenience wrapper around the new compute/plot pair.
 - Matrix comparison: reverted the IBS torch path to the 0.11.0 behavior while keeping the visualization split/peak work.
+- Reference SNP export: `zipstrain utilities get-snp-reference` can now emit either profile-like parquet or site-only VCF output.
+- Visualization: clustering helpers now accept a configurable hierarchical linkage method while keeping `average` as the default.
 
 ## 0.11.0
 
