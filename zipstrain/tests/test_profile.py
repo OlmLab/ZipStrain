@@ -265,6 +265,32 @@ def test_profile_filter_helpers_handle_read_inclusion_and_read_ani():
         min_read_ani=0.97,
         read_inclusion=profile.READ_INCLUSION_PAIRED,
     )
+    # 'paired' matches inStrain 'paired_only': a paired read whose mate maps to the
+    # SAME scaffold (RNEXT == "=") is kept...
+    assert profile._sam_alignment_passes_profile_filters(
+        flag=profile.SAM_FLAG_PAIRED,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+        rname="chr1",
+        rnext="=",
+    )
+    # ...while a paired read whose mate maps to a DIFFERENT scaffold is dropped
+    # (these cross-scaffold pairs otherwise inflate coverage relative to inStrain).
+    assert not profile._sam_alignment_passes_profile_filters(
+        flag=profile.SAM_FLAG_PAIRED,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+        rname="chr1",
+        rnext="chr2",
+    )
     assert profile._sam_alignment_passes_profile_filters(
         flag=0,
         mapq=42,
@@ -329,44 +355,33 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
 
 
 def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_commands: list[str] | None = None):
-    observed_limits: list[int | None] = []
+    observed_mpileups: list[str] = []
     observed_reference_flags: list[bool] = []
 
-    class _FakeStream:
-        def __init__(self, *, lines: list[bytes] | None = None, blob: bytes = b""):
+    class _FakeStdout:
+        """Iterable/closeable stand-in for Popen.stdout (yields byte lines)."""
+        def __init__(self, lines: list[bytes] | None = None):
             self._lines = list(lines or [])
-            self._line_index = 0
-            self._blob = blob
 
-        async def readline(self):
-            if self._line_index >= len(self._lines):
-                return b""
-            line = self._lines[self._line_index]
-            self._line_index += 1
-            return line
+        def __iter__(self):
+            return iter(self._lines)
 
-        async def read(self):
-            if self._lines:
-                if self._line_index >= len(self._lines):
-                    return b""
-                remaining = b"".join(self._lines[self._line_index :])
-                self._line_index = len(self._lines)
-                return remaining
-            blob = self._blob
-            self._blob = b""
-            return blob
+        def close(self):
+            pass
 
-    class _FakeProc:
-        def __init__(self, *, stdout_lines: list[bytes] | None = None, stderr: bytes = b"", returncode: int = 0):
+    class _FakePopen:
+        def __init__(self, *, stdout_lines: list[bytes] | None = None, returncode: int = 0):
             self.returncode = returncode
-            self.stdout = _FakeStream(lines=stdout_lines)
-            self.stderr = _FakeStream(blob=stderr)
+            self.stdout = _FakeStdout(stdout_lines)
 
-        async def communicate(self):
-            return await self.stdout.read(), await self.stderr.read()
-
-        async def wait(self):
+        def wait(self):
             return self.returncode
+
+    class _FakeCompleted:
+        def __init__(self, *, returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
     def _read_scaffolds_from_bed(bed_path: Path) -> list[str]:
         return [line.strip().split("\t")[0] for line in bed_path.read_text().splitlines() if line.strip()]
@@ -398,27 +413,36 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
         depth = len(bases)
         return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
 
-    async def _fake_create_subprocess_shell(command: str, stdout=None, stderr=None, cwd=None, limit=None):
+    def _fake_popen(cmd, stdout=None, stderr=None, **kwargs):
+        # Profiling launches `samtools mpileup` via subprocess.Popen with a list argv.
+        cmd_list = list(cmd) if isinstance(cmd, (list, tuple)) else re.split(r"\s+", cmd)
+        command = " ".join(str(c) for c in cmd_list)
         if observed_commands is not None:
             observed_commands.append(command)
-        if command.startswith("samtools mpileup"):
-            observed_limits.append(limit)
-            has_reference_fasta = re.search(r"-f\s+([^\s]+)", command) is not None
+        if cmd_list[:2] == ["samtools", "mpileup"]:
+            observed_mpileups.append(command)
+            has_reference_fasta = "-f" in cmd_list
             observed_reference_flags.append(has_reference_fasta)
-            bed_match = re.search(r"-l\s+([^\s]+)", command)
-            assert bed_match is not None, command
-            scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
+            bed_path = cmd_list[cmd_list.index("-l") + 1]
+            scaffolds = _read_scaffolds_from_bed(Path(bed_path))
             lines = []
             for scaffold in scaffolds:
                 lines.extend(
                     _fake_mpileup_line(row, use_reference_matches=has_reference_fasta)
                     for row in _fake_mpileup_rows(scaffold)
                 )
-            return _FakeProc(stdout_lines=lines)
+            return _FakePopen(stdout_lines=lines)
+        raise AssertionError(f"Unexpected Popen command in fake subprocess: {command}")
+
+    def _fake_run(cmd, shell=False, stdout=None, stderr=None, **kwargs):
+        command = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
+        if observed_commands is not None:
+            observed_commands.append(command)
         if "process-read-locs" in command:
+            # samtools view | zipstrain utilities process-read-locs --output-file <abs>
             out_match = re.search(r"--output-file\s+([^\s]+)", command)
             assert out_match is not None, command
-            output_file = Path(cwd) / out_match.group(1)
+            output_file = Path(out_match.group(1))
             output_file.parent.mkdir(parents=True, exist_ok=True)
             bed_match = re.search(r"-L\s+([^\s]+)", command)
             assert bed_match is not None, command
@@ -427,10 +451,13 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
             for scaffold in scaffolds:
                 rows.extend(_fake_read_loc_rows(scaffold))
             pl.DataFrame(rows).write_parquet(output_file)
-            return _FakeProc()
-        raise AssertionError(f"Unexpected command in fake subprocess: {command}")
+            return _FakeCompleted()
+        if isinstance(cmd, (list, tuple)) and list(cmd[:2]) == ["samtools", "faidx"]:
+            return _FakeCompleted()
+        raise AssertionError(f"Unexpected run command in fake subprocess: {command}")
 
-    monkeypatch.setattr(profile.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
+    monkeypatch.setattr(profile.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(profile.subprocess, "run", _fake_run)
 
     # The default profiling filters now trigger a samtools prefilter pass; these
     # fake-subprocess tests don't exercise real samtools, so no-op it. Tests that
@@ -441,7 +468,7 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
         bai.write_text("")
 
     monkeypatch.setattr(profile, "_filter_bam_for_profiling", _noop_filter_bam_for_profiling)
-    return observed_limits, observed_reference_flags
+    return observed_mpileups, observed_reference_flags
 
 
 def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -475,7 +502,6 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert observed_limits
     assert observed_reference_flags
     assert all(observed_reference_flags)
-    assert all(limit == profile.MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES for limit in observed_limits)
     assert prof.schema["gene"] == pl.Utf8
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()

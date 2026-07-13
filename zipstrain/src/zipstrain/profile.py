@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import duckdb
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import subprocess
 import pyarrow as pa
@@ -39,8 +40,9 @@ PROFILE_READ_INCLUSION_CHOICES = (
     READ_INCLUSION_PAIRED,
     READ_INCLUSION_ALL_MAPPED,
 )
-# Default eligibility: exclude half-mapped/orphan paired reads (inStrain's
-# "non_discordant" intent) while keeping genuinely single-end reads.
+# Default eligibility: for paired reads keep only those whose mate maps to the same
+# scaffold (matching inStrain's default "paired_only": drops half-mapped orphans and
+# cross-scaffold pairs), while keeping genuinely single-end reads.
 PROFILE_READ_INCLUSION_DEFAULT = READ_INCLUSION_PAIRED
 SAM_FLAG_PAIRED = 0x1
 SAM_FLAG_PROPER_PAIR = 0x2
@@ -126,15 +128,25 @@ def _sam_alignment_passes_profile_filters(
     min_mapq: int,
     min_read_ani: float | None,
     read_inclusion: str,
+    rname: str = "*",
+    rnext: str = "*",
 ) -> bool:
     if flag & SAM_FLAG_UNMAP:
         return False
 
     if read_inclusion == READ_INCLUSION_PAIRED:
-        # Single-end reads (not flagged paired) can't be discordant, so keep
-        # them; for paired reads, drop half-mapped orphans (mate unmapped).
-        if (flag & SAM_FLAG_PAIRED) and (flag & SAM_FLAG_MUNMAP):
-            return False
+        # For paired reads, match inStrain's default 'paired_only': keep a read only if
+        # its mate is mapped to the SAME scaffold. This drops half-mapped orphans (mate
+        # unmapped) and pairs split across scaffolds, both of which otherwise inflate
+        # coverage relative to inStrain. Mate-same-scaffold is encoded in SAM as
+        # RNEXT == "=" (or RNEXT == RNAME when the mapper writes the name out).
+        # Genuinely single-end reads (not flagged paired) can't be part of a pair, so
+        # they are kept, matching this mode's single-end-safe behavior.
+        if flag & SAM_FLAG_PAIRED:
+            if flag & SAM_FLAG_MUNMAP:
+                return False
+            if rnext != "=" and rnext != rname:
+                return False
     elif read_inclusion == READ_INCLUSION_PROPER_PAIRS:
         if not (flag & SAM_FLAG_PAIRED):
             return False
@@ -221,6 +233,8 @@ def _filter_bam_for_profiling(
                 min_mapq=min_mapq,
                 min_read_ani=min_read_ani,
                 read_inclusion=read_inclusion,
+                rname=fields[2],
+                rnext=fields[6],
             ):
                 samtools_view_out.stdin.write(line)
     finally:
@@ -572,7 +586,7 @@ def _parquet_rows_are_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
     )
 
 
-async def _stream_profile_mpileup_chunk_to_parquet(
+def _stream_profile_mpileup_chunk_to_parquet(
     *,
     bed_file: pathlib.Path,
     bam_file: pathlib.Path,
@@ -582,7 +596,15 @@ async def _stream_profile_mpileup_chunk_to_parquet(
     min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
     min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
 ) -> None:
-    """Stream one mpileup chunk into a raw counts parquet file."""
+    """Stream one mpileup chunk into a raw counts parquet file.
+
+    Runs synchronously with ``subprocess`` (not asyncio subprocess): asyncio's default
+    ThreadedChildWatcher spawns one waitpid thread per child, and this profiler launches
+    many short-lived samtools processes per chunk, so under concurrent invocation those
+    threads accumulate (100s of them) and asyncio.run()'s shutdown deadlocks. ``subprocess``
+    reaps its own children via waitpid, so no child watcher is involved. Callers run this
+    in a ThreadPoolExecutor worker to keep chunk-level concurrency.
+    """
     include_reference_base = reference_fasta is not None
     cmd = [
         "samtools",
@@ -600,13 +622,6 @@ async def _stream_profile_mpileup_chunk_to_parquet(
         str(bed_file.absolute()),
         str(bam_file.absolute()),
     ])
-    proc = await asyncio.create_subprocess_shell(
-        " ".join(cmd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        limit=MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES,
-        cwd=output_parquet.parent,
-    )
 
     chroms: list[str] = []
     positions: list[int] = []
@@ -642,34 +657,39 @@ async def _stream_profile_mpileup_chunk_to_parquet(
         Ts.clear()
         ref_base_bitmasks.clear()
 
+    # stderr goes to a temp file (not a pipe) so it can never fill a pipe buffer and
+    # deadlock the stdout stream; it is only read back if samtools exits non-zero.
     try:
-        while True:
-            raw_line = await proc.stdout.readline()
-            if not raw_line:
-                break
-            line = raw_line.decode().strip()
-            if not line:
-                continue
-            fields = line.split("\t")
-            if len(fields) < 5:
-                continue
-            chrom, pos_str, ref_base, _, bases = fields[:5]
-            counts = utils.count_mpileup_bases(bases, ref_base, MPILEUP_INDEL_RE)
-            chroms.append(chrom)
-            positions.append(int(pos_str))
-            As.append(counts["A"])
-            Cs.append(counts["C"])
-            Gs.append(counts["G"])
-            Ts.append(counts["T"])
-            if include_reference_base:
-                ref_base_bitmasks.append(utils.encode_reference_base_bitmask(ref_base))
-            if len(chroms) >= batch_size:
-                flush_batch()
-        stderr = await proc.stderr.read()
-        if await proc.wait() != 0:
-            raise Exception(f"Command failed with error: {stderr.decode().strip()}")
-        flush_batch()
-        success = True
+        with tempfile.TemporaryFile() as errf:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf)
+            try:
+                for raw_line in proc.stdout:
+                    line = raw_line.decode().strip()
+                    if not line:
+                        continue
+                    fields = line.split("\t")
+                    if len(fields) < 5:
+                        continue
+                    chrom, pos_str, ref_base, _, bases = fields[:5]
+                    counts = utils.count_mpileup_bases(bases, ref_base, MPILEUP_INDEL_RE)
+                    chroms.append(chrom)
+                    positions.append(int(pos_str))
+                    As.append(counts["A"])
+                    Cs.append(counts["C"])
+                    Gs.append(counts["G"])
+                    Ts.append(counts["T"])
+                    if include_reference_base:
+                        ref_base_bitmasks.append(utils.encode_reference_base_bitmask(ref_base))
+                    if len(chroms) >= batch_size:
+                        flush_batch()
+            finally:
+                proc.stdout.close()
+            if proc.wait() != 0:
+                errf.seek(0)
+                err_text = errf.read().decode(errors="replace").strip()
+                raise Exception(f"Command failed with error: {err_text}")
+            flush_batch()
+            success = True
     finally:
         writer.close()
         if not success:
@@ -1070,7 +1090,7 @@ def get_reference_snps(
 
 
 
-async def _profile_chunk_task(
+def _profile_chunk_task(
     bed_file:pathlib.Path,
     bam_file:pathlib.Path,
     reference_fasta: pathlib.Path | None,
@@ -1088,7 +1108,7 @@ async def _profile_chunk_task(
     candidate_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.candidate.parquet"
     final_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.parquet"
 
-    await _stream_profile_mpileup_chunk_to_parquet(
+    _stream_profile_mpileup_chunk_to_parquet(
         bed_file=bed_file,
         bam_file=bam_file,
         reference_fasta=reference_fasta,
@@ -1122,47 +1142,36 @@ async def _profile_chunk_task(
             tmp_dir=output_dir,
         )
 
-    cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", f"{bam_file.stem}_read_locs_{chunk_id}.parquet"]
-    proc = await asyncio.create_subprocess_shell(
-                " ".join(cmd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=output_dir
-            )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise Exception(f"Command failed with error: {stderr.decode().strip()}")
+    # Synchronous shell pipe (samtools view | process-read-locs); absolute output path
+    # so cwd is not needed. Run via subprocess (not asyncio) to avoid the child-watcher
+    # thread accumulation described in _stream_profile_mpileup_chunk_to_parquet.
+    read_locs_out = (output_dir / f"{bam_file.stem}_read_locs_{chunk_id}.parquet").absolute()
+    cmd=["samtools", "view", "-F", "132", "-L", str(bed_file.absolute()), str(bam_file.absolute()), "|", "zipstrain", "utilities", "process-read-locs", "--output-file", str(read_locs_out)]
+    result = subprocess.run(
+        " ".join(cmd),
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise Exception(f"Command failed with error: {result.stderr.decode().strip()}")
 
-async def _run_profile_chunk_with_semaphore(
-    semaphore: asyncio.Semaphore,
-    *,
-    bed_file: pathlib.Path,
-    bam_file: pathlib.Path,
-    reference_fasta: pathlib.Path | None,
-    scaffold_to_genome: pl.LazyFrame,
-    gene_range: pl.LazyFrame,
-    null_model: pl.LazyFrame,
-    output_dir: pathlib.Path,
-    chunk_id: int,
-    min_mapq: int,
-    min_baseq: int,
-) -> None:
-    """Bound chunk-level profiling concurrency."""
-    async with semaphore:
-        await _profile_chunk_task(
-            bed_file=bed_file,
-            bam_file=bam_file,
-            reference_fasta=reference_fasta,
-            scaffold_to_genome=scaffold_to_genome,
-            gene_range=gene_range,
-            null_model=null_model,
-            output_dir=output_dir,
-            chunk_id=chunk_id,
-            min_mapq=min_mapq,
-            min_baseq=min_baseq,
-        )
+def _ensure_faidx(reference_fasta: pathlib.Path) -> None:
+    """Create <reference_fasta>.fai once (idempotent) so concurrent chunk mpileups
+    don't race to build it. No cwd is passed so subprocess can use posix_spawn."""
+    fai = reference_fasta.with_name(reference_fasta.name + ".fai")
+    if fai.exists():
+        return
+    result = subprocess.run(
+        ["samtools", "faidx", str(reference_fasta.absolute())],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0 and not fai.exists():
+        raise Exception(f"samtools faidx failed: {result.stderr.decode().strip()}")
 
-async def profile_bam_in_chunks(
+
+def profile_bam_in_chunks(
     bed_file:str,
     bam_file:str,
     reference_fasta: Optional[str],
@@ -1243,23 +1252,36 @@ async def profile_bam_in_chunks(
     for chunk_id, bed_file in enumerate(bed_chunks):
         bed_file.sink_csv(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed",include_header=False,separator="\t")
         bed_chunk_files.append(output_dir/"tmp"/f"bed_chunk_{chunk_id}.bed")
-    tasks = []
-    semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
-    for chunk_id, bed_chunk_file in enumerate(bed_chunk_files):
-        tasks.append(_run_profile_chunk_with_semaphore(
-            semaphore,
-            bed_file=bed_chunk_file,
-            bam_file=effective_bam_file,
-            reference_fasta=reference_fasta,
-            scaffold_to_genome=stb,
-            gene_range=gene_range_lf,
-            null_model=null_model,
-            output_dir=output_dir/"tmp",
-            chunk_id=chunk_id,
-            min_mapq=min_mapq,
-            min_baseq=min_baseq,
-        ))
-    await asyncio.gather(*tasks) 
+
+    # Build the FASTA index once up front. Otherwise the per-chunk samtools mpileup
+    # processes race to create <reference>.fai concurrently and corrupt it.
+    if reference_fasta is not None:
+        _ensure_faidx(reference_fasta)
+
+    # Run chunks in a thread pool bounded by max_concurrency. Each chunk task is
+    # synchronous and manages its own subprocesses via `subprocess` (which reaps its
+    # own children); this deliberately avoids asyncio subprocess, whose default
+    # ThreadedChildWatcher spawns a waitpid thread per child and deadlocks
+    # asyncio.run()'s shutdown once hundreds accumulate under concurrent invocation.
+    with ThreadPoolExecutor(max_workers=max(1, int(max_concurrency))) as executor:
+        futures = [
+            executor.submit(
+                _profile_chunk_task,
+                bed_file=bed_chunk_file,
+                bam_file=effective_bam_file,
+                reference_fasta=reference_fasta,
+                scaffold_to_genome=stb,
+                gene_range=gene_range_lf,
+                null_model=null_model,
+                output_dir=output_dir/"tmp",
+                chunk_id=chunk_id,
+                min_mapq=min_mapq,
+                min_baseq=min_baseq,
+            )
+            for chunk_id, bed_chunk_file in enumerate(bed_chunk_files)
+        ]
+        for future in futures:
+            future.result()
     pfs=[(output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.parquet", output_dir/"tmp"/f"{effective_bam_file.stem}_read_locs_{chunk_id}.parquet" ) for chunk_id in range(len(bed_chunk_files)) if (output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.parquet").exists()]
 
     mpile_container: list[pl.LazyFrame] = []
@@ -1345,7 +1367,7 @@ def profile_bam(
     num_chunks (int): Number of BED chunks to create.
     max_concurrency (int): Maximum number of chunks to process concurrently.
     """
-    asyncio.run(profile_bam_in_chunks(
+    profile_bam_in_chunks(
         bed_file=bed_file,
         bam_file=bam_file,
         reference_fasta=reference_fasta,
@@ -1360,7 +1382,7 @@ def profile_bam(
         min_baseq=min_baseq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
-    ))
+    )
 
 
 # ---------------------------------------------------------------------------
