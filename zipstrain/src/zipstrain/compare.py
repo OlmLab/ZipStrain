@@ -15,14 +15,11 @@ PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 
 
-GENOME_COMPARISON_CALCULATIONS = ("ani", "conani", "ibs", "identical_genes")
-# conani is opt-in (not in the default) so the common popANI path adds nothing.
-GENOME_COMPARISON_DEFAULT_CALCULATIONS = ("ani", "ibs", "identical_genes")
+GENOME_COMPARISON_CALCULATIONS = ("ani", "ibs", "identical_genes")
+GENOME_COMPARISON_DEFAULT_CALCULATIONS = GENOME_COMPARISON_CALCULATIONS
 GENOME_COMPARISON_CALCULATION_ALIASES = {
     "ani": "ani",
     "popani": "ani",
-    "conani": "conani",
-    "consensus_ani": "conani",
     "ibs": "ibs",
     "max_block": "ibs",
     "max_consecutive_length": "ibs",
@@ -72,9 +69,7 @@ def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] 
     calculations = parse_genome_calculations(calculate)
     cols = ["genome"]
     if "ani" in calculations:
-        cols.extend(["total_positions", "share_allele_pos", "genome_pop_ani"])
-    if "conani" in calculations:
-        cols.extend(["share_consensus_pos", "consensus_SNPs", "genome_con_ani"])
+        cols.extend(["total_positions", "share_allele_pos", "genome_ani"])
     if "ibs" in calculations:
         cols.append("max_consecutive_length")
     if "identical_genes" in calculations:
@@ -354,7 +349,7 @@ pop AS (
     genome,
     COUNT(*)::BIGINT AS total_positions,
     SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_pop_ani
+    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_ani
   FROM contig
   GROUP BY genome
 )""".strip()
@@ -425,7 +420,6 @@ def _duckdb_genome_compare_query(
 ) -> str:
     calculations = parse_genome_calculations(calculate)
     need_ani = "ani" in calculations
-    need_conani = "conani" in calculations
     need_ibs = "ibs" in calculations
     need_identical_genes = "identical_genes" in calculations
 
@@ -445,19 +439,6 @@ def _duckdb_genome_compare_query(
                 include_max_blocks=need_ibs,
             )
         )
-    if need_conani:
-        ctes.append(
-            """
-con AS (
-  SELECT
-    genome,
-    SUM(CASE WHEN con_surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_consensus_pos,
-    (COUNT(*) - SUM(CASE WHEN con_surr > 0 THEN 1 ELSE 0 END))::BIGINT AS consensus_SNPs,
-    SUM(CASE WHEN con_surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_con_ani
-  FROM shared
-  GROUP BY genome
-)""".strip()
-        )
     if need_identical_genes:
         ctes.extend(_duckdb_gene_stats_ctes(min_gene_compare_len=min_gene_compare_len, contig_source="shared"))
 
@@ -468,19 +449,10 @@ con AS (
             [
                 "COALESCE(p.total_positions, 0)::BIGINT AS total_positions",
                 "COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos",
-                "COALESCE(p.genome_pop_ani, 0.0)::DOUBLE AS genome_pop_ani",
+                "COALESCE(p.genome_ani, 0.0)::DOUBLE AS genome_ani",
             ]
         )
         joins.append("LEFT JOIN pop p ON g.genome = p.genome")
-    if need_conani:
-        select_parts.extend(
-            [
-                "COALESCE(c.share_consensus_pos, 0)::BIGINT AS share_consensus_pos",
-                "COALESCE(c.consensus_SNPs, 0)::BIGINT AS consensus_SNPs",
-                "COALESCE(c.genome_con_ani, 0.0)::DOUBLE AS genome_con_ani",
-            ]
-        )
-        joins.append("LEFT JOIN con c ON g.genome = c.genome")
     if need_ibs:
         select_parts.append("COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length")
         joins.append("LEFT JOIN max_blocks m ON g.genome = m.genome")
@@ -905,22 +877,8 @@ def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
             total_positions=pl.len(),
             share_allele_pos=(pl.col("surr") > 0 ).sum()
         ).with_columns(
-            genome_pop_ani=pl.col("share_allele_pos")/pl.col("total_positions")*100,
+            genome_ani=pl.col("share_allele_pos")/pl.col("total_positions")*100,
         )
-
-def calculate_con_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
-    """Consensus ANI: a position matches when both samples' consensus base agrees.
-
-    ``con_surr`` is 1 when the consensus (majority) bases match, else 0.
-    """
-    return mpile_contig.group_by("genome").agg(
-            total_positions=pl.len(),
-            share_consensus_pos=(pl.col("con_surr") > 0).sum(),
-        ).with_columns(
-            share_consensus_pos=pl.col("share_consensus_pos").cast(pl.Int64),
-            consensus_SNPs=(pl.col("total_positions") - pl.col("share_consensus_pos")).cast(pl.Int64),
-            genome_con_ani=pl.col("share_consensus_pos")/pl.col("total_positions")*100,
-        ).select(["genome", "share_consensus_pos", "consensus_SNPs", "genome_con_ani"])
 
 def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     """
@@ -1004,8 +962,6 @@ def compare_genomes_polars(
     genome_comp_parts: list[pl.LazyFrame] = []
     if "ani" in calculations:
         genome_comp_parts.append(calculate_pop_ani(shared))
-    if "conani" in calculations:
-        genome_comp_parts.append(calculate_con_ani(shared))
     if "ibs" in calculations:
         genome_comp_parts.append(get_longest_consecutive_blocks(add_contiguity_info(shared)))
     if "identical_genes" in calculations:
@@ -1031,15 +987,7 @@ def compare_genomes_polars(
             [
                 pl.col("total_positions").fill_null(0).cast(pl.Int64),
                 pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
-                pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
-            ]
-        )
-    if "conani" in calculations:
-        casts.extend(
-            [
-                pl.col("share_consensus_pos").fill_null(0).cast(pl.Int64),
-                pl.col("consensus_SNPs").fill_null(0).cast(pl.Int64),
-                pl.col("genome_con_ani").fill_null(0.0).cast(pl.Float64),
+                pl.col("genome_ani").fill_null(0.0).cast(pl.Float64),
             ]
         )
     if "ibs" in calculations:

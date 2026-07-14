@@ -286,7 +286,7 @@ Each row is one genome compared between one pair of samples:
 ```text
 shape: (2, 10)
 ┌──────────────────────────┬─────────────────┬──────────────────┬────────────────┬───┬──────────────┬──────────────┐
-│ genome                   ┆ total_positions ┆ share_allele_pos ┆ genome_pop_ani ┆ … ┆ sample_1     ┆ sample_2     │
+│ genome                   ┆ total_positions ┆ share_allele_pos ┆ genome_ani ┆ … ┆ sample_1     ┆ sample_2     │
 │ ---                      ┆ ---             ┆ ---              ┆ ---            ┆   ┆ ---          ┆ ---          │
 ╞══════════════════════════╪═════════════════╪══════════════════╪════════════════╪═══╪══════════════╪══════════════╡
 │ fobin.fasta              ┆ 1183            ┆ 1183             ┆ 100.0          ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
@@ -300,12 +300,14 @@ Key columns:
 |--------|---------|
 | `genome` | The genome being compared between the two samples |
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
-| `share_allele_pos` | Of those, how many had a shared allele |
-| `genome_pop_ani` | Population-level ANI (%) between the two samples for this genome |
+| `share_allele_pos` | Of those, how many matched under the selected ANI method |
+| `genome_ani` | Genome-wide ANI (%) between the two samples for this genome. The parquet metadata key `zipstrain_compare_ani_method` records the method (`popani`, `conani`, or `cosani_<threshold>`) |
 | `sample_1`, `sample_2` | The pair being compared |
 
 !!! info "Interpreting popANI"
-    `genome_pop_ani` near **100.0** means the same strain is present in both samples (they share essentially all alleles). Lower values indicate diverging strains. A genome with `total_positions = 0` (like `maxbin2.maxbin.001.fasta` above) simply wasn't covered deeply enough in both samples to compare, so its `0.0` ANI is "not enough data," not "totally different." A common threshold for calling two samples the *same strain* is popANI ≥ 99.999%.
+    `genome_ani` near **100.0** means the same strain is present in both samples (they share essentially all alleles). Lower values indicate diverging strains. A genome with `total_positions = 0` (like `maxbin2.maxbin.001.fasta` above) simply wasn't covered deeply enough in both samples to compare, so its `0.0` ANI is "not enough data," not "totally different." A common threshold for calling two samples the *same strain* is popANI ≥ 99.999%.
+
+    This interpretation assumes the default `--ani-method popani`; if you run `--ani-method conani`, the same column is still called `genome_ani`, but the parquet header records `zipstrain_compare_ani_method=conani`.
 
 ---
 

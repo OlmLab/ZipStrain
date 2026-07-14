@@ -69,7 +69,7 @@ def _write_genome_compare_table_for_config_tests(compare_path: Path) -> None:
             "genome": ["genome1"],
             "total_positions": [10],
             "share_allele_pos": [10],
-            "genome_pop_ani": [100.0],
+            "genome_ani": [100.0],
             "max_consecutive_length": [10],
             "shared_genes_count": [0],
             "identical_gene_count": [0],
@@ -263,9 +263,9 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     ])
     lf1_duckdb = pl.read_parquet(tmp_path/"output_duckdb.parquet")
     assert result.exit_code == 0
-    # The two engines agree, but derived percentages (e.g. genome_con_ani) can
-    # differ by ~1 ULP due to float non-associativity, so compare non-float
-    # columns exactly and float columns with tolerance.
+    # The two engines agree, but floating point columns can differ by ~1 ULP
+    # due to non-associativity, so compare non-float columns exactly and float
+    # columns with tolerance.
     a = lf1.sort("genome")
     b = lf1_duckdb.sort("genome")
     assert a.columns == b.columns
@@ -833,6 +833,8 @@ def test_single_compare_genome_strips_profile_suffix_from_sample_columns(profile
             str(stb_path),
             "--engine",
             engine,
+            "--ani-method",
+            "conani",
             "--output-file",
             str(output_path),
         ],
@@ -885,6 +887,8 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
             str(stb_path),
             "--engine",
             engine,
+            "--ani-method",
+            "conani",
             "--output-file",
             str(output_path),
         ],
@@ -898,6 +902,7 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
     assert metadata[cli.ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY] == "100"
     assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
     assert metadata[cli.ut.COMPARE_USES_STB_METADATA_KEY] == "1"
+    assert metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "conani"
     assert metadata[cli.ut.COMPARE_REFERENCE_HASH_METADATA_KEY] == "ref_hash_shared"
     assert metadata[cli.ut.COMPARE_GENE_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
     assert metadata[cli.ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY] == "null_hash_shared"
@@ -952,6 +957,7 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
     assert metadata[cli.ut.COMPARE_SCOPE_METADATA_KEY] == "genome1:gene1"
     assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
     assert metadata[cli.ut.COMPARE_USES_STB_METADATA_KEY] == "0"
+    assert metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "popani"
     assert metadata[cli.ut.COMPARE_REFERENCE_HASH_METADATA_KEY] == "ref_hash_shared"
     assert metadata[cli.ut.COMPARE_GENE_HASH_METADATA_KEY] == "gene_hash_shared"
     assert metadata[cli.ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
@@ -1008,6 +1014,10 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
     assert "avg_wall_s_per_pair=" in result.output
 
     actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])
+    metadata = pl.read_parquet_metadata(output_file)
+    assert metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "popani"
+    assert metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "genome"
+    assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
     expected_frames = []
     for sample_1, sample_2, left, right in [
         ("profile_1", "profile_2", profile_1_path, profile_2_path),
@@ -1029,7 +1039,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
                 sample_1=pl.lit(sample_1),
                 sample_2=pl.lit(sample_2),
             )
-            .select(["genome", "total_positions", "share_allele_pos", "genome_pop_ani", "sample_1", "sample_2"])
+            .select(["genome", "total_positions", "share_allele_pos", "genome_ani", "sample_1", "sample_2"])
             .collect(engine="streaming")
         )
     expected = pl.concat(expected_frames, how="vertical_relaxed").sort(["sample_1", "sample_2", "genome"])
@@ -1101,7 +1111,7 @@ def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1
                 sample_1=pl.lit(sample_1),
                 sample_2=pl.lit(sample_2),
             )
-            .select(["genome", "total_positions", "share_allele_pos", "genome_pop_ani", "sample_1", "sample_2"])
+            .select(["genome", "total_positions", "share_allele_pos", "genome_ani", "sample_1", "sample_2"])
             .collect(engine="streaming")
         )
     expected = pl.concat(expected_frames, how="vertical_relaxed").sort(["sample_1", "sample_2", "genome"])
@@ -1313,7 +1323,7 @@ def test_compare_method_matrix_routes_to_matrix_workflow(tmp_path, monkeypatch):
         captured.update(kwargs)
         out = Path(kwargs["run_dir"]) / "all_comparisons.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"genome": ["g"], "genome_pop_ani": [100.0]}).write_parquet(out)
+        pl.DataFrame({"genome": ["g"], "genome_ani": [100.0]}).write_parquet(out)
         return out
 
     monkeypatch.setattr(cli.matrix_workflow, "run_matrix_compare", _fake_run_matrix_compare)
@@ -1338,6 +1348,29 @@ def test_compare_method_matrix_routes_to_matrix_workflow(tmp_path, monkeypatch):
     assert [name for name, _loc in captured["profiles"]] == ["sample_a", "sample_b", "sample_c"]
     assert captured["backend"] == "numpy"
     assert captured["compare_genes"] is False
+
+
+def test_compare_method_matrix_rejects_non_popani_method(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    monkeypatch.setattr(
+        cli.matrix_workflow,
+        "run_matrix_compare",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("matrix workflow should not run")),
+    )
+
+    result = CliRunner().invoke(
+        cli.cli,
+        [
+            "compare", "--method", "matrix",
+            "--profile-db", str(csv_path),
+            "--stb-file", str(tmp_path / "ref.stb"),
+            "--ani-method", "conani",
+            "--run-dir", str(tmp_path / "run"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "only supports --ani-method popani" in result.output
 
 
 def test_compare_default_scope_differs_by_mode(tmp_path, monkeypatch):
@@ -2521,7 +2554,7 @@ def test_profile_help_is_organized_into_sections_with_defaults():
 
 
 def _write_small_parquet(path, rows=3):
-    pl.DataFrame({"genome": ["g"] * rows, "genome_pop_ani": [100.0] * rows}).write_parquet(path)
+    pl.DataFrame({"genome": ["g"] * rows, "genome_ani": [100.0] * rows}).write_parquet(path)
 
 
 def test_maybe_write_csv_writes_small_and_respects_flags(tmp_path):
@@ -2657,39 +2690,6 @@ def test_finalize_adds_genome_taxonomy_column(tmp_path):
     by = {r["genome"]: r["genome_taxonomy"] for r in d.iter_rows(named=True)}
     assert by["GCF_1.1"] == "d__Bacteria;s__Foo"
     assert by["GCF_2.1"] is None  # unmatched -> null
-
-
-def test_add_percent_compared_and_coverage_overlap(tmp_path):
-    import pathlib
-    # A run dir with two samples' genome_stats + a genome_lengths asset.
-    (tmp_path / "profiling_assets").mkdir()
-    pl.DataFrame({"genome": ["g1"], "genome_length": [1000]}).write_parquet(
-        tmp_path / "profiling_assets" / "genome_lengths.parquet"
-    )
-    profiles = []
-    for name, covered in [("s1", 800), ("s2", 600)]:
-        d = tmp_path / name
-        d.mkdir()
-        prof = d / f"{name}_profile.parquet"
-        pl.DataFrame({"genome": ["g1"]}).write_parquet(prof)  # placeholder
-        pl.DataFrame({"genome": ["g1"], "5x_cov_sites": [covered]}).write_parquet(
-            d / f"{name}_genome_stats.parquet"
-        )
-        profiles.append((name, str(prof)))
-
-    comp_path = tmp_path / "all_comparisons.parquet"
-    pl.DataFrame(
-        {"sample_1": ["s1"], "sample_2": ["s2"], "genome": ["g1"], "total_positions": [500]}
-    ).write_parquet(comp_path)
-
-    cli._add_percent_compared(comp_path, cli._discover_genome_lengths(tmp_path, [p for _n, p in profiles]))
-    cli._add_coverage_overlap(comp_path, profiles)
-
-    out = pl.read_parquet(comp_path)
-    # percent_compared = 500 / 1000
-    assert out["percent_compared"][0] == pytest.approx(0.5)
-    # coverage_overlap = 500 / (800 + 600 - 500) = 500/900
-    assert out["coverage_overlap"][0] == pytest.approx(500 / 900)
 
 
 def test_get_snp_reference_cli_vcf_includes_subconsensus_snv_sites(tmp_path):

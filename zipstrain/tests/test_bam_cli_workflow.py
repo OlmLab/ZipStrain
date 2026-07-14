@@ -445,11 +445,11 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
     by_genome = genome_compare.rows_by_key("genome", unique=True, named=True)
     assert by_genome["genome_a"]["total_positions"] == 10
     assert by_genome["genome_a"]["share_allele_pos"] == 10
-    assert by_genome["genome_a"]["genome_pop_ani"] == pytest.approx(100.0)
+    assert by_genome["genome_a"]["genome_ani"] == pytest.approx(100.0)
     assert by_genome["genome_a"]["max_consecutive_length"] == 10
     assert by_genome["genome_b"]["total_positions"] == 10
     assert by_genome["genome_b"]["share_allele_pos"] == 9
-    assert by_genome["genome_b"]["genome_pop_ani"] == pytest.approx(90.0)
+    assert by_genome["genome_b"]["genome_ani"] == pytest.approx(90.0)
     assert by_genome["genome_b"]["max_consecutive_length"] == 5
     assert {by_genome["genome_a"]["sample_1"], by_genome["genome_a"]["sample_2"]} == {
         "sample_alpha",

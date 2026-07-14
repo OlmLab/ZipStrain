@@ -45,7 +45,7 @@ GENOME_COMPARE_OUTPUT_DTYPES = {
     "genome": pl.Utf8,
     "total_positions": pl.Int64,
     "share_allele_pos": pl.Int64,
-    "genome_pop_ani": pl.Float64,
+    "genome_ani": pl.Float64,
     "max_consecutive_length": pl.Int64,
     "shared_genes_count": pl.Int64,
     "identical_gene_count": pl.Int64,
@@ -65,6 +65,7 @@ COMPARE_MIN_COV_METADATA_KEY = "zipstrain_compare_min_cov"
 COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY = "zipstrain_compare_min_gene_compare_len"
 COMPARE_ENGINE_METADATA_KEY = "zipstrain_compare_engine"
 COMPARE_USES_STB_METADATA_KEY = "zipstrain_compare_uses_stb"
+COMPARE_ANI_METHOD_METADATA_KEY = "zipstrain_compare_ani_method"
 COMPARE_REFERENCE_HASH_METADATA_KEY = "zipstrain_compare_reference_hash"
 COMPARE_GENE_HASH_METADATA_KEY = "zipstrain_compare_gene_hash"
 COMPARE_NULL_MODEL_HASH_METADATA_KEY = "zipstrain_compare_null_model_hash"
@@ -252,6 +253,7 @@ def build_single_compare_metadata(
     min_gene_compare_len: int,
     engine: str,
     uses_stb: bool,
+    ani_method: str,
 ) -> dict[str, str]:
     """Build mismatch-tolerant metadata for a single compare parquet."""
     left_metadata = read_profile_contract_metadata(profile_1)
@@ -263,6 +265,7 @@ def build_single_compare_metadata(
         COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
         COMPARE_ENGINE_METADATA_KEY: engine,
         COMPARE_USES_STB_METADATA_KEY: "1" if uses_stb else "0",
+        COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
         COMPARE_REFERENCE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "reference_hash"),
         COMPARE_GENE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "gene_hash"),
         COMPARE_NULL_MODEL_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "null_model_hash"),
@@ -1504,6 +1507,19 @@ def chunk_genome_compare(
     pair_table_path = pathlib.Path(pair_table)
     output_path = pathlib.Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    compare_metadata = {
+        COMPARE_KIND_METADATA_KEY: "genome",
+        COMPARE_SCOPE_METADATA_KEY: genome_scope,
+        COMPARE_MIN_COV_METADATA_KEY: str(min_cov),
+        COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
+        COMPARE_ENGINE_METADATA_KEY: engine,
+        COMPARE_USES_STB_METADATA_KEY: "1" if stb_file is not None else "0",
+        COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
+        COMPARE_REFERENCE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+        COMPARE_GENE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+        COMPARE_NULL_MODEL_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+        COMPARE_STB_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+    }
 
     def emit(message: str) -> None:
         if progress_callback is not None:
@@ -1525,7 +1541,11 @@ def chunk_genome_compare(
     )
 
     if total_pairs == 0:
-        _empty_genome_compare_frame(calculations).write_parquet(output_path, compression="zstd")
+        _empty_genome_compare_frame(calculations).write_parquet(
+            output_path,
+            compression="zstd",
+            metadata=compare_metadata,
+        )
         elapsed = time.perf_counter() - start_time
         emit(f"chunk_genome_compare: done pairs=0 rows=0 elapsed={elapsed:.2f}s")
         return {
@@ -1605,11 +1625,21 @@ def chunk_genome_compare(
 
         result_frames = [frame for frame in ordered_results if frame is not None]
         if result_frames:
-            pl.concat(result_frames, how="vertical_relaxed").write_parquet(output_path, compression="zstd")
+            pl.concat(result_frames, how="vertical_relaxed").write_parquet(
+                output_path,
+                compression="zstd",
+                metadata=compare_metadata,
+            )
         else:
-            empty_frame.write_parquet(output_path, compression="zstd")
+            empty_frame.write_parquet(
+                output_path,
+                compression="zstd",
+                metadata=compare_metadata,
+            )
     else:
-        output_schema = empty_frame.to_arrow().schema
+        output_schema = empty_frame.to_arrow().schema.with_metadata(
+            {str(key).encode(): str(value).encode() for key, value in compare_metadata.items()}
+        )
         empty_output_table = pa.Table.from_arrays(
             [pa.array([], type=field.type) for field in output_schema],
             schema=output_schema,

@@ -156,7 +156,7 @@ def matrix_metric_output_columns(calculate: Optional[str] = None) -> list[str]:
     columns = ["sample_1", "sample_2", "genome"]
     calculations = parse_matrix_calculations(calculate)
     if "ani" in calculations:
-        columns.extend(["total_positions", "share_allele_pos", "genome_pop_ani"])
+        columns.extend(["total_positions", "share_allele_pos", "genome_ani"])
     if "ibs" in calculations:
         columns.append("max_consecutive_length")
     return columns
@@ -174,7 +174,7 @@ def matrix_pair_output_schema(calculate: Optional[str] = None) -> pa.Schema:
             [
                 pa.field("total_positions", pa.int64()),
                 pa.field("share_allele_pos", pa.int64()),
-                pa.field("genome_pop_ani", pa.float64()),
+                pa.field("genome_ani", pa.float64()),
             ]
         )
     if "ibs" in calculations:
@@ -193,7 +193,7 @@ def matrix_compare_result_db_schema() -> pa.Schema:
             pa.field("genome", pa.string()),
             pa.field("total_positions", pa.int64()),
             pa.field("share_allele_pos", pa.int64()),
-            pa.field("genome_pop_ani", pa.float64()),
+            pa.field("genome_ani", pa.float64()),
             pa.field("max_consecutive_length", pa.int64()),
         ]
     )
@@ -1428,7 +1428,7 @@ def _init_matrix_compare_db_schema(conn: duckdb.DuckDBPyConnection) -> None:
           genome VARCHAR NOT NULL,
           total_positions BIGINT,
           share_allele_pos BIGINT,
-          genome_pop_ani DOUBLE,
+          genome_ani DOUBLE,
           max_consecutive_length BIGINT
         )
         """
@@ -1454,6 +1454,7 @@ def _compare_db_metadata_rows(
     matrix_metadata: dict[str, str],
     genome_scope: Optional[str],
     calculations: tuple[str, ...],
+    min_cov: int,
 ) -> list[tuple[str, str]]:
     return [
         ("matrix_input_format", "hdf5"),
@@ -1462,6 +1463,8 @@ def _compare_db_metadata_rows(
         ("matrix_count_dtype", matrix_metadata.get("count_dtype", "")),
         ("genome_scope", genome_scope or "all"),
         ("calculate", "+".join(calculations)),
+        ("ani_method", "popani"),
+        ("min_cov", str(min_cov)),
     ]
 
 
@@ -1471,12 +1474,14 @@ def _validate_matrix_compare_db_metadata(
     matrix_metadata: dict[str, str],
     genome_scope: Optional[str],
     calculations: tuple[str, ...],
+    min_cov: int,
 ) -> None:
     expected = dict(
         _compare_db_metadata_rows(
             matrix_metadata=matrix_metadata,
             genome_scope=genome_scope,
             calculations=calculations,
+            min_cov=min_cov,
         )
     )
     mismatches: list[str] = []
@@ -1561,6 +1566,7 @@ def _prepare_matrix_compare_db(
     genomes: list[GenomeSpec],
     genome_scope: Optional[str],
     calculations: tuple[str, ...],
+    min_cov: int,
 ) -> duckdb.DuckDBPyConnection:
     existed_before = output_file.exists() and output_file.stat().st_size > 0
     compare_conn = duckdb.connect(str(output_file))
@@ -1573,6 +1579,7 @@ def _prepare_matrix_compare_db(
                 matrix_metadata=matrix_metadata,
                 genome_scope=genome_scope,
                 calculations=calculations,
+                min_cov=min_cov,
             ),
         )
     else:
@@ -1596,6 +1603,7 @@ def _prepare_matrix_compare_db(
             matrix_metadata=matrix_metadata,
             genome_scope=genome_scope,
             calculations=calculations,
+            min_cov=min_cov,
         )
         _ensure_matrix_compare_completed_table(compare_conn)
         _ensure_matrix_compare_gene_results_table(compare_conn)
@@ -1675,7 +1683,7 @@ def _insert_matrix_compare_result_table(
               genome,
               total_positions,
               share_allele_pos,
-              genome_pop_ani,
+              genome_ani,
               max_consecutive_length
             FROM _matrix_compare_result_batch
             """
@@ -4779,6 +4787,7 @@ def matrix_compare(
             genomes=genomes,
             genome_scope=genome_scope,
             calculations=calculations,
+            min_cov=min_cov,
         )
         completed_pairs_by_genome, requested_pairs, total_work = _load_matrix_compare_resume_state(
             compare_conn,
@@ -5048,12 +5057,13 @@ def export_matrix_compare_parquet(
         raise FileExistsError(f"Output file already exists: {output_file}")
 
     conn = duckdb.connect(str(matrix_compare_db_file), read_only=True)
+    compare_metadata: dict[str, str] = {}
     try:
+        compare_metadata = {
+            str(k): str(v)
+            for k, v in conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
+        }
         if table == "genome":
-            compare_metadata = {
-                str(k): str(v)
-                for k, v in conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
-            }
             calculate = compare_metadata.get("calculate", "ani")
             columns = matrix_metric_output_columns(calculate)
             query = f"""
@@ -5089,4 +5099,20 @@ def export_matrix_compare_parquet(
         )
     finally:
         conn.close()
+    from zipstrain import utils as ut
+
+    parquet_metadata = {
+        ut.COMPARE_KIND_METADATA_KEY: table,
+        ut.COMPARE_SCOPE_METADATA_KEY: compare_metadata.get("genome_scope", "all"),
+        ut.COMPARE_MIN_COV_METADATA_KEY: compare_metadata.get("min_cov", str(MATRIX_BUILD_MIN_COV)),
+        ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
+        ut.COMPARE_ENGINE_METADATA_KEY: "matrix",
+        ut.COMPARE_USES_STB_METADATA_KEY: "1",
+        ut.COMPARE_ANI_METHOD_METADATA_KEY: compare_metadata.get("ani_method", "popani"),
+        ut.COMPARE_REFERENCE_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
+        ut.COMPARE_GENE_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
+        ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
+        ut.COMPARE_STB_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
+    }
+    ut.rewrite_parquet_with_metadata(output_file, parquet_metadata)
     return output_file

@@ -9,7 +9,7 @@ Most comparison-driven functions expect a `pl.LazyFrame` with some or all of the
 - `genome`
 - `sample_1`
 - `sample_2`
-- `genome_pop_ani`
+- `genome_ani`
 - `total_positions`
 - `max_consecutive_length`
 - `shared_genes_count`

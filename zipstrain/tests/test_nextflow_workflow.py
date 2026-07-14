@@ -211,7 +211,7 @@ def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log:
     assert merged.height == 1
     row = merged.row(0, named=True)
     assert row["genome"] == "genome1"
-    assert row["genome_pop_ani"] == 100.0
+    assert row["genome_ani"] == 100.0
     assert {row["sample_1"], row["sample_2"]} == {"sample1", "sample2"}
 
 

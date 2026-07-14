@@ -157,9 +157,9 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_ge
 
     assert res_dict["genome2"]["share_allele_pos"]==len([i for i in zip(a_genome_2,t_genome_2,c_genome_2,g_genome_2) if sum(i)>=min_cov])
 
-    assert res_dict["genome1"]["genome_pop_ani"]==100.0
+    assert res_dict["genome1"]["genome_ani"]==100.0
     
-    assert res_dict["genome2"]["genome_pop_ani"]==100.0
+    assert res_dict["genome2"]["genome_ani"]==100.0
 
     assert res_dict["genome1"]["max_consecutive_length"]==max([len([i for i in zip(a_chr1,t_chr1,c_chr1,g_chr1) if sum(i)>=min_cov]),len([i for i in zip(a_chr2,t_chr2,c_chr2,g_chr2) if sum(i)>=min_cov])])
 
@@ -289,10 +289,7 @@ def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
         "genome",
         "total_positions",
         "share_allele_pos",
-        "genome_pop_ani",
-        "share_consensus_pos",
-        "consensus_SNPs",
-        "genome_con_ani",
+        "genome_ani",
         "max_consecutive_length",
         "shared_genes_count",
         "identical_gene_count",
@@ -469,7 +466,7 @@ def test_duckdb_compare_genomes_to_parquet_ani_only(profile_1, profile_2, stb, t
         "genome",
         "total_positions",
         "share_allele_pos",
-        "genome_pop_ani",
+        "genome_ani",
         "sample_1",
         "sample_2",
     }
@@ -490,7 +487,7 @@ def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb,
             calculate="all",
         )
         .collect()
-        .select("genome", "total_positions", "share_allele_pos", "genome_pop_ani")
+        .select("genome", "total_positions", "share_allele_pos", "genome_ani")
         .sort("genome")
     )
     ani_only = (
@@ -529,7 +526,7 @@ def test_compare_genomes_default_calculate_is_all_metrics(profile_1, profile_2, 
         "genome",
         "total_positions",
         "share_allele_pos",
-        "genome_pop_ani",
+        "genome_ani",
         "max_consecutive_length",
         "shared_genes_count",
         "identical_gene_count",

@@ -128,25 +128,20 @@ One row per genome, per pair of samples.
 | `sample_1`, `sample_2` | The two samples being compared |
 | `genome` | Genome compared between them |
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
-| `share_allele_pos` | Of those, positions where the two samples share an allele (the popANI numerator) |
-| `genome_pop_ani` | **Population** ANI (%) = `share_allele_pos` / `total_positions` × 100 — a position matches if any read supports a shared base |
-| `share_consensus_pos` | Positions where the two samples' **consensus** (majority) base agrees |
-| `consensus_SNPs` | Positions where the consensus bases differ (= `total_positions` − `share_consensus_pos`) |
-| `genome_con_ani` | **Consensus** ANI (%) = `share_consensus_pos` / `total_positions` × 100. Stricter than `genome_pop_ani`; the gap between them flags shared populations with a different dominant strain |
+| `share_allele_pos` | Of those, positions that match under the selected ANI method |
+| `genome_ani` | Genome-wide ANI (%) = `share_allele_pos` / `total_positions` × 100. The parquet metadata key `zipstrain_compare_ani_method` records whether this is `popani`, `conani`, or `cosani_<threshold>` |
 | `max_consecutive_length` | Longest run of consecutive shared positions (an identical-by-state / IBS measure) |
-| `percent_compared` | `total_positions` / genome length — the fraction of the genome that was compared. Added when a `genome_lengths.parquet` asset is discoverable (from `profiling_assets`) |
-| `coverage_overlap` | `total_positions` / positions covered in **either** sample — how much of the covered territory the two samples share. Added when the per-sample `genome_stats` are alongside the profiles; exact when `--min-cov` matches the profiling coverage cutoff (both 5 by default) |
 
-The consensus columns come from the `conani` calculation, which is included in the default `--calculate all`. With gene ranges available (or `--compare-genes`), gene-level columns are added: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
+With gene ranges available, genome-level gene identity summary columns are also added by the default `--calculate all`: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
 
-!!! note "conANI is standard-method only"
-    `genome_con_ani` / `share_consensus_pos` / `consensus_SNPs` are produced by `--method standard`. The `--method matrix` store keeps only per-base **presence** (which base is present, not its count) to make popANI a fast boolean operation, and consensus can't be recovered from presence — so matrix mode reports popANI + IBS (+ gene ANI) but not conANI.
+!!! note "ANI method is stored in the parquet header"
+    `--ani-method conani` changes how the ANI match indicator is computed, but it does not add separate consensus-specific output columns to the comparison table. Check `zipstrain_compare_ani_method` in the parquet metadata to know what `genome_ani` represents. Matrix mode supports `popani` only.
 
 Example (same-strain replicates → 100% popANI):
 
 ```text
-sample_1     sample_2     genome           total_positions  share_allele_pos  genome_pop_ani  max_consecutive_length
+sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_consecutive_length
 SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           100.0           768237
 ```
 
-**Interpreting popANI.** `genome_pop_ani` near **100.0** means the same strain is present in both samples. A common same-strain threshold is **≥ 99.999%** — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses *population* ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks) for the popANI-vs-consensus-ANI discussion.
+**Interpreting popANI.** `genome_ani` near **100.0** means the same strain is present in both samples. A common same-strain threshold is **≥ 99.999%** — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses *population* ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks) for the popANI-vs-consensus-ANI discussion.
