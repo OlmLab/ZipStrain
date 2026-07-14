@@ -242,8 +242,8 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome", 
-        "--mpileup-contig-1", str(profile_1_dir),
-        "--mpileup-contig-2", str(profile_2_dir),
+        "--profile-location-1", str(profile_1_dir),
+        "--profile-location-2", str(profile_2_dir),
         "--stb-file", str(stb_path),
         "--output-file", str(tmp_path/"output.parquet"),
         "--duckdb-memory-limit", "512MB",
@@ -255,8 +255,8 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome",
-        "--mpileup-contig-1", str(profile_1_dir),
-        "--mpileup-contig-2", str(profile_2_dir),
+        "--profile-location-1", str(profile_1_dir),
+        "--profile-location-2", str(profile_2_dir),
         "--stb-file", str(stb_path),
         "--engine", "duckdb",
         "--output-file", str(tmp_path/"output_duckdb.parquet"),
@@ -277,8 +277,8 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome", 
-        "--mpileup-contig-1", str(profile_1_dir),
-        "--mpileup-contig-2", str(profile_3_dir),
+        "--profile-location-1", str(profile_1_dir),
+        "--profile-location-2", str(profile_3_dir),
         "--stb-file", str(stb_path),
         "--output-file", str(tmp_path/"output.parquet"),
     ])
@@ -306,9 +306,9 @@ def test_single_compare_genome_duckdb_scope_skips_prefilter(profile_1: pl.LazyFr
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -342,9 +342,9 @@ def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFram
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -374,9 +374,9 @@ def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profi
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--engine",
             engine,
@@ -418,9 +418,9 @@ def test_single_compare_genome_polars_scope_uses_polars_prefilter(profile_1: pl.
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -463,9 +463,9 @@ def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.La
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -496,9 +496,9 @@ def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.L
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -526,9 +526,9 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_polars(p
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_3_dir),
             "--engine",
             "polars",
@@ -555,9 +555,9 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_duckdb(p
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_3_dir),
             "--engine",
             "duckdb",
@@ -571,7 +571,7 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_duckdb(p
     assert out.get_column("total_positions").to_list() == [22]
 
 
-def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
+def test_generate_sample_pair_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
     profile_1.sink_parquet(profile_dir / "profile_1_profile.parquet")
@@ -585,7 +585,7 @@ def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.La
         cli.cli,
         [
             "utilities",
-            "generate-genome-pairs",
+            "generate-sample-pair",
             "--profile-dir",
             str(profile_dir),
             "--output-file",
@@ -825,9 +825,9 @@ def test_single_compare_genome_strips_profile_suffix_from_sample_columns(profile
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_path),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_path),
             "--stb-file",
             str(stb_path),
@@ -879,9 +879,9 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_path),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_path),
             "--stb-file",
             str(stb_path),
@@ -938,9 +938,9 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_path),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_path),
             "--engine",
             engine,
@@ -1954,59 +1954,6 @@ def test_merge_stat_tables_command(tmp_path):
     assert result.exit_code == 0, result.output
     merged = pl.read_parquet(output_file).sort("sample")
     assert merged["sample"].to_list() == ["sample_a", "sample_b"]
-
-
-def test_get_coverage_stats_command(profile_2: pl.LazyFrame, tmp_path):
-    profile_path = tmp_path / "profile.parquet"
-    gene_bed_path = tmp_path / "genes.tsv"
-    genome_bed_path = tmp_path / "genomes.bed"
-
-    profile_2.sink_parquet(profile_path)
-    pl.DataFrame(
-        {
-            "gene": ["gene1", "gene2", "gene3", "gene1", "gene2", "gene3"],
-            "scaffold": ["chr1", "chr2", "chr2", "chr3", "chr3", "chr3"],
-            "start": [2, 2, 11, 3, 11, 22],
-            "end": [5, 6, 15, 6, 15, 26],
-        }
-    ).write_csv(gene_bed_path, separator="\t", include_header=False)
-    pl.DataFrame(
-        {
-            "scaffold": ["chr1", "chr2", "chr3"],
-            "start": [0, 0, 0],
-            "end": [10, 20, 30],
-        }
-    ).write_csv(genome_bed_path, separator="\t", include_header=False)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "get-coverage-stats",
-            "--profile-parquet",
-            str(profile_path),
-            "--gene-bed",
-            str(gene_bed_path),
-            "--genome-bed",
-            str(genome_bed_path),
-            "--output-dir",
-            str(tmp_path),
-            "--prefix",
-            "sample1",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert "sample1_gene_stats.parquet" in result.output
-    assert "sample1_genome_stats.parquet" in result.output
-
-    gene_stats = pl.read_parquet(tmp_path / "sample1_gene_stats.parquet")
-    genome_stats = pl.read_parquet(tmp_path / "sample1_genome_stats.parquet")
-    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage", "5x_cov_sites", "ber"]
-    assert genome_stats.columns == ["genome", "length", "breadth", "coverage", "5x_cov_sites", "ber"]
-    assert gene_stats.height == 6
-    assert genome_stats.height == 2
 
 
 def test_run_group_removed():

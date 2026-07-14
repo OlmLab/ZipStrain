@@ -13,6 +13,7 @@ First stable release. This version consolidates ZipStrain around three top-level
 - `compare --profile-db` accepts a CSV of `profile_name,profile_location` directly, so a separate `build-profile-db` step is no longer required.
 - `compare` runs are resumable and extendable: re-running with the same `--run-dir` and a profiles table that adds samples computes only the new pairs. Both methods write a single `all_comparisons.parquet` (or `all_gene_comparisons.parquet`) at the top of the run directory.
 - `compare --calculate` now accepts fine-grained metric combos (for example `ani+ibs+identical_genes`) through the batched standard path, not just `all`/`ani`.
+- Utility cleanup: `generate-genome-pairs` is now `generate-sample-pair`; redundant coverage stats, BED, genome-length, and strain-heterogeneity helper commands were removed.
 - Grouped, sectioned `--help` output for the main commands.
 
 ### Mapping (`zipstrain map`)

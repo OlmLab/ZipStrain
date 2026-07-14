@@ -365,7 +365,7 @@ Profiles are written to `out_sra_profile/profiles/`, one subdirectory per sample
 Build a profile table pointing at the outputs from Step 2:
 
 ```bash
-printf 'sample_name,profile_location\nN5_271_010G1,out_sra_profile/profiles/N5_271_010G1_profile.parquet\nN5_271_010G2,out_sra_profile/profiles/N5_271_010G2_profile.parquet\n' > profiles.csv
+printf 'sample_name,profiles\nN5_271_010G1,out_sra_profile/profiles/N5_271_010G1_profile.parquet\nN5_271_010G2,out_sra_profile/profiles/N5_271_010G2_profile.parquet\n' > profiles.csv
 ```
 
 Then run genome comparison:

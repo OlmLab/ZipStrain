@@ -404,7 +404,7 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         cli_module.cli,
         [
             "utilities",
-            "generate-genome-pairs",
+            "generate-sample-pair",
             "--profile-dir",
             str(paths["profiles_dir"]),
             "--output-file",
@@ -462,9 +462,9 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(paths["sample_alpha_profile"]),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(paths["sample_beta_profile"]),
             "--stb-file",
             str(paths["stb_file"]),

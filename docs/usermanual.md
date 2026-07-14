@@ -515,12 +515,9 @@ Commands:
   build-profile-db        Build a profile database from the given CSV file.
   chunk-genome-compare    Run classic genome compare over one pair-table...
   gene-range-table        Main function to build and save the gene...
-  generate-genome-pairs   Generate a pair table ready for...
+  generate-sample-pair    Generate a sample-pair table ready for...
   generate_stb            Generate a scaffold-to-genome mapping file from...
-  get-coverage-stats      Build coverage-only gene and genome stats from...
   get-snp-reference       Emit profile-like rows that are SNPs relative...
-  get_genome_lengths      Extract the genome length information from the...
-  make_bed                Create a BED file from the database in fasta...
   matrix-compare          Run resumable matrix compare on all...
   matrix-compare-export   Export a matrix compare DuckDB database to...
   matrix-db-to-hdf5       Convert a legacy DuckDB matrix database into...
@@ -530,12 +527,11 @@ Commands:
   prepare_profiling       Prepare the files needed for profiling bam...
   presence-profile        Generate a presence profile for genomes based...
   process-read-locs       Process read locations and save them to a...
-  process_mpileup         Process mpileup files and save the results in a...
+  process_mpileup         Process an mpileup stream and save the results in...
   profile-single          Profile a single BAM file using the provided...
-  single_compare_gene     Compare two mpileup files and calculate...
-  single_compare_genome   Main function to compare two mpileup files and...
+  single_compare_gene     Compare two profile parquets and calculate...
+  single_compare_genome   Compare two profile parquets and...
   sort-profile            Sort a classic profile parquet in place and...
-  strain_heterogeneity    Calculate strain heterogeneity for each genome...
   to-complete-table       Generate the not-yet-completed...
 ```
 
@@ -548,13 +544,9 @@ Commands:
 | `zipstrain utilities build-null-model` | Build sequencing-error null model |
 | `zipstrain utilities merge_parquet` | Merge parquet files |
 | `zipstrain utilities merge-stat-tables` | Merge gene/genome stat parquet files with sample labels |
-| `zipstrain utilities get-coverage-stats` | Rebuild coverage-only gene/genome stats from a profile parquet |
 | `zipstrain utilities process_mpileup` | Convert mpileup stream to parquet |
-| `zipstrain utilities make_bed` | Build bed chunks from fasta |
-| `zipstrain utilities get_genome_lengths` | Genome lengths from STB + BED |
-| `zipstrain utilities generate-genome-pairs` | Create all non-redundant standard-profile pairs |
+| `zipstrain utilities generate-sample-pair` | Create all non-redundant standard-profile sample pairs |
 | `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
-| `zipstrain utilities strain_heterogeneity` | Strain heterogeneity metrics |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
 | `zipstrain utilities build-matrix-db` | Build the current per-sample genome matrix store directly from profile parquets |
 | `zipstrain utilities append-matrix-db` | Append new profiles into an existing matrix store |
@@ -690,16 +682,16 @@ This uses the same reference-sharing logic used to populate `ref_ani` in the gen
 
 ```bash
 zipstrain utilities single_compare_genome \
-  --mpileup-contig-1 sample_a.parquet \
-  --mpileup-contig-2 sample_b.parquet \
+  --profile-location-1 sample_a.parquet \
+  --profile-location-2 sample_b.parquet \
   --stb-file mapping.stb \
   --output-file out.parquet
 ```
 
 Options:
 
-- `-m1, --mpileup-contig-1` (required)
-- `-m2, --mpileup-contig-2` (required)
+- `--profile-location-1` / `--profile-1` (required)
+- `--profile-location-2` / `--profile-2` (required)
 - `-s, --stb-file` (required)
 - `-c, --min-cov` (default: `5`)
 - `-l, --min-gene-compare-len` (default: `100`)
@@ -712,12 +704,12 @@ Options:
 - `--duckdb-temp-directory`
 - `--duckdb-threads`
 
-#### `zipstrain utilities generate-genome-pairs`
+#### `zipstrain utilities generate-sample-pair`
 
 ```bash
-zipstrain utilities generate-genome-pairs \
+zipstrain utilities generate-sample-pair \
   --profile-dir profiles \
-  --output-file genome_pairs.parquet
+  --output-file sample_pairs.parquet
 ```
 
 This writes a parquet table with:
@@ -785,8 +777,8 @@ The final console summary includes:
 
 ```bash
 zipstrain utilities single_compare_gene \
-  --mpileup-contig-1 sample_a.parquet \
-  --mpileup-contig-2 sample_b.parquet \
+  --profile-location-1 sample_a.parquet \
+  --profile-location-2 sample_b.parquet \
   --stb-file mapping.stb \
   --scope all:all \
   --output-file out.parquet
@@ -794,8 +786,8 @@ zipstrain utilities single_compare_gene \
 
 Options:
 
-- `-m1, --mpileup-contig-1` (required)
-- `-m2, --mpileup-contig-2` (required)
+- `--profile-location-1` / `--profile-1` (required)
+- `--profile-location-2` / `--profile-2` (required)
 - `-s, --stb-file` (required)
 - `-c, --min-cov` (default: `5`)
 - `-l, --min-gene-compare-len` (default: `100`)
@@ -1200,53 +1192,6 @@ Notes:
 - Use `--allow-mismatch` to skip that validation and build a mixed profile DB intentionally.
 - The output parquet stores at least `profile_name` and `profile_location`, plus shared metadata fields derived from the listed profiles.
 
-#### `zipstrain utilities get-coverage-stats`
-
-```bash
-zipstrain utilities get-coverage-stats \
-  --profile-parquet sample_profile.parquet \
-  --gene-bed reference_genomes_gene_ranges.tsv \
-  --genome-bed genomes_bed_file.bed \
-  --output-dir stats \
-  --prefix sample1
-```
-
-What it does:
-
-- rebuilds coverage-only genome and gene stats from an existing profile parquet
-- writes:
-  - `<output-dir>/<prefix>_gene_stats.parquet`
-  - `<output-dir>/<prefix>_genome_stats.parquet`
-- does not require read-location files
-- uses the profile’s existing `gene` and `genome` columns for counts
-- uses the supplied gene/genome BED files only to calculate lengths
-
-Output columns:
-
-- gene stats:
-  - `genome`
-  - `gene`
-  - `length`
-  - `breadth`
-  - `coverage`
-  - `5x_cov_sites`
-  - `ber`
-- genome stats:
-  - `genome`
-  - `length`
-  - `breadth`
-  - `coverage`
-  - `5x_cov_sites`
-  - `ber`
-
-Important options:
-
-- `-p, --profile-parquet` (required)
-- `-g, --gene-bed` (required) — supports 4 columns `gene, scaffold, start, end` or 5 columns with genome appended
-- `-b, --genome-bed` (required) — supports 3 columns `scaffold, start, end` or 4 columns with genome appended
-- `-o, --output-dir` (required)
-- `--prefix` (required)
-
 #### Other Utility Commands
 
 Use `--help` on each command for full option details:
@@ -1254,14 +1199,10 @@ Use `--help` on each command for full option details:
 ```bash
 zipstrain utilities build-null-model --help
 zipstrain utilities merge_parquet --help
-zipstrain utilities get-coverage-stats --help
 zipstrain utilities process_mpileup --help
-zipstrain utilities make_bed --help
-zipstrain utilities get_genome_lengths --help
-zipstrain utilities generate-genome-pairs --help
+zipstrain utilities generate-sample-pair --help
 zipstrain utilities chunk-genome-compare --help
 zipstrain utilities merge-stat-tables --help
-zipstrain utilities strain_heterogeneity --help
 zipstrain utilities build-profile-db --help
 zipstrain utilities build-matrix-db --help
 zipstrain utilities matrix-compare --help
@@ -1291,11 +1232,11 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:<version>`;
+- sets the default container to `parsaghadermazi/zipstrain:1.0.0`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
-- `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and the cluster execution profiles.
+- `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 
-For a cluster, select a Singularity/Slurm profile with `-profile <name>` (`fiji`, `gutbot`, `alpine`, or `blanca`); these turn Docker off and use Singularity. Review the container tag/paths in `conf.config` before running on a new system.
+For a cluster, keep site-specific SLURM profiles in an ignored local config such as `conf.local.config`, then run with `-c conf.local.config -profile <name>`. The public `conf.config` intentionally avoids lab- or cluster-specific paths.
 
 ### General running pattern
 
@@ -1309,7 +1250,7 @@ nextflow run OlmLab/ZipStrain \
 
 Conventions used by every example below:
 
-- **Docker is the default**, so no `-profile` is shown. On a cluster, add `-profile fiji` (or `gutbot`/`alpine`/`blanca`).
+- **Docker is the default**, so no `-profile` is shown. On a cluster, pass a site-specific config with `-c conf.local.config -profile <name>`.
 - Pin a branch/tag/commit with `-r <revision>` (e.g. `-r main`); omit it to use the default branch.
 - If you have **cloned the repo**, replace `OlmLab/ZipStrain` with `zipstrain.nf` and run from the repo root.
 - `-resume` reuses completed steps from a previous run in the same working directory.
@@ -1331,6 +1272,8 @@ Conventions used by every example below:
 - `--reference_genome` / `--stb` / `--gene_file`: reference FASTA, scaffold-to-genome map, and gene FASTA (mapping/profiling modes). If `--reference_genome` is omitted for `map_reads`, a reference is auto-built with Sylph.
 - `--sylph_db` / `--sylph_db_link`: path to the Sylph database, or the URL to download it from if the path is missing (defaults to the GTDB r220 database).
 - `--genome_db_cache_dir`: cache directory for genomes downloaded during Sylph-based reference building.
+- `--prefetch_max_size` (default `200g`): SRA Toolkit prefetch size limit for SRA modes.
+- `--min_mapq`, `--min_baseq`, `--min_read_ani`, `--read_inclusion`: profiling read/base filters passed through to `zipstrain utilities profile-single`.
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows.
 - `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
@@ -1339,9 +1282,10 @@ Conventions used by every example below:
 
 Notes:
 
-- For `--input_type profile_table`, the table columns are `sample_name` and `profile_location`.
+- For `--input_type profile_table`, the preferred table columns are `sample_name` and `profiles`.
 - For `--input_type pair_table`, the columns are `sample_name_1`, `sample_name_2`, `profile_location_1`, `profile_location_2`.
-- The Nextflow profiling workflow uses the default profiling read filters unless you edit `zipstrain.nf`.
+- `--mode` is required; running without it intentionally fails rather than choosing a default workflow.
+- `--parallel_mode` defaults to `batched`.
 - For auto-built references, genome selection comes from the merged Sylph abundance table via `zipstrain utilities build-genome-db`.
 
 ### Command 1: Map reads (`--mode map_reads`)
@@ -1445,7 +1389,7 @@ Input is either an all-vs-all profile list (`--input_type profile_table`) or exp
 
 ```csv
 # profile_table
-sample_name,profile_location
+sample_name,profiles
 S1,/profiles/S1_profile.parquet
 S2,/profiles/S2_profile.parquet
 ```

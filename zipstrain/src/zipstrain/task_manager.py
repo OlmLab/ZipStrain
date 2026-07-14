@@ -677,8 +677,8 @@ class CompareTaskGenerator(TaskGenerator):
                     else ""
                 )
                 inputs = {
-                "mpile_1_file": FileInput(row["profile_location_1"]),
-                "mpile_2_file": FileInput(row["profile_location_2"]),
+                "profile_1_file": FileInput(row["profile_location_1"]),
+                "profile_2_file": FileInput(row["profile_location_2"]),
                 "stb-file-arg": StringInput(stb_file_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
@@ -1747,8 +1747,8 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    zipstrain utilities single_compare_genome --mpileup-contig-1 <mpile_1_file> \
-    --mpileup-contig-2 <mpile_2_file> \
+    zipstrain utilities single_compare_genome --profile-location-1 <profile_1_file> \
+    --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
@@ -2111,8 +2111,8 @@ class FastGeneCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
     """
     TEMPLATE_CMD="""
-    zipstrain utilities single_compare_gene --mpileup-contig-1 <mpile_1_file> \
-    --mpileup-contig-2 <mpile_2_file> \
+    zipstrain utilities single_compare_gene --profile-location-1 <profile_1_file> \
+    --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
@@ -2187,8 +2187,8 @@ class GeneCompareTaskGenerator(TaskGenerator):
                     else ""
                 )
                 inputs = {
-                "mpile_1_file": FileInput(row["profile_location_1"]),
-                "mpile_2_file": FileInput(row["profile_location_2"]),
+                "profile_1_file": FileInput(row["profile_location_1"]),
+                "profile_2_file": FileInput(row["profile_location_2"]),
                 "stb-file-arg": StringInput(stb_file_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),

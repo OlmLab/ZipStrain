@@ -1,12 +1,11 @@
 params.error_rate=0.001
 params.max_total_reads=10000
 params.p_threshold=0.05
-params.mode = 'fast_compare' // 'fast_compare' or 'profile_genes' or
-params.parallel_mode="multiple"
+params.mode = null
+params.parallel_mode="batched"
 params.min_cov=5
 params.min_gene_compare_len=200
 params.batch_size=10
-params.bed_max_scaffold_length=500000
 params.compare_duckdb_memory_limit=""
 params.compare_engine="polars"
 params.compare_calculate="all"
@@ -14,13 +13,17 @@ params.batch_compare_n_parallel=4
 params.publish_mode="symlink"
 params.compare_genome_scope="all"
 params.compare_gene_scope="all:all"
-params.compare_genome_calculate="all"
 params.compare_ani_method="popani"
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
+params.min_mapq=0
+params.min_baseq=13
+params.min_read_ani=0.95
+params.read_inclusion="paired"
 params.sylph_db = null
 params.sylph_db_link="http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb"
 params.genome_db_cache_dir="genome_cache"
+params.prefetch_max_size="200g"
 params.compression_level=6
 def tableToDict(file, delimiter = ',') {
     /*
@@ -55,22 +58,16 @@ def tableToDict(file, delimiter = ',') {
     return result
 }
 
-def getProfileLocationsTableColumn(input_table) {
-    if (input_table.containsKey('profile_location')) {
-        return input_table['profile_location']
+def getProfilesTableColumn(input_table) {
+    if (input_table.containsKey('profiles')) {
+        return input_table['profiles']
     }
-    if (input_table.containsKey('mpileup_files')) {
-        return input_table['mpileup_files']
-    }
-    throw new IllegalArgumentException("Profile-table input must include a 'profile_location' column.")
+    throw new IllegalArgumentException("Profile-table input must include a 'profiles' column.")
 }
 
 def getProfileSampleNamesTableColumn(input_table) {
     if (input_table.containsKey('sample_name')) {
         return input_table['sample_name']
-    }
-    if (input_table.containsKey('sample_names')) {
-        return input_table['sample_names']
     }
     throw new IllegalArgumentException("Profile-table input must include a 'sample_name' column.")
 }
@@ -178,7 +175,7 @@ process get_sequences_from_sra {
     
     script:
     """
-    prefetch --max-size 200g ${sra_ids} 
+    prefetch --max-size ${params.prefetch_max_size} ${sra_ids} 
     fasterq-dump --split-files --outdir ${sra_ids} ${sra_ids}
     pigz -p ${task.cpus} -${params.compression_level} ${sra_ids}/${sra_ids}*.fastq
     rm -rf ${sra_ids}/${sra_ids}.sra
@@ -252,7 +249,6 @@ process prepare_profile{
     output:
     path "genomes_bed_file.bed", emit: genome_bed
     path "gene_range_table.tsv", emit: gene_range_table
-    path "genome_lengths.parquet", emit: genome_lengths
     path "null_model.parquet", emit: null_model
     path "profiling_contract.json", emit: profiling_contract
     script:
@@ -261,6 +257,9 @@ zipstrain utilities prepare_profiling \\
         --reference-fasta ${reference_genome} \\
         --gene-fasta ${gene_fasta} \\
         --stb-file ${stb_file} \\
+        --error-rate ${params.error_rate} \\
+        --max-total-reads ${params.max_total_reads} \\
+        --p-threshold ${params.p_threshold} \\
         --output-dir . 
 """
 
@@ -269,8 +268,8 @@ zipstrain utilities prepare_profiling \\
 
 process profile_bam {
     /*
-    * This process generates mpileup files from BAM files.
-    * It takes in the BAM file and outputs the mpileup file.
+    * This process profiles BAM files into ZipStrain parquet profiles.
+    * It takes in the BAM file and outputs profile/stat parquet files.
     */
     publishDir "${params.output_dir}", mode: params.publish_mode
     input:
@@ -298,6 +297,10 @@ process profile_bam {
                         --null-model ${null_model} \\
                         --profiling-contract ${profiling_contract} \\
                         --max-concurrency ${task.cpus} \\
+                        --min-mapq ${params.min_mapq} \\
+                        --min-baseq ${params.min_baseq} \\
+                        --min-read-ani ${params.min_read_ani} \\
+                        --read-inclusion ${params.read_inclusion} \\
                         --output-dir .
     """
 }
@@ -305,7 +308,7 @@ process profile_bam {
 process compare_genome_fast_profiles_single {
     /*
     * This process compares fast profiles.
-    * It takes in the mpileup files and outputs the comparison results.
+    * It takes in profile parquets and outputs the comparison results.
     */
     input:
     path profile_location_1
@@ -321,8 +324,8 @@ process compare_genome_fast_profiles_single {
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     zipstrain utilities single_compare_genome  \
-                        --mpileup-contig-1 ${profile_location_1} \
-                        --mpileup-contig-2 ${profile_location_2} \
+                        --profile-location-1 ${profile_location_1} \
+                        --profile-location-2 ${profile_location_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
@@ -337,7 +340,7 @@ process compare_genome_fast_profiles_single {
 process compare_gene_fast_profiles_single {
     /*
     * This process compares fast profiles.
-    * It takes in the mpileup files and outputs the comparison results.
+    * It takes in profile parquets and outputs the comparison results.
     */
     input:
     path profile_location_1
@@ -351,8 +354,8 @@ process compare_gene_fast_profiles_single {
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     zipstrain utilities single_compare_gene  \
-                        --mpileup-contig-1 ${profile_location_1} \
-                        --mpileup-contig-2 ${profile_location_2} \
+                        --profile-location-1 ${profile_location_1} \
+                        --profile-location-2 ${profile_location_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
@@ -392,8 +395,8 @@ process compare_genome_batched {
     """
     echo -e "${pairs_text}" > pairs.txt
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_genome \
-                        --mpileup-contig-1 {1} \
-                        --mpileup-contig-2 {2} \
+                        --profile-location-1 {1} \
+                        --profile-location-2 {2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
@@ -436,8 +439,8 @@ process compare_gene_batched {
     """
     echo -e "${pairs_text}" > pairs.txt
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_gene \
-                        --mpileup-contig-1 {1} \
-                        --mpileup-contig-2 {2} \
+                        --profile-location-1 {1} \
+                        --profile-location-2 {2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
@@ -473,24 +476,6 @@ process merge_comparison_tables {
     zipstrain utilities merge_parquet --input-dir . --output-file merged_comparisons.parquet
     """
 }
-process build_null_model {
-publishDir "${params.output_dir}", mode: params.publish_mode
-    /*
-    * This process builds a null model for the gene abundance data.
-    * It takes in the gene file and scaffold table, and outputs the null model.
-    */
-    output:
-    path "null_model.parquet", emit: model
-    script:
-    """
-    zipstrain utilities build-null-model \
-                      --error-rate ${params.error_rate} \
-                      --max-total-reads ${params.max_total_reads} \
-                      --p-threshold ${params.p_threshold} \
-                      --output-file "null_model.parquet" 
-    """
-}
-
 process fromSRAtoProfile{
     publishDir "${params.output_dir}/profiles", mode: params.publish_mode
     input:
@@ -499,7 +484,6 @@ process fromSRAtoProfile{
     path index_files
     path bed_file
     path gene_range_file
-    path genome_length_file
     path stb_file
     path null_model
     path profiling_contract
@@ -510,7 +494,7 @@ process fromSRAtoProfile{
     val sra_id, emit: sample_name
     script:
     """
-    prefetch --max-size 200g ${sra_id} 
+    prefetch --max-size ${params.prefetch_max_size} ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
     rm -rf ${sra_id}/${sra_id}.sra
     num_seq_files=\$(ls ${sra_id}/*.fastq | wc -l)
@@ -528,6 +512,10 @@ process fromSRAtoProfile{
                         --null-model ${null_model} \\
                         --profiling-contract ${profiling_contract} \\
                         --max-concurrency ${task.cpus} \\
+                        --min-mapq ${params.min_mapq} \\
+                        --min-baseq ${params.min_baseq} \\
+                        --min-read-ani ${params.min_read_ani} \\
+                        --read-inclusion ${params.read_inclusion} \\
                         --output-dir .
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
@@ -543,7 +531,6 @@ process prepare_profile_no_genes{
     output:
     path "genomes_bed_file.bed", emit: genome_bed
     path "gene_range_table.tsv", emit: gene_range_table
-    path "genome_lengths.parquet", emit: genome_lengths
     path "null_model.parquet", emit: null_model
     path "profiling_contract.json", emit: profiling_contract
     script:
@@ -551,6 +538,9 @@ process prepare_profile_no_genes{
 zipstrain utilities prepare_profiling \\
         --reference-fasta ${reference_genome} \\
         --stb-file ${stb_file} \\
+        --error-rate ${params.error_rate} \\
+        --max-total-reads ${params.max_total_reads} \\
+        --p-threshold ${params.p_threshold} \\
         --output-dir .
 """
 
@@ -569,7 +559,7 @@ process fromSRAtoProfileBuildDb{
     val sra_id, emit: sample_name
     script:
     """
-    prefetch --max-size 200g ${sra_id}
+    prefetch --max-size ${params.prefetch_max_size} ${sra_id}
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
     rm -rf ${sra_id}/${sra_id}.sra
 
@@ -593,6 +583,9 @@ process fromSRAtoProfileBuildDb{
     zipstrain utilities prepare_profiling \\
         --reference-fasta reference_genomes.fna \\
         --stb-file reference_genomes.stb \\
+        --error-rate ${params.error_rate} \\
+        --max-total-reads ${params.max_total_reads} \\
+        --p-threshold ${params.p_threshold} \\
         --output-dir .
 
     bowtie2 -x reference_genomes.fna \$bowtie_reads --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
@@ -605,6 +598,10 @@ process fromSRAtoProfileBuildDb{
         --null-model null_model.parquet \\
         --profiling-contract profiling_contract.json \\
         --max-concurrency ${task.cpus} \\
+        --min-mapq ${params.min_mapq} \\
+        --min-baseq ${params.min_baseq} \\
+        --min-read-ani ${params.min_read_ani} \\
+        --read-inclusion ${params.read_inclusion} \\
         --output-dir .
 
     rm -rf ${sra_id}
@@ -613,6 +610,9 @@ process fromSRAtoProfileBuildDb{
 }
 workflow
 {
+    if (!params.mode) {
+        error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+    }
 
     if (params.mode == 'map_reads') {
         
@@ -700,7 +700,6 @@ workflow
                 prepare_profile(reference_genome, gene_file, file(params.stb))
                 genome_bed = prepare_profile.out.genome_bed
                 gene_range_table = prepare_profile.out.gene_range_table
-                genome_lengths = prepare_profile.out.genome_lengths
                 null_model = prepare_profile.out.null_model
                 profiling_contract = prepare_profile.out.profiling_contract
             }
@@ -708,11 +707,10 @@ workflow
                 prepare_profile_no_genes(reference_genome, file(params.stb))
                 genome_bed = prepare_profile_no_genes.out.genome_bed
                 gene_range_table = prepare_profile_no_genes.out.gene_range_table
-                genome_lengths = prepare_profile_no_genes.out.genome_lengths
                 null_model = prepare_profile_no_genes.out.null_model
                 profiling_contract = prepare_profile_no_genes.out.profiling_contract
             }
-            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, genome_lengths, file(params.stb), null_model, profiling_contract)
+            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, file(params.stb), null_model, profiling_contract)
         }
     }
     if (params.mode =='profile') {
@@ -729,7 +727,7 @@ workflow
         input_table = tableToDict(file(params.input_table))
         
         if (params.input_type=="profile_table"){
-            profile_locations_list = getProfileLocationsTableColumn(input_table).collect{t->file(t)}
+            profile_locations_list = getProfilesTableColumn(input_table).collect{t->file(t)}
             sample_names_list = getProfileSampleNamesTableColumn(input_table)
             profiles=[profile_locations_list,sample_names_list].transpose()
             def profile_pairs = []
@@ -744,9 +742,9 @@ workflow
         {
             sample_1=input_table['sample_name_1']
             sample_2=input_table['sample_name_2']
-            mpile_1=input_table["profile_location_1"].collect{t->file(t)}
-            mpile_2=input_table["profile_location_2"].collect{t->file(t)}
-            profile_pairs=([mpile_1]+[sample_1]+[mpile_2]+[sample_2]).transpose()
+            profile_1=input_table["profile_location_1"].collect{t->file(t)}
+            profile_2=input_table["profile_location_2"].collect{t->file(t)}
+            profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
             pair_channel=Channel.from(profile_pairs)
 
         }
@@ -759,7 +757,7 @@ workflow
         input_table = tableToDict(file(params.input_table))
         
         if (params.input_type=="profile_table"){
-            profile_locations_list = getProfileLocationsTableColumn(input_table).collect{t->file(t)}
+            profile_locations_list = getProfilesTableColumn(input_table).collect{t->file(t)}
             sample_names_list = getProfileSampleNamesTableColumn(input_table)
             profiles=[profile_locations_list,sample_names_list].transpose()
             profile_pairs = []
@@ -774,16 +772,20 @@ workflow
         {
             sample_1=input_table['sample_name_1']
             sample_2=input_table['sample_name_2']
-            mpile_1=input_table["profile_location_1"].collect{t->file(t)}
-            mpile_2=input_table["profile_location_2"].collect{t->file(t)}
-            profile_pairs=([mpile_1]+[sample_1]+[mpile_2]+[sample_2]).transpose()
+            profile_1=input_table["profile_location_1"].collect{t->file(t)}
+            profile_2=input_table["profile_location_2"].collect{t->file(t)}
+            profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
             pair_channel=Channel.from(profile_pairs)
 
         }
         stb = file(params.stb)
         compare_genomes(pair_channel, stb)
 
-}}
+    }
+    else if (!(params.mode in ['map_reads', 'from_sra_to_profile'])) {
+        error "Unknown --mode '${params.mode}'. Choose one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+    }
+}
 
 workflow profile{
     take:
@@ -819,23 +821,26 @@ workflow compare_genomes
     if (params.parallel_mode=="single") {
 
     profile_pairs.multiMap{ v ->
-        mpile_1: v[0]
-        mpile_2: v[2]
+        profile_1: v[0]
+        profile_2: v[2]
         pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_genome_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, stb, profile_pairs.pair_name)
+    compare_genome_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name)
     merge_comparison_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
     batch.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
-        unique_mpiles: (v[0]+v[2]).unique().sort()
+        unique_profiles: (v[0]+v[2]).unique().sort()
         pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_genome_batched(batch_pairs.unique_mpiles, batch_pairs.pairs, stb)
+    compare_genome_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb)
     merge_comparison_tables(compare_genome_batched.out.comparison_results.collect() )
+    }
+    else {
+        error "Set --parallel_mode to either single or batched"
     }
 
 
@@ -850,23 +855,26 @@ workflow compare_genes{
     if (params.parallel_mode=="single") {
 
     profile_pairs.multiMap{ v ->
-        mpile_1: v[0]
-        mpile_2: v[2]
+        profile_1: v[0]
+        profile_2: v[2]
         pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_gene_fast_profiles_single(profile_pairs.mpile_1, profile_pairs.mpile_2, stb, profile_pairs.pair_name)
+    compare_gene_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name)
     merge_comparison_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
     batch.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
-        unique_mpiles: (v[0]+v[2]).unique().sort()
+        unique_profiles: (v[0]+v[2]).unique().sort()
         pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_gene_batched(batch_pairs.unique_mpiles, batch_pairs.pairs, stb)
+    compare_gene_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb)
     merge_comparison_tables(compare_gene_batched.out.comparison_results.collect() )
+    }
+    else {
+        error "Set --parallel_mode to either single or batched"
     }
 
 }

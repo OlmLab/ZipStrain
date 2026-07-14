@@ -45,55 +45,6 @@ def profile_1()->pl.LazyFrame:
     }).lazy()
     
 
-@pytest.fixture(scope="module")
-def stb()->pl.LazyFrame:
-    return pl.DataFrame({
-        "scaffold":["chr1","chr2","chr3"],
-        "genome":["genome1","genome1","genome2"],
-    }).lazy()
-    
-@pytest.mark.parametrize("min_cov,freq_threshold", [
-    (5, 0.8),
-    (10, 0.5)
-])
-def test_get_strain_hetrogeneity(profile_1, stb, min_cov, freq_threshold):
-    het_profile=profile.get_strain_hetrogeneity(profile_1, stb, min_cov=min_cov, freq_threshold=freq_threshold).collect().rows_by_key("genome",unique=True,named=True)
-    genome1_freq=[
-        a_chr1 + a_chr2 ,
-        t_chr1 + t_chr2 ,
-        c_chr1 + c_chr2 ,
-        g_chr1 + g_chr2 ,
-    ]
-    genome2_freq=[
-        a_chr3,
-        t_chr3,
-        c_chr3,
-        g_chr3,
-    ]
-    assert het_profile["genome1"][f"total_sites_at_{min_cov}_coverage"]==sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov)
-    assert het_profile["genome2"][f"total_sites_at_{min_cov}_coverage"]==sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov)
-    assert het_profile["genome1"]["heterogeneous_sites"]== sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome1_freq))[pos])/sum(list(zip(*genome1_freq))[pos]) < freq_threshold)
-    assert het_profile["genome2"]["heterogeneous_sites"]== sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome2_freq))[pos])/sum(list(zip(*genome2_freq))[pos]) < freq_threshold)
-    
-    assert het_profile["genome1"]["strain_heterogeneity"]== sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome1_freq))[pos])/sum(list(zip(*genome1_freq))[pos]) < freq_threshold) / \
-                                                        sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov)
-    
-    assert het_profile["genome2"]["strain_heterogeneity"]== sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome2_freq))[pos])/sum(list(zip(*genome2_freq))[pos]) < freq_threshold) / \
-                                                        sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov)
-
-
 def test_duckdb_chunk_annotation_matches_polars_for_unsorted_chunk(tmp_path: Path):
     adjusted = pl.DataFrame(
         {

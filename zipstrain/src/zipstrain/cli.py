@@ -503,45 +503,6 @@ def process_mpileup(batch_size, output_file):
     """
     ut.process_mpileup_function(batch_size, output_file)
     
-@utilities.command("make_bed")
-@click.option('--db-fasta-dir', '-d', required=True, help="Path to the database in fasta format.")
-@click.option('--max-scaffold-length', '-m', default=500000, help="Maximum scaffold length to split into multiple entries.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output BED file.")
-def make_bed(db_fasta_dir, max_scaffold_length, output_file):
-    """
-    Create a BED file from the database in fasta format.
-
-    Args:
-    db_fasta_dir (str): Path to the fasta file.
-    max_scaffold_length (int): Splits scaffolds longer than this into multiple entries of length <= max_scaffold_length.
-    output_file (str): Path to save the output BED file.
-    """
-    bed_df = ut.make_the_bed(db_fasta_dir, max_scaffold_length)
-    bed_df.write_csv(output_file, separator='\t', include_header=False)
-
-@utilities.command("get_genome_lengths")
-@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--bed-file', '-b', required=True, help="Path to the BED file.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def get_genome_lengths(stb_file, bed_file, output_file):
-    """
-    Extract the genome length information from the scaffold-to-genome mapping table.
-
-    Args:
-    stb_file (str): Path to the scaffold-to-genome mapping file.
-    bed_file (str): Path to the BED file containing genomic regions.
-    output_file (str): Path to save the output Parquet file.
-    """
-    stb = pf.read_stb(stb_file)
-    
-    bed_table = pl.scan_csv(bed_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").cast(pl.Int64).alias("start"),
-        pl.col("column_3").cast(pl.Int64).alias("end")
-    ).select(["scaffold", "start", "end"])
-    genome_length = ut.extract_genome_length(stb, bed_table)
-    genome_length.sink_parquet(output_file, compression='zstd')
-
 @utilities.command("merge-stat-tables")
 @click.option('--stat-table', '-s', multiple=True, required=True, help="Stat parquet file to include. Repeat for multiple files.")
 @click.option('--output-file', '-o', required=True, help="Path to save the merged stat table.")
@@ -560,43 +521,17 @@ def merge_stat_tables(stat_table, output_file):
     )
 
 
-@utilities.command("get-coverage-stats")
-@click.option('--profile-parquet', '-p', required=True, help="Classic profile parquet file.")
-@click.option('--gene-bed', '-g', required=True, help="Gene BED/range file. Supports 4 columns (gene, scaffold, start, end) or 5 columns (+ genome).")
-@click.option('--genome-bed', '-b', required=True, help="Genome BED file. Supports 3 columns (scaffold, start, end) or 4 columns (+ genome).")
-@click.option('--output-dir', '-o', required=True, help="Directory to write the gene/genome stats parquet files.")
-@click.option('--prefix', required=True, help="Prefix for the output files.")
-def get_coverage_stats(profile_parquet, gene_bed, genome_bed, output_dir, prefix):
-    """
-    Build coverage-only gene and genome stats from an existing profile parquet.
-    """
-    summary = ut.get_coverage_stats(
-        profile_parquet=profile_parquet,
-        gene_bed_file=gene_bed,
-        genome_bed_file=genome_bed,
-        output_dir=output_dir,
-        prefix=prefix,
-    )
-    click.echo(
-        f"gene_stats={summary['gene_stats_file']} "
-        f"genome_stats={summary['genome_stats_file']} "
-        f"gene_rows={summary['gene_rows']} "
-        f"genome_rows={summary['genome_rows']} "
-        f"cov_sites_column={summary['cov_sites_column']}"
-    )
-
-
-@utilities.command("generate-genome-pairs")
+@utilities.command("generate-sample-pair")
 @click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
 @click.option('--output-file', '-o', required=True, help="Output parquet file with all non-redundant profile pairs.")
 @click.option('--write-batch-size', type=int, default=100000, show_default=True, help="How many pairs to buffer before writing a parquet row group.")
-def generate_genome_pairs(profile_dir, output_file, write_batch_size):
-    """Generate a pair table ready for chunk-genome-compare or other compare utilities."""
+def generate_sample_pair(profile_dir, output_file, write_batch_size):
+    """Generate a sample-pair table ready for chunk-genome-compare or other compare utilities."""
     def _emit_progress(message: str) -> None:
         click.echo(message, err=True)
         sys.stderr.flush()
 
-    summary = ut.generate_genome_pairs(
+    summary = ut.generate_sample_pairs(
         profile_dir=profile_dir,
         output_file=output_file,
         write_batch_size=write_batch_size,
@@ -656,30 +591,6 @@ def chunk_genome_compare(pair_table, stb_file, output_file, workers, min_cov, mi
         f"avg_s_per_genome_row={summary['avg_seconds_per_genome_row']:.4f} "
         f"avg_genome_rows_per_pair={summary['avg_genome_rows_per_pair']:.2f}"
     )
-    
-@utilities.command("strain_heterogeneity")
-@click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
-@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--freq-threshold', '-f', default=0.8, help="Frequency threshold to define dominant nucleotide.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output_file):
-    """
-    Calculate strain heterogeneity for each genome based on nucleotide frequencies.
-
-    Args:
-    profile_file (str): Path to the profile Parquet file.
-    stb_file (str): Path to the scaffold-to-genome mapping file.
-    min_cov (int): Minimum coverage to consider a position.
-    freq_threshold (float): Frequency threshold to define dominant nucleotide.
-    output_file (str): Path to save the output Parquet file.
-    """
-    profile = pl.scan_parquet(profile_file)
-    stb = pf.read_stb(stb_file)
-    
-    het_profile = pf.get_strain_hetrogeneity(profile, stb, min_cov=min_cov, freq_threshold=freq_threshold)
-    het_profile.sink_parquet(output_file, compression='zstd')
-
 @utilities.command("get-snp-reference")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
 @click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage required for a site to contribute.")
@@ -1442,8 +1353,8 @@ def get_gene_range_table(gene_file, output_file):
 
 
 @utilities.command("single_compare_genome")
-@click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
-@click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
+@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
+@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
 @click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
@@ -1455,28 +1366,28 @@ def get_gene_range_table(gene_file, output_file):
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """
-    Main function to compare two mpileup files and calculate genome and gene statistics.
+    Compare two profile parquets and calculate genome-level comparison statistics.
     
     Args:
-    mpileup_contig_1 (str): Path to the first mpileup file.
-    mpileup_contig_2 (str): Path to the second mpileup file.
+    profile_location_1 (str): Path to the first profile parquet.
+    profile_location_2 (str): Path to the second profile parquet.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     output_file (str): Path to save the parquet file.
     genome (str): If provided, do the comparison only for the specified genome.
     stb_file (str): Optional path to the scaffold to genome mapping file.
     """
-    mpile_contig_1_name = ut.infer_sample_name_from_profile(mpileup_contig_1)
-    mpile_contig_2_name = ut.infer_sample_name_from_profile(mpileup_contig_2)
+    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
+    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
     calculations = cp.parse_genome_calculations(calculate)
     output_cols = cp.genome_metric_output_columns(calculations)
     compare_metadata = ut.build_single_compare_metadata(
-        mpileup_contig_1,
-        mpileup_contig_2,
+        profile_location_1,
+        profile_location_2,
         compare_kind="genome",
         scope=genome,
         min_cov=min_cov,
@@ -1486,23 +1397,23 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         ani_method=ani_method,
     )
 
-    mpile_1_for_compare = mpileup_contig_1
-    mpile_2_for_compare = mpileup_contig_2
+    profile_1_for_compare = profile_location_1
+    profile_2_for_compare = profile_location_2
     if engine == "polars" and genome != "all":
-        mpile_1_for_compare, mpile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             genome_scope=genome,
         )
 
     if engine == "duckdb":
         cp.duckdb_compare_genomes_to_parquet(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             output_file=output_file,
             stb_file=stb_file,
-            sample_1_name=mpile_contig_1_name,
-            sample_2_name=mpile_contig_2_name,
+            sample_1_name=profile_1_name,
+            sample_2_name=profile_2_name,
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome,
@@ -1516,8 +1427,8 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         return
 
     comp = cp.compare_genomes(
-        mpile_contig_1=mpile_1_for_compare,
-        mpile_contig_2=mpile_2_for_compare,
+        mpile_contig_1=profile_1_for_compare,
+        mpile_contig_2=profile_2_for_compare,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         genome_scope=genome,
@@ -1529,14 +1440,14 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         stb_file=stb_file,
         calculate=calculations,
     ).with_columns(
-        sample_1=pl.lit(mpile_contig_1_name),
-        sample_2=pl.lit(mpile_contig_2_name),
+        sample_1=pl.lit(profile_1_name),
+        sample_2=pl.lit(profile_2_name),
     ).select(output_cols + ["sample_1", "sample_2"])
     comp.sink_parquet(output_file, compression='zstd', metadata=compare_metadata)
 
 @utilities.command("single_compare_gene")
-@click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
-@click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
+@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
+@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
 @click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. Currently unused for gene compare, and accepted for workflow consistency.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
@@ -1547,13 +1458,13 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """
-    Compare two mpileup files and calculate gene-level comparison statistics.
+    Compare two profile parquets and calculate gene-level comparison statistics.
     
     Args:
-    mpileup_contig_1 (str): Path to the first mpileup file.
-    mpileup_contig_2 (str): Path to the second mpileup file.
+    profile_location_1 (str): Path to the first profile parquet.
+    profile_location_2 (str): Path to the second profile parquet.
     stb_file (str | None): Optional path to the scaffold to genome mapping file.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
@@ -1562,8 +1473,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     ani_method (str): ANI calculation method to use.
     """
 
-    mpile_contig_1_name = ut.infer_sample_name_from_profile(mpileup_contig_1)
-    mpile_contig_2_name = ut.infer_sample_name_from_profile(mpileup_contig_2)
+    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
+    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
 
@@ -1572,8 +1483,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         raise ValueError("scope must be in 'GENOME:GENE' format (e.g., all:all).")
     genome_scope, gene_scope = scope.split(":", 1)
     compare_metadata = ut.build_single_compare_metadata(
-        mpileup_contig_1,
-        mpileup_contig_2,
+        profile_location_1,
+        profile_location_2,
         compare_kind="gene",
         scope=scope,
         min_cov=min_cov,
@@ -1583,23 +1494,23 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         ani_method=ani_method,
     )
 
-    mpile_1_for_compare = mpileup_contig_1
-    mpile_2_for_compare = mpileup_contig_2
+    profile_1_for_compare = profile_location_1
+    profile_2_for_compare = profile_location_2
     if engine == "polars" and (genome_scope != "all" or gene_scope != "all"):
-        mpile_1_for_compare, mpile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             genome_scope=genome_scope,
             gene_scope=gene_scope,
         )
 
     if engine == "duckdb":
         cp.duckdb_compare_genes_to_parquet(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             output_file=output_file,
-            sample_1_name=mpile_contig_1_name,
-            sample_2_name=mpile_contig_2_name,
+            sample_1_name=profile_1_name,
+            sample_2_name=profile_2_name,
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
@@ -1613,8 +1524,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         return
 
     gene_comp = cp.compare_genes(
-        mpile_contig_1=mpile_1_for_compare,
-        mpile_contig_2=mpile_2_for_compare,
+        mpile_contig_1=profile_1_for_compare,
+        mpile_contig_2=profile_2_for_compare,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         genome_scope=genome_scope,
@@ -1625,8 +1536,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         duckdb_threads=duckdb_threads,
         engine="polars",
     ).with_columns(
-        sample_1=pl.lit(mpile_contig_1_name),
-        sample_2=pl.lit(mpile_contig_2_name),
+        sample_1=pl.lit(profile_1_name),
+        sample_2=pl.lit(profile_2_name),
     ).select(
         "genome",
         "gene",

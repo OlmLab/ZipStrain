@@ -112,13 +112,24 @@ def test_nextflow_calls_updated_profile_commands():
     assert "zipstrain utilities profile-single" in text
 
 
-def test_nextflow_compare_profile_tables_use_profile_location_names_and_engine_param():
+def test_nextflow_compare_profile_tables_use_profiles_column_and_engine_param():
     text = NEXTFLOW_FILE.read_text()
     assert 'params.compare_engine="polars"' in text
-    assert "getProfileLocationsTableColumn" in text
+    assert "getProfilesTableColumn" in text
     assert "getProfileSampleNamesTableColumn" in text
+    assert "input_table.containsKey('profiles')" in text
     assert "profile_location" in text
+    assert "--profile-location-1" in text
+    assert "--profile-location-2" in text
     assert "--engine ${params.compare_engine}" in text
+
+
+def test_nextflow_requires_mode_and_defaults_to_batched_compare():
+    text = NEXTFLOW_FILE.read_text()
+    assert "params.mode = null" in text
+    assert 'params.parallel_mode="batched"' in text
+    assert "Set --mode to one of" in text
+    assert "Set --parallel_mode to either single or batched" in text
 
 
 def test_nextflow_from_sra_to_profile_auto_builds_reference_without_genes():
@@ -167,6 +178,21 @@ def test_nextflow_profile_processes_pass_profiling_contract():
     assert "prepare_profile_no_genes.out.profiling_contract" in text
 
 
+def test_nextflow_profile_processes_pass_read_filters_and_null_model_params():
+    text = NEXTFLOW_FILE.read_text()
+    assert "params.min_mapq=0" in text
+    assert "params.min_baseq=13" in text
+    assert "params.min_read_ani=0.95" in text
+    assert 'params.read_inclusion="paired"' in text
+    assert "--min-mapq ${params.min_mapq}" in text
+    assert "--min-baseq ${params.min_baseq}" in text
+    assert "--min-read-ani ${params.min_read_ani}" in text
+    assert "--read-inclusion ${params.read_inclusion}" in text
+    assert "--error-rate ${params.error_rate}" in text
+    assert "--max-total-reads ${params.max_total_reads}" in text
+    assert "--p-threshold ${params.p_threshold}" in text
+
+
 def test_nextflow_processes_match_conf_config():
     assert _nextflow_process_names() == _conf_process_names()
 
@@ -196,7 +222,7 @@ def _write_compare_genomes_fixtures(tmp_path: pathlib.Path) -> tuple[pathlib.Pat
 
     profiles_csv = tmp_path / "profiles.csv"
     profiles_csv.write_text(
-        "sample_name,profile_location\n"
+        "sample_name,profiles\n"
         f"sample1,{profile_1}\n"
         f"sample2,{profile_2}\n"
     )

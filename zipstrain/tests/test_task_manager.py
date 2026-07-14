@@ -497,8 +497,8 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
 
     tasks = asyncio.run(_collect())
     assert len(tasks) == 2
-    assert tasks[0].inputs["mpile_1_file"].get_value() == str(profile_1.absolute())
-    assert tasks[0].inputs["mpile_2_file"].get_value() == str(profile_2.absolute())
+    assert tasks[0].inputs["profile_1_file"].get_value() == str(profile_1.absolute())
+    assert tasks[0].inputs["profile_2_file"].get_value() == str(profile_2.absolute())
     assert tasks[0].inputs["stb-file-arg"].get_value() == f"--stb-file {stb_file.absolute()}"
     assert tasks[0].inputs["ani-method-arg"].get_value() == "--ani-method popani"
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
@@ -658,8 +658,8 @@ def test_fast_compare_batch_cleanup_is_idempotent(tmp_path):
     task = task_manager.FastCompareTask(
         id="cmp",
         inputs={
-            "mpile_1_file": task_manager.FileInput(profile_1),
-            "mpile_2_file": task_manager.FileInput(profile_2),
+            "profile_1_file": task_manager.FileInput(profile_1),
+            "profile_2_file": task_manager.FileInput(profile_2),
             "stb-file-arg": task_manager.StringInput(""),
             "min_cov": task_manager.IntInput(5),
             "min-gene-compare-len": task_manager.IntInput(100),

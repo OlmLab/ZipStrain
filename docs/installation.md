@@ -153,7 +153,7 @@ A known-good combination (the current ZipStrain development environment). Newer 
 
 | Package / tool | Version | Used by |
 |---|---|---|
-| zipstrain | 0.11.1 | — |
+| zipstrain | 1.0.0 | — |
 | Python | 3.12 | everything |
 | samtools | 1.23 | `profile`, `map` |
 | bowtie2 | 2.5.5 | `map` |
@@ -225,7 +225,7 @@ The repo ships a `nextflow.config` that enables **Docker by default**, so a lapt
 nextflow run OlmLab/ZipStrain --mode ... --input_table ... --output_dir ... -resume
 ```
 
-On a cluster, add `-profile fiji` (or `gutbot`/`alpine`/`blanca`) to switch to a Singularity/Slurm profile from the bundled `conf.config`. Review the container tag/paths there before running on a new system (the published image is `parsaghadermazi/zipstrain:<version>`).
+On a cluster, keep site-specific SLURM profiles in a local ignored config such as `conf.local.config`, then run with `-c conf.local.config -profile <name>`. The public config only ships generic Docker/Apptainer profiles and uses the published image tag from `nextflow.config`.
 
 ### Confirmed working versions
 
@@ -233,7 +233,7 @@ On a cluster, add `-profile fiji` (or `gutbot`/`alpine`/`blanca`) to switch to a
 |---|---|
 | Nextflow | 24.10.0 |
 | Java (JDK) | 17+ |
-| ZipStrain container | `parsaghadermazi/zipstrain:0.11.1` |
+| ZipStrain container | `parsaghadermazi/zipstrain:1.0.0` |
 
 ZipStrain's continuous integration runs the pipeline against **Nextflow 24.10.0**, so that is the confirmed-working version. Pin it with `export NXF_VER=24.10.0` before running to match CI exactly. Newer Nextflow releases (26.x) tightened DSL syntax — the bundled `zipstrain.nf` is kept compatible, but pin to a tested version if you hit parse errors.
 
@@ -241,4 +241,4 @@ ZipStrain's continuous integration runs the pipeline against **Nextflow 24.10.0*
 
 - **"Cannot find Java or it's the wrong version"** — install Java 17+ and make sure `java -version` reports it (Nextflow reads `JAVA_HOME`/`PATH`).
 - **Nextflow parse/DSL errors** — pin to the tested release with `export NXF_VER=24.10.0` before running.
-- **Container not found / pull failures** — confirm your engine is installed and running, and that the image tag in `conf.config` is reachable from your host or cluster.
+- **Container not found / pull failures** — confirm your engine is installed and running, and that the image tag in `nextflow.config` or your local site config is reachable from your host or cluster.
