@@ -1,0 +1,1581 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>User Manual - ZipStrain</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "User Manual";
+        var mkdocs_page_input_path = "usermanual.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> ZipStrain
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../quickstart/">Quick Start</a>
+                </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">User Manual</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#an-overview-of-zipstrain-and-the-data-it-generates">An overview of ZipStrain and the data it generates</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#zipstrain-command-line-interface">ZipStrain Command Line Interface</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#run-logging">Run logging</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#map">Map</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-map">zipstrain map</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#profile">Profile</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-profile">zipstrain profile</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#comparison">Comparison</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-compare">zipstrain compare</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#test">Test</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-test">zipstrain test</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#utilities">Utilities</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-prepare_profiling">zipstrain utilities prepare_profiling</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-profile-single">zipstrain utilities profile-single</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-get-snp-reference">zipstrain utilities get-snp-reference</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-single_compare_genome">zipstrain utilities single_compare_genome</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-generate-sample-pair">zipstrain utilities generate-sample-pair</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-chunk-genome-compare">zipstrain utilities chunk-genome-compare</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-single_compare_gene">zipstrain utilities single_compare_gene</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-to-complete-table">zipstrain utilities to-complete-table</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-build-genome-db">zipstrain utilities build-genome-db</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#automatically-build-a-reference-database">Automatically build a reference database</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-build-matrix-db">zipstrain utilities build-matrix-db</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-append-matrix-db">zipstrain utilities append-matrix-db</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-matrix-db-to-hdf5">zipstrain utilities matrix-db-to-hdf5</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-matrix-compare">zipstrain utilities matrix-compare</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-matrix-compare-export">zipstrain utilities matrix-compare-export</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-parquet-to-csv">zipstrain utilities parquet-to-csv</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-merge_parquet">zipstrain utilities merge_parquet</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#zipstrain-utilities-build-profile-db">zipstrain utilities build-profile-db</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#other-utility-commands">Other Utility Commands</a>
+    </li>
+        </ul>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#nextflow-implementation">Nextflow Implementation</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#when-to-use-the-nextflow-pipeline">When to use the Nextflow pipeline</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#setup">Setup</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#general-running-pattern">General running pattern</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#pipeline-modes">Pipeline modes</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#key-parameters">Key parameters</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#command-1-map-reads-mode-map_reads">Command 1: Map reads (--mode map_reads)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#command-2-profile-bams-mode-profile">Command 2: Profile BAMs (--mode profile)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#command-3-sra-to-profile-end-to-end-mode-from_sra_to_profile">Command 3: SRA to profile, end to end (--mode from_sra_to_profile)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#command-4-compare-genomes-mode-compare_genomes">Command 4: Compare genomes (--mode compare_genomes)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#command-5-compare-genes-mode-compare_genes">Command 5: Compare genes (--mode compare_genes)</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../expected_output/">Expected output</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">ZipStrain</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">User Manual</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="user-manual">User Manual</h1>
+<h2 id="an-overview-of-zipstrain-and-the-data-it-generates">An overview of ZipStrain and the data it generates</h2>
+<p>ZipStrain is a program for microbial metagenomic analysis. The primary use cases for ZipStrain are to accurately determine organism presence / absence in a community, and to perform detailed comparisons between organisms in different samples.</p>
+<p>There are two ways of interacting with ZipStrain: the <strong>Python CLI</strong> and the <strong>Nextflow pipeline</strong>. Both run the same underlying analysis and produce the same output tables; they differ in how the work is orchestrated and how much infrastructure they assume.</p>
+<p><strong>Python CLI</strong> (<code>zipstrain map | profile | compare</code>)</p>
+<ul>
+<li><em>Pros:</em> nothing to install beyond ZipStrain and its dependencies; easy to run one step at a time and inspect intermediates; simplest path on a laptop, a single workstation, or an interactive session; the newer matrix-store comparison workflow is CLI-only.</li>
+<li><em>Cons:</em> you drive the steps yourself; large cohorts on a cluster mean managing SLURM submission and resumption by hand (the commands support <code>--execution-mode slurm</code>, but Nextflow does more of this for you).</li>
+<li><em>Best when:</em> you are exploring, working on a handful of samples, prototyping, or want the matrix workflow.</li>
+</ul>
+<p><strong>Nextflow pipeline</strong> (<code>nextflow run OlmLab/ZipStrain</code>)</p>
+<ul>
+<li><em>Pros:</em> one command runs the whole map → profile → compare chain; built-in <code>-resume</code>, containerization (Docker/Singularity/Apptainer), and scheduler execution (SLURM, etc.) via execution profiles; scales cleanly to large cohorts and shared HPC systems; reproducible across machines.</li>
+<li><em>Cons:</em> requires Nextflow (and usually a container engine) and some config setup; less convenient for poking at a single intermediate step; the matrix comparison workflow is not yet wired into Nextflow.</li>
+<li><em>Best when:</em> you are processing many samples, running on a cluster, or want a reproducible, restartable, containerized pipeline.</li>
+</ul>
+<p>A common pattern is to prototype with the CLI on a few samples, then scale the same analysis out with Nextflow. The <a href="#zipstrain-command-line-interface">ZipStrain Command Line Interface</a> section below documents the CLI; <a href="#nextflow-implementation">Nextflow Implementation</a> covers the pipeline.</p>
+<h2 id="zipstrain-command-line-interface">ZipStrain Command Line Interface</h2>
+<p>A typical ZipStrain run has three steps, each its own top-level command:</p>
+<ol>
+<li><strong><code>zipstrain map</code></strong> — turn reads into sorted BAM files</li>
+<li><strong><code>zipstrain profile</code></strong> — profile those BAMs at nucleotide resolution</li>
+<li><strong><code>zipstrain compare</code></strong> — compare samples to each other by ANI</li>
+</ol>
+<p>Two more commands round it out: <strong><code>zipstrain test</code></strong> checks your environment, and <strong><code>zipstrain utilities</code></strong> groups the lower-level helpers that the three main commands are built from (you rarely call these directly).</p>
+<p>For end-to-end, copy-pasteable examples, start with the <a href="../Tutorial/">Tutorial</a>; for the files each command writes, see <a href="../expected_output/">Expected output</a>. This page is the reference for what each command does and its major options.</p>
+<p>Every command supports <code>-h</code>/<code>--help</code>, and grouped utilities take a subcommand:</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>--help<span class="w">                 </span><span class="c1"># top-level commands</span>
+zipstrain<span class="w"> </span>&lt;command&gt;<span class="w"> </span>--help<span class="w">       </span><span class="c1"># e.g. zipstrain profile --help</span>
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>&lt;cmd&gt;<span class="w"> </span>--help<span class="w"> </span><span class="c1"># e.g. zipstrain utilities build-genome-db --help</span>
+</code></pre></div>
+<details>
+<summary><code>zipstrain --help</code></summary>
+
+<div class="highlight"><pre><span></span><code>Usage: zipstrain [OPTIONS] COMMAND [ARGS]...
+
+  ZipStrain — fast strain-level metagenomic profiling and comparison.
+
+  A typical run goes: map reads to BAMs, profile them at nucleotide
+  resolution, then compare samples by ANI.
+
+  Developed by Parsa Ghadermazi and Matt Olm in the Olm Lab at the University
+  of Colorado Boulder.
+
+Options:
+  --version   Show the version and exit.
+  -h, --help  Show this message and exit.
+
+Commands:
+  test       Check your environment is ready.
+  map        Map reads to sorted BAMs.
+  profile    Profile BAMs at nucleotide resolution.
+  compare    Compare samples (genomes or genes).
+  utilities  Lower-level helper commands.
+
+  Source &amp; docs: https://github.com/OlmLab/ZipStrain
+</code></pre></div>
+
+</details>
+
+<h3 id="run-logging">Run logging</h3>
+<p>Every <code>map</code>, <code>profile</code>, and <code>compare</code> run writes two logging files into its output directory (<code>--output-dir</code> for <code>map</code>, <code>--run-dir</code> for <code>profile</code>/<code>compare</code>), so you can tell at a glance whether a run is still going, finished, or crashed:</p>
+<ul>
+<li><strong><code>zipstrain_run.log</code></strong> — a human-readable, append-only timeline: a header (ZipStrain version, full command, working directory, process id, start time) followed by a timestamped line for each step. On success it ends with <code>COMPLETED</code>; on failure it ends with <code>CRASHED</code> (or <code>ABORTED</code> for a Ctrl-C), the step that was running, and the full Python traceback.</li>
+<li><strong><code>zipstrain_status.json</code></strong> — a machine-readable snapshot with <code>status</code> (<code>running</code> / <code>completed</code> / <code>crashed</code> / <code>aborted</code>), <code>last_step</code>, <code>pid</code>, timestamps, <code>elapsed_seconds</code>, and — on failure — <code>error_type</code>, <code>error_message</code>, and <code>failed_during_step</code>.</li>
+</ul>
+<p>A quick way to check on a run:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># What is (or was) it doing?</span>
+grep<span class="w"> </span>-E<span class="w"> </span><span class="s1">&#39;RUNNING|STEP|COMPLETED|CRASHED|ABORTED&#39;</span><span class="w"> </span>out_dir/zipstrain_run.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail
+<span class="c1"># Just the status</span>
+python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import json; print(json.load(open(&#39;out_dir/zipstrain_status.json&#39;))[&#39;status&#39;])&quot;</span>
+</code></pre></div>
+<p>If <code>status</code> is <code>running</code> but nothing has updated for a long time, use the recorded <code>pid</code> to check whether the process is still alive (e.g. <code>ps -p &lt;pid&gt;</code>). Because the log is append-only, re-running in the same directory (for example to <a href="#map">resume <code>map</code></a>) adds a fresh block rather than overwriting the previous run's history.</p>
+<h3 id="map">Map</h3>
+<h4 id="zipstrain-map"><code>zipstrain map</code></h4>
+<p>Turn sequencing reads into sorted, indexed BAM files ready for <code>zipstrain profile</code>. You provide a reads table (<code>sample_name,reads1[,reads2]</code>). If you also pass <code>--reference-fasta</code> (plus its <code>--stb-file</code>), ZipStrain maps against it with Bowtie2. If you <strong>omit</strong> the reference, ZipStrain runs Sylph to auto-pick reference genomes from the reads, downloads and caches them, and maps against the built reference — so a minimal run needs only a reads table, an output directory, and (for the Sylph route) a database and cache directory.</p>
+<p>Alongside the BAMs it writes the reference FASTA + STB and a <code>samples.txt</code> you can hand straight to <code>zipstrain profile</code>. On the Sylph route it also writes a <code>reference_genomes_taxonomy.tsv</code> that <code>profile</code> auto-discovers to populate <code>genome_taxonomy</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Sylph auto-reference (no reference on hand)</span>
+zipstrain<span class="w"> </span>map<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reads-table<span class="w"> </span>reads.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>out_map<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--sylph-db<span class="w"> </span>gtdb-r220-c200-dbv1.syldb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--genome-cache-dir<span class="w"> </span>genome_cache
+
+<span class="c1"># Map against a reference you already have</span>
+zipstrain<span class="w"> </span>map<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reads-table<span class="w"> </span>reads.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference-fasta<span class="w"> </span>reference_genomes.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>reference_genomes.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>out_map
+</code></pre></div>
+<p>Major options:</p>
+<ul>
+<li><code>-i, --reads-table</code> / <code>-o, --output-dir</code> (required) — reads CSV and output directory</li>
+<li><code>-f, --reference-fasta</code> + <code>-s, --stb-file</code> — map against an existing reference (skips Sylph)</li>
+<li><code>--sylph-db</code> / <code>--sylph-db-url</code> / <code>--genome-cache-dir</code> — Sylph database and genome cache for the auto-reference route</li>
+<li><code>--predict-genes</code> — also run prodigal to emit a gene FASTA for later gene-level profiling</li>
+<li><code>--non-competitive</code> — pass <code>-a</code> to Bowtie2 (report all alignments)</li>
+<li><code>--force</code> — redo every step even if cached outputs exist (see resume note below)</li>
+<li><code>-t, --threads</code> (default: <code>4</code>)</li>
+</ul>
+<p><code>zipstrain map</code> is <strong>resumable</strong>: re-running with the same <code>--output-dir</code> skips any stage whose output is already complete — per-sample Sylph tables, the built reference, the Bowtie2 index, and each sorted+indexed BAM. So if a run crashes partway through (say, on the third sample), just run the same command again and it picks up where it left off. Completion is judged conservatively (a BAM only counts as done once its <code>.bai</code> index exists, writes are atomic), so a half-written file from a crash is never reused. Pass <code>--force</code> to ignore the cache and rebuild everything.</p>
+<details>
+<summary><code>zipstrain map --help</code></summary>
+
+<div class="highlight"><pre><span></span><code>Usage: zipstrain map [OPTIONS]
+
+  Map sequencing reads to BAM files, ready for `zipstrain profile`.
+
+  Provide a reads table (``sample_name,reads1[,reads2]``). If you do not pass
+  ``--reference-fasta``, ZipStrain runs Sylph to pick reference genomes from
+  the reads automatically, downloading and caching them, then maps against the
+  built reference. Outputs sorted, indexed BAMs, the reference FASTA + STB,
+  and a ``samples.txt`` you can hand straight to ``zipstrain profile``.
+
+Required inputs:
+  -i, --reads-table TEXT  CSV of reads to map, with columns
+                          &#39;sample_name,reads1[,reads2]&#39; (reads2 blank/absent
+                          for single-end).  [required]
+  -o, --output-dir TEXT   Directory to write BAMs, the reference FASTA/STB,
+                          and a samples.txt ready for `zipstrain profile`.
+                          [required]
+
+Reference (Sylph auto-picks one if omitted):
+  -f, --reference-fasta TEXT  Reference FASTA to map against. If omitted,
+                              Sylph automatically picks and builds a reference
+                              from the reads.
+  -s, --stb-file TEXT         Scaffold-to-genome mapping file. Required when
+                              --reference-fasta is provided.
+  --sylph-db TEXT             Path to the Sylph database. Used when no
+                              --reference-fasta is given; downloaded from
+                              --sylph-db-url if the path does not exist.
+  --sylph-db-url TEXT         URL to download the Sylph database from when
+                              --sylph-db is missing.  [default:
+                              http://faust.compbio.cs.cmu.edu/sylph-
+                              stuff/gtdb-r220-c200-dbv1.syldb]
+  --genome-cache-dir TEXT     Directory that caches genome FASTAs downloaded
+                              during Sylph-based reference building. Required
+                              when no --reference-fasta is given.
+
+Options:
+  --predict-genes        Also run prodigal to emit a gene FASTA (for gene-
+                         level profiling via `profile --gene-fasta`).
+  --non-competitive      Pass -a to Bowtie2 for non-competitive mapping
+                         (report all alignments).
+  --force                Redo every step from scratch, ignoring cached
+                         outputs. By default `map` resumes: completed Sylph
+                         tables, reference, index, and BAMs are reused.
+  -t, --threads INTEGER  Threads for Sylph, Bowtie2, and samtools.  [default:
+                         4]
+
+Other options:
+  -h, --help  Show this message and exit.
+</code></pre></div>
+
+</details>
+
+<h3 id="profile">Profile</h3>
+<h4 id="zipstrain-profile"><code>zipstrain profile</code></h4>
+<p>Profile a batch of BAM files at nucleotide resolution, producing per-position base counts plus per-genome and per-gene summary tables. Profiling needs a set of assets (null model, BED file, genome-length table, optional gene ranges, profiling contract). You can supply any of these, but any you omit are <strong>generated automatically</strong> into a <code>profiling_assets/</code> directory inside <code>--run-dir</code> and reused on later runs when the inputs are unchanged. A minimal run therefore needs only <code>--input-table</code>, <code>--reference-fasta</code>, and <code>--stb-file</code>.</p>
+<p>By default each sample also gets an SNV table (<code>&lt;sample&gt;_SNVs.parquet</code>) and a <code>presence</code> (present/absent) call in its genome stats. Profile outputs are parquet-only; use <code>zipstrain utilities parquet-to-csv</code> when you want a CSV copy of a specific table. See <a href="../expected_output/">Expected output</a> for the full file list.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Minimal run — assets auto-generated and cached in run_dir/profiling_assets</span>
+zipstrain<span class="w"> </span>profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input-table<span class="w"> </span>samples.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference-fasta<span class="w"> </span>reference_genomes.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>reference_genomes.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--run-dir<span class="w"> </span>out_profile
+</code></pre></div>
+<p>Major options:</p>
+<ul>
+<li><code>-i, --input-table</code>, <code>-f, --reference-fasta</code>, <code>-s, --stb-file</code>, <code>-r, --run-dir</code> (required)</li>
+<li><code>--gene-fasta</code> — enables gene-level profiling (auto-generates a gene range table)</li>
+<li><code>-u/-b/-l/-g/--profiling-contract</code> — supply pre-built assets to override auto-generation; <code>--force-prepare</code> regenerates them all</li>
+<li>Read filters: <code>--min-mapq</code> (0), <code>--min-baseq</code> (13), <code>--min-read-ani</code> (0.95), <code>--read-inclusion</code> (<code>paired</code>). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain); pass <code>--min-read-ani 0 --read-inclusion all-mapped</code> for the old permissive behavior</li>
+<li>Presence &amp; SNVs: <code>--no-snvs</code>, <code>--snv-min-cov</code> (5), <code>--presence-ber</code> (0.5), <code>--presence-fug</code> (1.0), <code>--presence-min-cov-use-fug</code> (2.0), <code>--presence-min-coverage</code> (0.1), <code>--genome-taxonomy</code></li>
+<li>Execution: <code>-n, --num-procs</code> (8), <code>-m, --max-concurrent-batches</code> (5), <code>-t, --task-per-batch</code> (10), <code>-e, --execution-mode</code> (<code>local</code>/<code>slurm</code>), <code>-c, --slurm-config</code>, <code>-o, --container-engine</code>, <code>--container-address</code></li>
+</ul>
+<details>
+<summary><code>zipstrain profile --help</code></summary>
+
+<div class="highlight"><pre><span></span><code>Usage: zipstrain profile [OPTIONS]
+
+  Run BAM file profiling in batches using the specified execution mode and
+  container engine.
+
+  Any profiling assets (null model, bed file, genome length table, gene range
+  table, profiling contract) that are not supplied explicitly are generated
+  automatically into a ``profiling_assets`` directory inside ``run-dir`` and
+  reused on subsequent runs when the inputs are unchanged. This means a
+  minimal run needs only ``--input-table``, ``--reference-fasta``, and
+  ``--stb-file``.
+
+Required inputs:
+  -i, --input-table TEXT      Path to the input table in TSV format containing
+                              sample names and paths to bam files.  [required]
+  -f, --reference-fasta TEXT  Reference FASTA. Used for mpileup (adds
+                              ref_base_bitmask) and required to auto-generate
+                              the bed/genome-length assets when they are not
+                              supplied.
+  -s, --stb-file TEXT         Path to the scaffold-to-genome mapping file.
+                              [required]
+  -r, --run-dir TEXT          Directory to save the run data (sample outputs,
+                              profiling_assets, and logs).  [required]
+
+Optional inputs:
+  --gene-fasta TEXT  Gene FASTA. When provided, a gene range table is auto-
+                     generated from it for gene-level profiling.
+
+Optional pre-built assets (auto-generated if omitted):
+  -u, --null-model TEXT          Pre-built null model parquet file. Auto-
+                                 generated into &lt;run-dir&gt;/profiling_assets if
+                                 not provided.
+  -g, --gene-range-table TEXT    Pre-built gene range table file. Overrides
+                                 --gene-fasta auto-generation.
+  --profiling-contract TEXT      Pre-built profiling_contract.json. When
+                                 provided, its hashes are written into each
+                                 profile parquet metadata. Auto-generated
+                                 otherwise.
+  -b, --bed-file TEXT            Pre-built BED file for profiling regions.
+                                 Auto-generated into &lt;run-
+                                 dir&gt;/profiling_assets if not provided.
+  -l, --genome-length-file TEXT  Pre-built genome length file. Auto-generated
+                                 into &lt;run-dir&gt;/profiling_assets if not
+                                 provided.
+
+Profiling parameters:
+  --error-rate FLOAT              Error rate used when auto-generating the
+                                  null model.  [default: 0.001]
+  --max-total-reads INTEGER       Maximum coverage considered when auto-
+                                  generating the null model.  [default: 10000]
+  --p-threshold FLOAT             Significance threshold used when auto-
+                                  generating the null model.  [default: 0.05]
+  --model-type [poisson]          Null model type used when auto-generating
+                                  the null model.  [default: poisson]
+  --force-prepare                 Regenerate all auto-generated profiling
+                                  assets even if valid cached copies exist.
+  --min-mapq INTEGER              Minimum mapping quality for a read to be
+                                  used during profiling.  [default: 0]
+  --min-baseq INTEGER             Minimum base quality for a base to be
+                                  counted during profiling.  [default: 13]
+  --min-read-ani FLOAT            Minimum read ANI (from the NM tag / aligned
+                                  span) to use a read; filters low-identity/mis-
+                                  mapped reads. Reads lacking an NM tag are
+                                  kept. Pass 0 to disable.  [default: 0.95]
+  --read-inclusion [proper-pairs|paired|all-mapped]
+                                  Which mapped reads are eligible: &#39;paired&#39;
+                                  keeps single-end reads and concordant pairs
+                                  but drops half-mapped orphans; &#39;proper-pairs&#39;
+                                  keeps only proper pairs; &#39;all-mapped&#39; keeps
+                                  every mapped read.  [default: paired]
+
+SNV calling and presence:
+  --no-snvs                       Do not call SNVs/SNPs (per-sample
+                                  &lt;sample&gt;_SNVs.parquet). SNV calling needs
+                                  --reference-fasta.
+  --snv-min-cov INTEGER           Minimum coverage for a site to be eligible
+                                  as an SNV/SNP call.  [default: 5]
+  --presence-ber FLOAT            Breadth-error-ratio threshold for the genome
+                                  present/absent call (the Metapresence paper
+                                  recommends ~0.8).  [default: 0.5]
+  --presence-fug FLOAT            FUG threshold for the present/absent call at
+                                  low coverage. A genome is present when
+                                  fug/0.632 exceeds this (fug ~ 0.632 under
+                                  uniform coverage, so 1.0 means at least as
+                                  uniform as random).  [default: 1.0]
+  --presence-min-cov-use-fug FLOAT
+                                  Coverage above which the present/absent call
+                                  uses BER alone (below it, FUG is also
+                                  required).  [default: 2.0]
+  --presence-min-coverage FLOAT   Minimum mean coverage required to call a
+                                  genome present.  [default: 0.1]
+  --genome-taxonomy TEXT          Optional genome-&gt;taxonomy TSV to add a
+                                  genome_taxonomy column to genome_stats.
+                                  Auto-discovered next to the reference/STB
+                                  when produced by `zipstrain map` (Sylph
+                                  route).
+
+Running parameters:
+  -n, --num-procs INTEGER         Number of processors to use for each
+                                  profiling task.  [default: 8]
+  -m, --max-concurrent-batches INTEGER
+                                  Maximum number of concurrent batches to run.
+                                  [default: 5]
+  -p, --poll-interval INTEGER     Polling interval in seconds to check the
+                                  status of batches.  [default: 1]
+  -t, --task-per-batch INTEGER    Number of tasks to include in each batch.
+                                  [default: 10]
+  -e, --execution-mode TEXT       Execution mode: &#39;local&#39; or &#39;slurm&#39;.
+                                  [default: local]
+  -c, --slurm-config TEXT         Path to the SLURM configuration file in json
+                                  format. Required if execution mode is
+                                  &#39;slurm&#39;.
+  -o, --container-engine TEXT     Container engine to use: &#39;local&#39;, &#39;docker&#39;
+                                  or &#39;apptainer&#39;.  [default: local]
+  --container-address TEXT        Optional container image/address override.
+                                  Defaults to the current ZipStrain version
+                                  tag for docker/apptainer.
+
+Other options:
+  -h, --help  Show this message and exit.
+</code></pre></div>
+
+</details>
+
+<h3 id="comparison">Comparison</h3>
+<h4 id="zipstrain-compare"><code>zipstrain compare</code></h4>
+<p>Compare profiled samples to each other, one row per genome per sample pair, and write <code>&lt;run-dir&gt;/all_comparisons.parquet</code> (+ a companion CSV). By default it compares at the genome level; add <code>--compare-genes</code> for gene-level comparison. <code>--profile-db</code> accepts a CSV of <code>profile_name,profile_location</code> rows directly (no need to run <code>build-profile-db</code> first) or a pre-built profile-database parquet.</p>
+<p>There are two engines. <code>--method standard</code> (default) does direct pairwise comparison and is simplest. <code>--method matrix</code> builds a reusable matrix store, which pays off for repeated all-vs-all comparison. Both are <strong>resumable and extendable</strong>: re-running with the same <code>--run-dir</code> and a profiles table that includes new samples computes only the new pairs. See the <a href="../Tutorial/">Tutorial</a> for a worked matrix walk-through and <a href="../expected_output/">Expected output</a> for the columns.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Standard genome comparison from a CSV of profiles</span>
+zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-db<span class="w"> </span>profiles.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--run-dir<span class="w"> </span>out_compare
+
+<span class="c1"># Matrix method, reusable for repeated all-vs-all</span>
+zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-db<span class="w"> </span>profiles.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--run-dir<span class="w"> </span>out_compare<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--method<span class="w"> </span>matrix<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>reference_genomes.stb
+</code></pre></div>
+<p>Major options:</p>
+<ul>
+<li><code>--profile-db</code>, <code>-r, --run-dir</code> (required)</li>
+<li><code>--method</code> (<code>standard</code>/<code>matrix</code>) and <code>--compare-genes</code> — pick the engine and genome vs. gene level</li>
+<li><code>--scope</code> (<code>all</code> for genomes, <code>all:all</code> for genes), <code>--min-cov</code> (5), <code>--min-gene-compare-len</code> (100)</li>
+<li><code>-a, --ani-method</code> (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;threshold&gt;</code>), <code>--calculate</code> (<code>ani</code>/<code>ibs</code>/<code>identical_genes</code>/<code>all</code>)</li>
+<li><code>--stb-file</code> — required for <code>--method matrix</code></li>
+<li>Matrix method: <code>--bed-file</code>, <code>--gene-range-table</code> (both auto-discovered from <code>profiling_assets</code>), <code>--backend</code> (<code>numpy</code>/<code>torch…</code>), <code>--memory-limit-gb</code> (16)</li>
+<li>Standard method: <code>--engine</code> (<code>polars</code>/<code>duckdb</code>), <code>-d, --duckdb-memory-limit</code>, <code>--duckdb-threads</code>, plus the same execution/container options as <code>profile</code></li>
+<li>Output: <code>--no-csv</code> / <code>--force-csv</code></li>
+<li><code>--comp-db-file</code> / <code>--allow-mismatch</code> — resume from an existing comparison / skip profile-contract validation</li>
+</ul>
+<details>
+<summary><code>zipstrain compare --help</code></summary>
+
+<div class="highlight"><pre><span></span><code>Usage: zipstrain compare [OPTIONS]
+
+  Compare profiled samples at the genome level (default) or gene level
+  (--compare-genes).
+
+  ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
+  there is no need to run ``zipstrain utilities build-profile-db`` first; a
+  pre-built profile-database parquet is also accepted.
+
+  Both methods write ``&lt;run-dir&gt;/all_comparisons.parquet``. Re-running with
+  the same ``--run-dir`` and a profiles table that includes new samples
+  extends the existing comparison, computing only the new pairs.
+
+Required inputs:
+  --profile-db TEXT   Profiles to compare: either a CSV with
+                      &#39;profile_name,profile_location&#39; columns (built in
+                      memory, no build-profile-db needed) or a pre-built
+                      profile-database parquet.  [required]
+  -r, --run-dir TEXT  Directory to save the run data.  [required]
+
+Comparison parameters:
+  --method [standard|matrix]      Comparison engine: &#39;standard&#39; (direct
+                                  pairwise) or &#39;matrix&#39; (reusable matrix
+                                  store, good for repeated all-vs-all).
+                                  [default: standard]
+  --compare-genes                 Compare genes instead of genomes.
+  --scope TEXT                    Comparison scope. Defaults to &#39;all&#39; for
+                                  genomes and &#39;all:all&#39; for genes.
+  --min-cov INTEGER               Minimum coverage to consider a position.
+                                  [default: 5]
+  --min-gene-compare-len INTEGER  Minimum gene length to consider for
+                                  comparison.  [default: 100]
+  --stb-file TEXT                 Scaffold-to-genome mapping file. Required
+                                  for --method matrix.
+  -a, --ani-method TEXT           ANI calculation method (e.g., &#39;popani&#39;,
+                                  &#39;conani&#39;, &#39;cosani_0.4&#39;).  [default: popani]
+  --calculate TEXT                Genome metrics to compute (genome mode
+                                  only): ani, ibs, identical_genes. Combine
+                                  with &#39;+&#39;, or use all.  [default: all]
+  --comp-db-file TEXT             Optional existing comparison parquet to
+                                  resume/extend (standard method). Auto-
+                                  detected from --run-dir if omitted.
+  --allow-mismatch                Skip profile contract validation when
+                                  building the profile database from a CSV.
+
+Matrix method (--method matrix):
+  --bed-file TEXT                 BED file for the matrix store (--method
+                                  matrix). Auto-discovered from
+                                  profiling_assets if omitted.
+  --gene-range-table TEXT         Gene range table for gene ANI (--method
+                                  matrix). Auto-discovered from
+                                  profiling_assets if omitted.
+  --backend [numpy|torch|torch-cpu|torch-cuda|torch-mps]
+                                  Compute backend for --method matrix (numpy,
+                                  or torch on CPU/CUDA/MPS).  [default: numpy]
+  --memory-limit-gb FLOAT         Approximate memory budget for --method
+                                  matrix.  [default: 16.0]
+
+Output:
+  --no-csv     Do not write a companion .csv next to the comparison parquet.
+  --force-csv  Write the companion .csv even when the estimated size exceeds
+               100 MB.
+
+Standard method / engine:
+  --engine [polars|duckdb]        Comparison engine for standard compare
+                                  tasks.  [default: polars]
+  -d, --duckdb-memory-limit TEXT  DuckDB memory limit for compare tasks (e.g.,
+                                  2GB).
+  --duckdb-threads INTEGER        Number of DuckDB worker threads for compare
+                                  tasks.
+  -m, --max-concurrent-batches INTEGER
+                                  Maximum number of concurrent batches to run.
+                                  [default: 5]
+  -p, --poll-interval INTEGER     Polling interval in seconds to check the
+                                  status of batches.  [default: 1]
+  -t, --task-per-batch INTEGER    Number of tasks to include in each batch.
+                                  [default: 10]
+  -e, --execution-mode TEXT       Execution mode: &#39;local&#39; or &#39;slurm&#39;.
+                                  [default: local]
+  -s, --slurm-config TEXT         Path to the SLURM configuration file in json
+                                  format. Required if execution mode is
+                                  &#39;slurm&#39;.
+  -c, --container-engine TEXT     Container engine to use: &#39;local&#39;, &#39;docker&#39;
+                                  or &#39;apptainer&#39;.  [default: local]
+  --container-address TEXT        Optional container image/address override.
+                                  Defaults to the current ZipStrain version
+                                  tag for docker/apptainer.
+
+Other options:
+  -h, --help  Show this message and exit.
+</code></pre></div>
+
+</details>
+
+<h3 id="test">Test</h3>
+<h4 id="zipstrain-test"><code>zipstrain test</code></h4>
+<p>Run a lightweight health check that confirms ZipStrain and its external dependencies are importable and callable. Run it right after installation. It takes no options.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span><span class="nb">test</span>
+</code></pre></div>
+<details>
+<summary><code>zipstrain test --help</code></summary>
+
+<div class="highlight"><pre><span></span><code>Usage: zipstrain test [OPTIONS]
+
+  Run a lightweight ZipStrain health check.
+
+Options:
+  -h, --help  Show this message and exit.
+</code></pre></div>
+
+</details>
+
+<h3 id="utilities">Utilities</h3>
+<p>The <code>zipstrain utilities</code> group collects the lower-level helpers that <code>map</code>, <code>profile</code>, and <code>compare</code> are built from — asset preparation, single-BAM/single-pair operations, matrix-store management, format conversions, and more. Most users never call these directly, but they are useful for building custom pipelines or running one step in isolation. Use <code>zipstrain utilities &lt;command&gt; --help</code> for full details of any one.</p>
+<details>
+<summary><code>zipstrain utilities --help</code></summary>
+
+<div class="highlight"><pre><span></span><code>Usage: zipstrain utilities [OPTIONS] COMMAND [ARGS]...
+
+  The commands in this group are related to various utility functions that
+  mainly prepare input files for profiling and comparison.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  adjust-sequence-errors  Apply ZipStrain&#39;s sequence-error adjustment to...
+  append-matrix-db        Append new profiles to an existing matrix store.
+  build-genome-db         Build a reference bundle from an abundance table.
+  build-matrix-db         Build a matrix store directly from classic...
+  build-null-model        Build a null model for sequencing errors based...
+  build-profile-db        Build a profile database from the given CSV file.
+  chunk-genome-compare    Run classic genome compare over one pair-table...
+  gene-range-table        Main function to build and save the gene...
+  generate-sample-pair    Generate a sample-pair table ready for...
+  generate_stb            Generate a scaffold-to-genome mapping file from...
+  get-snp-reference       Emit profile-like rows that are SNPs relative...
+  matrix-compare          Run resumable matrix compare on all...
+  matrix-compare-export   Export a matrix compare DuckDB database to...
+  matrix-db-to-hdf5       Convert a legacy DuckDB matrix database into...
+  merge-stat-tables       Concatenate stat tables and add a sample column...
+  merge_parquet           Merge multiple Parquet files in a directory...
+  parquet-to-csv          Convert a parquet table to CSV.
+  prepare_profiling       Prepare the files needed for profiling bam...
+  presence-profile        Generate a presence profile for genomes based...
+  process-read-locs       Process read locations and save them to a...
+  process_mpileup         Process an mpileup stream and save the results in...
+  profile-single          Profile a single BAM file using the provided...
+  single_compare_gene     Compare two profile parquets and calculate...
+  single_compare_genome   Compare two profile parquets and...
+  sort-profile            Sort a classic profile parquet in place and...
+  to-complete-table       Generate the not-yet-completed...
+</code></pre></div>
+
+</details>
+
+<p><strong>Utility Commands At A Glance</strong></p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>zipstrain utilities build-null-model</code></td>
+<td>Build sequencing-error null model</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities merge_parquet</code></td>
+<td>Merge parquet files</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities merge-stat-tables</code></td>
+<td>Merge gene/genome stat parquet files with sample labels</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities process_mpileup</code></td>
+<td>Convert mpileup stream to parquet</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities generate-sample-pair</code></td>
+<td>Create all non-redundant standard-profile sample pairs</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities chunk-genome-compare</code></td>
+<td>Compare many genome-level pairs in Python-side parallel batches</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities build-profile-db</code></td>
+<td>Build profile DB parquet</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities build-matrix-db</code></td>
+<td>Build the current per-sample genome matrix store directly from profile parquets</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities append-matrix-db</code></td>
+<td>Append new profiles into an existing matrix store</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities matrix-db-to-hdf5</code></td>
+<td>Convert a DuckDB matrix database into the current matrix-store format</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities matrix-compare</code></td>
+<td>Resumable all-vs-all matrix compare into a DuckDB compare DB</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities matrix-compare-export</code></td>
+<td>Export a matrix compare DuckDB to parquet</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities parquet-to-csv</code></td>
+<td>Convert any parquet table to CSV</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities build-genome-db</code></td>
+<td>Build local genome reference bundle from abundance table</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities presence-profile</code></td>
+<td>Presence profile from coverage + read locations</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities process-read-locs</code></td>
+<td>Process read-location stream</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities generate_stb</code></td>
+<td>Create scaffold-to-genome map from genome files</td>
+</tr>
+<tr>
+<td><code>zipstrain utilities gene-range-table</code></td>
+<td>Create gene range table</td>
+</tr>
+<tr>
+<td><code>zipstrain test</code></td>
+<td>Validate local installation/dependencies</td>
+</tr>
+</tbody>
+</table>
+<p>The commands below run individual profiling and comparison steps by hand (the <code>map</code>, <code>profile</code>, and <code>compare</code> commands orchestrate them for you).</p>
+<h4 id="zipstrain-utilities-prepare_profiling"><code>zipstrain utilities prepare_profiling</code></h4>
+<p>Prepare profiling database assets.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>prepare_profiling<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference-fasta<span class="w"> </span>reference.fasta<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>mapping.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>profiling_assets
+</code></pre></div>
+<p>Options:</p>
+<ul>
+<li><code>-r, --reference-fasta</code> (required)</li>
+<li><code>-g, --gene-fasta</code> (optional)</li>
+<li><code>-s, --stb-file</code> (required)</li>
+<li><code>-e, --error-rate</code> (default: <code>0.001</code>)</li>
+<li><code>-m, --max-total-reads</code> (default: <code>10000</code>)</li>
+<li><code>-p, --p-threshold</code> (default: <code>0.05</code>)</li>
+<li><code>-t, --model-type</code> (default: <code>poisson</code>)</li>
+<li><code>-o, --output-dir</code> (required)</li>
+</ul>
+<p>Outputs:</p>
+<ul>
+<li><code>genomes_bed_file.bed</code></li>
+<li><code>gene_range_table.tsv</code></li>
+<li><code>genome_lengths.parquet</code></li>
+<li><code>null_model.parquet</code></li>
+<li><code>profiling_contract.json</code></li>
+</ul>
+<h4 id="zipstrain-utilities-profile-single"><code>zipstrain utilities profile-single</code></h4>
+<p>Profile a single BAM.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>profile-single<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bed-file<span class="w"> </span>genomes_bed_file.bed<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bam-file<span class="w"> </span>sample.bam<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>mapping.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--null-model<span class="w"> </span>profiling_assets/null_model.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profiling-contract<span class="w"> </span>profiling_assets/profiling_contract.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--num-chunks<span class="w"> </span><span class="m">24</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>sample_profile
+</code></pre></div>
+<p>Options:</p>
+<ul>
+<li><code>-r, --reference-fasta</code> (optional) — when provided, profiling also records <code>ref_base_bitmask</code> and adds <code>ref_ani</code> to gene/genome stat tables</li>
+<li><code>-b, --bed-file</code> (required)</li>
+<li><code>-a, --bam-file</code> (required)</li>
+<li><code>-s, --stb-file</code> (required)</li>
+<li><code>-m, --null-model</code> (required)</li>
+<li><code>-g, --gene-range-table</code> (optional)</li>
+<li><code>--profiling-contract</code> (optional)</li>
+<li><code>-n, --num-chunks</code> (default: <code>24</code>) — number of BED chunks to create</li>
+<li><code>-c, --max-concurrency</code> (default: <code>4</code>) — how many chunks run simultaneously</li>
+<li><code>--min-mapq</code> (default: <code>0</code>)</li>
+<li><code>--min-baseq</code> (default: <code>13</code>)</li>
+<li><code>--min-read-ani</code> (default: <code>0.95</code>) — filters low-identity / mis-mapped reads before pileup using the BAM <code>NM</code> tag and aligned query span; reads without an <code>NM</code> tag are kept; pass <code>0</code> to disable</li>
+<li><code>--read-inclusion</code> (<code>proper-pairs|paired|all-mapped</code>, default: <code>paired</code>)</li>
+<li><code>-o, --output-dir</code> (required)</li>
+</ul>
+<p>Read-inclusion modes:</p>
+<ul>
+<li><code>proper-pairs</code>: keep only mapped read pairs carrying the aligner <code>PROPER_PAIR</code> flag</li>
+<li><code>paired</code> (default): keep single-end reads and concordant pairs, but drop half-mapped orphan pairs (mate unmapped) — matches inStrain's <code>non_discordant</code> intent</li>
+<li><code>all-mapped</code>: keep any mapped read, whether paired or single-end</li>
+</ul>
+<p>Outputs include:</p>
+<ul>
+<li><code>&lt;sample&gt;_profile.parquet</code></li>
+<li><code>&lt;sample&gt;_genome_stats.parquet</code></li>
+<li><code>&lt;sample&gt;_gene_stats.parquet</code></li>
+</ul>
+<p>When <code>--reference-fasta</code> is provided during profiling, the profile parquet includes <code>ref_base_bitmask</code>.
+In the same case, the generated genome and gene stat tables also include a <code>ref_ani</code> column.</p>
+<p><code>ref_ani</code> is the percentage of covered sites whose observed allele set still contains the reference allele after ZipStrain's sequence-error adjustment.</p>
+<p><code>ref_base_bitmask</code> uses this encoding:</p>
+<ul>
+<li><code>1</code> = reference base <code>A</code></li>
+<li><code>2</code> = reference base <code>C</code></li>
+<li><code>4</code> = reference base <code>G</code></li>
+<li><code>8</code> = reference base <code>T</code></li>
+<li><code>0</code> = non-ACGT or unknown reference base</li>
+</ul>
+<p>This is a one-hot bitmask, so current profiles are expected to contain only <code>0</code>, <code>1</code>, <code>2</code>, <code>4</code>, or <code>8</code> in this column.</p>
+<h4 id="zipstrain-utilities-get-snp-reference"><code>zipstrain utilities get-snp-reference</code></h4>
+<p>Emit profile-like rows that are SNPs relative to the reference from a classic profile parquet that includes <code>ref_base_bitmask</code>.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>get-snp-reference<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-file<span class="w"> </span>sample_profile.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--min-cov<span class="w"> </span><span class="m">5</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>sample_reference_snps.parquet
+</code></pre></div>
+<p>Options:</p>
+<ul>
+<li><code>-p, --profile-file</code> (required)</li>
+<li><code>-c, --min-cov</code> (default: <code>5</code>)</li>
+<li><code>-o, --output-file</code> (required)</li>
+</ul>
+<p>The output preserves the input profile-like columns and includes only positions that:</p>
+<ul>
+<li>have coverage <code>&gt;= min_cov</code></li>
+<li>have a known reference base in <code>ref_base_bitmask</code></li>
+<li>do not retain the reference allele after profile sequence-error adjustment</li>
+</ul>
+<p>This uses the same reference-sharing logic used to populate <code>ref_ani</code> in the gene and genome stat tables.</p>
+<h4 id="zipstrain-utilities-single_compare_genome"><code>zipstrain utilities single_compare_genome</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>single_compare_genome<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-location-1<span class="w"> </span>sample_a.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-location-2<span class="w"> </span>sample_b.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>mapping.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>out.parquet
+</code></pre></div>
+<p>Options:</p>
+<ul>
+<li><code>--profile-location-1</code> / <code>--profile-1</code> (required)</li>
+<li><code>--profile-location-2</code> / <code>--profile-2</code> (required)</li>
+<li><code>-s, --stb-file</code> (required)</li>
+<li><code>-c, --min-cov</code> (default: <code>5</code>)</li>
+<li><code>-l, --min-gene-compare-len</code> (default: <code>100</code>)</li>
+<li><code>-o, --output-file</code> (required)</li>
+<li><code>-g, --genome</code> (default: <code>all</code>)</li>
+<li><code>-a, --ani-method</code> (default: <code>popani</code>)</li>
+<li><code>--calculate</code> (default: <code>all</code>)</li>
+<li><code>--engine</code> (<code>polars|duckdb</code>, default: <code>polars</code>)</li>
+<li><code>--duckdb-memory-limit</code></li>
+<li><code>--duckdb-temp-directory</code></li>
+<li><code>--duckdb-threads</code></li>
+</ul>
+<h4 id="zipstrain-utilities-generate-sample-pair"><code>zipstrain utilities generate-sample-pair</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>generate-sample-pair<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-dir<span class="w"> </span>profiles<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>sample_pairs.parquet
+</code></pre></div>
+<p>This writes a parquet table with:</p>
+<ul>
+<li><code>sample_name_1</code></li>
+<li><code>sample_name_2</code></li>
+<li><code>profile_location_1</code></li>
+<li><code>profile_location_2</code></li>
+</ul>
+<p>Options:</p>
+<ul>
+<li><code>-p, --profile-dir</code> (required)</li>
+<li><code>-o, --output-file</code> (required)</li>
+<li><code>--write-batch-size</code> (default: <code>100000</code>)</li>
+</ul>
+<h4 id="zipstrain-utilities-chunk-genome-compare"><code>zipstrain utilities chunk-genome-compare</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>chunk-genome-compare<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--pair-table<span class="w"> </span>genome_pairs.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>mapping.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>chunk_compare.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--workers<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--engine<span class="w"> </span>polars
+</code></pre></div>
+<p>This command runs standard genome comparisons directly inside Python for one pair-table chunk.
+It is intended as an experimental utility for benchmarking or ad hoc compare runs, and
+does not change the main workflow commands.</p>
+<p>Accepted pair-table schemas:</p>
+<ul>
+<li><code>sample_name_1</code>, <code>sample_name_2</code>, <code>profile_location_1</code>, <code>profile_location_2</code></li>
+<li><code>sample_name_1</code>, <code>sample_name_2</code>, <code>profile_1</code>, <code>profile_2</code></li>
+<li><code>sample_1</code>, <code>sample_2</code>, <code>profile_1</code>, <code>profile_2</code></li>
+<li><code>profile_location_1</code>, <code>profile_location_2</code></li>
+<li><code>profile_1</code>, <code>profile_2</code></li>
+</ul>
+<p>Options:</p>
+<ul>
+<li><code>-p, --pair-table</code> (required)</li>
+<li><code>-s, --stb-file</code> (required)</li>
+<li><code>-o, --output-file</code> (required)</li>
+<li><code>-w, --workers</code> (defaults to CPU count capped by pair count)</li>
+<li><code>-c, --min-cov</code> (default: <code>5</code>)</li>
+<li><code>-l, --min-gene-compare-len</code> (default: <code>100</code>)</li>
+<li><code>-g, --genome</code> (default: <code>all</code>)</li>
+<li><code>-a, --ani-method</code> (default: <code>popani</code>)</li>
+<li><code>--calculate</code> (default: <code>all</code>)</li>
+<li><code>--engine</code> (<code>polars|duckdb</code>, default: <code>polars</code>)</li>
+<li><code>--duckdb-memory-limit</code></li>
+<li><code>--duckdb-temp-directory</code></li>
+<li><code>--duckdb-threads</code></li>
+</ul>
+<p>The final console summary includes:</p>
+<ul>
+<li>total pairs processed</li>
+<li>total genome-level output rows written</li>
+<li>total elapsed time</li>
+<li>average wall time per pair</li>
+<li>average compute time per pair</li>
+<li>average time per genome-level output row</li>
+</ul>
+<h4 id="zipstrain-utilities-single_compare_gene"><code>zipstrain utilities single_compare_gene</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>single_compare_gene<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-location-1<span class="w"> </span>sample_a.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-location-2<span class="w"> </span>sample_b.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>mapping.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--scope<span class="w"> </span>all:all<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>out.parquet
+</code></pre></div>
+<p>Options:</p>
+<ul>
+<li><code>--profile-location-1</code> / <code>--profile-1</code> (required)</li>
+<li><code>--profile-location-2</code> / <code>--profile-2</code> (required)</li>
+<li><code>-s, --stb-file</code> (required)</li>
+<li><code>-c, --min-cov</code> (default: <code>5</code>)</li>
+<li><code>-l, --min-gene-compare-len</code> (default: <code>100</code>)</li>
+<li><code>-o, --output-file</code> (required)</li>
+<li><code>-g, --scope</code> (default: <code>all:all</code>)</li>
+<li><code>-a, --ani-method</code> (default: <code>popani</code>)</li>
+<li><code>--engine</code> (<code>polars|duckdb</code>, default: <code>polars</code>)</li>
+<li><code>--duckdb-memory-limit</code></li>
+<li><code>--duckdb-temp-directory</code></li>
+<li><code>--duckdb-threads</code></li>
+</ul>
+<h4 id="zipstrain-utilities-to-complete-table"><code>zipstrain utilities to-complete-table</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>to-complete-table<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-db<span class="w"> </span>profile_db.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--comp-db-file<span class="w"> </span>current_compare.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>remaining_pairs.csv
+</code></pre></div>
+<p>Options:</p>
+<ul>
+<li><code>--profile-db</code> (required)</li>
+<li><code>--comp-db-file</code> (optional)</li>
+<li><code>-o, --output-file</code> (required)</li>
+</ul>
+<p>Output columns:</p>
+<ul>
+<li><code>sample_name_1</code></li>
+<li><code>sample_name_2</code></li>
+<li><code>profile_location_1</code></li>
+<li><code>profile_location_2</code></li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>this command does not need <code>--scope</code>, <code>--min-cov</code>, <code>--min-gene-compare-len</code>, or <code>--stb-file</code></li>
+<li>it only compares the sample-pair universe implied by the profile DB against the pairs already present in the current genome comparison parquet</li>
+</ul>
+<h4 id="zipstrain-utilities-build-genome-db"><code>zipstrain utilities build-genome-db</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-genome-db<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tool<span class="w"> </span>sylph<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--abundance-table<span class="w"> </span>sylph_abundance.tsv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cache-dir<span class="w"> </span>genome_cache<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>.
+</code></pre></div>
+<p>Important options:</p>
+<ul>
+<li><code>--download-retries</code> (default: <code>8</code>)</li>
+<li><code>--retry-backoff-seconds</code> (default: <code>10.0</code>)</li>
+<li><code>--download-workers</code> (default: <code>1</code>)</li>
+</ul>
+<h4 id="automatically-build-a-reference-database">Automatically build a reference database</h4>
+<p>This guide shows how to build a reference bundle directly from a Sylph abundance table using:</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-genome-db
+</code></pre></div>
+<p>Note- This functionality can also be performed at-scale with the helper program <a href="https://github.com/OlmLab/MetaTrawl">MetaTrawl</a></p>
+<h5 id="what-this-does">What this does</h5>
+<p>Given a Sylph abundance table, ZipStrain will:</p>
+<ol>
+<li>Keep genomes with non-zero abundance in at least one sample.</li>
+<li>Resolve/download those genomes into a persistent cache directory.</li>
+<li>Reuse genomes already present in that cache (no redownload).</li>
+<li>Write a concatenated reference FASTA and STB file in your output directory.</li>
+</ol>
+<h5 id="command">Command</h5>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-genome-db<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tool<span class="w"> </span>sylph<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--abundance-table<span class="w"> </span>/path/to/sylph_abundance.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cache-dir<span class="w"> </span>/path/to/genome_cache<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>/path/to/reference_bundle<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--download-retries<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--retry-backoff-seconds<span class="w"> </span><span class="m">10</span>.0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--download-workers<span class="w"> </span><span class="m">1</span>
+</code></pre></div>
+<h5 id="inputs">Inputs</h5>
+<ul>
+<li><code>--tool</code>: abundance parser to use (currently <code>sylph</code>).</li>
+<li><code>--abundance-table</code>: <code>.csv</code>, <code>.tsv</code>, or <code>.parquet</code> table.</li>
+<li><code>--cache-dir</code>: persistent genome cache directory.</li>
+<li><code>--output-dir</code>: output directory for the final reference bundle.</li>
+</ul>
+<p>For Sylph tables, ZipStrain extracts genome accessions from the <code>Genome_file</code> column
+(case-insensitive), including GTDB-style paths such as:
+<code>gtdb_genomes_reps_r220/database/GCA/.../GCA_949068525.1_genomic.fna.gz</code>.</p>
+<p>If <code>Genome_file</code> points to a local file (absolute path or path relative to the abundance-table directory),
+ZipStrain loads it directly into cache first, then only downloads what is still missing.</p>
+<h5 id="outputs">Outputs</h5>
+<p>The command writes:</p>
+<ul>
+<li><code>/path/to/reference_bundle/reference_genomes.fna</code></li>
+<li><code>/path/to/reference_bundle/reference_genomes.stb</code></li>
+<li><code>/path/to/reference_bundle/genome_db_build_report.txt</code></li>
+</ul>
+<h5 id="stb-format">STB format</h5>
+<p><code>reference_genomes.stb</code> has two columns (tab-separated, no header):</p>
+<ul>
+<li>scaffold ID in the concatenated FASTA</li>
+<li>genome ID</li>
+</ul>
+<p>Genome IDs are accessions (for example <code>GCF_000001405.40</code>).</p>
+<h5 id="cache-behavior">Cache behavior</h5>
+<p>Inside <code>--cache-dir</code>, ZipStrain maintains:</p>
+<ul>
+<li>a local DB index (<code>.genome_db.parquet</code>)</li>
+<li>downloaded genomes under <code>genomes/</code></li>
+</ul>
+<p>Re-running with the same cache directory avoids redownloading genomes that already exist.</p>
+<h5 id="retry-behavior">Retry behavior</h5>
+<p>For genomes that are not available locally/in-cache, ZipStrain retries each download with exponential backoff (default: up to 8 attempts per genome).<br />
+If a genome still fails after retries, it is skipped, and the reference bundle is built from successfully fetched genomes.
+Parallelism for remote fetch is controlled with <code>--download-workers</code>.</p>
+<p>If you see repeated <code>Too Many Requests</code> errors on large runs:</p>
+<ul>
+<li>lower <code>--download-workers</code> (for example <code>1</code> or <code>2</code>)</li>
+<li>increase <code>--download-retries</code> (for example <code>8</code>)</li>
+<li>increase <code>--retry-backoff-seconds</code> (for example <code>10</code> to <code>20</code>)</li>
+</ul>
+<h5 id="console-summary">Console summary</h5>
+<p><code>build-genome-db</code> prints a short run summary:</p>
+<ul>
+<li>selected genomes (non-zero abundance)</li>
+<li>genomes already cached before the run</li>
+<li>new download attempts</li>
+<li>downloaded now / failed</li>
+<li>genomes available in cache after the run</li>
+</ul>
+<p>The same summary is saved to <code>genome_db_build_report.txt</code> and includes explicit failed accession IDs (with error messages) when downloads fail.</p>
+<h4 id="zipstrain-utilities-build-matrix-db"><code>zipstrain utilities build-matrix-db</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-matrix-db<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-dir<span class="w"> </span>profiles<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>matrix_db.h5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bed-file<span class="w"> </span>genomes_bed_file.bed<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>reference.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--gene-range-table<span class="w"> </span>gene_range_table.tsv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--memory-limit-gb<span class="w"> </span><span class="m">16</span>
+</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li>scans a directory of standard ZipStrain profile parquets</li>
+<li>builds one matrix store directly from those profiles</li>
+<li>uses the BED and STB files as the explicit scaffold/genome contract for the store</li>
+<li>stores each genome as one sample-major dense dataset with shape <code>samples x positions x 4</code></li>
+<li>positions with total coverage below <code>5</code> are zeroed during matrix build</li>
+<li>can optionally store scaffold-relative gene ranges for later gene ANI</li>
+<li>is intended for repeated cohort-scale comparison runs against the same reference set</li>
+</ul>
+<p>Important options:</p>
+<ul>
+<li><code>-p, --profile-dir</code> (required)</li>
+<li><code>-o, --output-file</code> (required)</li>
+<li><code>-g, --genome</code> optional genome scope (default: <code>all</code>)</li>
+<li><code>-b, --bed-file</code> (required) BED file defining scaffold coordinate extents for the matrix contract</li>
+<li><code>-s, --stb-file</code> (required) STB file defining scaffold-to-genome membership for the matrix contract</li>
+<li><code>--gene-range-table</code> optional headerless TSV of <code>gene, scaffold, start, end</code> for gene ANI support</li>
+<li><code>--count-dtype</code> stored matrix dtype (<code>uint16|uint32</code>, default: <code>uint16</code>)</li>
+<li><code>--memory-limit-gb</code> approximate maximum memory budget for the entire build process (default: <code>16.0</code>)</li>
+<li><code>--export-batch-mb</code> approximate matrix-store sample-axis chunk target size in MiB (default: <code>128.0</code>)</li>
+<li><code>--sparse</code> store genome matrices sparsely in HDF5</li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>the output matrix store is intended for <code>zipstrain utilities matrix-compare</code></li>
+<li>new matrix stores are append-friendly on the sample axis</li>
+<li>every input profile is interpreted against the BED+STB contract you provide here</li>
+<li>install matrix support with <code>pip install "zipstrain[matrix]"</code></li>
+<li>the CLI shows a progress bar in an interactive terminal</li>
+<li>in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files</li>
+<li>if <code>--gene-range-table</code> is omitted, matrix compare can still compute genome ANI and IBS, but not gene ANI</li>
+<li><code>--sparse</code> reduces on-disk HDF5 size, but matrix compare currently materializes sparse storage back into dense arrays when loading for comparison</li>
+</ul>
+<h4 id="zipstrain-utilities-append-matrix-db"><code>zipstrain utilities append-matrix-db</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>append-matrix-db<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-dir<span class="w"> </span>new_profiles<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--matrix-db-file<span class="w"> </span>matrix_db.h5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--memory-limit-gb<span class="w"> </span><span class="m">16</span>
+</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li>scans a directory of new standard ZipStrain profile parquets</li>
+<li>validates that they match the existing matrix-store contract</li>
+<li>appends new sample rows and whole-genome matrices into the existing matrix store</li>
+<li>materializes newly encountered genomes when they are still compatible with the stored BED+STB contract</li>
+<li>ignores genomes that fall outside the stored contract and reports the ignored count</li>
+</ul>
+<p>Important options:</p>
+<ul>
+<li><code>-p, --profile-dir</code> (required)</li>
+<li><code>-m, --matrix-db-file</code> (required)</li>
+<li><code>--memory-limit-gb</code> approximate maximum memory budget for the append process (default: <code>16.0</code>)</li>
+<li><code>--export-batch-mb</code> approximate matrix-store sample-axis chunk target size in MiB used when rewriting an older fixed-size store (default: <code>128.0</code>)</li>
+</ul>
+<p>Append behavior:</p>
+<ul>
+<li>sample names must be new</li>
+<li>known scaffolds and coordinate ranges must stay within the stored contract</li>
+<li>compatible genomes can be appended even if no matrix dataset existed for them yet</li>
+<li>genomes outside the stored contract are skipped and counted in the summary output</li>
+</ul>
+<h4 id="zipstrain-utilities-matrix-db-to-hdf5"><code>zipstrain utilities matrix-db-to-hdf5</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>matrix-db-to-hdf5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--matrix-db-file<span class="w"> </span>matrix_db.duckdb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>matrix_db.h5
+</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li>converts an existing DuckDB matrix database into the current matrix-store layout</li>
+<li>preserves sample, genome, and scaffold metadata</li>
+<li>is only needed when you already have a DuckDB-based matrix database from an older workflow</li>
+</ul>
+<p>Important options:</p>
+<ul>
+<li><code>-m, --matrix-db-file</code> (required)</li>
+<li><code>-o, --output-file</code> optional output HDF5 path; defaults to the same basename with <code>.h5</code></li>
+<li><code>--export-batch-mb</code> approximate matrix-store sample-axis chunk target size in MiB (default: <code>128.0</code>)</li>
+</ul>
+<h4 id="zipstrain-utilities-matrix-compare"><code>zipstrain utilities matrix-compare</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>matrix-compare<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--matrix-db-file<span class="w"> </span>matrix_db.h5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>matrix_compare.duckdb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--memory-limit-gb<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--anchor-queue-size<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--target-queue-size<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--result-transfer-batch-size<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--loader-executor<span class="w"> </span>thread<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--writer-executor<span class="w"> </span>thread<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--calculate<span class="w"> </span>ani+ibs<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>numpy
+</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li>reads a per-sample genome-matrix store from <code>build-matrix-db</code> or <code>matrix-db-to-hdf5</code></li>
+<li>writes results into a DuckDB compare database</li>
+<li>if the compare DB already exists, only pairs not yet marked completed are processed</li>
+<li>loads one anchor sample plus as many target samples as fit the memory budget</li>
+<li>computes genome ANI from dense whole-genome matrices</li>
+<li>computes IBS from the shared-allele boolean mask</li>
+<li>computes gene ANI when gene annotations are present in the matrix store and <code>gene</code> is requested</li>
+<li>stores result rows and completion metadata in the compare DB incrementally</li>
+</ul>
+<p>Important options:</p>
+<ul>
+<li><code>-m, --matrix-db-file</code> (required)</li>
+<li><code>-o, --output-file</code> (required)</li>
+<li><code>-g, --genome</code> optional genome scope (default: <code>all</code>)</li>
+<li><code>--memory-limit-gb</code> approximate compare memory budget</li>
+<li><code>--anchor-queue-size</code> number of torch anchor matrices to keep queued in host RAM while still transferring only one anchor at a time to the GPU (default: <code>1</code>)</li>
+<li><code>--target-queue-size</code> number of torch target blocks to keep queued in host RAM; <code>1</code> preserves the current synchronous target-load behavior (default: <code>1</code>)</li>
+<li><code>--result-transfer-batch-size</code> number of torch compare units to batch before transferring result vectors back to CPU (default: <code>1</code>)</li>
+<li><code>--loader-executor</code> executor kind for torch loader prefetch work (<code>thread|process</code>, default: <code>thread</code>)</li>
+<li><code>--writer-executor</code> executor kind for torch result writing/checkpoint work (<code>thread|process</code>, default: <code>thread</code>)</li>
+<li><code>--calculate</code> matrix metrics to compute:</li>
+<li><code>ani</code></li>
+<li><code>ani+ibs</code></li>
+<li><code>+gene</code> or <code>gene</code> for gene ANI</li>
+<li><code>all</code> means <code>ani+ibs</code>, and also <code>gene</code> when the matrix store contains gene annotations</li>
+<li><code>--backend</code> compute backend:</li>
+<li><code>numpy</code></li>
+<li><code>torch</code></li>
+<li><code>torch-cpu</code></li>
+<li><code>torch-cuda</code></li>
+<li><code>torch-mps</code></li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>install Torch support with <code>pip install "zipstrain[matrix]"</code></li>
+<li><code>--backend numpy</code> works without Torch and is the simplest CPU-only path</li>
+<li>on Apple Silicon, the standard <code>torch</code> wheel can use MPS</li>
+<li>on Linux with NVIDIA GPUs, replace Torch with the CUDA wheel that matches your system, for example:</li>
+</ul>
+<div class="highlight"><pre><span></span><code>pip install &quot;zipstrain[matrix]&quot;
+pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu124
+</code></pre></div>
+<ul>
+<li>MPS requires native macOS; Linux containers cannot expose Apple Metal</li>
+<li><code>torch</code> auto-selects CUDA, then MPS, then CPU</li>
+<li>for torch backends, GPU work stays on the main process while loader and writer stages can run through either thread or process executors</li>
+<li>the compare database is resumable; rerunning the same command on the same output file only processes unfinished sample pairs</li>
+<li>the CLI shows a progress bar in an interactive terminal</li>
+<li>in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files</li>
+</ul>
+<h4 id="zipstrain-utilities-matrix-compare-export"><code>zipstrain utilities matrix-compare-export</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>matrix-compare-export<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--matrix-compare-db-file<span class="w"> </span>matrix_compare.duckdb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>matrix_compare.parquet
+</code></pre></div>
+<p>Export the gene table instead:</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>matrix-compare-export<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--matrix-compare-db-file<span class="w"> </span>matrix_compare.duckdb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>matrix_compare_gene.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--table<span class="w"> </span>gene
+</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li>reads <code>matrix_compare_results</code> from a matrix compare DuckDB</li>
+<li>exports the standard compare columns to parquet</li>
+<li>uses the stored compare metadata to choose the correct output columns</li>
+<li>can also export <code>matrix_compare_gene_results</code> with <code>--table gene</code></li>
+<li>raises an error if <code>--table gene</code> is requested but the compare DB has no gene table</li>
+</ul>
+<p>Important options:</p>
+<ul>
+<li><code>-m, --matrix-compare-db-file</code> (required)</li>
+<li><code>-o, --output-file</code> (required)</li>
+<li><code>--table genome|gene</code> (optional, default <code>genome</code>)</li>
+</ul>
+<h4 id="zipstrain-utilities-parquet-to-csv"><code>zipstrain utilities parquet-to-csv</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>parquet-to-csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input-file<span class="w"> </span>sampleA_genome_stats.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>sampleA_genome_stats.csv
+</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li>streams an input parquet table to CSV</li>
+<li>defaults the output path to the input path with a <code>.csv</code> suffix when <code>--output-file</code> is omitted</li>
+<li>supports <code>--separator</code> and <code>--no-header</code></li>
+</ul>
+<p>Important options:</p>
+<ul>
+<li><code>-i, --input-file</code> (required)</li>
+<li><code>-o, --output-file</code> (optional)</li>
+<li><code>--separator</code> (optional, default <code>,</code>)</li>
+<li><code>--no-header</code> (optional)</li>
+</ul>
+<h4 id="zipstrain-utilities-merge_parquet"><code>zipstrain utilities merge_parquet</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>merge_parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input-dir<span class="w"> </span>comps<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>merged_comparisons.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--batch-size<span class="w"> </span><span class="m">5000</span>
+</code></pre></div>
+<p>Notes:</p>
+<ul>
+<li><code>--batch-size -1</code> keeps the current single-pass merge behavior.</li>
+<li>Positive <code>--batch-size</code> values first merge input files batch-by-batch into a temporary directory, then do one final lazy merge over those batch outputs.</li>
+<li>Progress is logged as active line-oriented batch updates and flushed immediately, which is easier to follow in cluster logs.</li>
+<li>When input files contain ZipStrain compare metadata, those metadata fields must match across inputs unless <code>--allow-mismatch</code> is used.</li>
+<li>With <code>--allow-mismatch</code>, mismatched compare metadata are rewritten to <code>NA</code> in the merged parquet metadata.</li>
+</ul>
+<h4 id="zipstrain-utilities-build-profile-db"><code>zipstrain utilities build-profile-db</code></h4>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-profile-db<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile-db-csv<span class="w"> </span>profiles.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-file<span class="w"> </span>profile_db.parquet
+</code></pre></div>
+<p>Input CSV columns:</p>
+<ul>
+<li><code>profile_name</code></li>
+<li><code>profile_location</code></li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>By default, ZipStrain checks that all listed profiles carry matching embedded contract metadata.</li>
+<li>Use <code>--allow-mismatch</code> to skip that validation and build a mixed profile DB intentionally.</li>
+<li>The output parquet stores at least <code>profile_name</code> and <code>profile_location</code>, plus shared metadata fields derived from the listed profiles.</li>
+</ul>
+<h4 id="other-utility-commands">Other Utility Commands</h4>
+<p>Use <code>--help</code> on each command for full option details:</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-null-model<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>merge_parquet<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>process_mpileup<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>generate-sample-pair<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>chunk-genome-compare<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>merge-stat-tables<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-profile-db<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>build-matrix-db<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>matrix-compare<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>presence-profile<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>process-read-locs<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>generate_stb<span class="w"> </span>--help
+zipstrain<span class="w"> </span>utilities<span class="w"> </span>gene-range-table<span class="w"> </span>--help
+zipstrain<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--help
+</code></pre></div>
+<h2 id="nextflow-implementation">Nextflow Implementation</h2>
+<p>The bundled <code>zipstrain.nf</code> pipeline runs the ZipStrain workflow end to end — read mapping, profiling, and comparison — as a single, restartable Nextflow job. It is an alternative to driving the <a href="#zipstrain-command-line-interface">Python CLI</a> by hand, and this section reflects the current <code>zipstrain.nf</code> in the repository.</p>
+<h3 id="when-to-use-the-nextflow-pipeline">When to use the Nextflow pipeline</h3>
+<p>Use Nextflow when you are processing <strong>many samples</strong>, running on an <strong>HPC cluster or scheduler</strong>, or want a <strong>reproducible, containerized, restartable</strong> run of the whole chain from one command. Use the CLI when you are exploring, working on a handful of samples, or want the matrix comparison workflow. The two produce the same output tables — see <a href="#an-overview-of-zipstrain-and-the-data-it-generates">CLI vs. Nextflow</a> at the top of this page for the full trade-off.</p>
+<div class="admonition note">
+<p class="admonition-title">Scope</p>
+<p>The standard profile-based compare workflows are available in Nextflow. The newer <strong>matrix-store</strong> comparison workflow is currently CLI-only (<code>zipstrain compare --method matrix</code>); see the <a href="../Tutorial/">Tutorial</a> and the <a href="#zipstrain-compare"><code>compare</code></a> reference. For a worked standard example end to end, the <a href="../Tutorial/">Tutorial</a> has both a CLI route and a Nextflow route.</p>
+</div>
+<h3 id="setup">Setup</h3>
+<p>You need <strong>Nextflow</strong>, a <strong>Java 17+</strong> runtime, and a <strong>container engine</strong> (Docker on a laptop, or Singularity/Apptainer on a cluster). Full install steps are in <a href="../installation/#nextflow-installation">Nextflow Installation</a>.</p>
+<p>You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a <code>nextflow.config</code> that:</p>
+<ul>
+<li>enables <strong>Docker by default</strong> (with <code>--platform linux/amd64</code> for Apple Silicon), so a laptop run needs no <code>-profile</code>;</li>
+<li>sets the default container to <code>parsaghadermazi/zipstrain:1.0.0</code>;</li>
+<li>declares <code>zipstrain.nf</code> as the main script (so <code>-main-script</code> is not needed);</li>
+<li><code>includeConfig</code>s <code>conf.config</code>, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.</li>
+</ul>
+<p>For a cluster, keep site-specific SLURM profiles in an ignored local config such as <code>conf.local.config</code>, then run with <code>-c conf.local.config -profile &lt;name&gt;</code>. The public <code>conf.config</code> intentionally avoids lab- or cluster-specific paths.</p>
+<h3 id="general-running-pattern">General running pattern</h3>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>&lt;mode&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_table<span class="w"> </span>&lt;path/to/input.csv&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span>&lt;path/to/output_dir&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-resume
+</code></pre></div>
+<p>Conventions used by every example below:</p>
+<ul>
+<li><strong>Docker is the default</strong>, so no <code>-profile</code> is shown. On a cluster, pass a site-specific config with <code>-c conf.local.config -profile &lt;name&gt;</code>.</li>
+<li>Pin a branch/tag/commit with <code>-r &lt;revision&gt;</code> (e.g. <code>-r main</code>); omit it to use the default branch.</li>
+<li>If you have <strong>cloned the repo</strong>, replace <code>OlmLab/ZipStrain</code> with <code>zipstrain.nf</code> and run from the repo root.</li>
+<li><code>-resume</code> reuses completed steps from a previous run in the same working directory.</li>
+</ul>
+<h3 id="pipeline-modes">Pipeline modes</h3>
+<table>
+<thead>
+<tr>
+<th><code>--mode</code></th>
+<th>Does</th>
+<th>Typical <code>--input_type</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>map_reads</code></td>
+<td>Reads → sorted BAMs with Bowtie2</td>
+<td><code>local</code> or <code>sra</code></td>
+</tr>
+<tr>
+<td><code>profile</code></td>
+<td>BAMs → per-position profiles and stat tables</td>
+<td>(bam table)</td>
+</tr>
+<tr>
+<td><code>from_sra_to_profile</code></td>
+<td>SRA accessions → profiles, end to end</td>
+<td><code>sra</code></td>
+</tr>
+<tr>
+<td><code>compare_genomes</code></td>
+<td>Pairwise genome ANI/IBS across profiles</td>
+<td><code>profile_table</code> or <code>pair_table</code></td>
+</tr>
+<tr>
+<td><code>compare_genes</code></td>
+<td>Pairwise gene comparison across profiles</td>
+<td><code>profile_table</code> or <code>pair_table</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="key-parameters">Key parameters</h3>
+<ul>
+<li><code>--mode</code>: which workflow to run (table above).</li>
+<li><code>--input_type</code>: input-table shape — <code>local</code>, <code>sra</code>, <code>profile_table</code>, or <code>pair_table</code> (depends on mode).</li>
+<li><code>--reference_genome</code> / <code>--stb</code> / <code>--gene_file</code>: reference FASTA, scaffold-to-genome map, and gene FASTA (mapping/profiling modes). If <code>--reference_genome</code> is omitted for <code>map_reads</code>, a reference is auto-built with Sylph.</li>
+<li><code>--sylph_db</code> / <code>--sylph_db_link</code>: path to the Sylph database, or the URL to download it from if the path is missing (defaults to the GTDB r220 database).</li>
+<li><code>--genome_db_cache_dir</code>: cache directory for genomes downloaded during Sylph-based reference building.</li>
+<li><code>--prefetch_max_size</code> (default <code>200g</code>): SRA Toolkit prefetch size limit for SRA modes.</li>
+<li><code>--min_mapq</code>, <code>--min_baseq</code>, <code>--min_read_ani</code>, <code>--read_inclusion</code>: profiling read/base filters passed through to <code>zipstrain utilities profile-single</code>.</li>
+<li><code>--parallel_mode</code> (<code>single</code> | <code>batched</code>) and <code>--batch_size</code> / <code>--batch_compare_n_parallel</code>: parallelization of the comparison workflows.</li>
+<li><code>--compare_genome_scope</code> / <code>--compare_gene_scope</code>: comparison scope (<code>all</code>, a genome ID, or <code>all:all</code>-style gene scope).</li>
+<li><code>--compare_ani_method</code>: ANI method (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;threshold&gt;</code>).</li>
+<li><code>--compare_engine</code> (<code>polars</code> | <code>duckdb</code>, default <code>polars</code>) and <code>--compare_duckdb_memory_limit</code> (DuckDB only).</li>
+<li><code>--compare_calculate</code>: genome metrics to compute (<code>ani</code>, <code>ibs</code>, <code>identical_genes</code>, <code>all</code>, or <code>+</code> combinations).</li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>For <code>--input_type profile_table</code>, the preferred table columns are <code>sample_name</code> and <code>profiles</code>.</li>
+<li>For <code>--input_type pair_table</code>, the columns are <code>sample_name_1</code>, <code>sample_name_2</code>, <code>profile_location_1</code>, <code>profile_location_2</code>.</li>
+<li><code>--mode</code> is required; running without it intentionally fails rather than choosing a default workflow.</li>
+<li><code>--parallel_mode</code> defaults to <code>batched</code>.</li>
+<li>For auto-built references, genome selection comes from the merged Sylph abundance table via <code>zipstrain utilities build-genome-db</code>.</li>
+</ul>
+<h3 id="command-1-map-reads-mode-map_reads">Command 1: Map reads (<code>--mode map_reads</code>)</h3>
+<p>Input table for <code>--input_type local</code> (paired-end, or single-end with just <code>reads1</code>):</p>
+<div class="highlight"><pre><span></span><code>sample_name,reads1,reads2
+S1,/data/S1_R1.fastq.gz,/data/S1_R2.fastq.gz
+S2,/data/S2_R1.fastq.gz,/data/S2_R2.fastq.gz
+</code></pre></div>
+<p>Input table for <code>--input_type sra</code> (one accession per row):</p>
+<div class="highlight"><pre><span></span><code>Run
+SRR12345678
+SRR12345679
+</code></pre></div>
+<p><strong>Option A — map against an existing reference:</strong></p>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>map_reads<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_type<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_table<span class="w"> </span>reads.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference_genome<span class="w"> </span>reference_genomes.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb<span class="w"> </span>reference_genomes.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span>out_map<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-resume
+</code></pre></div>
+<p>Optional: <code>--index_files</code> to reuse an existing Bowtie2 index; <code>--bowtie2_non_competitive_mapping true</code> to pass <code>-a</code> to Bowtie2.</p>
+<p><strong>Option B — build the reference automatically with Sylph</strong> (when <code>--reference_genome</code> is omitted): the pipeline runs per-sample <code>sylph profile</code>, merges the abundance tables, builds a reference with <code>zipstrain utilities build-genome-db</code>, predicts genes with prodigal, indexes with Bowtie2, and maps.</p>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>map_reads<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_type<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_table<span class="w"> </span>reads.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span>out_map<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--genome_db_cache_dir<span class="w"> </span>genome_cache<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--sylph_db<span class="w"> </span>/path/to/custom.syldb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-resume
+</code></pre></div>
+<div class="admonition tip">
+<p class="admonition-title">Pre-download the Sylph database</p>
+<p>If <code>--sylph_db</code> is omitted, the pipeline downloads the database from <code>--sylph_db_link</code> (the ~13 GB GTDB r220 database) on every run. That download is large and, on a laptop, a long-running task that some Nextflow versions kill mid-way. Download it <strong>once</strong> and pass its path with <code>--sylph_db</code>:</p>
+<div class="highlight"><pre><span></span><code>wget<span class="w"> </span>http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb
+</code></pre></div>
+</div>
+<p>Outputs: BAMs at <code>&lt;output_dir&gt;/*.bam</code>, Sylph tables under <code>&lt;output_dir&gt;/sylph_abundance/</code>, and (when auto-built) the reference bundle under <code>&lt;output_dir&gt;/db_from_sylph/</code>.</p>
+<h3 id="command-2-profile-bams-mode-profile">Command 2: Profile BAMs (<code>--mode profile</code>)</h3>
+<p>Input table:</p>
+<div class="highlight"><pre><span></span><code>sample_name,bamfile
+S1,/data/S1.bam
+S2,/data/S2.bam
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_table<span class="w"> </span>bams.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference_genome<span class="w"> </span>reference_genomes.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--gene_file<span class="w"> </span>reference_genomes_gene.fasta<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb<span class="w"> </span>reference_genomes.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span>out_profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-resume
+</code></pre></div>
+<p>Outputs: <code>&lt;output_dir&gt;/*_profile.parquet</code>, <code>*_genome_stats.parquet</code>, <code>*_gene_stats.parquet</code>. Because these modes pass a reference FASTA into profiling, the profiles include <code>ref_base_bitmask</code> and the stat tables include <code>ref_ani</code> (see <a href="../expected_output/">Expected output</a>).</p>
+<h3 id="command-3-sra-to-profile-end-to-end-mode-from_sra_to_profile">Command 3: SRA to profile, end to end (<code>--mode from_sra_to_profile</code>)</h3>
+<p>Input table is one SRA accession per row (<code>Run</code> column). This mode downloads the reads, maps, and profiles in one go.</p>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>from_sra_to_profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_table<span class="w"> </span>sra.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference_genome<span class="w"> </span>reference_genomes.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--gene_file<span class="w"> </span>reference_genomes_gene.fasta<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb<span class="w"> </span>reference_genomes.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span>out_sra_profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-resume
+</code></pre></div>
+<p>Omit <code>--reference_genome</code> to auto-build a reference with Sylph (as in Command 1, Option B); in that case pass <code>--sylph_db /path/to/gtdb-r220-c200-dbv1.syldb</code> pointing at a database you <a href="#command-1-map-reads-mode-map_reads">pre-downloaded</a>, rather than letting the pipeline re-download it each run. Outputs land under <code>&lt;output_dir&gt;/profiles/</code>.</p>
+<h3 id="command-4-compare-genomes-mode-compare_genomes">Command 4: Compare genomes (<code>--mode compare_genomes</code>)</h3>
+<p>Input is either an all-vs-all profile list (<code>--input_type profile_table</code>) or explicit pairs (<code>--input_type pair_table</code>):</p>
+<div class="highlight"><pre><span></span><code># profile_table
+sample_name,profiles
+S1,/profiles/S1_profile.parquet
+S2,/profiles/S2_profile.parquet
+</code></pre></div>
+<div class="highlight"><pre><span></span><code># pair_table
+sample_name_1,sample_name_2,profile_location_1,profile_location_2
+S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>compare_genomes<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_type<span class="w"> </span>profile_table<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_table<span class="w"> </span>profiles.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb<span class="w"> </span>reference_genomes.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--compare_genome_scope<span class="w"> </span>all<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--compare_calculate<span class="w"> </span>ani+ibs+identical_genes<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--parallel_mode<span class="w"> </span>batched<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--batch_size<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--batch_compare_n_parallel<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span>out_compare_genomes<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-resume
+</code></pre></div>
+<h3 id="command-5-compare-genes-mode-compare_genes">Command 5: Compare genes (<code>--mode compare_genes</code>)</h3>
+<p>Same input-table formats as genome compare.</p>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>compare_genes<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_type<span class="w"> </span>profile_table<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input_table<span class="w"> </span>profiles.csv<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb<span class="w"> </span>reference_genomes.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--compare_gene_scope<span class="w"> </span>all:all<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--compare_ani_method<span class="w"> </span>popani<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--parallel_mode<span class="w"> </span>batched<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--batch_size<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--batch_compare_n_parallel<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span>out_compare_genes<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-resume
+</code></pre></div>
+<p>Comparison outputs: the final merged table at <code>&lt;output_dir&gt;/merged_comparisons.parquet</code>, and (with <code>--parallel_mode batched</code>) intermediate per-batch outputs under <code>&lt;output_dir&gt;/batch_comparisons/</code>.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../quickstart/" class="btn btn-neutral float-left" title="Quick Start"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../installation/" class="btn btn-neutral float-right" title="Installation">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../quickstart/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../installation/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

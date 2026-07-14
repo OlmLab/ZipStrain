@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Quick Start - ZipStrain</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Quick Start";
+        var mkdocs_page_input_path = "quickstart.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> ZipStrain
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">Quick Start</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#install">Install</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#the-three-commands">The three commands</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#1-map-reads-bams">1. map — reads → BAMs</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#2-profile-bams-nucleotide-profiles">2. profile — BAMs → nucleotide profiles</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#3-compare-profiles-ani">3. compare — profiles → ANI</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../usermanual/">User Manual</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../expected_output/">Expected output</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">ZipStrain</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Quick Start</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="quick-start">Quick Start</h1>
+<p><strong>Strain-level metagenomics in three commands.</strong> ZipStrain maps reads, profiles them at single-nucleotide resolution, and compares samples by ANI to tell whether they share a strain.</p>
+<p><img src="../workflow.png" alt="ZipStrain workflow" width="520"></p>
+<h2 id="install">Install</h2>
+<div class="highlight"><pre><span></span><code><span class="c1"># Conda (recommended — bundles samtools and the map aligners)</span>
+conda<span class="w"> </span>create<span class="w"> </span>-n<span class="w"> </span>zipstrain<span class="w"> </span>-c<span class="w"> </span>conda-forge<span class="w"> </span>-c<span class="w"> </span>bioconda<span class="w"> </span><span class="nv">python</span><span class="o">=</span><span class="m">3</span>.12<span class="w"> </span>zipstrain<span class="w"> </span>bowtie2<span class="w"> </span>samtools<span class="w"> </span>sylph
+conda<span class="w"> </span>activate<span class="w"> </span>zipstrain
+zipstrain<span class="w"> </span><span class="nb">test</span>
+</code></pre></div>
+<p>Prefer pip? <code>pip install zipstrain</code> (then install <code>samtools</code> separately). Full options: <a href="../installation/">Installation</a>.</p>
+<h2 id="the-three-commands">The three commands</h2>
+<h3 id="1-map-reads-bams">1. <code>map</code> — reads → BAMs</h3>
+<p>Aligns reads to a reference and writes sorted BAMs plus a <code>samples.txt</code> ready for profiling. Omit <code>--reference-fasta</code> to let Sylph pick and build a reference automatically. Resumable if interrupted.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>map<span class="w"> </span>-i<span class="w"> </span>reads.csv<span class="w"> </span>-o<span class="w"> </span>mapped<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference-fasta<span class="w"> </span>ref.fna<span class="w"> </span>--stb-file<span class="w"> </span>ref.stb
+</code></pre></div>
+<p><img alt="zipstrain map" src="../assets/zipstrain_map.gif" /></p>
+<h3 id="2-profile-bams-nucleotide-profiles">2. <code>profile</code> — BAMs → nucleotide profiles</h3>
+<p>Counts A/C/G/T at every reference position and writes per-genome stats (coverage, breadth, a present/absent call) and SNVs. Missing assets are auto-generated and cached.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>profile<span class="w"> </span>-i<span class="w"> </span>mapped/samples.txt<span class="w"> </span>-f<span class="w"> </span>ref.fna<span class="w"> </span>-s<span class="w"> </span>ref.stb<span class="w"> </span>-r<span class="w"> </span>profiled
+</code></pre></div>
+<p><img alt="zipstrain profile" src="../assets/zipstrain_profile.gif" /></p>
+<h3 id="3-compare-profiles-ani">3. <code>compare</code> — profiles → ANI</h3>
+<p>Compares every pair of samples by popANI (near 100% ⇒ same strain). Point <code>--profile-db</code> at a CSV of <code>profile_name,profile_location</code>.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>compare<span class="w"> </span>--profile-db<span class="w"> </span>profiles.csv<span class="w"> </span>-r<span class="w"> </span>compared
+</code></pre></div>
+<p><img alt="zipstrain compare" src="../assets/zipstrain_compare.gif" /></p>
+<p>Every run writes a <code>zipstrain_run.log</code> so you can tell if it is running, finished, or crashed.</p>
+<h2 id="next-steps">Next steps</h2>
+<ul>
+<li><a href="../Tutorial/">Tutorial</a> — worked end-to-end examples (CLI and Nextflow)</li>
+<li><a href="../expected_output/">Expected output</a> — every output file and column explained</li>
+<li><a href="../usermanual/">User Manual</a> — full command reference and the Nextflow pipeline</li>
+</ul>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href=".." class="btn btn-neutral float-left" title="Welcome to ZipStrain"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../usermanual/" class="btn btn-neutral float-right" title="User Manual">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href=".." style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../usermanual/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

@@ -1,789 +1,153 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Downstream Analyses - ZipStrain</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Downstream Analyses";
+        var mkdocs_page_input_path = "downstream.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
 
-<!doctype html>
-<html lang="en" class="no-js">
-  <head>
-    
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width,initial-scale=1">
-      
-      
-      
-      
-        <link rel="prev" href="../cli/">
-      
-      
-        <link rel="next" href="../api/">
-      
-      
-      <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.22">
-    
-    
-      
-        <title>Downstream Analysis Catalogue - ZipStrain</title>
-      
-    
-    
-      <link rel="stylesheet" href="../assets/stylesheets/main.84d31ad4.min.css">
-      
-      
+<body class="wy-body-for-nav" role="document">
 
-
-    
-    
-      
-    
-    
-      
-        
-        
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
-        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
-      
-    
-    
-      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
-    
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
-    
-      
-
-    
-    
-    
-  </head>
-  
-  
-    <body dir="ltr">
-  
-    
-    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
-    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
-    <label class="md-overlay" for="__drawer"></label>
-    <div data-md-component="skip">
-      
-        
-        <a href="#downstream-analysis-catalogue" class="md-skip">
-          Skip to content
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> ZipStrain
         </a>
-      
-    </div>
-    <div data-md-component="announce">
-      
-    </div>
-    
-    
-      
+      </div>
 
-  
-
-<header class="md-header md-header--shadow" data-md-component="header">
-  <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="ZipStrain" class="md-header__button md-logo" aria-label="ZipStrain" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
-
-    </a>
-    <label class="md-header__button md-icon" for="__drawer">
-      
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
-    </label>
-    <div class="md-header__title" data-md-component="header-title">
-      <div class="md-header__ellipsis">
-        <div class="md-header__topic">
-          <span class="md-ellipsis">
-            ZipStrain
-          </span>
-        </div>
-        <div class="md-header__topic" data-md-component="header-topic">
-          <span class="md-ellipsis">
-            
-              Downstream Analysis Catalogue
-            
-          </span>
-        </div>
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../quickstart/">Quick Start</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../usermanual/">User Manual</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../expected_output/">Expected output</a>
+                </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">Downstream Analyses</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#input-conventions">Input conventions</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#common-setup">Common setup</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#working-with-outputs">Working with outputs</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#if-a-function-returns-a-pldataframe">If a function returns a pl.DataFrame</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#if-a-function-returns-a-plotly-figure">If a function returns a Plotly figure</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#if-a-function-returns-a-matplotlib-figure">If a function returns a Matplotlib figure</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#if-a-function-returns-a-seaborn-clustergrid">If a function returns a Seaborn ClusterGrid</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#function-catalogue">Function catalogue</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#calculate_strainsharing">calculate_strainsharing</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_strainsharing">plot_strainsharing</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#calculate_ibs">calculate_ibs</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_ibs">plot_ibs</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_ibs_heatmap">plot_ibs_heatmap</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#calculate_identical_frac_vs_popani">calculate_identical_frac_vs_popani</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_identical_frac_vs_popani">plot_identical_frac_vs_popani</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#compute_silhouette_curve">compute_silhouette_curve</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_silhouette_curve">plot_silhouette_curve</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#get_silhouette_plot">get_silhouette_plot</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#get_cluster_assignments">get_cluster_assignments</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_dendo">plot_dendo</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#get_clustermap">get_clustermap</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
+                </li>
+              </ul>
       </div>
     </div>
-    
-    
-      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
-    
-    
-    
-    
-  </nav>
-  
-</header>
-    
-    <div class="md-container" data-md-component="container">
-      
-      
-        
-          
-        
-      
-      <main class="md-main" data-md-component="main">
-        <div class="md-main__inner md-grid">
-          
-            
-              
-              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-
-
-<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
-  <label class="md-nav__title" for="__drawer">
-    <a href=".." title="ZipStrain" class="md-nav__button md-logo" aria-label="ZipStrain" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
-
-    </a>
-    ZipStrain
-  </label>
-  
-  <ul class="md-nav__list" data-md-scrollfix>
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Welcome to ZipStrain
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../installation/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Installation
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../Tutorial/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Tutorial
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../GenomeDBFromSylph/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Build Reference FASTA/STB from Sylph Abundances
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../NextflowPipeline/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Nextflow Pipeline for ZipStrain
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../cli/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ZipStrain Command Line Interface
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Downstream Analysis Catalogue
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    Downstream Analysis Catalogue
-    
-  </span>
-  
-
-      </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#input-conventions" class="md-nav__link">
-    <span class="md-ellipsis">
-      Input conventions
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#common-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      Common setup
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#working-with-outputs" class="md-nav__link">
-    <span class="md-ellipsis">
-      Working with outputs
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Working with outputs">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-pldataframe" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a pl.DataFrame
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-plotly-figure" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a Plotly figure
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-matplotlib-figure" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a Matplotlib figure
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-seaborn-clustergrid" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a Seaborn ClusterGrid
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#function-catalogue" class="md-nav__link">
-    <span class="md-ellipsis">
-      Function catalogue
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Function catalogue">
-      <ul class="md-nav__list">
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">ZipStrain</a>
         
-          <li class="md-nav__item">
-  <a href="#calculate_strainsharing" class="md-nav__link">
-    <span class="md-ellipsis">
-      calculate_strainsharing
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_strainsharing" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_strainsharing
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#calculate_ibs" class="md-nav__link">
-    <span class="md-ellipsis">
-      calculate_ibs
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_ibs" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_ibs
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_ibs_heatmap" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_ibs_heatmap
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#calculate_identical_frac_vs_popani" class="md-nav__link">
-    <span class="md-ellipsis">
-      calculate_identical_frac_vs_popani
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_identical_frac_vs_popani" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_identical_frac_vs_popani
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_silhouette_plot" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_silhouette_plot
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_cluster_assignments" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_cluster_assignments
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_dendo" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_dendo
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_clustermap" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_clustermap
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Downstream Analyses</li>
+    <li class="wy-breadcrumbs-aside">
     </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../api/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    API
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-    
   </ul>
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-            
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
               
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#input-conventions" class="md-nav__link">
-    <span class="md-ellipsis">
-      Input conventions
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#common-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      Common setup
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#working-with-outputs" class="md-nav__link">
-    <span class="md-ellipsis">
-      Working with outputs
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Working with outputs">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-pldataframe" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a pl.DataFrame
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-plotly-figure" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a Plotly figure
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-matplotlib-figure" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a Matplotlib figure
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#if-a-function-returns-a-seaborn-clustergrid" class="md-nav__link">
-    <span class="md-ellipsis">
-      If a function returns a Seaborn ClusterGrid
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#function-catalogue" class="md-nav__link">
-    <span class="md-ellipsis">
-      Function catalogue
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Function catalogue">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#calculate_strainsharing" class="md-nav__link">
-    <span class="md-ellipsis">
-      calculate_strainsharing
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_strainsharing" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_strainsharing
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#calculate_ibs" class="md-nav__link">
-    <span class="md-ellipsis">
-      calculate_ibs
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_ibs" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_ibs
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_ibs_heatmap" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_ibs_heatmap
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#calculate_identical_frac_vs_popani" class="md-nav__link">
-    <span class="md-ellipsis">
-      calculate_identical_frac_vs_popani
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_identical_frac_vs_popani" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_identical_frac_vs_popani
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_silhouette_plot" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_silhouette_plot
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_cluster_assignments" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_cluster_assignments
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#plot_dendo" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_dendo
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_clustermap" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_clustermap
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-          
-          
-            <div class="md-content" data-md-component="content">
-              <article class="md-content__inner md-typeset">
-                
-                  
-
-
-
-<h1 id="downstream-analysis-catalogue">Downstream Analysis Catalogue</h1>
-<p>This page summarizes the downstream analysis helpers currently exposed in <code>zipstrain.visualize</code>.</p>
+                <h1 id="downstream-analyses">Downstream Analyses</h1>
+<p>This page documents the downstream analysis tools available in <code>zipstrain.visualize</code>. These functions help you go from raw genome-comparison outputs to interpretable figures and tables — things like strain-sharing rates between populations, identity-by-state distributions, dendrograms, and cluster assignments. All examples are in Python. If you're not a programmer, you can point an AI assistant (like Claude or ChatGPT) at this page and ask it to write the code for you — just describe what you want to visualize and paste in your file paths.</p>
 <h2 id="input-conventions">Input conventions</h2>
 <p>Most comparison-driven functions expect a <code>pl.LazyFrame</code> with some or all of these columns:</p>
 <ul>
 <li><code>genome</code></li>
 <li><code>sample_1</code></li>
 <li><code>sample_2</code></li>
-<li><code>genome_pop_ani</code></li>
+<li><code>genome_ani</code></li>
 <li><code>total_positions</code></li>
 <li><code>max_consecutive_length</code></li>
 <li><code>shared_genes_count</code></li>
@@ -797,12 +161,12 @@
 </ul>
 <h2 id="common-setup">Common setup</h2>
 <p>For most downstream analysis, start from a genome-comparison parquet and a sample metadata table:</p>
-<pre><code class="language-python">import polars as pl
-from zipstrain import visualize
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">zipstrain</span><span class="w"> </span><span class="kn">import</span> <span class="n">visualize</span>
 
-comps_lf = pl.scan_parquet(&quot;example_genome_compare.parquet&quot;)
-sample_to_population = pl.scan_csv(&quot;sample_to_population.csv&quot;)
-</code></pre>
+<span class="n">comps_lf</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">scan_parquet</span><span class="p">(</span><span class="s2">&quot;example_genome_compare.parquet&quot;</span><span class="p">)</span>
+<span class="n">sample_to_population</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">scan_csv</span><span class="p">(</span><span class="s2">&quot;sample_to_population.csv&quot;</span><span class="p">)</span>
+</code></pre></div>
 <p>Where:</p>
 <ul>
 <li><code>example_genome_compare.parquet</code> is a genome-compare output parquet</li>
@@ -811,42 +175,42 @@ sample_to_population = pl.scan_csv(&quot;sample_to_population.csv&quot;)
 <li><code>population</code></li>
 </ul>
 <p>Example metadata file:</p>
-<pre><code class="language-text">sample,population
+<div class="highlight"><pre><span></span><code>sample,population
 sample_a,Population_1
 sample_b,Population_1
 sample_c,Population_2
 sample_d,Population_2
-</code></pre>
+</code></pre></div>
 <p>Use <code>pl.scan_parquet(...)</code> and <code>pl.scan_csv(...)</code> when a function expects a <code>LazyFrame</code>.
 Use <code>pl.read_parquet(...)</code> when a function expects an eager <code>DataFrame</code>.</p>
 <h2 id="working-with-outputs">Working with outputs</h2>
 <p>The downstream helpers return a mix of tables and figures.</p>
 <h3 id="if-a-function-returns-a-pldataframe">If a function returns a <code>pl.DataFrame</code></h3>
 <p>You can inspect it directly:</p>
-<pre><code class="language-python">print(df.head())
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="nb">print</span><span class="p">(</span><span class="n">df</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+</code></pre></div>
 <p>You can save it for later:</p>
-<pre><code class="language-python">df.write_parquet(&quot;output.parquet&quot;)
-df.write_csv(&quot;output.csv&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">df</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">&quot;output.parquet&quot;</span><span class="p">)</span>
+<span class="n">df</span><span class="o">.</span><span class="n">write_csv</span><span class="p">(</span><span class="s2">&quot;output.csv&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="if-a-function-returns-a-plotly-figure">If a function returns a Plotly figure</h3>
 <p>You can open it interactively:</p>
-<pre><code class="language-python">fig.show()
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</code></pre></div>
 <p>You can save it as an interactive HTML file:</p>
-<pre><code class="language-python">fig.write_html(&quot;figure.html&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span><span class="o">.</span><span class="n">write_html</span><span class="p">(</span><span class="s2">&quot;figure.html&quot;</span><span class="p">)</span>
+</code></pre></div>
 <p>Or save a static image if you have the required Plotly image backend installed:</p>
-<pre><code class="language-python">fig.write_image(&quot;figure.png&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span><span class="o">.</span><span class="n">write_image</span><span class="p">(</span><span class="s2">&quot;figure.png&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="if-a-function-returns-a-matplotlib-figure">If a function returns a Matplotlib figure</h3>
 <p>You can save it as:</p>
-<pre><code class="language-python">fig.savefig(&quot;figure.png&quot;, dpi=200, bbox_inches=&quot;tight&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span><span class="o">.</span><span class="n">savefig</span><span class="p">(</span><span class="s2">&quot;figure.png&quot;</span><span class="p">,</span> <span class="n">dpi</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span> <span class="n">bbox_inches</span><span class="o">=</span><span class="s2">&quot;tight&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="if-a-function-returns-a-seaborn-clustergrid">If a function returns a Seaborn <code>ClusterGrid</code></h3>
 <p>Save the underlying Matplotlib figure:</p>
-<pre><code class="language-python">grid.fig.savefig(&quot;clustermap.png&quot;, dpi=200, bbox_inches=&quot;tight&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">grid</span><span class="o">.</span><span class="n">fig</span><span class="o">.</span><span class="n">savefig</span><span class="p">(</span><span class="s2">&quot;clustermap.png&quot;</span><span class="p">,</span> <span class="n">dpi</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span> <span class="n">bbox_inches</span><span class="o">=</span><span class="s2">&quot;tight&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h2 id="function-catalogue">Function catalogue</h2>
 <h3 id="calculate_strainsharing"><code>calculate_strainsharing</code></h3>
 <ul>
@@ -870,19 +234,19 @@ df.write_csv(&quot;output.csv&quot;)
 <li>You will usually pass the result into <code>plot_strainsharing(...)</code>.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">breadth_lf = pl.scan_parquet(&quot;example_breadth_table.parquet&quot;)
+<div class="highlight"><pre><span></span><code><span class="n">breadth_lf</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">scan_parquet</span><span class="p">(</span><span class="s2">&quot;example_breadth_table.parquet&quot;</span><span class="p">)</span>
 
-strainsharing = visualize.calculate_strainsharing(
-    comps_lf=comps_lf,
-    breadth_lf=breadth_lf,
-    sample_to_population=sample_to_population,
-    min_breadth=0.5,
-    strain_similarity_threshold=99.9,
-    min_total_positions=10000,
-)
+<span class="n">strainsharing</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">calculate_strainsharing</span><span class="p">(</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">comps_lf</span><span class="p">,</span>
+    <span class="n">breadth_lf</span><span class="o">=</span><span class="n">breadth_lf</span><span class="p">,</span>
+    <span class="n">sample_to_population</span><span class="o">=</span><span class="n">sample_to_population</span><span class="p">,</span>
+    <span class="n">min_breadth</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+    <span class="n">strain_similarity_threshold</span><span class="o">=</span><span class="mf">99.9</span><span class="p">,</span>
+    <span class="n">min_total_positions</span><span class="o">=</span><span class="mi">10000</span><span class="p">,</span>
+<span class="p">)</span>
 
-print(strainsharing.keys())
-</code></pre>
+<span class="nb">print</span><span class="p">(</span><span class="n">strainsharing</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+</code></pre></div>
 <h3 id="plot_strainsharing"><code>plot_strainsharing</code></h3>
 <ul>
 <li>Purpose: plot strain-sharing rate distributions.</li>
@@ -901,13 +265,13 @@ print(strainsharing.keys())
 <li>It is useful for comparing how much strain sharing you see within and between groups.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">fig = visualize.plot_strainsharing(
-    strainsharingrates=strainsharing,
-    sample_frac=1.0,
-)
-fig.show()
-fig.write_html(&quot;strainsharing.html&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">plot_strainsharing</span><span class="p">(</span>
+    <span class="n">strainsharingrates</span><span class="o">=</span><span class="n">strainsharing</span><span class="p">,</span>
+    <span class="n">sample_frac</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">write_html</span><span class="p">(</span><span class="s2">&quot;strainsharing.html&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="calculate_ibs"><code>calculate_ibs</code></h3>
 <ul>
 <li>Purpose: aggregate IBS-like distributions across within- and between-population comparisons.</li>
@@ -930,16 +294,16 @@ fig.write_html(&quot;strainsharing.html&quot;)
 <li>The result is a <code>DataFrame</code> that you can pass to <code>plot_ibs(...)</code> or <code>plot_ibs_heatmap(...)</code>.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">ibs_df = visualize.calculate_ibs(
-    sample_to_population=sample_to_population,
-    comps_lf=comps_lf,
-    max_perc_id_genes=15,
-    min_total_positions=10000,
-)
+<div class="highlight"><pre><span></span><code><span class="n">ibs_df</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">calculate_ibs</span><span class="p">(</span>
+    <span class="n">sample_to_population</span><span class="o">=</span><span class="n">sample_to_population</span><span class="p">,</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">comps_lf</span><span class="p">,</span>
+    <span class="n">max_perc_id_genes</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span>
+    <span class="n">min_total_positions</span><span class="o">=</span><span class="mi">10000</span><span class="p">,</span>
+<span class="p">)</span>
 
-print(ibs_df.head())
-ibs_df.write_parquet(&quot;ibs_summary.parquet&quot;)
-</code></pre>
+<span class="nb">print</span><span class="p">(</span><span class="n">ibs_df</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+<span class="n">ibs_df</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">&quot;ibs_summary.parquet&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="plot_ibs"><code>plot_ibs</code></h3>
 <ul>
 <li>Purpose: plot IBS cumulative distributions for two populations within one genome.</li>
@@ -962,15 +326,15 @@ ibs_df.write_parquet(&quot;ibs_summary.parquet&quot;)
 <li>It is most useful when you want to compare whether within-population pairs and between-population pairs have clearly different IBS behavior.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">fig = visualize.plot_ibs(
-    df=ibs_df,
-    genome=&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;,
-    population_1=&quot;Population_1&quot;,
-    population_2=&quot;Population_2&quot;,
-)
-fig.show()
-fig.write_html(&quot;ibs_curve.html&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">plot_ibs</span><span class="p">(</span>
+    <span class="n">df</span><span class="o">=</span><span class="n">ibs_df</span><span class="p">,</span>
+    <span class="n">genome</span><span class="o">=</span><span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span><span class="p">,</span>
+    <span class="n">population_1</span><span class="o">=</span><span class="s2">&quot;Population_1&quot;</span><span class="p">,</span>
+    <span class="n">population_2</span><span class="o">=</span><span class="s2">&quot;Population_2&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">write_html</span><span class="p">(</span><span class="s2">&quot;ibs_curve.html&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="plot_ibs_heatmap"><code>plot_ibs_heatmap</code></h3>
 <ul>
 <li>Purpose: summarize IBS separation across genomes and population pairs.</li>
@@ -992,13 +356,13 @@ fig.write_html(&quot;ibs_curve.html&quot;)
 <li>Each cell represents how separated the IBS distributions are for one genome and one population pair.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">fig = visualize.plot_ibs_heatmap(
-    df=ibs_df,
-    min_member=10,
-)
-fig.show()
-fig.write_html(&quot;ibs_heatmap.html&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">plot_ibs_heatmap</span><span class="p">(</span>
+    <span class="n">df</span><span class="o">=</span><span class="n">ibs_df</span><span class="p">,</span>
+    <span class="n">min_member</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">write_html</span><span class="p">(</span><span class="s2">&quot;ibs_heatmap.html&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="calculate_identical_frac_vs_popani"><code>calculate_identical_frac_vs_popani</code></h3>
 <ul>
 <li>Purpose: collect genome-wide popANI and identical-gene fractions for two populations.</li>
@@ -1019,17 +383,17 @@ fig.write_html(&quot;ibs_heatmap.html&quot;)
 <li>It is helpful when you want to see whether near-identical genomes also tend to have high identical-gene fractions.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">identical_df = visualize.calculate_identical_frac_vs_popani(
-    genome=&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;,
-    population_1=&quot;Population_1&quot;,
-    population_2=&quot;Population_2&quot;,
-    sample_to_population=sample_to_population,
-    comps_lf=comps_lf,
-)
+<div class="highlight"><pre><span></span><code><span class="n">identical_df</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">calculate_identical_frac_vs_popani</span><span class="p">(</span>
+    <span class="n">genome</span><span class="o">=</span><span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span><span class="p">,</span>
+    <span class="n">population_1</span><span class="o">=</span><span class="s2">&quot;Population_1&quot;</span><span class="p">,</span>
+    <span class="n">population_2</span><span class="o">=</span><span class="s2">&quot;Population_2&quot;</span><span class="p">,</span>
+    <span class="n">sample_to_population</span><span class="o">=</span><span class="n">sample_to_population</span><span class="p">,</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">comps_lf</span><span class="p">,</span>
+<span class="p">)</span>
 
-print(identical_df.head())
-identical_df.write_csv(&quot;identical_vs_popani.csv&quot;)
-</code></pre>
+<span class="nb">print</span><span class="p">(</span><span class="n">identical_df</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+<span class="n">identical_df</span><span class="o">.</span><span class="n">write_csv</span><span class="p">(</span><span class="s2">&quot;identical_vs_popani.csv&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="plot_identical_frac_vs_popani"><code>plot_identical_frac_vs_popani</code></h3>
 <ul>
 <li>Purpose: scatterplot identical-gene fraction against genome-wide popANI.</li>
@@ -1048,24 +412,27 @@ identical_df.write_csv(&quot;identical_vs_popani.csv&quot;)
 <li>It is useful for seeing whether samples form obvious within-group and between-group patterns.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">fig = visualize.plot_identical_frac_vs_popani(
-    df=identical_df,
-    genome=&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;,
-)
-fig.show()
-fig.write_html(&quot;identical_vs_popani.html&quot;)
-</code></pre>
-<h3 id="get_silhouette_plot"><code>get_silhouette_plot</code></h3>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">plot_identical_frac_vs_popani</span><span class="p">(</span>
+    <span class="n">df</span><span class="o">=</span><span class="n">identical_df</span><span class="p">,</span>
+    <span class="n">genome</span><span class="o">=</span><span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">write_html</span><span class="p">(</span><span class="s2">&quot;identical_vs_popani.html&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="compute_silhouette_curve"><code>compute_silhouette_curve</code></h3>
 <ul>
-<li>Purpose: sweep ANI thresholds and plot clustering silhouette score for one genome.</li>
+<li>Purpose: compute the silhouette curve and peak summary for one genome.</li>
 <li>Inputs:</li>
 <li><code>comps_lf</code></li>
 <li><code>genome</code></li>
 <li><code>min_comp_len</code></li>
 <li><code>impute_method</code></li>
 <li><code>max_null_samples</code></li>
+<li><code>min_threshold</code></li>
+<li><code>peak_prominence</code></li>
+<li><code>peak_distance</code></li>
 <li>Output:</li>
-<li><code>plotly.graph_objects.Figure</code></li>
+<li><code>SilhouetteCurveResult</code></li>
 <li>Notes:</li>
 <li>Expects one genome scope at a time.</li>
 <li>Null ANI entries are imputed with a numeric ANI value.</li>
@@ -1073,18 +440,50 @@ fig.write_html(&quot;identical_vs_popani.html&quot;)
 <p>What it does:</p>
 <ul>
 <li>This tries many ANI cutoffs and asks: “At which threshold do the resulting clusters look most coherent?”</li>
-<li>The result is a line plot of silhouette score versus ANI threshold.</li>
+<li>The result includes:</li>
+<li>the full threshold vector</li>
+<li>the full silhouette vector</li>
+<li><code>curve</code>: a table with columns <code>threshold</code> and <code>silhouette</code></li>
+<li><code>candidate_peaks</code>: a table with columns <code>index</code>, <code>threshold</code>, <code>silhouette</code>, and <code>prominence</code></li>
+<li><code>best_peak</code>: a one-row table with columns <code>index</code>, <code>threshold</code>, <code>silhouette</code>, and <code>source</code></li>
 <li>A higher silhouette score usually means cleaner separation between clusters.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">fig = visualize.get_silhouette_plot(
-    comps_lf=comps_lf,
-    genome=&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;,
-    min_comp_len=100000,
-)
-fig.show()
-fig.write_html(&quot;silhouette.html&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">result</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">compute_silhouette_curve</span><span class="p">(</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">comps_lf</span><span class="p">,</span>
+    <span class="n">genome</span><span class="o">=</span><span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span><span class="p">,</span>
+    <span class="n">min_comp_len</span><span class="o">=</span><span class="mi">100000</span><span class="p">,</span>
+    <span class="n">linkage_method</span><span class="o">=</span><span class="s2">&quot;average&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">best_peak</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">candidate_peaks</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="plot_silhouette_curve"><code>plot_silhouette_curve</code></h3>
+<ul>
+<li>Purpose: plot a precomputed silhouette curve result.</li>
+<li>Inputs:</li>
+<li><code>result</code></li>
+<li>Output:</li>
+<li><code>plotly.graph_objects.Figure</code></li>
+</ul>
+<p>Example:</p>
+<div class="highlight"><pre><span></span><code><span class="n">result</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">compute_silhouette_curve</span><span class="p">(</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">comps_lf</span><span class="p">,</span>
+    <span class="n">genome</span><span class="o">=</span><span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span><span class="p">,</span>
+    <span class="n">min_comp_len</span><span class="o">=</span><span class="mi">100000</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">fig</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">plot_silhouette_curve</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">write_html</span><span class="p">(</span><span class="s2">&quot;silhouette.html&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="get_silhouette_plot"><code>get_silhouette_plot</code></h3>
+<ul>
+<li>Purpose: convenience wrapper that computes and plots the silhouette curve in one call.</li>
+<li>Notes:</li>
+<li>Internally this calls <code>compute_silhouette_curve(...)</code> and then <code>plot_silhouette_curve(...)</code>.</li>
+<li>It accepts the same <code>linkage_method</code> argument, defaulting to <code>"average"</code>.</li>
+</ul>
 <h3 id="get_cluster_assignments"><code>get_cluster_assignments</code></h3>
 <ul>
 <li>Purpose: assign clonal and strain-level clusters from hierarchical clustering.</li>
@@ -1114,19 +513,26 @@ fig.write_html(&quot;silhouette.html&quot;)
 <li>This is useful when you want cluster labels that you can join back to metadata and use downstream.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">single_genome_lf = comps_lf.filter(
-    pl.col(&quot;genome&quot;) == &quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;
-)
+<div class="highlight"><pre><span></span><code><span class="n">single_genome_lf</span> <span class="o">=</span> <span class="n">comps_lf</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span>
+    <span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;genome&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span>
+<span class="p">)</span>
 
-cluster_df = visualize.get_cluster_assignments(
-    comps_lf=single_genome_lf,
-    clonal_cluster_threshold=99.93,
-    strain_cluster_threshold=99.8,
-)
+<span class="n">cluster_df</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">get_cluster_assignments</span><span class="p">(</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">single_genome_lf</span><span class="p">,</span>
+    <span class="n">clonal_cluster_threshold</span><span class="o">=</span><span class="mf">99.93</span><span class="p">,</span>
+    <span class="n">strain_cluster_threshold</span><span class="o">=</span><span class="mf">99.8</span><span class="p">,</span>
+    <span class="n">linkage_method</span><span class="o">=</span><span class="s2">&quot;average&quot;</span><span class="p">,</span>
+<span class="p">)</span>
 
-print(cluster_df)
-cluster_df.write_csv(&quot;cluster_assignments.csv&quot;)
-</code></pre>
+<span class="nb">print</span><span class="p">(</span><span class="n">cluster_df</span><span class="p">)</span>
+<span class="n">cluster_df</span><span class="o">.</span><span class="n">write_csv</span><span class="p">(</span><span class="s2">&quot;cluster_assignments.csv&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>Notes:</p>
+<ul>
+<li><code>linkage_method</code> defaults to <code>"average"</code></li>
+<li>this is passed directly to SciPy hierarchical clustering</li>
+<li>if you want stricter cluster semantics, you can also try <code>"complete"</code></li>
+</ul>
 <h3 id="plot_dendo"><code>plot_dendo</code></h3>
 <ul>
 <li>Purpose: draw a population-colored dendrogram for one genome.</li>
@@ -1156,14 +562,15 @@ cluster_df.write_csv(&quot;cluster_assignments.csv&quot;)
 <li>If <code>include_fraction_null=True</code>, it also adds a side bar showing how much missing pairwise ANI information each sample had before imputation.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">fig = visualize.plot_dendo(
-    comps_lf=comps_lf,
-    genome=&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;,
-    sample_to_population=sample_to_population,
-    include_fraction_null=True,
-)
-fig.savefig(&quot;dendrogram.png&quot;, dpi=200, bbox_inches=&quot;tight&quot;)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">fig</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">plot_dendo</span><span class="p">(</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">comps_lf</span><span class="p">,</span>
+    <span class="n">genome</span><span class="o">=</span><span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span><span class="p">,</span>
+    <span class="n">sample_to_population</span><span class="o">=</span><span class="n">sample_to_population</span><span class="p">,</span>
+    <span class="n">linkage_method</span><span class="o">=</span><span class="s2">&quot;average&quot;</span><span class="p">,</span>
+    <span class="n">include_fraction_null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">savefig</span><span class="p">(</span><span class="s2">&quot;dendrogram.png&quot;</span><span class="p">,</span> <span class="n">dpi</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span> <span class="n">bbox_inches</span><span class="o">=</span><span class="s2">&quot;tight&quot;</span><span class="p">)</span>
+</code></pre></div>
 <h3 id="get_clustermap"><code>get_clustermap</code></h3>
 <ul>
 <li>Purpose: build a seaborn clustermap for one genome using ANI as similarity.</li>
@@ -1184,67 +591,59 @@ fig.savefig(&quot;dendrogram.png&quot;, dpi=200, bbox_inches=&quot;tight&quot;)
 <li>It is a good “overview plot” when you want to see sample blocks, clusters, and group structure all at once.</li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-python">grid = visualize.get_clustermap(
-    comps_lf=comps_lf,
-    genome=&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;,
-    sample_to_population=sample_to_population,
-)
-grid.fig.suptitle(&quot;ANI clustermap&quot;, y=1.02)
-grid.fig.savefig(&quot;clustermap.png&quot;, dpi=200, bbox_inches=&quot;tight&quot;)
-</code></pre>
-
-
-
-
-
-
-
-
-
-
-
-
-                
-              </article>
+<div class="highlight"><pre><span></span><code><span class="n">grid</span> <span class="o">=</span> <span class="n">visualize</span><span class="o">.</span><span class="n">get_clustermap</span><span class="p">(</span>
+    <span class="n">comps_lf</span><span class="o">=</span><span class="n">comps_lf</span><span class="p">,</span>
+    <span class="n">genome</span><span class="o">=</span><span class="s2">&quot;GCF_000269965.1_ASM26996v1_genomic.fna&quot;</span><span class="p">,</span>
+    <span class="n">sample_to_population</span><span class="o">=</span><span class="n">sample_to_population</span><span class="p">,</span>
+    <span class="n">linkage_method</span><span class="o">=</span><span class="s2">&quot;average&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">grid</span><span class="o">.</span><span class="n">fig</span><span class="o">.</span><span class="n">suptitle</span><span class="p">(</span><span class="s2">&quot;ANI clustermap&quot;</span><span class="p">,</span> <span class="n">y</span><span class="o">=</span><span class="mf">1.02</span><span class="p">)</span>
+<span class="n">grid</span><span class="o">.</span><span class="n">fig</span><span class="o">.</span><span class="n">savefig</span><span class="p">(</span><span class="s2">&quot;clustermap.png&quot;</span><span class="p">,</span> <span class="n">dpi</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span> <span class="n">bbox_inches</span><span class="o">=</span><span class="s2">&quot;tight&quot;</span><span class="p">)</span>
+</code></pre></div>
+              
             </div>
-          
-          
-<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
-        </div>
-        
-      </main>
-      
-        <footer class="md-footer">
-  
-  <div class="md-footer-meta md-typeset">
-    <div class="md-footer-meta__inner md-grid">
-      <div class="md-copyright">
-  
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
-  
-</div>
-      
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../expected_output/" class="btn btn-neutral float-left" title="Expected output"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../api/" class="btn btn-neutral float-right" title="API">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
   </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
 </footer>
-      
-    </div>
-    <div class="md-dialog" data-md-component="dialog">
-      <div class="md-dialog__inner md-typeset"></div>
-    </div>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
     
     
-    
-      
-      <script id="__config" type="application/json">{"base": "..", "features": [], "search": "../assets/javascripts/workers/search.973d3a69.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <span><a href="../expected_output/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
-      <script src="../assets/javascripts/bundle.f55a23d4.min.js"></script>
-      
+      <span><a href="../api/" style="color: #fcfcfc">Next &raquo;</a></span>
     
-  </body>
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
 </html>

@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Expected output - ZipStrain</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Expected output";
+        var mkdocs_page_input_path = "expected_output.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> ZipStrain
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../quickstart/">Quick Start</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../usermanual/">User Manual</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">Expected output</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#zipstrain-profile">zipstrain profile</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#sample_genome_statsparquet">&lt;sample&gt;_genome_stats.parquet</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#sample_gene_statsparquet">&lt;sample&gt;_gene_stats.parquet</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#sample_profileparquet">&lt;sample&gt;_profile.parquet</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#sample_snvsparquet">&lt;sample&gt;_SNVs.parquet</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#zipstrain-compare">zipstrain compare</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#all_comparisonsparquet">all_comparisons.parquet</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">ZipStrain</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Expected output</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="expected-output">Expected output</h1>
+<p>This page describes every file ZipStrain writes, the columns in each, and how to read them. Profile outputs are written as parquet. Convert any parquet table to CSV explicitly with <code>zipstrain utilities parquet-to-csv</code> when text output is needed. The examples below come from <a href="../Tutorial/">Tutorial #3</a> (three replicates of the ZymoBIOMICS standard, Sylph route).</p>
+<hr />
+<h2 id="zipstrain-profile"><code>zipstrain profile</code></h2>
+<p>A profile run writes one folder per sample directly under the run directory, plus shared <code>profiling_assets/</code> (auto-generated inputs + logs):</p>
+<div class="highlight"><pre><span></span><code>out_profile/
+├── SRR12324251/
+│   ├── SRR12324251_profile.parquet        # per-position base counts
+│   ├── SRR12324251_genome_stats.parquet   # per-genome summary
+│   ├── SRR12324251_gene_stats.parquet     # per-gene summary
+│   ├── SRR12324251_SNVs.parquet           # SNPs vs. reference
+│   └── intermediate_files/                # scratch — safe to ignore
+├── SRR12324252/ …
+└── profiling_assets/                      # null model, bed, contract, logs
+</code></pre></div>
+<h3 id="sample_genome_statsparquet"><code>&lt;sample&gt;_genome_stats.parquet</code></h3>
+<p>One row per genome: how well it was covered, whether it is present, and its identity.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>genome</code></td>
+<td>Genome identifier (a GTDB accession on the Sylph route)</td>
+</tr>
+<tr>
+<td><code>coverage</code></td>
+<td>Mean read depth across the genome (over its full length)</td>
+</tr>
+<tr>
+<td><code>coverage_median</code>, <code>coverage_std</code></td>
+<td>Median and std. dev. of depth across covered positions</td>
+</tr>
+<tr>
+<td><code>breadth</code></td>
+<td>Fraction of the genome covered by ≥ 1 read</td>
+</tr>
+<tr>
+<td><code>genome_length</code></td>
+<td>Genome length (bp)</td>
+</tr>
+<tr>
+<td><code>gap_mean</code>, <code>gap_std</code></td>
+<td>Mean / std. dev. of the gap length between consecutive mapped reads</td>
+</tr>
+<tr>
+<td><code>5x_cov_sites</code></td>
+<td>Number of positions covered ≥ 5×</td>
+</tr>
+<tr>
+<td><code>heterogeneity</code></td>
+<td>Mean per-site nucleotide diversity (within-sample microdiversity)</td>
+</tr>
+<tr>
+<td><code>ber</code></td>
+<td>Breadth-error ratio: observed breadth ÷ breadth expected at this coverage (~1 for an evenly-covered genome)</td>
+</tr>
+<tr>
+<td><code>fug</code></td>
+<td>Read-distribution uniformity (fraction of non-excess gaps); ~0.632 under a random distribution</td>
+</tr>
+<tr>
+<td><code>reads_mapped</code></td>
+<td>Reads mapped to the genome</td>
+</tr>
+<tr>
+<td><code>ref_ani</code></td>
+<td><strong>Population</strong> ANI of the sample to the reference genome (%) — a position counts as matching if the reference allele is present among the reads</td>
+</tr>
+<tr>
+<td><code>conANI_reference</code></td>
+<td><strong>Consensus</strong> ANI to the reference (%) — a position counts as matching only if the reference base is the sample's consensus (majority) base. Lower than <code>ref_ani</code> at polymorphic sites. Both are reported only when <code>--reference-fasta</code> is used</td>
+</tr>
+<tr>
+<td><code>SNS_count</code>, <code>SNV_count</code></td>
+<td>Number of fixed substitutions (<code>SNS</code>) and polymorphic sites (<code>SNV</code>+<code>con_SNV</code>+<code>pop_SNV</code>) — the per-genome totals of the SNV table. Reference route only</td>
+</tr>
+<tr>
+<td><code>presence</code></td>
+<td>Automated <code>present</code> / <code>absent</code> call (see <a href="../Tutorial/#interpreting-the-benchmarks">Tutorial #3</a>)</td>
+</tr>
+<tr>
+<td><code>genome_taxonomy</code></td>
+<td>GTDB lineage — <strong>Sylph route only</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Example (one present genome):</p>
+<div class="highlight"><pre><span></span><code>genome           coverage  breadth  ber     fug     reads_mapped  ref_ani  presence  genome_taxonomy
+GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    present   d__Bacteria;…;s__Salmonella enterica
+</code></pre></div>
+<p>Here breadth ≈ 0.92 at 380× coverage and <code>presence = present</code> — a genuine member of the community. Trace genomes appear with breadth &lt; 0.05 and <code>presence = absent</code>.</p>
+<h3 id="sample_gene_statsparquet"><code>&lt;sample&gt;_gene_stats.parquet</code></h3>
+<p>One row per gene, populated only when gene annotations are supplied (<code>profile --gene-fasta</code>, or a gene FASTA on the Sylph route). Empty otherwise.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>genome</code></td>
+<td>Genome the gene belongs to</td>
+</tr>
+<tr>
+<td><code>gene</code></td>
+<td>Gene identifier</td>
+</tr>
+<tr>
+<td><code>length</code></td>
+<td>Gene length (bp)</td>
+</tr>
+<tr>
+<td><code>breadth</code></td>
+<td>Fraction of the gene covered by ≥ 1 read</td>
+</tr>
+<tr>
+<td><code>coverage</code></td>
+<td>Mean read depth across the gene</td>
+</tr>
+<tr>
+<td><code>ref_ani</code></td>
+<td>ANI of the sample to the reference for this gene (%)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample_profileparquet"><code>&lt;sample&gt;_profile.parquet</code></h3>
+<p>The core output: one row per reference position with the observed base counts. This is what comparisons are computed from. It is large (tens of millions of rows), and profile runs do not write CSV sidecars.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>chrom</code></td>
+<td>Scaffold / contig name</td>
+</tr>
+<tr>
+<td><code>genome</code></td>
+<td>Genome the scaffold belongs to (<code>NA</code> if unbinned)</td>
+</tr>
+<tr>
+<td><code>gene</code></td>
+<td>Gene at this position (<code>NA</code> if none / unannotated)</td>
+</tr>
+<tr>
+<td><code>pos</code></td>
+<td>Position on the scaffold (<strong>1-based</strong>)</td>
+</tr>
+<tr>
+<td><code>A</code>, <code>C</code>, <code>G</code>, <code>T</code></td>
+<td>Read counts of each base at this position</td>
+</tr>
+<tr>
+<td><code>ref_base_bitmask</code></td>
+<td>Reference base as a bitmask: <strong>A = 1, C = 2, G = 4, T = 8</strong> (<code>0</code> = reference base unknown). Only present when <code>--reference-fasta</code> was used</td>
+</tr>
+</tbody>
+</table>
+<p>Example:</p>
+<div class="highlight"><pre><span></span><code>chrom                    genome           gene  pos      A   C   G   T   ref_base_bitmask
+GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892095  0   51  0   0   0
+GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
+</code></pre></div>
+<h3 id="sample_snvsparquet"><code>&lt;sample&gt;_SNVs.parquet</code></h3>
+<p>Every covered position that is <strong>divergent</strong> from the reference — either polymorphic or a substitution — classified in the style of inStrain's <code>SNVs.tsv</code>. Skipped without <code>--reference-fasta</code> (or with <code>--no-snvs</code>). Because the profile counts are sequence-error adjusted, a base with <code>count &gt; 0</code> is a "passing" allele.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>chrom</code>, <code>genome</code>, <code>gene</code>, <code>pos</code></td>
+<td>Location (<code>pos</code> is 1-based)</td>
+</tr>
+<tr>
+<td><code>position_coverage</code></td>
+<td>Total (error-adjusted) depth at the position</td>
+</tr>
+<tr>
+<td><code>allele_count</code></td>
+<td>Number of passing alleles (bases with count &gt; 0)</td>
+</tr>
+<tr>
+<td><code>ref_base</code>, <code>con_base</code>, <code>var_base</code></td>
+<td>Reference, consensus (majority), and top variant base</td>
+</tr>
+<tr>
+<td><code>ref_freq</code>, <code>con_freq</code>, <code>var_freq</code></td>
+<td>Frequencies of those bases over <code>position_coverage</code></td>
+</tr>
+<tr>
+<td><code>A</code>, <code>C</code>, <code>G</code>, <code>T</code></td>
+<td>Per-base counts</td>
+</tr>
+<tr>
+<td><code>class</code></td>
+<td>SNP classification (below)</td>
+</tr>
+<tr>
+<td><code>ref_base_bitmask</code></td>
+<td>Reference base bitmask (A=1, C=2, G=4, T=8)</td>
+</tr>
+</tbody>
+</table>
+<p><code>class</code> values (with <code>alleles</code> = passing bases, <code>con</code> = consensus, <code>ref</code> = reference):</p>
+<ul>
+<li><strong><code>SNS</code></strong> — one allele, <code>con ≠ ref</code>: a fixed substitution.</li>
+<li><strong><code>SNV</code></strong> — ≥2 alleles, <code>con == ref</code>: reference is the majority, with a minor variant.</li>
+<li><strong><code>con_SNV</code></strong> — ≥2 alleles, <code>con ≠ ref</code>, reference <strong>still present</strong> among the alleles.</li>
+<li><strong><code>pop_SNV</code></strong> — ≥2 alleles, <code>con ≠ ref</code>, reference <strong>absent</strong>: population-divergent (these are what pull <code>ref_ani</code>/popANI below 100%).</li>
+</ul>
+<p>Monomorphic reference matches are not emitted. The per-genome <code>SNS_count</code> and <code>SNV_count</code> (= <code>SNV</code>+<code>con_SNV</code>+<code>pop_SNV</code>) in <code>genome_stats</code> are the totals of these.</p>
+<div class="admonition note">
+<p class="admonition-title">Coordinates are 1-based (comparing with inStrain)</p>
+<p>ZipStrain reports <code>pos</code> as <strong>1-based</strong> (the samtools/mpileup convention), whereas inStrain's <code>SNVs.tsv</code> uses <strong>0-based</strong> <code>position</code>. When intersecting the two tables, add 1 to inStrain's <code>position</code> (or subtract 1 from ZipStrain's <code>pos</code>) before matching, or every position will appear to disagree.</p>
+</div>
+<hr />
+<h2 id="zipstrain-compare"><code>zipstrain compare</code></h2>
+<p>Both methods (standard and matrix) write a single comparison table at the top of the run directory: <code>all_comparisons.parquet</code> (+ <code>.csv</code>), or <code>all_gene_comparisons.parquet</code> with <code>--compare-genes</code>.</p>
+<h3 id="all_comparisonsparquet"><code>all_comparisons.parquet</code></h3>
+<p>One row per genome, per pair of samples.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sample_1</code>, <code>sample_2</code></td>
+<td>The two samples being compared</td>
+</tr>
+<tr>
+<td><code>genome</code></td>
+<td>Genome compared between them</td>
+</tr>
+<tr>
+<td><code>total_positions</code></td>
+<td>Positions covered in <strong>both</strong> samples (≥ <code>--min-cov</code>) — the basis of the comparison</td>
+</tr>
+<tr>
+<td><code>share_allele_pos</code></td>
+<td>Of those, positions that match under the selected ANI method</td>
+</tr>
+<tr>
+<td><code>genome_ani</code></td>
+<td>Genome-wide ANI (%) = <code>share_allele_pos</code> / <code>total_positions</code> × 100. The parquet metadata key <code>zipstrain_compare_ani_method</code> records whether this is <code>popani</code>, <code>conani</code>, or <code>cosani_&lt;threshold&gt;</code></td>
+</tr>
+<tr>
+<td><code>max_consecutive_length</code></td>
+<td>Longest run of consecutive shared positions (an identical-by-state / IBS measure)</td>
+</tr>
+</tbody>
+</table>
+<p>With gene ranges available, genome-level gene identity summary columns are also added by the default <code>--calculate all</code>: <code>shared_genes_count</code>, <code>identical_gene_count</code>, <code>perc_id_genes</code>.</p>
+<div class="admonition note">
+<p class="admonition-title">ANI method is stored in the parquet header</p>
+<p><code>--ani-method conani</code> changes how the ANI match indicator is computed, but it does not add separate consensus-specific output columns to the comparison table. Check <code>zipstrain_compare_ani_method</code> in the parquet metadata to know what <code>genome_ani</code> represents. Matrix mode supports <code>popani</code> only.</p>
+</div>
+<p>Example (same-strain replicates → 100% popANI):</p>
+<div class="highlight"><pre><span></span><code>sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_consecutive_length
+SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           100.0           768237
+</code></pre></div>
+<p><strong>Interpreting popANI.</strong> <code>genome_ani</code> near <strong>100.0</strong> means the same strain is present in both samples. A common same-strain threshold is <strong>≥ 99.999%</strong> — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses <em>population</em> ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see <a href="../Tutorial/#interpreting-the-benchmarks">Tutorial #3</a> for the popANI-vs-consensus-ANI discussion.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../Tutorial/" class="btn btn-neutral float-left" title="Tutorial"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../downstream/" class="btn btn-neutral float-right" title="Downstream Analyses">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../Tutorial/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../downstream/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
