@@ -186,7 +186,7 @@ Other options:
 
 Profile a batch of BAM files at nucleotide resolution, producing per-position base counts plus per-genome and per-gene summary tables. Profiling needs a set of assets (null model, BED file, genome-length table, optional gene ranges, profiling contract). You can supply any of these, but any you omit are **generated automatically** into a `profiling_assets/` directory inside `--run-dir` and reused on later runs when the inputs are unchanged. A minimal run therefore needs only `--input-table`, `--reference-fasta`, and `--stb-file`.
 
-By default each sample also gets an SNV table (`<sample>_SNVs.parquet`) and a `presence` (present/absent) call in its genome stats. Companion `.csv` files are written next to the small stat tables. See [Expected output](./expected_output.md) for the full file list.
+By default each sample also gets an SNV table (`<sample>_SNVs.parquet`) and a `presence` (present/absent) call in its genome stats. Profile outputs are parquet-only; use `zipstrain utilities parquet-to-csv` when you want a CSV copy of a specific table. See [Expected output](./expected_output.md) for the full file list.
 
 ```bash
 # Minimal run — assets auto-generated and cached in run_dir/profiling_assets
@@ -204,7 +204,6 @@ Major options:
 - `-u/-b/-l/-g/--profiling-contract` — supply pre-built assets to override auto-generation; `--force-prepare` regenerates them all
 - Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain); pass `--min-read-ani 0 --read-inclusion all-mapped` for the old permissive behavior
 - Presence & SNVs: `--no-snvs`, `--snv-min-cov` (5), `--presence-ber` (0.5), `--presence-fug` (1.0), `--presence-min-cov-use-fug` (2.0), `--presence-min-coverage` (0.1), `--genome-taxonomy`
-- Output: `--no-csv` / `--force-csv` (companion CSVs; 100 MB cap by default)
 - Execution: `-n, --num-procs` (8), `-m, --max-concurrent-batches` (5), `-t, --task-per-batch` (10), `-e, --execution-mode` (`local`/`slurm`), `-c, --slurm-config`, `-o, --container-engine`, `--container-address`
 
 <details>
@@ -307,12 +306,6 @@ SNV calling and presence:
                                   Auto-discovered next to the reference/STB
                                   when produced by `zipstrain map` (Sylph
                                   route).
-
-Output:
-  --no-csv     Do not write companion .csv files next to the
-               genome_stats/gene_stats/SNV parquets.
-  --force-csv  Write companion .csv files even when the estimated size exceeds
-               100 MB.
 
 Running parameters:
   -n, --num-procs INTEGER         Number of processors to use for each
@@ -533,6 +526,7 @@ Commands:
   matrix-db-to-hdf5       Convert a legacy DuckDB matrix database into...
   merge-stat-tables       Concatenate stat tables and add a sample column...
   merge_parquet           Merge multiple Parquet files in a directory...
+  parquet-to-csv          Convert a parquet table to CSV.
   prepare_profiling       Prepare the files needed for profiling bam...
   presence-profile        Generate a presence profile for genomes based...
   process-read-locs       Process read locations and save them to a...
@@ -567,6 +561,7 @@ Commands:
 | `zipstrain utilities matrix-db-to-hdf5` | Convert a DuckDB matrix database into the current matrix-store format |
 | `zipstrain utilities matrix-compare` | Resumable all-vs-all matrix compare into a DuckDB compare DB |
 | `zipstrain utilities matrix-compare-export` | Export a matrix compare DuckDB to parquet |
+| `zipstrain utilities parquet-to-csv` | Convert any parquet table to CSV |
 | `zipstrain utilities build-genome-db` | Build local genome reference bundle from abundance table |
 | `zipstrain utilities presence-profile` | Presence profile from coverage + read locations |
 | `zipstrain utilities process-read-locs` | Process read-location stream |
@@ -1147,6 +1142,27 @@ Important options:
 - `-m, --matrix-compare-db-file` (required)
 - `-o, --output-file` (required)
 - `--table genome|gene` (optional, default `genome`)
+
+#### `zipstrain utilities parquet-to-csv`
+
+```bash
+zipstrain utilities parquet-to-csv \
+  --input-file sampleA_genome_stats.parquet \
+  --output-file sampleA_genome_stats.csv
+```
+
+What it does:
+
+- streams an input parquet table to CSV
+- defaults the output path to the input path with a `.csv` suffix when `--output-file` is omitted
+- supports `--separator` and `--no-header`
+
+Important options:
+
+- `-i, --input-file` (required)
+- `-o, --output-file` (optional)
+- `--separator` (optional, default `,`)
+- `--no-header` (optional)
 
 #### `zipstrain utilities merge_parquet`
 

@@ -1,6 +1,6 @@
 # Expected output
 
-This page describes every file ZipStrain writes, the columns in each, and how to read them. All tables are written as parquet, and — when small enough — a matching `.csv` (see `--no-csv` / `--force-csv`). The examples below come from [Tutorial #3](./Tutorial.md) (three replicates of the ZymoBIOMICS standard, Sylph route).
+This page describes every file ZipStrain writes, the columns in each, and how to read them. Profile outputs are written as parquet. Convert any parquet table to CSV explicitly with `zipstrain utilities parquet-to-csv` when text output is needed. The examples below come from [Tutorial #3](./Tutorial.md) (three replicates of the ZymoBIOMICS standard, Sylph route).
 
 ---
 
@@ -12,9 +12,9 @@ A profile run writes one folder per sample directly under the run directory, plu
 out_profile/
 ├── SRR12324251/
 │   ├── SRR12324251_profile.parquet        # per-position base counts
-│   ├── SRR12324251_genome_stats.parquet   # per-genome summary (+ .csv)
-│   ├── SRR12324251_gene_stats.parquet     # per-gene summary (+ .csv)
-│   ├── SRR12324251_SNVs.parquet           # SNPs vs. reference (+ .csv)
+│   ├── SRR12324251_genome_stats.parquet   # per-genome summary
+│   ├── SRR12324251_gene_stats.parquet     # per-gene summary
+│   ├── SRR12324251_SNVs.parquet           # SNPs vs. reference
 │   └── intermediate_files/                # scratch — safe to ignore
 ├── SRR12324252/ …
 └── profiling_assets/                      # null model, bed, contract, logs
@@ -67,7 +67,7 @@ One row per gene, populated only when gene annotations are supplied (`profile --
 
 ### `<sample>_profile.parquet`
 
-The core output: one row per reference position with the observed base counts. This is what comparisons are computed from. It is large (tens of millions of rows) and has no CSV companion by default.
+The core output: one row per reference position with the observed base counts. This is what comparisons are computed from. It is large (tens of millions of rows), and profile runs do not write CSV sidecars.
 
 | Column | Meaning |
 |--------|---------|
@@ -98,7 +98,6 @@ Every covered position that is **divergent** from the reference — either polym
 | `ref_base`, `con_base`, `var_base` | Reference, consensus (majority), and top variant base |
 | `ref_freq`, `con_freq`, `var_freq` | Frequencies of those bases over `position_coverage` |
 | `A`, `C`, `G`, `T` | Per-base counts |
-| `cryptic` | Always `False` (ZipStrain profiles a single mismatch level) |
 | `class` | SNP classification (below) |
 | `ref_base_bitmask` | Reference base bitmask (A=1, C=2, G=4, T=8) |
 

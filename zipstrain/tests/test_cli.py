@@ -2552,7 +2552,20 @@ def test_maybe_write_csv_skips_huge_unless_forced(tmp_path, monkeypatch):
     assert forced is not None and forced.exists()
 
 
-def test_finalize_profile_outputs_writes_stat_csvs(tmp_path):
+def test_parquet_to_csv_utility_converts_table(tmp_path):
+    pq = tmp_path / "table.parquet"
+    pl.DataFrame({"genome": ["g1", "g2"], "coverage": [1.5, 2.5]}).write_parquet(pq)
+    out = tmp_path / "table.csv"
+
+    result = CliRunner().invoke(cli.cli, ["utilities", "parquet-to-csv", "-i", str(pq), "-o", str(out)])
+
+    assert result.exit_code == 0, result.output
+    assert out.exists()
+    got = pl.read_csv(out)
+    assert got.to_dicts() == [{"genome": "g1", "coverage": 1.5}, {"genome": "g2", "coverage": 2.5}]
+
+
+def test_finalize_profile_outputs_writes_no_csvs(tmp_path):
     sample = tmp_path / "sampleA"
     sample.mkdir()
     # genome_stats needs the presence-input columns.
@@ -2564,8 +2577,6 @@ def test_finalize_profile_outputs_writes_stat_csvs(tmp_path):
 
     cli._finalize_profile_outputs(
         tmp_path,
-        no_csv=False,
-        force_csv=False,
         emit_snvs=True,
         snv_min_cov=5,
         presence_ber=0.5,
@@ -2574,8 +2585,8 @@ def test_finalize_profile_outputs_writes_stat_csvs(tmp_path):
         presence_min_coverage=0.1,
     )
 
-    assert (sample / "sampleA_genome_stats.csv").exists()
-    assert (sample / "sampleA_gene_stats.csv").exists()
+    assert not (sample / "sampleA_genome_stats.csv").exists()
+    assert not (sample / "sampleA_gene_stats.csv").exists()
     assert not (sample / "sampleA_profile.csv").exists()
     # Presence column was added to the genome stats table.
     assert "presence" in pl.read_parquet(sample / "sampleA_genome_stats.parquet").columns
@@ -2637,7 +2648,7 @@ def test_finalize_adds_genome_taxonomy_column(tmp_path):
     tax = tmp_path / "tax.tsv"; tax.write_text("genome\tgenome_taxonomy\nGCF_1.1\td__Bacteria;s__Foo\n")
 
     cli._finalize_profile_outputs(
-        tmp_path, no_csv=True, force_csv=False, emit_snvs=False, snv_min_cov=5,
+        tmp_path, emit_snvs=False, snv_min_cov=5,
         presence_ber=0.5, presence_fug=1.0, presence_min_cov_use_fug=2.0, presence_min_coverage=0.1,
         taxonomy_file=tax,
     )

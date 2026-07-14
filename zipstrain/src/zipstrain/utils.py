@@ -81,6 +81,25 @@ PROFILE_CONTRACT_METADATA_KEYS = {
 PROFILE_CONTRACT_MISSING_VALUE = COMPARE_METADATA_MISSING_VALUE
 
 
+def parquet_to_csv(
+    input_file: str | pathlib.Path,
+    output_file: str | pathlib.Path | None = None,
+    *,
+    separator: str = ",",
+    include_header: bool = True,
+) -> pathlib.Path:
+    """Stream a parquet table to CSV."""
+    input_path = pathlib.Path(input_file)
+    output_path = input_path.with_suffix(".csv") if output_file is None else pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pl.scan_parquet(input_path).sink_csv(
+        output_path,
+        separator=separator,
+        include_header=include_header,
+    )
+    return output_path
+
+
 def sha256_file(path: str | pathlib.Path, chunk_size: int = 1024 * 1024) -> str:
     """Return the file-content SHA-256 hex digest for ``path``."""
     digest = hashlib.sha256()

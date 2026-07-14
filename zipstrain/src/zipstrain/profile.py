@@ -1024,7 +1024,7 @@ def get_reference_ani(
 SNV_TABLE_COLUMNS = [
     "chrom", "genome", "gene", "pos", "position_coverage", "allele_count",
     "ref_base", "con_base", "var_base", "ref_freq", "con_freq", "var_freq",
-    "A", "C", "G", "T", "cryptic", "class", "ref_base_bitmask",
+    "A", "C", "G", "T", "class", "ref_base_bitmask",
 ]
 
 
@@ -1047,8 +1047,7 @@ def get_reference_snps(
     - ``pop_SNV`` : ≥2 alleles, ``con != ref``, reference absent from the alleles
 
     Monomorphic reference sites (one allele equal to the reference) are omitted.
-    Frequencies are over the (error-adjusted) position coverage. ``cryptic`` is
-    always ``False`` (ZipStrain profiles a single mismatch level). Requires a
+    Frequencies are over the (error-adjusted) position coverage. Requires a
     profile carrying ``ref_base_bitmask`` (i.e. ``--reference-fasta``).
     """
     schema_names = profile.collect_schema().names()
@@ -1103,7 +1102,6 @@ def get_reference_snps(
             ref_freq=pl.col("ref_count") / pl.col("position_coverage"),
             con_freq=pl.col("con_count") / pl.col("position_coverage"),
             var_freq=pl.col("var_count") / pl.col("position_coverage"),
-            cryptic=pl.lit(False),
             **{"class": pl.when((pl.col("allele_count") == 1) & (pl.col("con_base") != pl.col("ref_base")))
                 .then(pl.lit("SNS"))
                 .when((pl.col("allele_count") >= 2) & (pl.col("con_base") == pl.col("ref_base")))

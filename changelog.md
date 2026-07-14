@@ -27,13 +27,14 @@ First stable release. This version consolidates ZipStrain around three top-level
 - Reference-aware profiling: `--reference-fasta` adds `ref_base_bitmask` to profiles and `ref_ani` to gene/genome stats.
 - Per-sample SNV/SNP calling (`<sample>_SNVs.parquet`), with inStrain-style stats in genome/gene stats: `SNS_count`, `SNV_count`, `conANI_reference`, `ber`, `fug`, coverage summaries, and an automated `present`/`absent` `presence` call (BER/FUG thresholds).
 - Read/base filters aligned with inStrain and samtools: `--min-mapq`, `--min-baseq`, `--min-read-ani` (NM-tag based), and `--read-inclusion proper-pairs|paired|all-mapped` (default `paired`).
-- Optional `--genome-taxonomy` (auto-discovered from the Sylph route) adds a `genome_taxonomy` column; companion `.csv` files are written next to the parquet outputs (`--no-csv` / `--force-csv`).
+- Optional `--genome-taxonomy` (auto-discovered from the Sylph route) adds a `genome_taxonomy` column; profile outputs are parquet-only.
 
 ### Comparison outputs and metrics
 
 - Genome comparison tables gained consensus-ANI columns (`share_consensus_pos`, `consensus_SNPs`, `genome_con_ani`; standard method only) alongside population ANI, plus `percent_compared` and `coverage_overlap`.
 - Matrix comparison is integrated as `compare --method matrix` (HDF5 matrix store, numpy/torch CPU/CUDA/MPS backends, optional sparse storage), while the low-level `utilities build-matrix-db` / `append-matrix-db` / `matrix-compare` / `matrix-compare-export` / `matrix-db-to-hdf5` remain available.
 - `utilities get-snp-reference` can emit either profile-like parquet or a site-only VCF.
+- `utilities parquet-to-csv` converts any parquet table to CSV explicitly.
 
 ### Reliability and logging
 

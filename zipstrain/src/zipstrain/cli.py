@@ -307,8 +307,6 @@ def _add_presence_column(
 def _finalize_profile_outputs(
     run_dir: pathlib.Path,
     *,
-    no_csv: bool,
-    force_csv: bool,
     emit_snvs: bool,
     snv_min_cov: int,
     presence_ber: float,
@@ -318,7 +316,7 @@ def _finalize_profile_outputs(
     taxonomy_file: pathlib.Path | None = None,
     console=None,
 ) -> None:
-    """Post-process a completed profile run: presence calls, SNV tables, and CSVs."""
+    """Post-process a completed profile run: presence calls and SNV tables."""
     run_dir = pathlib.Path(run_dir)
 
     taxonomy = None
@@ -337,7 +335,6 @@ def _finalize_profile_outputs(
         stats.write_parquet(genome_stats_path)
 
     # Call SNPs/SNVs relative to the reference for each profile (needs a reference).
-    snv_paths: list[pathlib.Path] = []
     if emit_snvs:
         for profile_path in sorted(run_dir.glob("*/*_profile.parquet")):
             profile_lf = pl.scan_parquet(profile_path)
@@ -350,14 +347,6 @@ def _finalize_profile_outputs(
                 continue
             snv_path = profile_path.with_name(profile_path.name.replace("_profile.parquet", "_SNVs.parquet"))
             pf.get_reference_snps(profile_lf, min_cov=snv_min_cov).sink_parquet(snv_path, compression="zstd")
-            snv_paths.append(snv_path)
-
-    # Companion CSVs (subject to the size threshold / --force-csv).
-    for pattern in ("*/*_genome_stats.parquet", "*/*_gene_stats.parquet"):
-        for parquet in sorted(run_dir.glob(pattern)):
-            _maybe_write_csv(parquet, no_csv=no_csv, force_csv=force_csv, console=console)
-    for snv_path in snv_paths:
-        _maybe_write_csv(snv_path, no_csv=no_csv, force_csv=force_csv, console=console)
 
 
 def _default_container_address(engine_kind: str) -> str:
@@ -538,6 +527,25 @@ def merge_parquet(input_dir, output_file, batch_size, allow_mismatch):
         allow_mismatch=allow_mismatch,
         progress_callback=_emit_progress,
     )
+
+
+@utilities.command("parquet-to-csv")
+@click.option('--input-file', '-i', required=True, help="Input parquet file.")
+@click.option('--output-file', '-o', default=None, help="Output CSV file. Defaults to the input path with a .csv suffix.")
+@click.option('--separator', default=",", show_default=True, help="CSV field separator.")
+@click.option('--no-header', is_flag=True, default=False, show_default=True, help="Do not write a header row.")
+def parquet_to_csv(input_file, output_file, separator, no_header):
+    """Convert a parquet table to CSV."""
+    try:
+        output_path = ut.parquet_to_csv(
+            input_file=input_file,
+            output_file=output_file,
+            separator=separator,
+            include_header=not no_header,
+        )
+    except Exception as exc:
+        raise click.UsageError(str(exc)) from exc
+    click.echo(f"wrote={output_path}")
 
 
 @utilities.command("adjust-sequence-errors")
@@ -1930,9 +1938,7 @@ map_command.option_sections = {
 @click.option('--presence-min-cov-use-fug', default=2.0, show_default=True, help="Coverage above which the present/absent call uses BER alone (below it, FUG is also required).")
 @click.option('--presence-min-coverage', default=0.1, show_default=True, help="Minimum mean coverage required to call a genome present.")
 @click.option('--genome-taxonomy', default=None, help="Optional genome->taxonomy TSV to add a genome_taxonomy column to genome_stats. Auto-discovered next to the reference/STB when produced by `zipstrain map` (Sylph route).")
-@click.option('--no-csv', is_flag=True, default=False, show_default=True, help="Do not write companion .csv files next to the genome_stats/gene_stats/SNV parquets.")
-@click.option('--force-csv', is_flag=True, default=False, show_default=True, help="Write companion .csv files even when the estimated size exceeds 100 MB.")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy, no_csv, force_csv):
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -2005,11 +2011,9 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
             slurm_config=slurm_conf,
         )
 
-        run_log.step("Finalizing outputs (presence, SNVs, taxonomy, CSVs)")
+        run_log.step("Finalizing outputs (presence, SNVs, taxonomy)")
         _finalize_profile_outputs(
             run_dir,
-            no_csv=no_csv,
-            force_csv=force_csv,
             emit_snvs=not no_snvs,
             snv_min_cov=snv_min_cov,
             presence_ber=presence_ber,
@@ -2057,10 +2061,6 @@ profile.option_sections = {
         "presence_min_cov_use_fug",
         "presence_min_coverage",
         "genome_taxonomy",
-    ],
-    "Output": [
-        "no_csv",
-        "force_csv",
     ],
     "Running parameters": [
         "num_procs",
