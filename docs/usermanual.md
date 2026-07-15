@@ -28,6 +28,8 @@ A typical ZipStrain run has three steps, each its own top-level command:
 2. **`zipstrain profile`** — profile those BAMs at nucleotide resolution
 3. **`zipstrain compare`** — compare samples to each other by ANI
 
+![ZipStrain overview: map turns reads into BAMs, profile turns BAMs into nucleotide profiles, compare turns profiles into ANI](assets/program_overview.png)
+
 Two more commands round it out: **`zipstrain test`** checks your environment, and **`zipstrain utilities`** groups the lower-level helpers that the three main commands are built from (you rarely call these directly).
 
 For end-to-end, copy-pasteable examples, start with the [Tutorial](./Tutorial.md); for the files each command writes, see [Expected output](./expected_output.md). This page is the reference for what each command does and its major options.

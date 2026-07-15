@@ -42,6 +42,8 @@ Prefer pip? `pip install zipstrain` (then install `samtools` separately). Full o
 
 ## The three commands
 
+<img src="docs/assets/program_overview.png" alt="ZipStrain overview: map turns reads into BAMs, profile turns BAMs into nucleotide profiles, compare turns profiles into ANI" width="900">
+
 ### 1. `map` — reads → BAMs
 
 Aligns reads to a reference and writes sorted BAMs plus a `samples.txt` ready for profiling. Omit `--reference-fasta` to let Sylph pick and build a reference automatically. Resumable if interrupted.
