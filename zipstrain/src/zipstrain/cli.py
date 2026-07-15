@@ -13,6 +13,9 @@ import zipstrain.database as db
 import zipstrain.build_db as bdb
 import zipstrain.matrix_pairs as mp
 import zipstrain.healthcheck as hc
+import zipstrain.mapping as mapping
+import zipstrain.matrix_workflow as matrix_workflow
+from zipstrain.run_logger import RunLogger
 import polars as pl
 import pathlib
 import shutil
@@ -27,13 +30,84 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, Sp
 DEFAULT_CONTAINER_REPOSITORY = "parsaghadermazi/zipstrain"
 
 
-@click.group()
+class SectionedCommand(click.Command):
+    """A click.Command that renders its options grouped under section headers.
+
+    Set ``option_sections`` to an ordered mapping of ``section title -> [param
+    names]``. Options are listed under their section in the given order; any
+    option not assigned to a section (e.g. ``--help``) is shown last under
+    "Other options".
+    """
+
+    option_sections: dict[str, list[str]] = {}
+
+    def format_options(self, ctx, formatter):
+        options_by_name = {
+            param.name: param
+            for param in self.get_params(ctx)
+            if isinstance(param, click.Option)
+        }
+        assigned: set[str] = set()
+
+        def _records(names):
+            records = []
+            for name in names:
+                param = options_by_name.get(name)
+                if param is None:
+                    continue
+                record = param.get_help_record(ctx)
+                if record is not None:
+                    records.append(record)
+                    assigned.add(name)
+            return records
+
+        for section_title, names in self.option_sections.items():
+            records = _records(names)
+            if records:
+                with formatter.section(section_title):
+                    formatter.write_dl(records)
+
+        leftover = [
+            record
+            for name, param in options_by_name.items()
+            if name not in assigned
+            and (record := param.get_help_record(ctx)) is not None
+        ]
+        if leftover:
+            with formatter.section("Other options"):
+                formatter.write_dl(leftover)
+
+
+class OrderedGroup(click.Group):
+    """A click.Group that lists its commands in a fixed, curated order."""
+
+    COMMAND_ORDER = ["test", "map", "profile", "compare", "utilities"]
+
+    def list_commands(self, ctx):
+        commands = list(super().list_commands(ctx))
+        ordered = [name for name in self.COMMAND_ORDER if name in commands]
+        ordered += [name for name in commands if name not in self.COMMAND_ORDER]
+        return ordered
+
+
+@click.group(
+    cls=OrderedGroup,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    epilog="Source & docs: https://github.com/OlmLab/ZipStrain",
+)
 @click.version_option(version=__version__, prog_name="zipstrain")
 def cli():
-    """ZipStrain CLI"""
+    """ZipStrain — fast strain-level metagenomic profiling and comparison.
+
+    A typical run goes: map reads to BAMs, profile them at nucleotide
+    resolution, then compare samples by ANI.
+
+    Developed by Parsa Ghadermazi and Matt Olm in the Olm Lab at the
+    University of Colorado Boulder.
+    """
     pass
 
-@cli.group()
+@cli.group(short_help="Lower-level helper commands.")
 def utilities():
     """The commands in this group are related to various utility functions that mainly prepare input files for profiling and comparison."""
     pass
@@ -43,6 +117,140 @@ def _emit_stderr_log(prefix: str, **fields: object) -> None:
     payload = " ".join(f"{key}={value}" for key, value in fields.items())
     click.echo(f"{prefix} {payload}".rstrip(), err=True)
     sys.stderr.flush()
+
+
+# Companion-CSV emission. Outputs are written as parquet; a matching .csv is
+# also written when its estimated size is below this threshold, unless the user
+# opts out with --no-csv or forces it with --force-csv.
+CSV_SIZE_THRESHOLD_MB = 100
+_CSV_BYTES_PER_CELL_ESTIMATE = 16
+
+
+def _estimated_csv_mb(parquet_path: pathlib.Path) -> float:
+    """Cheaply estimate the CSV size of a parquet file from its row/column counts."""
+    lazy = pl.scan_parquet(parquet_path)
+    n_cols = len(lazy.collect_schema().names())
+    n_rows = lazy.select(pl.len()).collect().item()
+    return (n_rows * n_cols * _CSV_BYTES_PER_CELL_ESTIMATE) / (1024 * 1024)
+
+
+def _maybe_write_csv(
+    parquet_path: pathlib.Path,
+    *,
+    no_csv: bool,
+    force_csv: bool,
+    console: "Console | None" = None,
+) -> pathlib.Path | None:
+    """Write a ``.csv`` next to ``parquet_path`` unless disabled or too large.
+
+    Returns the CSV path when written, otherwise ``None``. ``--no-csv`` always
+    wins; ``--force-csv`` writes regardless of the estimated size.
+    """
+    parquet_path = pathlib.Path(parquet_path)
+    if no_csv or not parquet_path.exists():
+        return None
+    if not force_csv and _estimated_csv_mb(parquet_path) >= CSV_SIZE_THRESHOLD_MB:
+        if console is not None:
+            console.print(
+                f"[yellow]Skipping CSV for {parquet_path.name}[/] "
+                f"(estimated > {CSV_SIZE_THRESHOLD_MB} MB; use --force-csv to write it)."
+            )
+        return None
+    csv_path = parquet_path.with_suffix(".csv")
+    pl.read_parquet(parquet_path).write_csv(csv_path)
+    return csv_path
+
+
+def _discover_taxonomy_file(reference_fasta, stb_file, explicit) -> pathlib.Path | None:
+    """Locate a genome-taxonomy TSV (explicit, or next to the reference/STB)."""
+    if explicit is not None:
+        return pathlib.Path(explicit)
+    candidates = []
+    if reference_fasta is not None:
+        ref = pathlib.Path(reference_fasta)
+        candidates.append(ref.with_name(mapping.REFERENCE_TAXONOMY_NAME))
+    if stb_file is not None:
+        candidates.append(pathlib.Path(stb_file).with_name(mapping.REFERENCE_TAXONOMY_NAME))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _add_presence_column(
+    genome_stats: pl.DataFrame,
+    *,
+    ber: float,
+    fug: float,
+    min_cov_use_fug: float,
+    min_coverage: float,
+) -> pl.DataFrame:
+    """Add a 'presence' column ('present'/'absent') using the Metapresence logic.
+
+    A genome is called present when both of the following hold:
+
+    - **BER / FUG.** Above ``min_cov_use_fug`` coverage, its breadth-error ratio
+      ``ber`` exceeds the threshold; at or below that coverage the ``fug``
+      criterion is also required. ``fug`` (fraction of non-excess gaps) is ~0.632
+      for uniformly-distributed reads, so present requires ``fug / 0.632 > fug``
+      (higher = more uniform = present).
+    - **Minimum coverage.** At least ``min_coverage`` mean coverage.
+    """
+    ber_fug_call = (
+        pl.when(pl.col("coverage") > min_cov_use_fug)
+        .then(pl.col("ber") > ber)
+        .otherwise((pl.col("fug") / 0.632 > fug) & (pl.col("ber") > ber))
+        .fill_null(False)
+    )
+    is_present = ber_fug_call & (pl.col("coverage") >= min_coverage).fill_null(False)
+    return genome_stats.with_columns(
+        pl.when(is_present).then(pl.lit("present")).otherwise(pl.lit("absent")).alias("presence")
+    )
+
+
+def _finalize_profile_outputs(
+    run_dir: pathlib.Path,
+    *,
+    emit_snvs: bool,
+    snv_min_cov: int,
+    presence_ber: float,
+    presence_fug: float,
+    presence_min_cov_use_fug: float,
+    presence_min_coverage: float,
+    taxonomy_file: pathlib.Path | None = None,
+    console=None,
+) -> None:
+    """Post-process a completed profile run: presence calls and SNV tables."""
+    run_dir = pathlib.Path(run_dir)
+
+    taxonomy = None
+    if taxonomy_file is not None and pathlib.Path(taxonomy_file).exists():
+        taxonomy = pl.read_csv(taxonomy_file, separator="\t").select("genome", "genome_taxonomy")
+
+    # Add presence and (when available) taxonomy columns to each genome_stats table.
+    for genome_stats_path in sorted(run_dir.glob("*/*_genome_stats.parquet")):
+        stats = pl.read_parquet(genome_stats_path)
+        if {"coverage", "ber", "fug"}.issubset(stats.columns):
+            stats = _add_presence_column(
+                stats, ber=presence_ber, fug=presence_fug, min_cov_use_fug=presence_min_cov_use_fug, min_coverage=presence_min_coverage
+            )
+        if taxonomy is not None and "genome_taxonomy" not in stats.columns:
+            stats = stats.join(taxonomy, on="genome", how="left")
+        stats.write_parquet(genome_stats_path)
+
+    # Call SNPs/SNVs relative to the reference for each profile (needs a reference).
+    if emit_snvs:
+        for profile_path in sorted(run_dir.glob("*/*_profile.parquet")):
+            profile_lf = pl.scan_parquet(profile_path)
+            if ut.REF_BASE_BITMASK_COLUMN not in profile_lf.collect_schema().names():
+                if console is not None:
+                    console.print(
+                        f"[yellow]Skipping SNV calls for {profile_path.name}[/] "
+                        "(needs --reference-fasta so reference bases are recorded)."
+                    )
+                continue
+            snv_path = profile_path.with_name(profile_path.name.replace("_profile.parquet", "_SNVs.parquet"))
+            pf.get_reference_snps(profile_lf, min_cov=snv_min_cov).sink_parquet(snv_path, compression="zstd")
 
 
 def _default_container_address(engine_kind: str) -> str:
@@ -66,6 +274,20 @@ def _build_container_engine(container_engine: str, container_address: str | None
     if container_engine == "apptainer":
         return tm.ApptainerEngine(address=container_address or _default_container_address("apptainer"))
     raise ValueError("Invalid container engine. Choose from 'local', 'docker', or 'apptainer'.")
+
+
+def _load_profile_database(profile_db: str, allow_mismatch: bool = False) -> "db.ProfileDatabase":
+    """Load a ProfileDatabase from either a profiles CSV or a pre-built parquet.
+
+    Passing a ``.csv`` (with ``profile_name,profile_location`` columns) builds
+    the profile database in memory, so ``zipstrain compare`` can be run without
+    first calling ``zipstrain utilities build-profile-db``. Any other extension
+    is treated as a pre-built profile-database parquet.
+    """
+    path = pathlib.Path(profile_db)
+    if path.suffix.lower() == ".csv":
+        return db.ProfileDatabase.from_csv(path, allow_mismatch=allow_mismatch)
+    return db.ProfileDatabase(path)
 
 
 class _ThrottledMatrixLogger:
@@ -154,11 +376,7 @@ class _ThrottledMatrixLogger:
 
 
 def _build_null_model_frame(error_rate: float, max_total_reads: int, p_threshold: float, model_type: str) -> pl.DataFrame:
-    if model_type == "poisson":
-        rows = ut.build_null_poisson(error_rate, max_total_reads, p_threshold)
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
-    return pl.DataFrame(rows, schema=["cov", "max_error_count"], orient="row")
+    return pf._build_null_model_frame(error_rate, max_total_reads, p_threshold, model_type)
 
 @utilities.command("build-null-model")
 @click.option('--error-rate', '-e', default=0.001, help="Error rate for the sequencing technology.")
@@ -215,6 +433,25 @@ def merge_parquet(input_dir, output_file, batch_size, allow_mismatch):
     )
 
 
+@utilities.command("parquet-to-csv")
+@click.option('--input-file', '-i', required=True, help="Input parquet file.")
+@click.option('--output-file', '-o', default=None, help="Output CSV file. Defaults to the input path with a .csv suffix.")
+@click.option('--separator', default=",", show_default=True, help="CSV field separator.")
+@click.option('--no-header', is_flag=True, default=False, show_default=True, help="Do not write a header row.")
+def parquet_to_csv(input_file, output_file, separator, no_header):
+    """Convert a parquet table to CSV."""
+    try:
+        output_path = ut.parquet_to_csv(
+            input_file=input_file,
+            output_file=output_file,
+            separator=separator,
+            include_header=not no_header,
+        )
+    except Exception as exc:
+        raise click.UsageError(str(exc)) from exc
+    click.echo(f"wrote={output_path}")
+
+
 @utilities.command("adjust-sequence-errors")
 @click.option('--profile-parquet', '-p', required=True, help="Input profile parquet file.")
 @click.option('--null-model', '-n', required=True, help="Null model parquet file.")
@@ -255,13 +492,7 @@ def sort_profile(input_profile, tmp_dir):
 @utilities.command("process_mpileup")
 @click.option('--batch-size', '-s', default=10000, help="Buffer size for processing stdin from samtools.")
 @click.option('--output-file', '-o', required=True, help="Location to save the output Parquet file.")
-@click.option(
-    '--include-reference-base',
-    is_flag=True,
-    default=False,
-    help="Include a ref_base_bitmask column encoded from the mpileup reference base field.",
-)
-def process_mpileup(batch_size, output_file, include_reference_base):
+def process_mpileup(batch_size, output_file):
     """
     Process mpileup files and save the results in a Parquet file.
 
@@ -270,54 +501,8 @@ def process_mpileup(batch_size, output_file, include_reference_base):
     batch_bed (str): Path to the batch BED file.
     output_file (str): Path to save the output Parquet file.
     """
-    ut.process_mpileup_function(
-        batch_size,
-        output_file,
-        include_reference_base=include_reference_base,
-    )
+    ut.process_mpileup_function(batch_size, output_file)
     
-@utilities.command("make_bed")
-@click.option('--db-fasta-dir', '-d', required=True, help="Path to the database in fasta format.")
-@click.option('--max-scaffold-length', '-m', default=500000, help="Maximum scaffold length to split into multiple entries.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output BED file.")
-def make_bed(db_fasta_dir, max_scaffold_length, output_file):
-    """
-    Create a BED file from the database in fasta format.
-
-    Args:
-    db_fasta_dir (str): Path to the fasta file.
-    max_scaffold_length (int): Splits scaffolds longer than this into multiple entries of length <= max_scaffold_length.
-    output_file (str): Path to save the output BED file.
-    """
-    bed_df = ut.make_the_bed(db_fasta_dir, max_scaffold_length)
-    bed_df.write_csv(output_file, separator='\t', include_header=False)
-
-@utilities.command("get_genome_lengths")
-@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--bed-file', '-b', required=True, help="Path to the BED file.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def get_genome_lengths(stb_file, bed_file, output_file):
-    """
-    Extract the genome length information from the scaffold-to-genome mapping table.
-
-    Args:
-    stb_file (str): Path to the scaffold-to-genome mapping file.
-    bed_file (str): Path to the BED file containing genomic regions.
-    output_file (str): Path to save the output Parquet file.
-    """
-    stb = pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    )
-    
-    bed_table = pl.scan_csv(bed_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").cast(pl.Int64).alias("start"),
-        pl.col("column_3").cast(pl.Int64).alias("end")
-    ).select(["scaffold", "start", "end"])
-    genome_length = ut.extract_genome_length(stb, bed_table)
-    genome_length.sink_parquet(output_file, compression='zstd')
-
 @utilities.command("merge-stat-tables")
 @click.option('--stat-table', '-s', multiple=True, required=True, help="Stat parquet file to include. Repeat for multiple files.")
 @click.option('--output-file', '-o', required=True, help="Path to save the merged stat table.")
@@ -336,43 +521,17 @@ def merge_stat_tables(stat_table, output_file):
     )
 
 
-@utilities.command("get-coverage-stats")
-@click.option('--profile-parquet', '-p', required=True, help="Classic profile parquet file.")
-@click.option('--gene-bed', '-g', required=True, help="Gene BED/range file. Supports 4 columns (gene, scaffold, start, end) or 5 columns (+ genome).")
-@click.option('--genome-bed', '-b', required=True, help="Genome BED file. Supports 3 columns (scaffold, start, end) or 4 columns (+ genome).")
-@click.option('--output-dir', '-o', required=True, help="Directory to write the gene/genome stats parquet files.")
-@click.option('--prefix', required=True, help="Prefix for the output files.")
-def get_coverage_stats(profile_parquet, gene_bed, genome_bed, output_dir, prefix):
-    """
-    Build coverage-only gene and genome stats from an existing profile parquet.
-    """
-    summary = ut.get_coverage_stats(
-        profile_parquet=profile_parquet,
-        gene_bed_file=gene_bed,
-        genome_bed_file=genome_bed,
-        output_dir=output_dir,
-        prefix=prefix,
-    )
-    click.echo(
-        f"gene_stats={summary['gene_stats_file']} "
-        f"genome_stats={summary['genome_stats_file']} "
-        f"gene_rows={summary['gene_rows']} "
-        f"genome_rows={summary['genome_rows']} "
-        f"cov_sites_column={summary['cov_sites_column']}"
-    )
-
-
-@utilities.command("generate-genome-pairs")
+@utilities.command("generate-sample-pair")
 @click.option('--profile-dir', '-p', required=True, help="Directory containing classic ZipStrain profile parquets.")
 @click.option('--output-file', '-o', required=True, help="Output parquet file with all non-redundant profile pairs.")
 @click.option('--write-batch-size', type=int, default=100000, show_default=True, help="How many pairs to buffer before writing a parquet row group.")
-def generate_genome_pairs(profile_dir, output_file, write_batch_size):
-    """Generate a pair table ready for chunk-genome-compare or other compare utilities."""
+def generate_sample_pair(profile_dir, output_file, write_batch_size):
+    """Generate a sample-pair table ready for chunk-genome-compare or other compare utilities."""
     def _emit_progress(message: str) -> None:
         click.echo(message, err=True)
         sys.stderr.flush()
 
-    summary = ut.generate_genome_pairs(
+    summary = ut.generate_sample_pairs(
         profile_dir=profile_dir,
         output_file=output_file,
         write_batch_size=write_batch_size,
@@ -432,33 +591,6 @@ def chunk_genome_compare(pair_table, stb_file, output_file, workers, min_cov, mi
         f"avg_s_per_genome_row={summary['avg_seconds_per_genome_row']:.4f} "
         f"avg_genome_rows_per_pair={summary['avg_genome_rows_per_pair']:.2f}"
     )
-    
-@utilities.command("strain_heterogeneity")
-@click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
-@click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--freq-threshold', '-f', default=0.8, help="Frequency threshold to define dominant nucleotide.")
-@click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
-def strain_heterogeneity(profile_file, stb_file, min_cov, freq_threshold, output_file):
-    """
-    Calculate strain heterogeneity for each genome based on nucleotide frequencies.
-
-    Args:
-    profile_file (str): Path to the profile Parquet file.
-    stb_file (str): Path to the scaffold-to-genome mapping file.
-    min_cov (int): Minimum coverage to consider a position.
-    freq_threshold (float): Frequency threshold to define dominant nucleotide.
-    output_file (str): Path to save the output Parquet file.
-    """
-    profile = pl.scan_parquet(profile_file)
-    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    ).select(["scaffold", "genome"])
-    
-    het_profile = pf.get_strain_hetrogeneity(profile, stb, min_cov=min_cov, freq_threshold=freq_threshold)
-    het_profile.sink_parquet(output_file, compression='zstd')
-
 @utilities.command("get-snp-reference")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
 @click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage required for a site to contribute.")
@@ -1147,10 +1279,7 @@ def presence_profile(profile_file, stb_file, bed_file, read_loc_file, min_cov_fu
     output_file (str): Path to save the output Parquet file.
     """
     profile = pl.scan_parquet(profile_file)
-    stb = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    ).select(["scaffold", "genome"])
+    stb = pf.read_stb(stb_file)
     bed = pl.scan_csv(bed_file, separator="\t", has_header=False).with_columns(
         pl.col("column_1").alias("scaffold"),
         pl.col("column_2").cast(pl.Int64).alias("start"),
@@ -1223,14 +1352,9 @@ def get_gene_range_table(gene_file, output_file):
     gene_locs.write_csv(pathlib.Path(output_file), separator="\t", include_header=False)
 
 
-@cli.group()
-def compare():
-    """The commands in this group are related to comparing profiled samples."""
-    pass
-
 @utilities.command("single_compare_genome")
-@click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
-@click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
+@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
+@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
 @click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
@@ -1242,53 +1366,54 @@ def compare():
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """
-    Main function to compare two mpileup files and calculate genome and gene statistics.
+    Compare two profile parquets and calculate genome-level comparison statistics.
     
     Args:
-    mpileup_contig_1 (str): Path to the first mpileup file.
-    mpileup_contig_2 (str): Path to the second mpileup file.
+    profile_location_1 (str): Path to the first profile parquet.
+    profile_location_2 (str): Path to the second profile parquet.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
     output_file (str): Path to save the parquet file.
     genome (str): If provided, do the comparison only for the specified genome.
     stb_file (str): Optional path to the scaffold to genome mapping file.
     """
-    mpile_contig_1_name = ut.infer_sample_name_from_profile(mpileup_contig_1)
-    mpile_contig_2_name = ut.infer_sample_name_from_profile(mpileup_contig_2)
+    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
+    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
     calculations = cp.parse_genome_calculations(calculate)
     output_cols = cp.genome_metric_output_columns(calculations)
     compare_metadata = ut.build_single_compare_metadata(
-        mpileup_contig_1,
-        mpileup_contig_2,
+        profile_location_1,
+        profile_location_2,
         compare_kind="genome",
         scope=genome,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         engine=engine,
         uses_stb=stb_file is not None,
+        ani_method=ani_method,
     )
 
-    mpile_1_for_compare = mpileup_contig_1
-    mpile_2_for_compare = mpileup_contig_2
+    profile_1_for_compare = profile_location_1
+    profile_2_for_compare = profile_location_2
     if engine == "polars" and genome != "all":
-        mpile_1_for_compare, mpile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             genome_scope=genome,
         )
 
     if engine == "duckdb":
         cp.duckdb_compare_genomes_to_parquet(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             output_file=output_file,
             stb_file=stb_file,
-            sample_1_name=mpile_contig_1_name,
-            sample_2_name=mpile_contig_2_name,
+            sample_1_name=profile_1_name,
+            sample_2_name=profile_2_name,
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome,
@@ -1302,8 +1427,8 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         return
 
     comp = cp.compare_genomes(
-        mpile_contig_1=mpile_1_for_compare,
-        mpile_contig_2=mpile_2_for_compare,
+        mpile_contig_1=profile_1_for_compare,
+        mpile_contig_2=profile_2_for_compare,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         genome_scope=genome,
@@ -1315,14 +1440,14 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
         stb_file=stb_file,
         calculate=calculations,
     ).with_columns(
-        sample_1=pl.lit(mpile_contig_1_name),
-        sample_2=pl.lit(mpile_contig_2_name),
+        sample_1=pl.lit(profile_1_name),
+        sample_2=pl.lit(profile_2_name),
     ).select(output_cols + ["sample_1", "sample_2"])
     comp.sink_parquet(output_file, compression='zstd', metadata=compare_metadata)
 
 @utilities.command("single_compare_gene")
-@click.option('--mpileup-contig-1', '-m1', required=True, help="Path to the first mpileup file.")
-@click.option('--mpileup-contig-2', '-m2', required=True, help="Path to the second mpileup file.")
+@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
+@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
 @click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. Currently unused for gene compare, and accepted for workflow consistency.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
 @click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
@@ -1333,13 +1458,13 @@ def single_compare_genome(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov,
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """
-    Compare two mpileup files and calculate gene-level comparison statistics.
+    Compare two profile parquets and calculate gene-level comparison statistics.
     
     Args:
-    mpileup_contig_1 (str): Path to the first mpileup file.
-    mpileup_contig_2 (str): Path to the second mpileup file.
+    profile_location_1 (str): Path to the first profile parquet.
+    profile_location_2 (str): Path to the second profile parquet.
     stb_file (str | None): Optional path to the scaffold to genome mapping file.
     min_cov (int): Minimum coverage to consider a position.
     min_gene_compare_len (int): Minimum gene length to consider for comparison.
@@ -1348,8 +1473,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
     ani_method (str): ANI calculation method to use.
     """
 
-    mpile_contig_1_name = ut.infer_sample_name_from_profile(mpileup_contig_1)
-    mpile_contig_2_name = ut.infer_sample_name_from_profile(mpileup_contig_2)
+    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
+    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
 
@@ -1358,33 +1483,34 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         raise ValueError("scope must be in 'GENOME:GENE' format (e.g., all:all).")
     genome_scope, gene_scope = scope.split(":", 1)
     compare_metadata = ut.build_single_compare_metadata(
-        mpileup_contig_1,
-        mpileup_contig_2,
+        profile_location_1,
+        profile_location_2,
         compare_kind="gene",
         scope=scope,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         engine=engine,
         uses_stb=stb_file is not None,
+        ani_method=ani_method,
     )
 
-    mpile_1_for_compare = mpileup_contig_1
-    mpile_2_for_compare = mpileup_contig_2
+    profile_1_for_compare = profile_location_1
+    profile_2_for_compare = profile_location_2
     if engine == "polars" and (genome_scope != "all" or gene_scope != "all"):
-        mpile_1_for_compare, mpile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             genome_scope=genome_scope,
             gene_scope=gene_scope,
         )
 
     if engine == "duckdb":
         cp.duckdb_compare_genes_to_parquet(
-            mpile1=mpileup_contig_1,
-            mpile2=mpileup_contig_2,
+            mpile1=profile_location_1,
+            mpile2=profile_location_2,
             output_file=output_file,
-            sample_1_name=mpile_contig_1_name,
-            sample_2_name=mpile_contig_2_name,
+            sample_1_name=profile_1_name,
+            sample_2_name=profile_2_name,
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
@@ -1398,8 +1524,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         return
 
     gene_comp = cp.compare_genes(
-        mpile_contig_1=mpile_1_for_compare,
-        mpile_contig_2=mpile_2_for_compare,
+        mpile_contig_1=profile_1_for_compare,
+        mpile_contig_2=profile_2_for_compare,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         genome_scope=genome_scope,
@@ -1410,8 +1536,8 @@ def single_compare_gene(mpileup_contig_1, mpileup_contig_2, stb_file, min_cov, m
         duckdb_threads=duckdb_threads,
         engine="polars",
     ).with_columns(
-        sample_1=pl.lit(mpile_contig_1_name),
-        sample_2=pl.lit(mpile_contig_2_name),
+        sample_1=pl.lit(profile_1_name),
+        sample_2=pl.lit(profile_2_name),
     ).select(
         "genome",
         "gene",
@@ -1436,41 +1562,19 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
     """
     Prepare the files needed for profiling bam files and save them in the specified output directory.
     """
-    output_dir=pathlib.Path(output_dir)
+    output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(reference_fasta, output_dir / "reference.fasta")
-    bed_df = ut.make_the_bed(reference_fasta)
-    bed_df.write_csv(output_dir / "genomes_bed_file.bed", separator='\t', include_header=False)
-    if gene_fasta is None:
-        pl.DataFrame(schema={"gene": pl.Utf8, "scaffold": pl.Utf8, "start": pl.Int64, "end": pl.Int64}).write_csv(
-            output_dir / "gene_range_table.tsv",
-            separator='\t',
-            include_header=False,
-        )
-    else:
-        gene_range_table = pf.build_gene_range_table(pathlib.Path(gene_fasta))
-        gene_range_table.write_csv(output_dir / "gene_range_table.tsv", separator='\t', include_header=False)
-    
-    stb = pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
+    pf.prepare_profiling_assets(
+        reference_fasta=reference_fasta,
+        stb_file=stb_file,
+        output_dir=output_dir,
+        gene_fasta=gene_fasta,
+        error_rate=error_rate,
+        max_total_reads=max_total_reads,
+        p_threshold=p_threshold,
+        model_type=model_type,
     )
-
-    bed_df = bed_df.lazy()
-    genome_length = ut.extract_genome_length(stb, bed_df)
-    genome_length.sink_parquet(output_dir / "genome_lengths.parquet", compression='zstd')
-
-    null_model_df = _build_null_model_frame(error_rate, max_total_reads, p_threshold, model_type)
-    null_model_path = output_dir / "null_model.parquet"
-    null_model_df.write_parquet(null_model_path)
-
-    contract = {
-        "reference_hash": ut.sha256_file(reference_fasta),
-        "gene_hash": ut.sha256_file(gene_fasta) if gene_fasta is not None else ut.PROFILE_CONTRACT_MISSING_VALUE,
-        "stb_hash": ut.sha256_file(stb_file),
-        "null_model_hash": ut.sha256_file(null_model_path),
-    }
-    ut.write_profile_contract_file(contract, output_dir / "profiling_contract.json")
 
 
 @utilities.command("profile-single")
@@ -1485,8 +1589,8 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
 @click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-read-ani', default=None, type=float, help="Optional minimum read ANI proxy based on the NM tag and aligned query span.")
-@click.option('--read-inclusion', default=pf.READ_INCLUSION_ALL_MAPPED, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible for profiling.")
+@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
 def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_read_ani, read_inclusion, output_dir):
     """
@@ -1495,10 +1599,7 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
     """
     output_dir=pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stb= pl.scan_csv(stb_file, separator='\t',has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome")
-    )
+    stb= pf.read_stb(stb_file)
     null_model=pl.scan_parquet(null_model)
     profile_contract_values = (
         ut.read_profile_contract_file(profiling_contract)
@@ -1522,234 +1623,540 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
         read_inclusion=read_inclusion,
     )
 
-@cli.command("profile")
+@cli.command("map", cls=SectionedCommand, short_help="Map reads to sorted BAMs.")
+@click.option('--reads-table', '-i', required=True, help="CSV of reads to map, with columns 'sample_name,reads1[,reads2]' (reads2 blank/absent for single-end).")
+@click.option('--output-dir', '-o', required=True, help="Directory to write BAMs, the reference FASTA/STB, and a samples.txt ready for `zipstrain profile`.")
+@click.option('--reference-fasta', '-f', default=None, help="Reference FASTA to map against. If omitted, Sylph automatically picks and builds a reference from the reads.")
+@click.option('--stb-file', '-s', default=None, help="Scaffold-to-genome mapping file. Required when --reference-fasta is provided.")
+@click.option('--sylph-db', default=None, help="Path to the Sylph database. Used when no --reference-fasta is given; downloaded from --sylph-db-url if the path does not exist.")
+@click.option('--sylph-db-url', default=mapping.DEFAULT_SYLPH_DB_URL, show_default=True, help="URL to download the Sylph database from when --sylph-db is missing.")
+@click.option('--genome-cache-dir', default=None, help="Directory that caches genome FASTAs downloaded during Sylph-based reference building. Required when no --reference-fasta is given.")
+@click.option('--predict-genes', is_flag=True, default=False, show_default=True, help="Also run prodigal to emit a gene FASTA (for gene-level profiling via `profile --gene-fasta`).")
+@click.option('--non-competitive', is_flag=True, default=False, show_default=True, help="Pass -a to Bowtie2 for non-competitive mapping (report all alignments).")
+@click.option('--force', is_flag=True, default=False, show_default=True, help="Redo every step from scratch, ignoring cached outputs. By default `map` resumes: completed Sylph tables, reference, index, and BAMs are reused.")
+@click.option('--threads', '-t', default=4, show_default=True, help="Threads for Sylph, Bowtie2, and samtools.")
+def map_command(reads_table, output_dir, reference_fasta, stb_file, sylph_db, sylph_db_url, genome_cache_dir, predict_genes, non_competitive, force, threads):
+    """
+    Map sequencing reads to BAM files, ready for `zipstrain profile`.
+
+    Provide a reads table (``sample_name,reads1[,reads2]``). If you do not pass
+    ``--reference-fasta``, ZipStrain runs Sylph to pick reference genomes from
+    the reads automatically, downloading and caching them, then maps against the
+    built reference. Outputs sorted, indexed BAMs, the reference FASTA + STB, and
+    a ``samples.txt`` you can hand straight to ``zipstrain profile``.
+    """
+    console = Console()
+    start = time.monotonic()
+    step_number = {"n": 0}
+
+    def _on_step(message: str) -> None:
+        step_number["n"] += 1
+        console.print(f"[bold cyan]›[/] [{step_number['n']}] {message}")
+
+    console.print(Panel.fit("[bold magenta]ZipStrain map[/]", border_style="magenta"))
+    with RunLogger(output_dir, command="map", argv=sys.argv) as run_log:
+        try:
+            results = mapping.run_map(
+                reads_table=reads_table,
+                output_dir=output_dir,
+                reference_fasta=reference_fasta,
+                stb_file=stb_file,
+                sylph_db=sylph_db,
+                sylph_db_url=sylph_db_url,
+                genome_cache_dir=genome_cache_dir,
+                threads=threads,
+                predict_genes_flag=predict_genes,
+                non_competitive=non_competitive,
+                force=force,
+                progress_callback=run_log.as_callback(_on_step),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise click.UsageError(str(exc)) from exc
+
+    elapsed = time.monotonic() - start
+    elapsed_str = f"{int(elapsed // 3600)}:{int(elapsed % 3600 // 60):02d}:{int(elapsed % 60):02d}"
+    out_dir = pathlib.Path(output_dir).absolute()
+
+    lines = [
+        "[bold green]Mapping complete![/]",
+        "",
+        f"Elapsed: {elapsed_str}",
+        "",
+        f"Output:    {out_dir}",
+        f"Reference: {pathlib.Path(results['reference_fasta']).absolute()}",
+        f"STB:       {pathlib.Path(results['stb_file']).absolute()}",
+    ]
+    if "gene_fasta" in results:
+        lines.append(f"Genes:     {pathlib.Path(results['gene_fasta']).absolute()}")
+    lines += [
+        f"Samples:   {pathlib.Path(results['samples_table']).absolute()}",
+        "",
+        "Next:      zipstrain profile "
+        f"--input-table {results['samples_table']} "
+        f"--reference-fasta {results['reference_fasta']} "
+        f"--stb-file {results['stb_file']} --run-dir <run_dir>",
+    ]
+    console.print(Panel("\n".join(lines), title="Summary", border_style="green", expand=True))
+
+
+map_command.option_sections = {
+    "Required inputs": [
+        "reads_table",
+        "output_dir",
+    ],
+    "Reference (Sylph auto-picks one if omitted)": [
+        "reference_fasta",
+        "stb_file",
+        "sylph_db",
+        "sylph_db_url",
+        "genome_cache_dir",
+    ],
+    "Options": [
+        "predict_genes",
+        "non_competitive",
+        "force",
+        "threads",
+    ],
+}
+
+
+@cli.command("profile", cls=SectionedCommand, short_help="Profile BAMs at nucleotide resolution.")
 @click.option('--input-table', '-i', required=True, help="Path to the input table in TSV format containing sample names and paths to bam files.")
-@click.option('--reference-fasta', '-f', default=None, help="Optional reference FASTA used for mpileup during profiling. When provided, ref_base_bitmask is added to each profile.")
+@click.option('--reference-fasta', '-f', default=None, help="Reference FASTA. Used for mpileup (adds ref_base_bitmask) and required to auto-generate the bed/genome-length assets when they are not supplied.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--null-model', '-u', required=True, help="Path to the null model parquet file.")
-@click.option('--gene-range-table', '-g', default=None, help="Optional path to the gene range table file.")
-@click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into each profile parquet metadata.")
-@click.option('--bed-file', '-b', required=True, help="Path to the BED file for profiling regions.")
-@click.option('--genome-length-file', '-l', required=True, help="Path to the genome length file.")
-@click.option('--run-dir', '-r', required=True, help="Directory to save the run data.")
-@click.option('--num-procs', '-n', default=8, help="Number of processors to use for each profiling task.")
-@click.option('--max-concurrent-batches', '-m', default=5, help="Maximum number of concurrent batches to run.")
-@click.option('--poll-interval', '-p', default=1, help="Polling interval in seconds to check the status of batches.")
-@click.option('--execution-mode', '-e', default="local", help="Execution mode: 'local' or 'slurm'.")
-@click.option('--slurm-config', '-c', default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
-@click.option('--container-engine', '-o', default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
-@click.option('--container-address', default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
-@click.option('--task-per-batch', '-t', default=10, help="Number of tasks to include in each batch.")
+@click.option('--run-dir', '-r', required=True, help="Directory to save the run data (sample outputs, profiling_assets, and logs).")
+@click.option('--null-model', '-u', default=None, help="Pre-built null model parquet file. Auto-generated into <run-dir>/profiling_assets if not provided.")
+@click.option('--gene-fasta', default=None, help="Gene FASTA. When provided, a gene range table is auto-generated from it for gene-level profiling.")
+@click.option('--gene-range-table', '-g', default=None, help="Pre-built gene range table file. Overrides --gene-fasta auto-generation.")
+@click.option('--profiling-contract', default=None, help="Pre-built profiling_contract.json. When provided, its hashes are written into each profile parquet metadata. Auto-generated otherwise.")
+@click.option('--bed-file', '-b', default=None, help="Pre-built BED file for profiling regions. Auto-generated into <run-dir>/profiling_assets if not provided.")
+@click.option('--genome-length-file', '-l', default=None, help="Pre-built genome length file. Auto-generated into <run-dir>/profiling_assets if not provided.")
+@click.option('--error-rate', default=0.001, show_default=True, help="Error rate used when auto-generating the null model.")
+@click.option('--max-total-reads', default=10000, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
+@click.option('--p-threshold', default=0.05, show_default=True, help="Significance threshold used when auto-generating the null model.")
+@click.option('--model-type', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Null model type used when auto-generating the null model.")
+@click.option('--force-prepare', is_flag=True, default=False, show_default=True, help="Regenerate all auto-generated profiling assets even if valid cached copies exist.")
 @click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-read-ani', default=None, type=float, help="Optional minimum read ANI proxy based on the NM tag and aligned query span.")
-@click.option('--read-inclusion', default=pf.READ_INCLUSION_ALL_MAPPED, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible for profiling.")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_range_table, profiling_contract, bed_file, genome_length_file, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion):
+@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
+@click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
+@click.option('--max-concurrent-batches', '-m', default=5, show_default=True, help="Maximum number of concurrent batches to run.")
+@click.option('--poll-interval', '-p', default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
+@click.option('--task-per-batch', '-t', default=10, show_default=True, help="Number of tasks to include in each batch.")
+@click.option('--execution-mode', '-e', default="local", show_default=True, help="Execution mode: 'local' or 'slurm'.")
+@click.option('--slurm-config', '-c', default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
+@click.option('--container-engine', '-o', default="local", show_default=True, help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option('--container-address', default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
+@click.option('--no-snvs', is_flag=True, default=False, show_default=True, help="Do not call SNVs/SNPs (per-sample <sample>_SNVs.parquet). SNV calling needs --reference-fasta.")
+@click.option('--snv-min-cov', default=5, show_default=True, help="Minimum coverage for a site to be eligible as an SNV/SNP call.")
+@click.option('--presence-ber', default=0.5, show_default=True, help="Breadth-error-ratio threshold for the genome present/absent call (the Metapresence paper recommends ~0.8).")
+@click.option('--presence-fug', default=1.0, show_default=True, help="FUG threshold for the present/absent call at low coverage. A genome is present when fug/0.632 exceeds this (fug ~ 0.632 under uniform coverage, so 1.0 means at least as uniform as random).")
+@click.option('--presence-min-cov-use-fug', default=2.0, show_default=True, help="Coverage above which the present/absent call uses BER alone (below it, FUG is also required).")
+@click.option('--presence-min-coverage', default=0.1, show_default=True, help="Minimum mean coverage required to call a genome present.")
+@click.option('--genome-taxonomy', default=None, help="Optional genome->taxonomy TSV to add a genome_taxonomy column to genome_stats. Auto-discovered next to the reference/STB when produced by `zipstrain map` (Sylph route).")
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
-    Args:
-    input_table (str): Path to the input table in TSV format containing sample names and BAM file paths.
-    stb_file (str): Path to the scaffold-to-genome mapping file.
-    null_model (str): Path to the null model parquet file.
-    gene_range_table (str | None): Optional path to the gene range table file.
-    bed_file (str): Path to the BED file for profiling regions.
-    genome_length_file (str): Path to the genome length file.
-    run_dir (str): Directory to save the run data.
-    num_procs (int): Number of processors to use for each profiling task.
-    max_concurrent_batches (int): Maximum number of concurrent batches to run.
-    poll_interval (int): Polling interval in seconds to check the status of batches.
-    execution_mode (str): Execution mode: 'local' or 'slurm'.
-    slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
-    container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
-    task_per_batch (int): Number of tasks to include in each batch.
+    Any profiling assets (null model, bed file, genome length table, gene range
+    table, profiling contract) that are not supplied explicitly are generated
+    automatically into a ``profiling_assets`` directory inside ``run-dir`` and
+    reused on subsequent runs when the inputs are unchanged. This means a
+    minimal run needs only ``--input-table``, ``--reference-fasta``, and
+    ``--stb-file``.
     """
     # Load the BAM files table
     bams_lf = pl.scan_csv(input_table)
-    
+
     # Validate required columns exist
     required_columns = {"sample_name", "bamfile"}
     actual_columns = set(bams_lf.collect_schema().names())
     if not required_columns.issubset(actual_columns):
         missing = required_columns - actual_columns
         raise ValueError(f"Input table missing required columns: {missing}")
-    
+
     run_dir = pathlib.Path(run_dir)
-    slurm_conf = None
-    if execution_mode == "slurm":
-        if slurm_config is None:
-            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
-    
-    container_engine_obj = _build_container_engine(container_engine, container_address)
-    
-    tm.lazy_run_profile(
-        run_dir=run_dir,
-        container_engine=container_engine_obj,
-        bams_lf=bams_lf,
-        reference_fasta_file=pathlib.Path(reference_fasta) if reference_fasta is not None else None,
-        stb_file=pathlib.Path(stb_file),
-        null_model_file=pathlib.Path(null_model),
-        gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
-        profiling_contract_file=pathlib.Path(profiling_contract) if profiling_contract is not None else None,
-        bed_file=pathlib.Path(bed_file),
-        genome_length_file=pathlib.Path(genome_length_file),
-        num_procs=num_procs,
-        min_mapq=min_mapq,
-        min_baseq=min_baseq,
-        min_read_ani=min_read_ani,
-        read_inclusion=read_inclusion,
-        tasks_per_batch=task_per_batch,
-        max_concurrent_batches=max_concurrent_batches,
-        poll_interval=poll_interval,
-        execution_mode=execution_mode,
-        slurm_config=slurm_conf,
+    with RunLogger(run_dir, command="profile", argv=sys.argv) as run_log:
+        slurm_conf = None
+        if execution_mode == "slurm":
+            if slurm_config is None:
+                raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+
+        run_log.step("Resolving profiling assets")
+        assets = pf.resolve_profiling_assets(
+            run_dir=run_dir,
+            reference_fasta=reference_fasta,
+            stb_file=stb_file,
+            gene_fasta=gene_fasta,
+            null_model_file=null_model,
+            bed_file=bed_file,
+            genome_length_file=genome_length_file,
+            gene_range_table=gene_range_table,
+            profiling_contract_file=profiling_contract,
+            error_rate=error_rate,
+            max_total_reads=max_total_reads,
+            p_threshold=p_threshold,
+            model_type=model_type,
+            force_prepare=force_prepare,
+        )
+
+        container_engine_obj = _build_container_engine(container_engine, container_address)
+
+        run_log.step("Profiling BAM files")
+        tm.lazy_run_profile(
+            run_dir=run_dir,
+            container_engine=container_engine_obj,
+            bams_lf=bams_lf,
+            reference_fasta_file=pathlib.Path(reference_fasta) if reference_fasta is not None else None,
+            stb_file=pathlib.Path(stb_file),
+            null_model_file=assets.null_model_file,
+            gene_range_table=assets.gene_range_table,
+            profiling_contract_file=assets.profiling_contract_file,
+            bed_file=assets.bed_file,
+            genome_length_file=assets.genome_length_file,
+            num_procs=num_procs,
+            min_mapq=min_mapq,
+            min_baseq=min_baseq,
+            min_read_ani=min_read_ani,
+            read_inclusion=read_inclusion,
+            tasks_per_batch=task_per_batch,
+            max_concurrent_batches=max_concurrent_batches,
+            poll_interval=poll_interval,
+            execution_mode=execution_mode,
+            slurm_config=slurm_conf,
+        )
+
+        run_log.step("Finalizing outputs (presence, SNVs, taxonomy)")
+        _finalize_profile_outputs(
+            run_dir,
+            emit_snvs=not no_snvs,
+            snv_min_cov=snv_min_cov,
+            presence_ber=presence_ber,
+            presence_fug=presence_fug,
+            presence_min_cov_use_fug=presence_min_cov_use_fug,
+            presence_min_coverage=presence_min_coverage,
+            taxonomy_file=_discover_taxonomy_file(reference_fasta, stb_file, genome_taxonomy),
+            console=Console(),
+        )
+
+
+profile.option_sections = {
+    "Required inputs": [
+        "input_table",
+        "reference_fasta",
+        "stb_file",
+        "run_dir",
+    ],
+    "Optional inputs": [
+        "gene_fasta",
+    ],
+    "Optional pre-built assets (auto-generated if omitted)": [
+        "null_model",
+        "gene_range_table",
+        "profiling_contract",
+        "bed_file",
+        "genome_length_file",
+    ],
+    "Profiling parameters": [
+        "error_rate",
+        "max_total_reads",
+        "p_threshold",
+        "model_type",
+        "force_prepare",
+        "min_mapq",
+        "min_baseq",
+        "min_read_ani",
+        "read_inclusion",
+    ],
+    "SNV calling and presence": [
+        "no_snvs",
+        "snv_min_cov",
+        "presence_ber",
+        "presence_fug",
+        "presence_min_cov_use_fug",
+        "presence_min_coverage",
+        "genome_taxonomy",
+    ],
+    "Running parameters": [
+        "num_procs",
+        "max_concurrent_batches",
+        "poll_interval",
+        "task_per_batch",
+        "execution_mode",
+        "slurm_config",
+        "container_engine",
+        "container_address",
+    ],
+}
+
+
+def _run_matrix_compare_method(
+    *,
+    profile_database,
+    run_dir,
+    stb_file,
+    bed_file,
+    gene_range_table,
+    scope,
+    backend,
+    memory_limit_gb,
+    compare_genes,
+    ani_method,
+    no_csv=False,
+    force_csv=False,
+    run_log=None,
+):
+    """Drive the matrix-store comparison route with progress + a summary panel."""
+    profiles = [
+        (row["profile_name"], row["profile_location"])
+        for row in profile_database.db.collect().iter_rows(named=True)
+    ]
+
+    console = Console()
+    start = time.monotonic()
+    step_number = {"n": 0}
+
+    def _on_step(message: str) -> None:
+        step_number["n"] += 1
+        console.print(f"[bold cyan]›[/] [{step_number['n']}] {message}")
+        if run_log is not None:
+            run_log.step(message)
+
+    if ani_method != "popani":
+        raise click.UsageError("--method matrix only supports --ani-method popani.")
+
+    console.print(Panel.fit("[bold magenta]ZipStrain compare (matrix)[/]", border_style="magenta"))
+    try:
+        output = matrix_workflow.run_matrix_compare(
+            profiles=profiles,
+            run_dir=run_dir,
+            stb_file=stb_file,
+            bed_file=bed_file,
+            gene_range_table=gene_range_table,
+            scope=scope if scope is not None else "all",
+            backend=backend,
+            memory_limit_gb=memory_limit_gb,
+            compare_genes=compare_genes,
+            progress_callback=_on_step,
+        )
+    except ModuleNotFoundError as exc:
+        raise click.UsageError(
+            "The matrix method needs the matrix extra (h5py, torch). Install it with "
+            f'`pip install "zipstrain[matrix]"`. Missing: {exc.name}'
+        ) from exc
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    _maybe_write_csv(output, no_csv=no_csv, force_csv=force_csv, console=console)
+
+    elapsed = time.monotonic() - start
+    elapsed_str = f"{int(elapsed // 3600)}:{int(elapsed % 3600 // 60):02d}:{int(elapsed % 60):02d}"
+    console.print(
+        Panel(
+            "\n".join(
+                [
+                    "[bold green]Comparison complete![/]",
+                    "",
+                    f"Elapsed: {elapsed_str}",
+                    "",
+                    f"Output:  {pathlib.Path(output).absolute()}",
+                    f"Store:   {(pathlib.Path(run_dir) / 'intermediate_files' / matrix_workflow.MATRIX_STORE_NAME).absolute()}",
+                ]
+            ),
+            title="Summary",
+            border_style="green",
+            expand=True,
+        )
     )
 
 
-@compare.command("genomes")
-@click.option("--profile-db", required=True, help="Path to the profile database parquet file.")
-@click.option("--comp-db-file", required=False, default=None, help="Optional current genome comparison parquet.")
-@click.option("--scope", default="all", show_default=True, help="Genome scope for comparison.")
+@cli.command("compare", cls=SectionedCommand, short_help="Compare samples (genomes or genes).")
+@click.option("--profile-db", required=True, help="Profiles to compare: either a CSV with 'profile_name,profile_location' columns (built in memory, no build-profile-db needed) or a pre-built profile-database parquet.")
+@click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
+@click.option("--method", type=click.Choice(["standard", "matrix"]), default="standard", show_default=True, help="Comparison engine: 'standard' (direct pairwise) or 'matrix' (reusable matrix store, good for repeated all-vs-all).")
+@click.option("--compare-genes", is_flag=True, default=False, show_default=True, help="Compare genes instead of genomes.")
+@click.option("--scope", default=None, help="Comparison scope. Defaults to 'all' for genomes and 'all:all' for genes.")
 @click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
 @click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum gene length to consider for comparison.")
-@click.option("--stb-file", default=None, help="Optional scaffold-to-genome mapping file.")
-@click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
-@click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
-@click.option("--poll-interval", "-p", default=1, help="Polling interval in seconds to check the status of batches.")
-@click.option("--execution-mode", "-e", default="local", help="Execution mode: 'local' or 'slurm'.")
-@click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
-@click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
-@click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
-@click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
-@click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method passed to genome compare tasks.")
-@click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
-@click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option("--stb-file", default=None, help="Scaffold-to-genome mapping file. Required for --method matrix.")
+@click.option("--comp-db-file", default=None, help="Optional existing comparison parquet to resume/extend (standard method). Auto-detected from --run-dir if omitted.")
+@click.option("--allow-mismatch", is_flag=True, default=False, show_default=True, help="Skip profile contract validation when building the profile database from a CSV.")
+@click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for standard compare tasks.")
+@click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute (genome mode only): ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
+@click.option("--gene-range-table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
+@click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
+@click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for --method matrix.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genomes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, ani_method, engine, calculate, duckdb_memory_limit, duckdb_threads):
-    """
-    Run genome comparisons in batches using the specified execution mode and container engine.
-
-    Args:
-    profile_db (str): Path to the profile database parquet file.
-    run_dir (str): Directory to save the run data.
-    max_concurrent_batches (int): Maximum number of concurrent batches to run.
-    poll_interval (int): Polling interval in seconds to check the status of batches.
-    execution_mode (str): Execution mode: 'local' or 'slurm'.
-    slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
-    container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
-    task_per_batch (int): Number of tasks to include in each batch.
-    """
-    genome_comp_db=db.GenomeComparisonDatabase(
-        profile_db=db.ProfileDatabase(pathlib.Path(profile_db)),
-        config=db.GenomeComparisonConfig(
-            scope=scope,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            stb_file_loc=stb_file,
-        ),
-        comp_db_loc=comp_db_file,
-    )
-    run_dir=pathlib.Path(run_dir)
-    if duckdb_threads is not None and duckdb_threads < 1:
-        raise ValueError("--duckdb-threads must be >= 1")
-    cp.parse_genome_calculations(calculate)
-    slurm_conf=None
-    if execution_mode == "slurm":
-        if slurm_config is None:
-            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
-    
-    container_engine_obj = _build_container_engine(container_engine, container_address)
-    tm.lazy_run_compares(
-        comps_db=genome_comp_db,
-        container_engine=container_engine_obj,
-        run_dir=run_dir,
-        max_concurrent_batches=max_concurrent_batches,
-        execution_mode=execution_mode,
-        slurm_config=slurm_conf,
-        ani_method=ani_method,
-        compare_engine=engine,
-        calculate=calculate,
-        duckdb_memory_limit=duckdb_memory_limit,
-        duckdb_threads=duckdb_threads,
-        tasks_per_batch=task_per_batch,
-        poll_interval=poll_interval,
-    )
-
-
-@compare.command("genes")
-@click.option("--profile-db", required=True, help="Path to the profile database parquet file.")
-@click.option("--comp-db-file", required=False, default=None, help="Optional current gene comparison parquet.")
-@click.option("--scope", default="all:all", show_default=True, help="Genome-gene scope for comparison.")
-@click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
-@click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum gene length to consider for comparison.")
-@click.option("--stb-file", default=None, help="Optional scaffold-to-genome mapping file.")
-@click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
-@click.option("--max-concurrent-batches", "-m", default=5, help="Maximum number of concurrent batches to run.")
-@click.option("--poll-interval", "-p", default=1, help="Polling interval in seconds to check the status of batches.")
-@click.option("--execution-mode", "-e", default="local", help="Execution mode: 'local' or 'slurm'.")
+@click.option("--max-concurrent-batches", "-m", default=5, show_default=True, help="Maximum number of concurrent batches to run.")
+@click.option("--poll-interval", "-p", default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
+@click.option("--task-per-batch", "-t", default=10, show_default=True, help="Number of tasks to include in each batch.")
+@click.option("--execution-mode", "-e", default="local", show_default=True, help="Execution mode: 'local' or 'slurm'.")
 @click.option("--slurm-config", "-s", default=None, help="Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.")
-@click.option("--container-engine", "-c", default="local", help="Container engine to use: 'local', 'docker' or 'apptainer'.")
+@click.option("--container-engine", "-c", default="local", show_default=True, help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
-@click.option("--task-per-batch", "-t", default=10, help="Number of tasks to include in each batch.")
-@click.option("--ani-method", "-n", default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for compare tasks.")
-@click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
-@click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
-def compare_genes(profile_db, comp_db_file, scope, min_cov, min_gene_compare_len, stb_file, run_dir, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, ani_method, engine, duckdb_memory_limit, duckdb_threads):
+@click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
+@click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Write the companion .csv even when the estimated size exceeds 100 MB.")
+def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
     """
-    Run gene comparisons in batches using the specified execution mode and container engine.
+    Compare profiled samples at the genome level (default) or gene level (--compare-genes).
 
-    Args:
-    profile_db (str): Path to the profile database parquet file.
-    run_dir (str): Directory to save the run data.
-    max_concurrent_batches (int): Maximum number of concurrent batches to run.
-    poll_interval (int): Polling interval in seconds to check the status of batches.
-    execution_mode (str): Execution mode: 'local' or 'slurm'.
-    slurm_config (str): Path to the SLURM configuration file in json format. Required if execution mode is 'slurm'.
-    container_engine (str): Container engine to use: 'local', 'docker' or 'apptainer'.
-    task_per_batch (int): Number of tasks to include in each batch.
-    ani_method (str): ANI calculation method to use.
+    ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
+    there is no need to run ``zipstrain utilities build-profile-db`` first; a
+    pre-built profile-database parquet is also accepted.
+
+    Both methods write ``<run-dir>/all_comparisons.parquet``. Re-running with the
+    same ``--run-dir`` and a profiles table that includes new samples extends the
+    existing comparison, computing only the new pairs.
     """
-    genome_comp_db=db.GeneComparisonDatabase(
-        profile_db=db.ProfileDatabase(pathlib.Path(profile_db)),
-        config=db.GeneComparisonConfig(
-            scope=scope,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            stb_file_loc=stb_file,
-        ),
-        comp_db_loc=comp_db_file,
-    )
-    run_dir=pathlib.Path(run_dir)
-    if duckdb_threads is not None and duckdb_threads < 1:
-        raise ValueError("--duckdb-threads must be >= 1")
-    slurm_conf=None
-    if execution_mode == "slurm":
-        if slurm_config is None:
-            raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
-    
-    container_engine_obj = _build_container_engine(container_engine, container_address)
-    
-    tm.lazy_run_gene_compares(
-        comps_db=genome_comp_db,
-        container_engine=container_engine_obj,
-        run_dir=run_dir,
-        max_concurrent_batches=max_concurrent_batches,
-        execution_mode=execution_mode,
-        slurm_config=slurm_conf,
-        compare_engine=engine,
-        tasks_per_batch=task_per_batch,
-        poll_interval=poll_interval,
-        ani_method=ani_method,
-        duckdb_memory_limit=duckdb_memory_limit,
-        duckdb_threads=duckdb_threads,
-    )
-        
-@cli.command("test")
+    run_dir = pathlib.Path(run_dir)
+    with RunLogger(run_dir, command="compare", argv=sys.argv) as run_log:
+        run_log.step("Loading profile database")
+        profile_database = _load_profile_database(profile_db, allow_mismatch=allow_mismatch)
+
+        if method == "matrix":
+            _run_matrix_compare_method(
+                profile_database=profile_database,
+                run_dir=run_dir,
+                stb_file=stb_file,
+                bed_file=bed_file,
+                gene_range_table=gene_range_table,
+                scope=scope,
+                backend=backend,
+                memory_limit_gb=memory_limit_gb,
+                compare_genes=compare_genes,
+                ani_method=ani_method,
+                no_csv=no_csv,
+                force_csv=force_csv,
+                run_log=run_log,
+            )
+            return
+
+        if duckdb_threads is not None and duckdb_threads < 1:
+            raise ValueError("--duckdb-threads must be >= 1")
+        slurm_conf = None
+        if execution_mode == "slurm":
+            if slurm_config is None:
+                raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+
+        # Standard method: auto-resume from a prior run in the same run-dir when the
+        # user did not pass an explicit comparison to extend.
+        if comp_db_file is None:
+            existing_output = run_dir / ("all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet")
+            if existing_output.exists():
+                comp_db_file = str(existing_output)
+
+        container_engine_obj = _build_container_engine(container_engine, container_address)
+
+        if compare_genes:
+            resolved_scope = scope if scope is not None else "all:all"
+            comps_db = db.GeneComparisonDatabase(
+                profile_db=profile_database,
+                config=db.GeneComparisonConfig(
+                    scope=resolved_scope,
+                    min_cov=min_cov,
+                    min_gene_compare_len=min_gene_compare_len,
+                    stb_file_loc=stb_file,
+                ),
+                comp_db_loc=comp_db_file,
+            )
+            run_log.step("Comparing genes across sample pairs")
+            tm.lazy_run_gene_compares(
+                comps_db=comps_db,
+                container_engine=container_engine_obj,
+                run_dir=run_dir,
+                max_concurrent_batches=max_concurrent_batches,
+                execution_mode=execution_mode,
+                slurm_config=slurm_conf,
+                compare_engine=engine,
+                tasks_per_batch=task_per_batch,
+                poll_interval=poll_interval,
+                ani_method=ani_method,
+                duckdb_memory_limit=duckdb_memory_limit,
+                duckdb_threads=duckdb_threads,
+            )
+        else:
+            resolved_scope = scope if scope is not None else "all"
+            cp.parse_genome_calculations(calculate)
+            comps_db = db.GenomeComparisonDatabase(
+                profile_db=profile_database,
+                config=db.GenomeComparisonConfig(
+                    scope=resolved_scope,
+                    min_cov=min_cov,
+                    min_gene_compare_len=min_gene_compare_len,
+                    stb_file_loc=stb_file,
+                ),
+                comp_db_loc=comp_db_file,
+            )
+            run_log.step("Comparing genomes across sample pairs")
+            tm.lazy_run_compares(
+                comps_db=comps_db,
+                container_engine=container_engine_obj,
+                run_dir=run_dir,
+                max_concurrent_batches=max_concurrent_batches,
+                execution_mode=execution_mode,
+                slurm_config=slurm_conf,
+                ani_method=ani_method,
+                compare_engine=engine,
+                calculate=calculate,
+                duckdb_memory_limit=duckdb_memory_limit,
+                duckdb_threads=duckdb_threads,
+                tasks_per_batch=task_per_batch,
+                poll_interval=poll_interval,
+            )
+
+        run_log.step("Writing comparison outputs")
+        output_name = "all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet"
+        _maybe_write_csv(run_dir / output_name, no_csv=no_csv, force_csv=force_csv, console=Console())
+
+
+compare.option_sections = {
+    "Required inputs": [
+        "profile_db",
+        "run_dir",
+    ],
+    "Comparison parameters": [
+        "method",
+        "compare_genes",
+        "scope",
+        "min_cov",
+        "min_gene_compare_len",
+        "stb_file",
+        "ani_method",
+        "calculate",
+        "comp_db_file",
+        "allow_mismatch",
+    ],
+    "Matrix method (--method matrix)": [
+        "bed_file",
+        "gene_range_table",
+        "backend",
+        "memory_limit_gb",
+    ],
+    "Output": [
+        "no_csv",
+        "force_csv",
+    ],
+    "Standard method / engine": [
+        "engine",
+        "duckdb_memory_limit",
+        "duckdb_threads",
+        "max_concurrent_batches",
+        "poll_interval",
+        "task_per_batch",
+        "execution_mode",
+        "slurm_config",
+        "container_engine",
+        "container_address",
+    ],
+}
+
+@cli.command("test", short_help="Check your environment is ready.")
 def test():
     """Run a lightweight ZipStrain health check."""
     hc.render_health_report(hc.collect_health_report(), console=Console())

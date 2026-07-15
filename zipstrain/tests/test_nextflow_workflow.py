@@ -1,10 +1,70 @@
+import os
 import pathlib
 import re
+import shutil
+import subprocess
+import sys
+
+import polars as pl
+import pytest
 
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 NEXTFLOW_FILE = ROOT_DIR / "zipstrain.nf"
 CONF_FILE = ROOT_DIR / "conf.config"
+
+# Resolve nextflow + a JVM for it to use. The conda env running these tests
+# (`<env>/bin/nextflow` + `<env>/lib/jvm`) is checked *first* and preferred
+# when present, so a stray/older `nextflow` earlier on a developer's PATH
+# never gets picked up instead of the pinned env copy. Falls back to a plain
+# PATH lookup for environments without that conda layout (e.g. CI, where
+# actions/setup-java + nextflow-io/setup-nextflow put java/nextflow on PATH
+# and export JAVA_HOME directly).
+_ENV_PREFIX = pathlib.Path(sys.prefix)
+_CONDA_NEXTFLOW_BIN = _ENV_PREFIX / "bin" / "nextflow"
+_CONDA_JAVA_HOME = _ENV_PREFIX / "lib" / "jvm"
+_CONDA_LAYOUT_AVAILABLE = _CONDA_NEXTFLOW_BIN.exists() and (_CONDA_JAVA_HOME / "bin" / "java").exists()
+
+if _CONDA_LAYOUT_AVAILABLE:
+    _NEXTFLOW_BIN = _CONDA_NEXTFLOW_BIN
+else:
+    _nextflow_on_path = shutil.which("nextflow")
+    _NEXTFLOW_BIN = pathlib.Path(_nextflow_on_path) if _nextflow_on_path else _CONDA_NEXTFLOW_BIN
+
+_JAVA_ON_PATH = shutil.which("java") is not None
+_JAVA_AVAILABLE = _CONDA_LAYOUT_AVAILABLE or _JAVA_ON_PATH
+
+_NEXTFLOW_AVAILABLE = _NEXTFLOW_BIN.exists() and _JAVA_AVAILABLE
+
+
+def _nextflow_subprocess_env() -> dict[str, str]:
+    """Builds the env for running nextflow: sets JAVA_HOME to the conda env's
+    JVM when using the conda layout (its `java` isn't on PATH by itself),
+    and makes sure the resolved nextflow binary's directory is on PATH."""
+    env = dict(os.environ)
+    if _CONDA_LAYOUT_AVAILABLE:
+        env["JAVA_HOME"] = str(_CONDA_JAVA_HOME)
+    nextflow_dir = str(_NEXTFLOW_BIN.parent)
+    python_bin_dir = str(pathlib.Path(sys.executable).resolve().parent)
+    env["PATH"] = f"{nextflow_dir}{os.pathsep}{python_bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    return env
+
+
+def _docker_available() -> bool:
+    docker_bin = shutil.which("docker")
+    if docker_bin is None:
+        return False
+    try:
+        result = subprocess.run(
+            [docker_bin, "info"], capture_output=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+_DOCKER_AVAILABLE = _docker_available()
+_DOCKER_E2E_ENABLED = os.environ.get("ZIPSTRAIN_RUN_DOCKER_E2E") == "1"
 
 
 def _extract_output_section(process_name: str) -> str:
@@ -31,11 +91,6 @@ def test_profile_bam_process_emits_gene_stats():
     assert 'path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats' in output_section
 
 
-def test_profile_bam_no_reference_process_emits_gene_stats():
-    output_section = _extract_output_section("profile_bam_no_reference")
-    assert 'path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats' in output_section
-
-
 def test_from_sra_to_profile_process_emits_gene_stats():
     output_section = _extract_output_section("fromSRAtoProfile")
     assert 'path "${sra_id}_gene_stats.parquet", emit: gene_stats' in output_section
@@ -59,13 +114,24 @@ def test_nextflow_calls_updated_profile_commands():
     assert "zipstrain utilities profile-single" in text
 
 
-def test_nextflow_compare_profile_tables_use_profile_location_names_and_engine_param():
+def test_nextflow_compare_profile_tables_use_profiles_column_and_engine_param():
     text = NEXTFLOW_FILE.read_text()
     assert 'params.compare_engine="polars"' in text
-    assert "getProfileLocationsTableColumn" in text
+    assert "getProfilesTableColumn" in text
     assert "getProfileSampleNamesTableColumn" in text
+    assert "input_table.containsKey('profiles')" in text
     assert "profile_location" in text
+    assert "--profile-location-1" in text
+    assert "--profile-location-2" in text
     assert "--engine ${params.compare_engine}" in text
+
+
+def test_nextflow_requires_mode_and_defaults_to_batched_compare():
+    text = NEXTFLOW_FILE.read_text()
+    assert "params.mode = null" in text
+    assert 'params.parallel_mode="batched"' in text
+    assert "Set --mode to one of" in text
+    assert "Set --parallel_mode to either single or batched" in text
 
 
 def test_nextflow_from_sra_to_profile_auto_builds_reference_without_genes():
@@ -83,14 +149,12 @@ def test_nextflow_has_no_gene_prepare_profile_path():
     assert "prepare_profile_no_genes(reference_genome, file(params.stb))" in text
 
 
-def test_profile_mode_supports_precomputed_assets_or_reference_prep():
+def test_profile_mode_uses_profile_workflow_and_supports_no_gene_path():
     text = NEXTFLOW_FILE.read_text()
     assert "workflow profile{" in text
     assert "fast_profile(" not in text
-    assert "profile_uses_prepared_assets = params.bed_file || params.gene_range_table || params.null_model || params.profiling_contract" in text
-    assert 'required_profile_asset_params = ["stb", "bed_file", "gene_range_table", "null_model", "profiling_contract"]' in text
-    assert "mode=profile requires --reference_genome unless you provide precomputed profiling assets." in text
-    assert "profile_bam_no_reference(sample_names, bamfiles, bed_file, stb_file, gene_range_table, null_model, profiling_contract)" in text
+    assert "profile(bamfiles, sample_names, gene_file, reference_genome)" in text
+    assert "gene_file = params.gene_file ? file(params.gene_file) : null" in text
 
 
 def test_prepare_profile_process_emits_contract_and_null_model():
@@ -107,17 +171,195 @@ def test_prepare_profile_no_genes_process_emits_contract_and_null_model():
 
 def test_nextflow_profile_processes_pass_profiling_contract():
     text = NEXTFLOW_FILE.read_text()
+    assert "--reference-fasta ${reference_fasta}" in text
     assert "--reference-fasta ${reference_genome}" in text
     assert "--reference-fasta reference_genomes.fna" in text
     assert "--profiling-contract ${profiling_contract}" in text
     assert "--profiling-contract profiling_contract.json" in text
-    assert "--min-mapq ${params.min_mapq}" in text
-    assert "--min-baseq ${params.min_baseq}" in text
-    assert "--read-inclusion ${params.read_inclusion}" in text
-    assert "getOptionalReadAniArg" in text
     assert "prepare_profile.out.profiling_contract" in text
     assert "prepare_profile_no_genes.out.profiling_contract" in text
 
 
+def test_nextflow_profile_processes_pass_read_filters_and_null_model_params():
+    text = NEXTFLOW_FILE.read_text()
+    assert "params.min_mapq=0" in text
+    assert "params.min_baseq=13" in text
+    assert "params.min_read_ani=0.95" in text
+    assert 'params.read_inclusion="paired"' in text
+    assert "--min-mapq ${params.min_mapq}" in text
+    assert "--min-baseq ${params.min_baseq}" in text
+    assert "--min-read-ani ${params.min_read_ani}" in text
+    assert "--read-inclusion ${params.read_inclusion}" in text
+    assert "--error-rate ${params.error_rate}" in text
+    assert "--max-total-reads ${params.max_total_reads}" in text
+    assert "--p-threshold ${params.p_threshold}" in text
+
+
 def test_nextflow_processes_match_conf_config():
     assert _nextflow_process_names() == _conf_process_names()
+
+
+def _write_compare_genomes_fixtures(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """Writes two tiny, identical profile parquets + an stb file and returns
+    (profiles_csv, stb_path) for a `mode=compare_genomes input_type=profile_table` run."""
+    profile_schema = {
+        "chrom": ["chr1", "chr1", "chr1"],
+        "genome": ["genome1", "genome1", "genome1"],
+        "pos": [0, 1, 2],
+        "gene": ["NA", "NA", "NA"],
+        "A": [5, 0, 5],
+        "T": [0, 5, 0],
+        "C": [0, 0, 0],
+        "G": [0, 0, 0],
+    }
+    profile_1 = tmp_path / "sample1_profile.parquet"
+    profile_2 = tmp_path / "sample2_profile.parquet"
+    pl.DataFrame(profile_schema).write_parquet(profile_1)
+    pl.DataFrame(profile_schema).write_parquet(profile_2)
+
+    stb_path = tmp_path / "reference.stb"
+    pl.DataFrame({"scaffold": ["chr1"], "genome": ["genome1"]}).write_csv(
+        stb_path, separator="\t", include_header=False
+    )
+
+    profiles_csv = tmp_path / "profiles.csv"
+    profiles_csv.write_text(
+        "sample_name,profiles\n"
+        f"sample1,{profile_1}\n"
+        f"sample2,{profile_2}\n"
+    )
+    return profiles_csv, stb_path
+
+
+def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log: str) -> None:
+    merged_path = output_dir / "merged_comparisons.parquet"
+    assert merged_path.exists(), f"missing output; nextflow log:\n{nextflow_log}"
+
+    merged = pl.read_parquet(merged_path)
+    assert merged.height == 1
+    row = merged.row(0, named=True)
+    assert row["genome"] == "genome1"
+    assert row["genome_ani"] == 100.0
+    assert {row["sample_1"], row["sample_2"]} == {"sample1", "sample2"}
+
+
+@pytest.mark.skipif(
+    not _NEXTFLOW_AVAILABLE,
+    reason="nextflow + a JVM must be installed in the current Python environment "
+    "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
+)
+def test_compare_genomes_mode_runs_end_to_end(tmp_path):
+    """
+    Actually compiles and executes zipstrain.nf, rather than grepping its text.
+
+    This uses `mode=compare_genomes` with `input_type=profile_table` because it is
+    the only mode that needs no containers, no samtools/bowtie2/sylph, and no
+    network access: it just calls the `zipstrain` CLI (already on PATH in this
+    environment) on two tiny profile parquets and merges the result.
+    """
+    profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
+    output_dir = tmp_path / "out"
+
+    # The repo's nextflow.config enables Docker by default and includes conf.config,
+    # which sizes these processes at 8 cpus for cluster nodes. This test is meant to
+    # run container-free with the local `zipstrain` CLI on PATH, so disable Docker and
+    # shrink the cpu/memory requests to something a 4-core CI runner can satisfy.
+    override = tmp_path / "test_local_resources.config"
+    override.write_text(
+        "docker { enabled = false }\n"
+        "process {\n"
+        "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
+        "}\n"
+    )
+
+    result = subprocess.run(
+        [
+            str(_NEXTFLOW_BIN),
+            "run",
+            str(NEXTFLOW_FILE),
+            "-c", str(override),
+            "--mode", "compare_genomes",
+            "--input_type", "profile_table",
+            "--input_table", str(profiles_csv),
+            "--stb", str(stb_path),
+            "--parallel_mode", "single",
+            "--output_dir", str(output_dir),
+        ],
+        cwd=tmp_path,
+        env=_nextflow_subprocess_env(),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, (
+        f"nextflow run failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
+    _assert_merged_comparison_is_correct(output_dir, result.stdout)
+
+
+@pytest.mark.skipif(
+    not _NEXTFLOW_AVAILABLE,
+    reason="nextflow + a JVM must be installed in the current Python environment "
+    "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
+)
+@pytest.mark.skipif(
+    not _DOCKER_AVAILABLE,
+    reason="a running Docker daemon is required to exercise the `-profile docker` path.",
+)
+@pytest.mark.skipif(
+    not _DOCKER_E2E_ENABLED,
+    reason=(
+        "Docker-backed Nextflow e2e uses the published ZipStrain image, which may "
+        "lag branch CLI changes. Set ZIPSTRAIN_RUN_DOCKER_E2E=1 to run it explicitly."
+    ),
+)
+def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
+    """
+    Same scenario as test_compare_genomes_mode_runs_end_to_end, but run under
+    `-profile docker` so every process (including compare_genome_fast_profiles_single)
+    executes inside the published parsaghadermazi/zipstrain image. This is the
+    cheapest way to catch a broken/stale published image (missing tools, wrong
+    zipstrain version, wrong CPU architecture) without the slow/flaky SRA + Sylph
+    download path.
+    """
+    profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
+    output_dir = tmp_path / "out"
+
+    # conf.config requests 8 cpus / 40 GB for compare_genome_fast_profiles_single,
+    # sized for cluster nodes. Override to something any laptop's Docker Desktop
+    # allocation can satisfy, since this test only cares whether the container
+    # itself works, not real-world throughput.
+    resource_override = tmp_path / "test_docker_resources.config"
+    resource_override.write_text(
+        "process {\n"
+        "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
+        "}\n"
+    )
+
+    result = subprocess.run(
+        [
+            str(_NEXTFLOW_BIN),
+            "run",
+            str(NEXTFLOW_FILE),
+            "-c", str(CONF_FILE),
+            "-c", str(resource_override),
+            "-profile", "docker",
+            "--mode", "compare_genomes",
+            "--input_type", "profile_table",
+            "--input_table", str(profiles_csv),
+            "--stb", str(stb_path),
+            "--parallel_mode", "single",
+            "--output_dir", str(output_dir),
+        ],
+        cwd=tmp_path,
+        env=_nextflow_subprocess_env(),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, (
+        f"nextflow run failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
+    _assert_merged_comparison_is_correct(output_dir, result.stdout)

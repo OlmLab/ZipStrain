@@ -45,55 +45,6 @@ def profile_1()->pl.LazyFrame:
     }).lazy()
     
 
-@pytest.fixture(scope="module")
-def stb()->pl.LazyFrame:
-    return pl.DataFrame({
-        "scaffold":["chr1","chr2","chr3"],
-        "genome":["genome1","genome1","genome2"],
-    }).lazy()
-    
-@pytest.mark.parametrize("min_cov,freq_threshold", [
-    (5, 0.8),
-    (10, 0.5)
-])
-def test_get_strain_hetrogeneity(profile_1, stb, min_cov, freq_threshold):
-    het_profile=profile.get_strain_hetrogeneity(profile_1, stb, min_cov=min_cov, freq_threshold=freq_threshold).collect().rows_by_key("genome",unique=True,named=True)
-    genome1_freq=[
-        a_chr1 + a_chr2 ,
-        t_chr1 + t_chr2 ,
-        c_chr1 + c_chr2 ,
-        g_chr1 + g_chr2 ,
-    ]
-    genome2_freq=[
-        a_chr3,
-        t_chr3,
-        c_chr3,
-        g_chr3,
-    ]
-    assert het_profile["genome1"][f"total_sites_at_{min_cov}_coverage"]==sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov)
-    assert het_profile["genome2"][f"total_sites_at_{min_cov}_coverage"]==sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov)
-    assert het_profile["genome1"]["heterogeneous_sites"]== sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome1_freq))[pos])/sum(list(zip(*genome1_freq))[pos]) < freq_threshold)
-    assert het_profile["genome2"]["heterogeneous_sites"]== sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome2_freq))[pos])/sum(list(zip(*genome2_freq))[pos]) < freq_threshold)
-    
-    assert het_profile["genome1"]["strain_heterogeneity"]== sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome1_freq))[pos])/sum(list(zip(*genome1_freq))[pos]) < freq_threshold) / \
-                                                        sum(1 for pos in range(len(genome1_freq[0])) 
-                                                        if sum(list(zip(*genome1_freq))[pos]) >= min_cov)
-    
-    assert het_profile["genome2"]["strain_heterogeneity"]== sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov and 
-                                                           max(list(zip(*genome2_freq))[pos])/sum(list(zip(*genome2_freq))[pos]) < freq_threshold) / \
-                                                        sum(1 for pos in range(len(genome2_freq[0])) 
-                                                        if sum(list(zip(*genome2_freq))[pos]) >= min_cov)
-
-
 def test_duckdb_chunk_annotation_matches_polars_for_unsorted_chunk(tmp_path: Path):
     adjusted = pl.DataFrame(
         {
@@ -244,7 +195,9 @@ def test_profile_filter_helpers_handle_read_inclusion_and_read_ani():
         min_read_ani=0.97,
         read_inclusion=profile.READ_INCLUSION_PAIRED,
     )
-    assert not profile._sam_alignment_passes_profile_filters(
+    # 'paired' is single-end-safe: a genuinely single-end read (not flagged
+    # paired) is kept, since it cannot be part of a discordant pair.
+    assert profile._sam_alignment_passes_profile_filters(
         flag=0,
         mapq=42,
         cigar="100M",
@@ -252,6 +205,42 @@ def test_profile_filter_helpers_handle_read_inclusion_and_read_ani():
         min_mapq=10,
         min_read_ani=0.97,
         read_inclusion=profile.READ_INCLUSION_PAIRED,
+    )
+    # ...but a half-mapped orphan (paired flag + mate unmapped) is dropped.
+    assert not profile._sam_alignment_passes_profile_filters(
+        flag=profile.SAM_FLAG_PAIRED | profile.SAM_FLAG_MUNMAP,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+    )
+    # 'paired' matches inStrain 'paired_only': a paired read whose mate maps to the
+    # SAME scaffold (RNEXT == "=") is kept...
+    assert profile._sam_alignment_passes_profile_filters(
+        flag=profile.SAM_FLAG_PAIRED,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+        rname="chr1",
+        rnext="=",
+    )
+    # ...while a paired read whose mate maps to a DIFFERENT scaffold is dropped
+    # (these cross-scaffold pairs otherwise inflate coverage relative to inStrain).
+    assert not profile._sam_alignment_passes_profile_filters(
+        flag=profile.SAM_FLAG_PAIRED,
+        mapq=42,
+        cigar="100M",
+        optional_fields=["NM:i:2"],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_PAIRED,
+        rname="chr1",
+        rnext="chr2",
     )
     assert profile._sam_alignment_passes_profile_filters(
         flag=0,
@@ -262,6 +251,33 @@ def test_profile_filter_helpers_handle_read_inclusion_and_read_ani():
         min_read_ani=0.97,
         read_inclusion=profile.READ_INCLUSION_ALL_MAPPED,
     )
+    # A read without an NM tag is kept rather than failing the run when a
+    # read-ANI floor is set (mappers that omit NM just don't get ANI filtering).
+    assert profile._sam_alignment_passes_profile_filters(
+        flag=0,
+        mapq=42,
+        cigar="100M",
+        optional_fields=[],
+        min_mapq=10,
+        min_read_ani=0.97,
+        read_inclusion=profile.READ_INCLUSION_ALL_MAPPED,
+    )
+
+
+def test_read_stb_strips_whitespace(tmp_path):
+    # An STB with stray spaces around the tab (which inStrain tolerates) must
+    # still yield clean scaffold/genome names so scaffolds are not dropped.
+    stb = tmp_path / "padded.stb"
+    stb.write_text("scaffold_0 \t genomeA\nscaffold_1\tgenomeA \n")
+    df = profile.read_stb(stb).collect()
+    assert df.columns == ["scaffold", "genome"]
+    assert df["scaffold"].to_list() == ["scaffold_0", "scaffold_1"]
+    assert df["genome"].to_list() == ["genomeA", "genomeA"]
+
+
+def test_profile_defaults_match_instrain_leaning_filters():
+    assert profile.PROFILE_MIN_READ_ANI_DEFAULT == 0.95
+    assert profile.PROFILE_READ_INCLUSION_DEFAULT == profile.READ_INCLUSION_PAIRED
 
 
 def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, pl.LazyFrame]:
@@ -290,7 +306,37 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
 
 
 def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_commands: list[str] | None = None):
+    observed_mpileups: list[str] = []
     observed_reference_flags: list[bool] = []
+
+    class _FakeStdout:
+        """Iterable/closeable stand-in for Popen.stdout (yields byte lines)."""
+        def __init__(self, lines: list[bytes] | None = None):
+            self._lines = list(lines or [])
+
+        def __iter__(self):
+            return iter(self._lines)
+
+        def close(self):
+            pass
+
+    class _FakePopen:
+        def __init__(self, *, stdout_lines: list[bytes] | None = None, returncode: int = 0):
+            self.returncode = returncode
+            self.stdout = _FakeStdout(stdout_lines)
+            self.pid = -1
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    class _FakeCompleted:
+        def __init__(self, *, returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
     def _read_scaffolds_from_bed(bed_path: Path) -> list[str]:
         return [line.strip().split("\t")[0] for line in bed_path.read_text().splitlines() if line.strip()]
@@ -317,64 +363,41 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
             {"chrom": scaffold, "pos": 3},
         ]
 
-    def _shell_token_to_path(token: str) -> Path:
-        return Path(token.strip("'\""))
+    def _fake_mpileup_line(row: dict, *, use_reference_matches: bool) -> bytes:
+        bases = row["bases"] if use_reference_matches else row["ref"] * len(row["bases"])
+        depth = len(bases)
+        return f"{row['chrom']}\t{row['pos']}\t{row['ref']}\t{depth}\t{bases}\t*\n".encode()
 
-    def _write_fake_raw_profile_parquet(output_file: Path, rows: list[dict], *, include_reference_base: bool) -> None:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        frame = pl.DataFrame(rows).select(["chrom", "pos", "A", "C", "G", "T"])
-        if include_reference_base:
-            frame = frame.with_columns(
-                pl.Series(
-                    "ref_base_bitmask",
-                    [
-                        {"A": 1, "C": 2, "G": 4, "T": 8}.get(str(row["ref"]).upper(), 0)
-                        for row in rows
-                    ],
-                    dtype=pl.UInt8,
-                )
-            )
-        frame = frame.with_columns(
-            pl.col("pos").cast(pl.Int32),
-            pl.col("A").cast(pl.Int32),
-            pl.col("C").cast(pl.Int32),
-            pl.col("G").cast(pl.Int32),
-            pl.col("T").cast(pl.Int32),
-        )
-        frame.write_parquet(output_file)
-
-    def _fake_run_profile_shell_pipeline(command: str, *, cwd: Path, output_file: Path | None = None, **kwargs):
+    def _fake_popen(cmd, stdout=None, stderr=None, **kwargs):
+        # Profiling launches `samtools mpileup` via subprocess.Popen with a list argv.
+        cmd_list = list(cmd) if isinstance(cmd, (list, tuple)) else re.split(r"\s+", cmd)
+        command = " ".join(str(c) for c in cmd_list)
         if observed_commands is not None:
             observed_commands.append(command)
-        if command.startswith("samtools faidx"):
-            assert output_file is not None
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            output_file.write_text("chr1\t3\t6\t3\t4\nchr2\t3\t16\t3\t4\n")
-            return
-        if "samtools mpileup" in command:
-            has_reference_fasta = re.search(r"-f\s+([^\s]+)", command) is not None
+        if cmd_list[:2] == ["samtools", "mpileup"]:
+            observed_mpileups.append(command)
+            has_reference_fasta = "-f" in cmd_list
             observed_reference_flags.append(has_reference_fasta)
-            bed_match = re.search(r"-l\s+([^\s]+)", command)
-            assert bed_match is not None, command
-            scaffolds = _read_scaffolds_from_bed(Path(bed_match.group(1)))
-            rows = []
+            bed_path = cmd_list[cmd_list.index("-l") + 1]
+            scaffolds = _read_scaffolds_from_bed(Path(bed_path))
+            lines = []
             for scaffold in scaffolds:
-                rows.extend(_fake_mpileup_rows(scaffold))
-            if output_file is None:
-                out_match = re.search(r"--output-file\s+([^\s]+)", command)
-                assert out_match is not None, command
-                output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
-            _write_fake_raw_profile_parquet(
-                Path(output_file),
-                rows,
-                include_reference_base="--include-reference-base" in command,
-            )
-            return
+                lines.extend(
+                    _fake_mpileup_line(row, use_reference_matches=has_reference_fasta)
+                    for row in _fake_mpileup_rows(scaffold)
+                )
+            return _FakePopen(stdout_lines=lines)
+        raise AssertionError(f"Unexpected Popen command in fake subprocess: {command}")
+
+    def _fake_run(cmd, shell=False, stdout=None, stderr=None, **kwargs):
+        command = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
+        if observed_commands is not None:
+            observed_commands.append(command)
         if "process-read-locs" in command:
-            if output_file is None:
-                out_match = re.search(r"--output-file\s+([^\s]+)", command)
-                assert out_match is not None, command
-                output_file = Path(cwd) / _shell_token_to_path(out_match.group(1))
+            # samtools view | zipstrain utilities process-read-locs --output-file <abs>
+            out_match = re.search(r"--output-file\s+([^\s]+)", command)
+            assert out_match is not None, command
+            output_file = Path(out_match.group(1))
             output_file.parent.mkdir(parents=True, exist_ok=True)
             bed_match = re.search(r"-L\s+([^\s]+)", command)
             assert bed_match is not None, command
@@ -383,15 +406,28 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
             for scaffold in scaffolds:
                 rows.extend(_fake_read_loc_rows(scaffold))
             pl.DataFrame(rows).write_parquet(output_file)
-            return
-        raise AssertionError(f"Unexpected command in fake subprocess: {command}")
+            return _FakeCompleted()
+        if isinstance(cmd, (list, tuple)) and list(cmd[:2]) == ["samtools", "faidx"]:
+            return _FakeCompleted()
+        raise AssertionError(f"Unexpected run command in fake subprocess: {command}")
 
-    monkeypatch.setattr(profile, "_run_profile_shell_pipeline", _fake_run_profile_shell_pipeline)
-    return observed_commands, observed_reference_flags
+    monkeypatch.setattr(profile.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(profile.subprocess, "run", _fake_run)
+
+    # The default profiling filters now trigger a samtools prefilter pass; these
+    # fake-subprocess tests don't exercise real samtools, so no-op it. Tests that
+    # want to observe the prefilter override this setattr afterwards.
+    def _noop_filter_bam_for_profiling(**kwargs):
+        kwargs["output_bam"].write_bytes(kwargs["input_bam"].read_bytes())
+        bai = kwargs["output_bam"].with_suffix(kwargs["output_bam"].suffix + ".bai")
+        bai.write_text("")
+
+    monkeypatch.setattr(profile, "_filter_bam_for_profiling", _noop_filter_bam_for_profiling)
+    return observed_mpileups, observed_reference_flags
 
 
 def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    observed_commands, observed_reference_flags = _install_fake_profile_subprocess(monkeypatch, observed_commands=[])
+    observed_limits, observed_reference_flags = _install_fake_profile_subprocess(monkeypatch)
     bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
     profile.profile_bam(
         bed_file=str(bed_file),
@@ -418,15 +454,9 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert prof.height == 6
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
-    assert observed_commands
+    assert observed_limits
     assert observed_reference_flags
     assert all(observed_reference_flags)
-    faidx_commands = [cmd for cmd in observed_commands if cmd.startswith("samtools faidx")]
-    mpileup_commands = [cmd for cmd in observed_commands if "samtools mpileup" in cmd]
-    assert len(faidx_commands) == 1
-    assert observed_commands[0].startswith("samtools faidx")
-    assert all(str(reference_fasta) not in cmd for cmd in mpileup_commands)
-    assert all(f"-f {tmp_path / 'tmp' / reference_fasta.name}" in cmd for cmd in mpileup_commands)
     assert prof.schema["gene"] == pl.Utf8
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()
@@ -459,85 +489,9 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert by_genome["genome2"]["ref_ani"] == pytest.approx(100.0)
 
 
-def test_profile_bam_postprocess_waits_for_all_raw_chunk_outputs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    observed_commands: list[str] = []
-    _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
-    bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
-    original_postprocess = profile._postprocess_profile_raw_chunk
-    postprocessed_chunks: list[int] = []
-
-    def _observed_postprocess(**kwargs):
-        chunk_id = kwargs["chunk_id"]
-        output_dir = kwargs["output_dir"]
-        bam_stem = kwargs["bam_file"].stem
-
-        assert sum("samtools mpileup" in cmd for cmd in observed_commands) == 2
-        assert sum("process-read-locs" in cmd for cmd in observed_commands) == 2
-        for expected_chunk_id in range(2):
-            assert (output_dir / f"{bam_stem}_{expected_chunk_id}.raw.parquet").exists()
-            assert (output_dir / f"{bam_stem}_read_locs_{expected_chunk_id}.parquet").exists()
-
-        postprocessed_chunks.append(chunk_id)
-        return original_postprocess(**kwargs)
-
-    monkeypatch.setattr(profile, "_postprocess_profile_raw_chunk", _observed_postprocess)
-
-    profile.profile_bam(
-        bed_file=str(bed_file),
-        bam_file=str(bam_file),
-        reference_fasta=str(reference_fasta),
-        gene_range_table=str(gene_range_table),
-        stb=stb_lf,
-        null_model=pl.scan_parquet(null_model_file),
-        output_dir=str(tmp_path),
-        num_chunks=2,
-        max_concurrency=2,
-    )
-
-    assert postprocessed_chunks == [0, 1]
-    assert (tmp_path / "sample_profile.parquet").exists()
-
-
-def test_cli_process_mpileup_can_emit_reference_base_bitmask(tmp_path: Path):
-    output_file = tmp_path / "raw.parquet"
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_module.cli,
-        [
-            "utilities",
-            "process_mpileup",
-            "--output-file",
-            str(output_file),
-            "--include-reference-base",
-        ],
-        input="chr1\t1\tA\t3\t.,T\t*\n",
-    )
-
-    assert result.exit_code == 0, result.output
-    got = pl.read_parquet(output_file)
-    assert got.columns == ["chrom", "pos", "A", "C", "G", "T", "ref_base_bitmask"]
-    assert got.to_dicts() == [
-        {
-            "chrom": "chr1",
-            "pos": 1,
-            "A": 2,
-            "C": 0,
-            "G": 0,
-            "T": 1,
-            "ref_base_bitmask": 1,
-        }
-    ]
-    assert got.schema["A"] == pl.Int32
-    assert got.schema["ref_base_bitmask"] == pl.UInt8
-
-
 def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     observed_commands: list[str] = []
-    _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
+    observed_limits, _ = _install_fake_profile_subprocess(monkeypatch, observed_commands=observed_commands)
     bam_file, reference_fasta, bed_file, gene_range_table, _, null_model_file, stb_lf = _write_profile_test_inputs(tmp_path)
 
     captured_prefilter = {}
@@ -569,11 +523,12 @@ def test_profile_bam_prefilters_alignments_and_applies_mpileup_thresholds(tmp_pa
     assert captured_prefilter["min_read_ani"] == 0.96
     assert captured_prefilter["read_inclusion"] == profile.READ_INCLUSION_PAIRED
     assert captured_prefilter["output_bam"].name.endswith(".filtered.bam")
-    mpileup_commands = [cmd for cmd in observed_commands if "samtools mpileup" in cmd]
+    mpileup_commands = [cmd for cmd in observed_commands if cmd.startswith("samtools mpileup")]
     assert mpileup_commands
     assert all("-q 7" in cmd for cmd in mpileup_commands)
     assert all("-Q 23" in cmd for cmd in mpileup_commands)
     assert all(".filtered.bam" in cmd for cmd in mpileup_commands)
+    assert observed_limits
 
 
 def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -744,3 +699,164 @@ def test_cli_profile_single_bam_without_reference_base_column(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     prof = pl.read_parquet(out_dir / "sample_profile.parquet")
     assert "ref_base_bitmask" not in prof.columns
+
+
+# ---------------------------------------------------------------------------
+# Profiling-asset preparation and caching
+# ---------------------------------------------------------------------------
+
+import json
+
+
+# Building the null model dominates asset-prep runtime; a small max_total_reads
+# keeps these caching-focused tests fast without changing what they verify.
+_FAST_NULL_MAX_READS = 100
+
+
+def _write_reference_and_stb(tmp_path):
+    """Write a tiny 2-scaffold reference FASTA + matching stb, return their paths."""
+    reference = tmp_path / "reference.fna"
+    reference.write_text(">chr1\nACGTACGTAC\n>chr2\nTTTTGGGGCC\n")
+    stb = tmp_path / "reference.stb"
+    stb.write_text("chr1\tgenome1\nchr2\tgenome1\n")
+    return reference, stb
+
+
+def _asset_names(assets_dir):
+    return {p.name for p in assets_dir.iterdir()}
+
+
+def test_prepare_profiling_assets_writes_all_files(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    out_dir = tmp_path / "assets"
+
+    assets = profile.prepare_profiling_assets(
+        reference_fasta=reference,
+        stb_file=stb,
+        output_dir=out_dir,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+
+    for path in (
+        assets.bed_file,
+        assets.gene_range_table,
+        assets.genome_length_file,
+        assets.null_model_file,
+        assets.profiling_contract_file,
+    ):
+        assert path.exists(), path
+
+    # No gene fasta -> empty gene range table, contract records gene hash as missing.
+    contract = json.loads(assets.profiling_contract_file.read_text())
+    assert contract["gene_hash"] == "NA"
+    assert contract["reference_hash"] != "NA"
+
+
+def test_resolve_profiling_assets_auto_generates_into_run_dir(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    assets = profile.resolve_profiling_assets(
+        run_dir=run_dir,
+        reference_fasta=reference,
+        stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+
+    assets_dir = run_dir / profile.DEFAULT_PROFILING_ASSETS_DIRNAME
+    assert assets_dir.is_dir()
+    assert assets.null_model_file == assets_dir / profile.ASSET_NULL_MODEL_FILENAME
+    assert assets.bed_file == assets_dir / profile.ASSET_BED_FILENAME
+    assert (assets_dir / profile.ASSET_CACHE_MANIFEST_FILENAME).exists()
+
+
+def test_resolve_profiling_assets_reuses_cache_when_inputs_unchanged(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    first = profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    null_model_mtime = first.null_model_file.stat().st_mtime_ns
+
+    # Second call with identical inputs must NOT regenerate (mtime unchanged).
+    profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    assert first.null_model_file.stat().st_mtime_ns == null_model_mtime
+
+
+def test_resolve_profiling_assets_regenerates_when_null_model_param_changes(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    first = profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb, error_rate=0.001,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    original_mtime = first.null_model_file.stat().st_mtime_ns
+
+    # A different null-model parameter invalidates the cache -> regeneration.
+    profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb, error_rate=0.05,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    assert first.null_model_file.stat().st_mtime_ns != original_mtime
+
+
+def test_resolve_profiling_assets_force_prepare_regenerates(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    first = profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    original_mtime = first.bed_file.stat().st_mtime_ns
+
+    profile.resolve_profiling_assets(
+        run_dir=run_dir, reference_fasta=reference, stb_file=stb, force_prepare=True,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+    assert first.bed_file.stat().st_mtime_ns != original_mtime
+
+
+def test_resolve_profiling_assets_explicit_paths_win_and_skip_generation(tmp_path):
+    reference, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    explicit_null = tmp_path / "my_null.parquet"
+    explicit_bed = tmp_path / "my.bed"
+    explicit_len = tmp_path / "my_len.parquet"
+    for p in (explicit_null, explicit_bed, explicit_len):
+        p.write_text("placeholder")
+
+    assets = profile.resolve_profiling_assets(
+        run_dir=run_dir,
+        reference_fasta=reference,
+        stb_file=stb,
+        null_model_file=explicit_null,
+        bed_file=explicit_bed,
+        genome_length_file=explicit_len,
+        max_total_reads=_FAST_NULL_MAX_READS,
+    )
+
+    # All three required assets supplied -> nothing generated, no assets dir.
+    assert assets.null_model_file == explicit_null
+    assert assets.bed_file == explicit_bed
+    assert assets.genome_length_file == explicit_len
+    assert not (run_dir / profile.DEFAULT_PROFILING_ASSETS_DIRNAME).exists()
+
+
+def test_resolve_profiling_assets_requires_reference_for_autogen(tmp_path):
+    _, stb = _write_reference_and_stb(tmp_path)
+    run_dir = tmp_path / "run"
+
+    with pytest.raises(ValueError, match="reference-fasta is required"):
+        profile.resolve_profiling_assets(
+            run_dir=run_dir,
+            reference_fasta=None,
+            stb_file=stb,
+        )

@@ -111,7 +111,7 @@ def test_genome_comparison_database_remaining_pairs(tmp_path):
             "genome": ["genome1"],
             "total_positions": [10],
             "share_allele_pos": [9],
-            "genome_pop_ani": [90.0],
+            "genome_ani": [90.0],
             "max_consecutive_length": [5],
             "shared_genes_count": [1],
             "identical_gene_count": [1],

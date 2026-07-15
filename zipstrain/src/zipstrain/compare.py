@@ -69,7 +69,7 @@ def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] 
     calculations = parse_genome_calculations(calculate)
     cols = ["genome"]
     if "ani" in calculations:
-        cols.extend(["total_positions", "share_allele_pos", "genome_pop_ani"])
+        cols.extend(["total_positions", "share_allele_pos", "genome_ani"])
     if "ibs" in calculations:
         cols.append("max_consecutive_length")
     if "identical_genes" in calculations:
@@ -216,6 +216,7 @@ def _duckdb_shared_query(
     gene_scope: str = "all",
 ) -> str:
     ani_expr = _duckdb_ani_expression(ani_method)
+    con_expr = _duckdb_ani_expression("conani")
     genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
     gene_scope_sql = _duckdb_quote_sql_string(gene_scope)
     return f"""
@@ -251,6 +252,7 @@ def _duckdb_shared_query(
     )
     SELECT
       {ani_expr} AS surr,
+      {con_expr} AS con_surr,
       p1.chrom AS scaffold,
       p1.pos,
       p1.gene,
@@ -277,7 +279,7 @@ def _join_stb_requested_genomes(
 ) -> pl.LazyFrame:
     genomes_utf8 = (
         pl.scan_csv(stb_file, separator="\t", has_header=False)
-        .select(pl.col("column_2").cast(pl.Utf8).alias("genome"))
+        .select(pl.col("column_2").cast(pl.Utf8).str.strip_chars().alias("genome"))
         .unique()
     )
     genome_dtype = genome_comp.collect_schema().get("genome")
@@ -302,9 +304,9 @@ def _join_stb_requested_genomes(
 def _duckdb_genomes_scope_cte(stb_sql: str, genome_scope_sql: str) -> str:
     return f"""
 genomes AS (
-  SELECT DISTINCT CAST(column1 AS VARCHAR) AS genome
+  SELECT DISTINCT trim(CAST(column1 AS VARCHAR)) AS genome
   FROM read_csv('{stb_sql}', delim='\\t', header=false)
-  WHERE ('{genome_scope_sql}' = 'all' OR CAST(column1 AS VARCHAR) = '{genome_scope_sql}')
+  WHERE ('{genome_scope_sql}' = 'all' OR trim(CAST(column1 AS VARCHAR)) = '{genome_scope_sql}')
 )""".strip()
 
 
@@ -347,7 +349,7 @@ pop AS (
     genome,
     COUNT(*)::BIGINT AS total_positions,
     SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_pop_ani
+    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_ani
   FROM contig
   GROUP BY genome
 )""".strip()
@@ -447,7 +449,7 @@ def _duckdb_genome_compare_query(
             [
                 "COALESCE(p.total_positions, 0)::BIGINT AS total_positions",
                 "COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos",
-                "COALESCE(p.genome_pop_ani, 0.0)::DOUBLE AS genome_pop_ani",
+                "COALESCE(p.genome_ani, 0.0)::DOUBLE AS genome_ani",
             ]
         )
         joins.append("LEFT JOIN pop p ON g.genome = p.genome")
@@ -523,6 +525,7 @@ def _shared_loci_polars(
     ani_method: str = "popani",
 ) -> pl.LazyFrame:
     ani_expr = getattr(PolarsANIExpressions(), ani_method)()
+    con_expr = PolarsANIExpressions().conani()
     p1, p2 = _filter_profiles_polars(
         mpile1=mpile1,
         mpile2=mpile2,
@@ -538,9 +541,10 @@ def _shared_loci_polars(
             how="inner",
             suffix="_2",
         )
-        .with_columns(ani_expr.alias("surr"))
+        .with_columns(ani_expr.alias("surr"), con_expr.alias("con_surr"))
         .select(
             pl.col("surr"),
+            pl.col("con_surr"),
             scaffold=pl.col("chrom"),
             pos=pl.col("pos"),
             gene=pl.col("gene"),
@@ -873,7 +877,7 @@ def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
             total_positions=pl.len(),
             share_allele_pos=(pl.col("surr") > 0 ).sum()
         ).with_columns(
-            genome_pop_ani=pl.col("share_allele_pos")/pl.col("total_positions")*100,
+            genome_ani=pl.col("share_allele_pos")/pl.col("total_positions")*100,
         )
 
 def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
@@ -983,7 +987,7 @@ def compare_genomes_polars(
             [
                 pl.col("total_positions").fill_null(0).cast(pl.Int64),
                 pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
-                pl.col("genome_pop_ani").fill_null(0.0).cast(pl.Float64),
+                pl.col("genome_ani").fill_null(0.0).cast(pl.Float64),
             ]
         )
     if "ibs" in calculations:

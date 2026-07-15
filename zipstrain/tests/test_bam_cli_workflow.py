@@ -326,23 +326,35 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
     )
     assert result.exit_code == 0, result.output
 
-    batch_dir = run_dir / "batch_0"
-    assert batch_dir.exists()
-    # Persisted workflow status files use "done" once outputs are validated.
-    assert (batch_dir / ".status").read_text().strip() == "done"
+    # After a successful run the batch scaffolding is flattened away: sample
+    # folders sit directly under run_dir, and batch logs land in profiling_assets/log.
+    assert not (run_dir / "batch_0").exists()
+    log_dir = run_dir / "profiling_assets" / "log"
+    assert (log_dir / "batch_events.log").exists()
 
     for sample_name in SAMPLE_SEQUENCES:
-        task_dir = batch_dir / sample_name
-        assert task_dir.exists()
-        assert (task_dir / ".status").read_text().strip() == "done"
-        prof = pl.read_parquet(task_dir / f"{sample_name}_profile.parquet").sort(["chrom", "pos"])
+        sample_dir = run_dir / sample_name
+        assert sample_dir.exists()
+        # The real output parquets live at the top of the sample dir; everything
+        # else is in intermediate_files/.
+        top_level = {p.name for p in sample_dir.iterdir()}
+        assert top_level == {
+            f"{sample_name}_profile.parquet",
+            f"{sample_name}_genome_stats.parquet",
+            f"{sample_name}_gene_stats.parquet",
+            f"{sample_name}_SNVs.parquet",
+            "intermediate_files",
+        }
+        assert (sample_dir / "intermediate_files").is_dir()
+        assert (sample_dir / "intermediate_files" / ".status").read_text().strip() == "done"
+        prof = pl.read_parquet(sample_dir / f"{sample_name}_profile.parquet").sort(["chrom", "pos"])
         assert prof.equals(_expected_profile_frame(sample_name))
-        genome_stats = pl.read_parquet(task_dir / f"{sample_name}_genome_stats.parquet").sort("genome")
+        genome_stats = pl.read_parquet(sample_dir / f"{sample_name}_genome_stats.parquet").sort("genome")
         by_genome = genome_stats.rows_by_key("genome", unique=True, named=True)
         assert by_genome["genome_a"]["coverage"] == pytest.approx(float(READ_DEPTH))
         assert by_genome["genome_b"]["coverage"] == pytest.approx(float(READ_DEPTH))
         assert "ref_ani" in genome_stats.columns
-        gene_stats = pl.read_parquet(task_dir / f"{sample_name}_gene_stats.parquet").sort("gene")
+        gene_stats = pl.read_parquet(sample_dir / f"{sample_name}_gene_stats.parquet").sort("gene")
         assert gene_stats["breadth"].to_list() == pytest.approx([1.0, 1.0])
         assert "ref_ani" in gene_stats.columns
 
@@ -392,7 +404,7 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         cli_module.cli,
         [
             "utilities",
-            "generate-genome-pairs",
+            "generate-sample-pair",
             "--profile-dir",
             str(paths["profiles_dir"]),
             "--output-file",
@@ -433,11 +445,11 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
     by_genome = genome_compare.rows_by_key("genome", unique=True, named=True)
     assert by_genome["genome_a"]["total_positions"] == 10
     assert by_genome["genome_a"]["share_allele_pos"] == 10
-    assert by_genome["genome_a"]["genome_pop_ani"] == pytest.approx(100.0)
+    assert by_genome["genome_a"]["genome_ani"] == pytest.approx(100.0)
     assert by_genome["genome_a"]["max_consecutive_length"] == 10
     assert by_genome["genome_b"]["total_positions"] == 10
     assert by_genome["genome_b"]["share_allele_pos"] == 9
-    assert by_genome["genome_b"]["genome_pop_ani"] == pytest.approx(90.0)
+    assert by_genome["genome_b"]["genome_ani"] == pytest.approx(90.0)
     assert by_genome["genome_b"]["max_consecutive_length"] == 5
     assert {by_genome["genome_a"]["sample_1"], by_genome["genome_a"]["sample_2"]} == {
         "sample_alpha",
@@ -450,9 +462,9 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(paths["sample_alpha_profile"]),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(paths["sample_beta_profile"]),
             "--stb-file",
             str(paths["stb_file"]),

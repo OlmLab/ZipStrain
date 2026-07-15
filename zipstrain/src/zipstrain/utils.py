@@ -22,8 +22,6 @@ import subprocess
 import duckdb
 
 CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
-PROFILE_COVERAGE_STATS_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
-DEFAULT_COVERAGE_STATS_SITE_THRESHOLD = 5
 REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
 REF_BASE_BIT_VALUES = {
     "A": 1,
@@ -32,7 +30,7 @@ REF_BASE_BIT_VALUES = {
     "T": 8,
 }
 REF_BASE_FROM_BITMASK = {value: base for base, value in REF_BASE_BIT_VALUES.items()}
-GENOME_PAIR_TABLE_SCHEMA = pa.schema(
+SAMPLE_PAIR_TABLE_SCHEMA = pa.schema(
     [
         pa.field("sample_name_1", pa.string()),
         pa.field("sample_name_2", pa.string()),
@@ -45,7 +43,7 @@ GENOME_COMPARE_OUTPUT_DTYPES = {
     "genome": pl.Utf8,
     "total_positions": pl.Int64,
     "share_allele_pos": pl.Int64,
-    "genome_pop_ani": pl.Float64,
+    "genome_ani": pl.Float64,
     "max_consecutive_length": pl.Int64,
     "shared_genes_count": pl.Int64,
     "identical_gene_count": pl.Int64,
@@ -65,6 +63,7 @@ COMPARE_MIN_COV_METADATA_KEY = "zipstrain_compare_min_cov"
 COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY = "zipstrain_compare_min_gene_compare_len"
 COMPARE_ENGINE_METADATA_KEY = "zipstrain_compare_engine"
 COMPARE_USES_STB_METADATA_KEY = "zipstrain_compare_uses_stb"
+COMPARE_ANI_METHOD_METADATA_KEY = "zipstrain_compare_ani_method"
 COMPARE_REFERENCE_HASH_METADATA_KEY = "zipstrain_compare_reference_hash"
 COMPARE_GENE_HASH_METADATA_KEY = "zipstrain_compare_gene_hash"
 COMPARE_NULL_MODEL_HASH_METADATA_KEY = "zipstrain_compare_null_model_hash"
@@ -79,6 +78,25 @@ PROFILE_CONTRACT_METADATA_KEYS = {
     "stb_hash": PROFILE_STB_HASH_METADATA_KEY,
 }
 PROFILE_CONTRACT_MISSING_VALUE = COMPARE_METADATA_MISSING_VALUE
+
+
+def parquet_to_csv(
+    input_file: str | pathlib.Path,
+    output_file: str | pathlib.Path | None = None,
+    *,
+    separator: str = ",",
+    include_header: bool = True,
+) -> pathlib.Path:
+    """Stream a parquet table to CSV."""
+    input_path = pathlib.Path(input_file)
+    output_path = input_path.with_suffix(".csv") if output_file is None else pathlib.Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pl.scan_parquet(input_path).sink_csv(
+        output_path,
+        separator=separator,
+        include_header=include_header,
+    )
+    return output_path
 
 
 def sha256_file(path: str | pathlib.Path, chunk_size: int = 1024 * 1024) -> str:
@@ -233,6 +251,7 @@ def build_single_compare_metadata(
     min_gene_compare_len: int,
     engine: str,
     uses_stb: bool,
+    ani_method: str,
 ) -> dict[str, str]:
     """Build mismatch-tolerant metadata for a single compare parquet."""
     left_metadata = read_profile_contract_metadata(profile_1)
@@ -244,6 +263,7 @@ def build_single_compare_metadata(
         COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
         COMPARE_ENGINE_METADATA_KEY: engine,
         COMPARE_USES_STB_METADATA_KEY: "1" if uses_stb else "0",
+        COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
         COMPARE_REFERENCE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "reference_hash"),
         COMPARE_GENE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "gene_hash"),
         COMPARE_NULL_MODEL_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "null_model_hash"),
@@ -350,336 +370,6 @@ def merge_parquet_files(
         return output_path
 
 
-def _read_gene_coverage_bed(gene_bed_file: str | pathlib.Path) -> pl.DataFrame:
-    gene_bed = pl.read_csv(
-        gene_bed_file,
-        separator="\t",
-        has_header=False,
-        infer_schema_length=10000,
-    )
-    if gene_bed.width == 4:
-        gene_bed = gene_bed.rename(
-            {
-                "column_1": "gene",
-                "column_2": "scaffold",
-                "column_3": "start",
-                "column_4": "end",
-            }
-        ).with_columns(pl.lit(None, dtype=pl.Utf8).alias("genome"))
-    elif gene_bed.width == 5:
-        gene_bed = gene_bed.rename(
-            {
-                "column_1": "gene",
-                "column_2": "scaffold",
-                "column_3": "start",
-                "column_4": "end",
-                "column_5": "genome",
-            }
-        )
-    else:
-        raise ValueError("Gene BED must have 4 columns (gene, scaffold, start, end) or 5 columns (+ genome).")
-    return gene_bed.select(
-        pl.col("gene").cast(pl.Utf8),
-        pl.col("scaffold").cast(pl.Utf8),
-        pl.col("start").cast(pl.Int64),
-        pl.col("end").cast(pl.Int64),
-        pl.col("genome").cast(pl.Utf8),
-    )
-
-
-def _read_genome_coverage_bed(genome_bed_file: str | pathlib.Path) -> pl.DataFrame:
-    genome_bed = pl.read_csv(
-        genome_bed_file,
-        separator="\t",
-        has_header=False,
-        infer_schema_length=10000,
-    )
-    if genome_bed.width == 3:
-        genome_bed = genome_bed.rename(
-            {
-                "column_1": "scaffold",
-                "column_2": "start",
-                "column_3": "end",
-            }
-        ).with_columns(pl.lit(None, dtype=pl.Utf8).alias("genome"))
-    elif genome_bed.width == 4:
-        genome_bed = genome_bed.rename(
-            {
-                "column_1": "scaffold",
-                "column_2": "start",
-                "column_3": "end",
-                "column_4": "genome",
-            }
-        )
-    else:
-        raise ValueError("Genome BED must have 3 columns (scaffold, start, end) or 4 columns (+ genome).")
-    return genome_bed.select(
-        pl.col("scaffold").cast(pl.Utf8),
-        pl.col("start").cast(pl.Int64),
-        pl.col("end").cast(pl.Int64),
-        pl.col("genome").cast(pl.Utf8),
-    )
-
-
-def _validate_unique_scaffold_genome_mapping(scaffold_to_genome: pl.DataFrame) -> pl.DataFrame:
-    conflicts = (
-        scaffold_to_genome.drop_nulls(["scaffold", "genome"])
-        .group_by("scaffold")
-        .agg(pl.col("genome").n_unique().alias("genome_count"))
-        .filter(pl.col("genome_count") > 1)
-    )
-    if conflicts.height > 0:
-        raise ValueError("Scaffold-to-genome mapping must be unique per scaffold.")
-    return scaffold_to_genome.drop_nulls(["scaffold", "genome"]).unique(["scaffold", "genome"])
-
-
-def _resolve_scaffold_to_genome_mapping(
-    profile_parquet: str | pathlib.Path,
-) -> pl.DataFrame:
-    mapping = pl.scan_parquet(profile_parquet).select(
-        pl.col("chrom").cast(pl.Utf8).alias("scaffold"),
-        pl.col("genome").cast(pl.Utf8).alias("genome"),
-    ).unique().collect()
-    return _validate_unique_scaffold_genome_mapping(mapping)
-
-
-def _profile_rows_cte_sql(profile_sql: str, *, include_reference_base: bool = False) -> str:
-    ref_column_sql = ""
-    if include_reference_base:
-        ref_column_sql = "\n            CAST(p.ref_base_bitmask AS BIGINT) AS ref_base_bitmask,"
-    return f"""
-        profile_rows AS (
-          SELECT
-            CAST(p.chrom AS VARCHAR) AS chrom,
-            CAST(p.pos AS BIGINT) AS pos,
-            CAST(p.genome AS VARCHAR) AS genome,
-            CAST(p.gene AS VARCHAR) AS gene,
-            CAST(p.A AS DOUBLE) AS A,
-            CAST(p.C AS DOUBLE) AS C,
-            CAST(p.G AS DOUBLE) AS G,
-            CAST(p.T AS DOUBLE) AS T,
-            {ref_column_sql}
-            CAST(p.A AS DOUBLE) + CAST(p.C AS DOUBLE) + CAST(p.G AS DOUBLE) + CAST(p.T AS DOUBLE) AS site_coverage
-          FROM read_parquet('{profile_sql}') AS p
-        )
-    """
-
-
-def get_coverage_stats(
-    profile_parquet: str | pathlib.Path,
-    gene_bed_file: str | pathlib.Path,
-    genome_bed_file: str | pathlib.Path,
-    output_dir: str | pathlib.Path,
-    prefix: str,
-    cov_site_threshold: int = DEFAULT_COVERAGE_STATS_SITE_THRESHOLD,
-) -> dict[str, object]:
-    profile_path = pathlib.Path(profile_parquet).expanduser().resolve()
-    output_path = pathlib.Path(output_dir).expanduser().resolve()
-    output_path.mkdir(parents=True, exist_ok=True)
-    gene_output = output_path / f"{prefix}_gene_stats.parquet"
-    genome_output = output_path / f"{prefix}_genome_stats.parquet"
-    if gene_output.exists():
-        raise FileExistsError(f"Output file already exists: {gene_output}")
-    if genome_output.exists():
-        raise FileExistsError(f"Output file already exists: {genome_output}")
-    if cov_site_threshold < 1:
-        raise ValueError("cov_site_threshold must be >= 1")
-
-    profile_schema = set(pq.read_schema(profile_path).names)
-    missing_columns = PROFILE_COVERAGE_STATS_REQUIRED_COLUMNS - profile_schema
-    if missing_columns:
-        raise ValueError(f"Profile parquet is missing required columns: {sorted(missing_columns)}")
-    include_reference_ani = REF_BASE_BITMASK_COLUMN in profile_schema
-
-    gene_bed = _read_gene_coverage_bed(gene_bed_file)
-    genome_bed = _read_genome_coverage_bed(genome_bed_file)
-    scaffold_to_genome = _resolve_scaffold_to_genome_mapping(
-        profile_parquet=profile_path,
-    )
-    profile_sql = _duckdb_quote_sql_string(str(profile_path))
-    cov_sites_column = f"{int(cov_site_threshold)}x_cov_sites"
-    profile_rows_cte = _profile_rows_cte_sql(
-        profile_sql=profile_sql,
-        include_reference_base=include_reference_ani,
-    )
-    ref_cov_sql = ""
-    ref_select_sql = ""
-    if include_reference_ani:
-        ref_cov_sql = f""",
-                    SUM(
-                      CASE
-                        WHEN site_coverage >= {int(cov_site_threshold)}
-                         AND ref_base_bitmask > 0
-                        THEN 1
-                        ELSE 0
-                      END
-                    )::BIGINT AS ref_total_positions,
-                    SUM(
-                      CASE
-                        WHEN site_coverage >= {int(cov_site_threshold)}
-                         AND ref_base_bitmask > 0
-                         AND (
-                           (ref_base_bitmask = 1 AND A > 0)
-                           OR (ref_base_bitmask = 2 AND C > 0)
-                           OR (ref_base_bitmask = 4 AND G > 0)
-                           OR (ref_base_bitmask = 8 AND T > 0)
-                         )
-                        THEN 1
-                        ELSE 0
-                      END
-                    )::BIGINT AS ref_share_allele_pos"""
-        ref_select_sql = """
-                  ,
-                  CASE
-                    WHEN COALESCE(cs.ref_total_positions, 0) > 0
-                    THEN COALESCE(cs.ref_share_allele_pos, 0)::DOUBLE / cs.ref_total_positions * 100.0
-                    ELSE NULL
-                  END AS ref_ani"""
-
-    with TemporaryDirectory(prefix="zipstrain_coverage_stats_") as tmp_dir:
-        conn = _duckdb_connect_with_temp_dir(tmp_dir)
-        try:
-            conn.register("gene_bed_src", gene_bed.to_arrow())
-            conn.register("genome_bed_src", genome_bed.to_arrow())
-            conn.register("scaffold_map_src", scaffold_to_genome.to_arrow())
-
-            gene_table = conn.execute(
-                f"""
-                WITH
-                {profile_rows_cte},
-                gene_lengths AS (
-                  SELECT
-                    sm.genome AS genome,
-                    CAST(g.gene AS VARCHAR) AS gene,
-                    SUM(
-                      CASE
-                        WHEN CAST(g."end" AS BIGINT) >= CAST(g.start AS BIGINT)
-                        THEN CAST(g."end" AS BIGINT) - CAST(g.start AS BIGINT) + 1
-                        ELSE 0
-                      END
-                    )::BIGINT AS length
-                  FROM gene_bed_src AS g
-                  INNER JOIN scaffold_map_src AS sm
-                    ON CAST(g.scaffold AS VARCHAR) = CAST(sm.scaffold AS VARCHAR)
-                  GROUP BY 1, 2
-                ),
-                covered_stats AS (
-                  SELECT
-                    CAST(genome AS VARCHAR) AS genome,
-                    CAST(gene AS VARCHAR) AS gene,
-                    COUNT(*)::BIGINT AS total_covered_sites,
-                    SUM(site_coverage)::DOUBLE AS covered_bases,
-                    SUM(CASE WHEN site_coverage >= {int(cov_site_threshold)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites
-                    {ref_cov_sql}
-                  FROM profile_rows
-                  WHERE gene IS NOT NULL
-                    AND CAST(gene AS VARCHAR) <> 'NA'
-                    AND genome IS NOT NULL
-                  GROUP BY 1, 2
-                )
-                SELECT
-                  CAST(gl.genome AS VARCHAR) AS genome,
-                  CAST(gl.gene AS VARCHAR) AS gene,
-                  CAST(gl.length AS BIGINT) AS length,
-                  CASE
-                    WHEN gl.length > 0
-                    THEN COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length
-                    ELSE 0.0
-                  END AS breadth,
-                  CASE
-                    WHEN gl.length > 0
-                    THEN COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length
-                    ELSE 0.0
-                  END AS coverage,
-                  COALESCE(CAST(cs.cov_sites AS BIGINT), 0) AS "{cov_sites_column}",
-                  CASE
-                    WHEN gl.length > 0 AND COALESCE(cs.covered_bases, 0) > 0
-                    THEN
-                      (COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length) /
-                      (1 - EXP(-0.883 * (COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length)))
-                    ELSE 0.0
-                  END AS ber
-                  {ref_select_sql}
-                FROM gene_lengths AS gl
-                LEFT JOIN covered_stats AS cs
-                  ON gl.genome = cs.genome
-                 AND gl.gene = cs.gene
-                ORDER BY genome, gene
-                """
-            ).fetch_arrow_table()
-
-            genome_table = conn.execute(
-                f"""
-                WITH
-                {profile_rows_cte},
-                genome_lengths AS (
-                  SELECT
-                    sm.genome AS genome,
-                    SUM(
-                      CASE
-                        WHEN CAST(gb."end" AS BIGINT) >= CAST(gb.start AS BIGINT)
-                        THEN CAST(gb."end" AS BIGINT) - CAST(gb.start AS BIGINT)
-                        ELSE 0
-                      END
-                    )::BIGINT AS length
-                  FROM genome_bed_src AS gb
-                  INNER JOIN scaffold_map_src AS sm
-                    ON CAST(gb.scaffold AS VARCHAR) = CAST(sm.scaffold AS VARCHAR)
-                  GROUP BY 1
-                ),
-                covered_stats AS (
-                  SELECT
-                    CAST(genome AS VARCHAR) AS genome,
-                    COUNT(*)::BIGINT AS total_covered_sites,
-                    SUM(site_coverage)::DOUBLE AS covered_bases,
-                    SUM(CASE WHEN site_coverage >= {int(cov_site_threshold)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites
-                    {ref_cov_sql}
-                  FROM profile_rows
-                  WHERE genome IS NOT NULL
-                  GROUP BY 1
-                )
-                SELECT
-                  CAST(gl.genome AS VARCHAR) AS genome,
-                  CAST(gl.length AS BIGINT) AS length,
-                  CASE
-                    WHEN gl.length > 0
-                    THEN COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length
-                    ELSE 0.0
-                  END AS breadth,
-                  CASE
-                    WHEN gl.length > 0
-                    THEN COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length
-                    ELSE 0.0
-                  END AS coverage,
-                  COALESCE(CAST(cs.cov_sites AS BIGINT), 0) AS "{cov_sites_column}",
-                  CASE
-                    WHEN gl.length > 0 AND COALESCE(cs.covered_bases, 0) > 0
-                    THEN
-                      (COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length) /
-                      (1 - EXP(-0.883 * (COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length)))
-                    ELSE 0.0
-                  END AS ber
-                  {ref_select_sql}
-                FROM genome_lengths AS gl
-                LEFT JOIN covered_stats AS cs
-                  ON gl.genome = cs.genome
-                ORDER BY genome
-                """
-            ).fetch_arrow_table()
-        finally:
-            conn.close()
-
-    pq.write_table(gene_table, gene_output, compression="zstd")
-    pq.write_table(genome_table, genome_output, compression="zstd")
-    return {
-        "gene_stats_file": gene_output,
-        "genome_stats_file": genome_output,
-        "gene_rows": gene_table.num_rows,
-        "genome_rows": genome_table.num_rows,
-        "cov_sites_column": cov_sites_column,
-    }
-
-
 class CallPresence:
     """This class provides methods to use the information """
     def validate_input(self,lf:pl.LazyFrame)->pl.LazyFrame:
@@ -693,26 +383,25 @@ class CallPresence:
                        lf:pl.LazyFrame,
                        ber:float=0.5,
                        fug:float=0.5,
-                       min_cov_use_fug:int=0.1
+                       min_cov_use_fug:int=0.1,
                        )->pl.LazyFrame:
         """
         Call presence/absence of genomes based on breadth, coverage, ber, and fug.
         Parameters:
         lf (pl.LazyFrame): Input LazyFrame with genome statistics.
         ber (float): Breadth error rate threshold.
-        fug (float): Fragmented unassembled genome threshold.
-        min_cov_use_fug (int): Minimum coverage to use fug for presence call.
+        fug (float): FUG threshold; present requires fug above this (higher fug = more uniform coverage = present).
+        min_cov_use_fug (int): Coverage above which BER is used alone; below it FUG is also required.
         Returns:
         pl.LazyFrame: LazyFrame with presence/absence calls.
         """
-        lf=lf.with_columns(
+        ber_fug_call = (
             pl.when(pl.col("coverage") > min_cov_use_fug)
-            .then(
-                pl.col("ber") > ber
-                ).otherwise(
-                    (pl.col("fug")/0.632 < fug) &
-                    (pl.col("ber") > ber)
-                ).fill_null(False).alias("is_present"))
+            .then(pl.col("ber") > ber)
+            .otherwise(((pl.col("fug") / 0.632) > fug) & (pl.col("ber") > ber))
+            .fill_null(False)
+        )
+        lf=lf.with_columns(ber_fug_call.alias("is_present"))
         return lf.select(
             pl.col("genome"),
             pl.col("coverage"),
@@ -892,7 +581,6 @@ def encode_reference_base_bitmask(base: str) -> int:
     """
     return REF_BASE_BIT_VALUES.get(str(base).upper(), 0)
 
-
 def decode_reference_base_bitmask(bitmask: int) -> str | None:
     """
     Decode a one-hot reference-base bitmask to the corresponding base.
@@ -940,7 +628,7 @@ def count_mpileup_bases(bases: str, ref_base: str, indel_re: re.Pattern) -> dict
         translated.append(base.upper())
     return count_bases("".join(translated))
 
-def process_mpileup_function(batch_size, output_file, include_reference_base: bool = False):
+def process_mpileup_function(batch_size, output_file):
     """
     Process mpileup files and save the results in a Parquet file.
 
@@ -953,17 +641,14 @@ def process_mpileup_function(batch_size, output_file, include_reference_base: bo
     indel_re = re.compile(r'\^.|[\$]|[+-](\d+)')
 
 
-    fields = [
+    schema = pa.schema([
         ('chrom', pa.string()),
         ('pos', pa.int32()),
-        ('A', pa.int32()),
-        ('C', pa.int32()),
-        ('G', pa.int32()),
-        ('T', pa.int32()),
-    ]
-    if include_reference_base:
-        fields.append((REF_BASE_BITMASK_COLUMN, pa.uint8()))
-    schema = pa.schema(fields)
+        ('A', pa.uint16()),
+        ('C', pa.uint16()),
+        ('G', pa.uint16()),
+        ('T', pa.uint16()),
+    ])
 
     chroms = []
     positions = []
@@ -971,24 +656,24 @@ def process_mpileup_function(batch_size, output_file, include_reference_base: bo
     Cs = []
     Gs = []
     Ts = []
-    ref_base_bitmasks = []
 
-    writer = pq.ParquetWriter(output_file, schema, compression='zstd')
+    writer = None
     def flush_batch():
+        nonlocal writer
         if not chroms:
             return
-        arrays = [
+        batch = pa.RecordBatch.from_arrays([
             pa.array(chroms, type=pa.string()),
             pa.array(positions, type=pa.int32()),
-            pa.array(As, type=pa.int32()),
-            pa.array(Cs, type=pa.int32()),
-            pa.array(Gs, type=pa.int32()),
-            pa.array(Ts, type=pa.int32()),
-        ]
-        if include_reference_base:
-            arrays.append(pa.array(ref_base_bitmasks, type=pa.uint8()))
-        batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
+            pa.array(As, type=pa.uint16()),
+            pa.array(Cs, type=pa.uint16()),
+            pa.array(Gs, type=pa.uint16()),
+            pa.array(Ts, type=pa.uint16()),
+        ], schema=schema)
 
+        if writer is None:
+            # Open writer for the first time
+            writer = pq.ParquetWriter(output_file, schema, compression='zstd')
         writer.write_table(pa.Table.from_batches([batch]))
 
         # Clear buffers
@@ -998,32 +683,29 @@ def process_mpileup_function(batch_size, output_file, include_reference_base: bo
         Cs.clear()
         Gs.clear()
         Ts.clear()
-        ref_base_bitmasks.clear()
-    try:
-        for line in sys.stdin:
-            if not line.strip():
-                continue
-            fields = line.strip().split('\t')
-            if len(fields) < 5:
-                continue
-            chrom, pos, ref_base, _, bases = fields[:5]
-            counts = count_mpileup_bases(bases, ref_base, indel_re)
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        fields = line.strip().split('\t')
+        if len(fields) < 5:
+            continue
+        chrom, pos, ref_base, _, bases = fields[:5]
+        counts = count_mpileup_bases(bases, ref_base, indel_re)
 
-            chroms.append(chrom)
-            positions.append(int(pos))
-            As.append(counts['A'])
-            Cs.append(counts['C'])
-            Gs.append(counts['G'])
-            Ts.append(counts['T'])
-            if include_reference_base:
-                ref_base_bitmasks.append(encode_reference_base_bitmask(ref_base))
+        chroms.append(chrom)
+        positions.append(int(pos))
+        As.append(counts['A'])
+        Cs.append(counts['C'])
+        Gs.append(counts['G'])
+        Ts.append(counts['T'])
 
-            if len(chroms) >= batch_size:
-                flush_batch()
+        if len(chroms) >= batch_size:
+            flush_batch()
 
-        # Flush remaining data
-        flush_batch()
-    finally:
+    # Flush remaining data
+    flush_batch()
+
+    if writer:
         writer.close()
 
 def process_read_location(output_file:str, batch_size:int=10000)->None:
@@ -1289,13 +971,13 @@ def _normalize_pair_batch(batch: pl.DataFrame) -> pl.DataFrame:
     return normalized
 
 
-def generate_genome_pairs(
+def generate_sample_pairs(
     profile_dir: str | pathlib.Path,
     output_file: str | pathlib.Path,
     write_batch_size: int = 100_000,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
-    """Generate all non-redundant classic profile pairs and write them to parquet."""
+    """Generate all non-redundant classic profile sample pairs and write them to parquet."""
     if write_batch_size < 1:
         raise ValueError("write_batch_size must be >= 1")
 
@@ -1310,7 +992,7 @@ def generate_genome_pairs(
         if progress_callback is not None:
             progress_callback(message)
 
-    emit(f"generate_genome_pairs: found {total_profiles} profiles")
+    emit(f"generate_sample_pairs: found {total_profiles} profiles")
     written_pairs = 0
     buffer = {
         "sample_name_1": [],
@@ -1319,9 +1001,9 @@ def generate_genome_pairs(
         "profile_location_2": [],
     }
 
-    with pq.ParquetWriter(output_path, GENOME_PAIR_TABLE_SCHEMA, compression="zstd") as writer:
+    with pq.ParquetWriter(output_path, SAMPLE_PAIR_TABLE_SCHEMA, compression="zstd") as writer:
         if total_pairs == 0:
-            writer.write_table(pa.Table.from_arrays([pa.array([], type=field.type) for field in GENOME_PAIR_TABLE_SCHEMA], schema=GENOME_PAIR_TABLE_SCHEMA))
+            writer.write_table(pa.Table.from_arrays([pa.array([], type=field.type) for field in SAMPLE_PAIR_TABLE_SCHEMA], schema=SAMPLE_PAIR_TABLE_SCHEMA))
         else:
             for left_idx, (sample_1, profile_1) in enumerate(sample_rows[:-1]):
                 for sample_2, profile_2 in sample_rows[left_idx + 1:]:
@@ -1330,19 +1012,19 @@ def generate_genome_pairs(
                     buffer["profile_location_1"].append(profile_1)
                     buffer["profile_location_2"].append(profile_2)
                     if len(buffer["sample_name_1"]) >= write_batch_size:
-                        writer.write_table(pa.Table.from_pydict(buffer, schema=GENOME_PAIR_TABLE_SCHEMA))
+                        writer.write_table(pa.Table.from_pydict(buffer, schema=SAMPLE_PAIR_TABLE_SCHEMA))
                         written_pairs += len(buffer["sample_name_1"])
                         emit(
-                            f"generate_genome_pairs: wrote {written_pairs}/{total_pairs} pairs"
+                            f"generate_sample_pairs: wrote {written_pairs}/{total_pairs} pairs"
                         )
                         for key in buffer:
                             buffer[key].clear()
             if buffer["sample_name_1"]:
-                writer.write_table(pa.Table.from_pydict(buffer, schema=GENOME_PAIR_TABLE_SCHEMA))
+                writer.write_table(pa.Table.from_pydict(buffer, schema=SAMPLE_PAIR_TABLE_SCHEMA))
                 written_pairs += len(buffer["sample_name_1"])
-                emit(f"generate_genome_pairs: wrote {written_pairs}/{total_pairs} pairs")
+                emit(f"generate_sample_pairs: wrote {written_pairs}/{total_pairs} pairs")
 
-    emit(f"generate_genome_pairs: done -> {output_path}")
+    emit(f"generate_sample_pairs: done -> {output_path}")
     return {
         "output_file": output_path,
         "profiles": total_profiles,
@@ -1493,6 +1175,19 @@ def chunk_genome_compare(
     pair_table_path = pathlib.Path(pair_table)
     output_path = pathlib.Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    compare_metadata = {
+        COMPARE_KIND_METADATA_KEY: "genome",
+        COMPARE_SCOPE_METADATA_KEY: genome_scope,
+        COMPARE_MIN_COV_METADATA_KEY: str(min_cov),
+        COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
+        COMPARE_ENGINE_METADATA_KEY: engine,
+        COMPARE_USES_STB_METADATA_KEY: "1" if stb_file is not None else "0",
+        COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
+        COMPARE_REFERENCE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+        COMPARE_GENE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+        COMPARE_NULL_MODEL_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+        COMPARE_STB_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
+    }
 
     def emit(message: str) -> None:
         if progress_callback is not None:
@@ -1514,7 +1209,11 @@ def chunk_genome_compare(
     )
 
     if total_pairs == 0:
-        _empty_genome_compare_frame(calculations).write_parquet(output_path, compression="zstd")
+        _empty_genome_compare_frame(calculations).write_parquet(
+            output_path,
+            compression="zstd",
+            metadata=compare_metadata,
+        )
         elapsed = time.perf_counter() - start_time
         emit(f"chunk_genome_compare: done pairs=0 rows=0 elapsed={elapsed:.2f}s")
         return {
@@ -1594,11 +1293,21 @@ def chunk_genome_compare(
 
         result_frames = [frame for frame in ordered_results if frame is not None]
         if result_frames:
-            pl.concat(result_frames, how="vertical_relaxed").write_parquet(output_path, compression="zstd")
+            pl.concat(result_frames, how="vertical_relaxed").write_parquet(
+                output_path,
+                compression="zstd",
+                metadata=compare_metadata,
+            )
         else:
-            empty_frame.write_parquet(output_path, compression="zstd")
+            empty_frame.write_parquet(
+                output_path,
+                compression="zstd",
+                metadata=compare_metadata,
+            )
     else:
-        output_schema = empty_frame.to_arrow().schema
+        output_schema = empty_frame.to_arrow().schema.with_metadata(
+            {str(key).encode(): str(value).encode() for key, value in compare_metadata.items()}
+        )
         empty_output_table = pa.Table.from_arrays(
             [pa.array([], type=field.type) for field in output_schema],
             schema=output_schema,
@@ -1888,14 +1597,57 @@ def get_genome_stats(
                         THEN 1
                         ELSE 0
                       END
-                    )::BIGINT AS ref_share_allele_pos"""
+                    )::BIGINT AS ref_share_allele_pos,
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                         AND (
+                           (ref_base_bitmask = 1 AND A = max_base_count)
+                           OR (ref_base_bitmask = 2 AND C = max_base_count)
+                           OR (ref_base_bitmask = 4 AND G = max_base_count)
+                           OR (ref_base_bitmask = 8 AND T = max_base_count)
+                         )
+                        THEN 1
+                        ELSE 0
+                      END
+                    )::BIGINT AS ref_share_consensus_pos,
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                         AND ((A > 0)::INT + (C > 0)::INT + (G > 0)::INT + (T > 0)::INT) = 1
+                         AND NOT (
+                           (ref_base_bitmask = 1 AND A = max_base_count)
+                           OR (ref_base_bitmask = 2 AND C = max_base_count)
+                           OR (ref_base_bitmask = 4 AND G = max_base_count)
+                           OR (ref_base_bitmask = 8 AND T = max_base_count)
+                         )
+                        THEN 1 ELSE 0
+                      END
+                    )::BIGINT AS sns_count,
+                    SUM(
+                      CASE
+                        WHEN coverage >= {int(ref_ani_min_cov)}
+                         AND ref_base_bitmask > 0
+                         AND ((A > 0)::INT + (C > 0)::INT + (G > 0)::INT + (T > 0)::INT) >= 2
+                        THEN 1 ELSE 0
+                      END
+                    )::BIGINT AS snv_count"""
                 ref_select_sql = """
                   ,
                   CASE
                     WHEN p.ref_total_positions > 0
                     THEN p.ref_share_allele_pos::DOUBLE / p.ref_total_positions * 100.0
                     ELSE NULL
-                  END AS ref_ani"""
+                  END AS ref_ani,
+                  CASE
+                    WHEN p.ref_total_positions > 0
+                    THEN p.ref_share_consensus_pos::DOUBLE / p.ref_total_positions * 100.0
+                    ELSE NULL
+                  END AS conANI_reference,
+                  COALESCE(p.sns_count, 0) AS SNS_count,
+                  COALESCE(p.snv_count, 0) AS SNV_count"""
             table = conn.execute(
                 f"""
                 WITH profile_rows AS (
@@ -1920,6 +1672,8 @@ def get_genome_stats(
                     genome,
                     COUNT(*)::BIGINT AS total_covered_sites,
                     SUM(coverage)::DOUBLE AS covered_bases,
+                    MEDIAN(coverage)::DOUBLE AS coverage_median,
+                    STDDEV_SAMP(coverage)::DOUBLE AS coverage_std,
                     SUM(CASE WHEN coverage >= {int(comp_min_cov_breadth)} THEN 1 ELSE 0 END)::BIGINT AS cov_sites,
                     SUM(
                       CASE
@@ -1940,6 +1694,8 @@ def get_genome_stats(
                 SELECT
                   CAST(p.genome AS VARCHAR) AS genome,
                   p.covered_bases / gl.genome_length AS coverage,
+                  CAST(p.coverage_median AS DOUBLE) AS coverage_median,
+                  CAST(p.coverage_std AS DOUBLE) AS coverage_std,
                   p.total_covered_sites::DOUBLE / gl.genome_length AS breadth,
                   CAST(gl.genome_length AS BIGINT) AS genome_length,
                   CAST(gg.gap_mean AS DOUBLE) AS gap_mean,

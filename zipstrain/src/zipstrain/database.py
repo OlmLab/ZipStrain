@@ -373,7 +373,7 @@ class GenomeComparisonDatabase:
     
     - share_allele_pos
     
-    - genome_pop_ani
+    - genome_ani
     
     - max_consecutive_length
     
@@ -398,7 +398,7 @@ class GenomeComparisonDatabase:
         "genome",
         "total_positions",
         "share_allele_pos",
-        "genome_pop_ani",
+        "genome_ani",
         "max_consecutive_length",
         "shared_genes_count",
         "identical_gene_count",
@@ -410,7 +410,7 @@ class GenomeComparisonDatabase:
         "genome": pl.Utf8,
         "total_positions": pl.Int64,
         "share_allele_pos": pl.Int64,
-        "genome_pop_ani": pl.Float64,
+        "genome_ani": pl.Float64,
         "max_consecutive_length": pl.Int64,
         "shared_genes_count": pl.Int64,
         "identical_gene_count": pl.Int64,
@@ -435,7 +435,7 @@ class GenomeComparisonDatabase:
                 "genome": [],
                 "total_positions": [],
                 "share_allele_pos": [],
-                "genome_pop_ani": [],
+                "genome_ani": [],
                 "max_consecutive_length": [],
                 "shared_genes_count": [],
                 "identical_gene_count": [],

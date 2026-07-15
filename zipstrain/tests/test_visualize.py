@@ -12,12 +12,12 @@ from zipstrain import visualize as vz
 
 def _comparison_frame() -> pl.LazyFrame:
     rows = [
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_b", "genome_pop_ani": 99.99, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_c", "genome_pop_ani": 97.0, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_d", "genome_pop_ani": 97.0, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_c", "genome_pop_ani": 97.0, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_d", "genome_pop_ani": 97.0, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_c", "sample_2": "sample_d", "genome_pop_ani": 99.98, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_b", "genome_ani": 99.99, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_c", "genome_ani": 97.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_d", "genome_ani": 97.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_c", "genome_ani": 97.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_d", "genome_ani": 97.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_c", "sample_2": "sample_d", "genome_ani": 99.98, "total_positions": 20000},
     ]
     return pl.DataFrame(rows).lazy()
 
@@ -39,11 +39,11 @@ def _sample_to_population() -> pl.LazyFrame:
 
 def _sparse_comparison_frame_with_dense_core() -> pl.LazyFrame:
     rows = [
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_b", "genome_pop_ani": 99.9, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_c", "genome_pop_ani": 99.8, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_c", "genome_pop_ani": 99.7, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_d", "genome_pop_ani": 99.0, "total_positions": 20000},
-        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_e", "genome_pop_ani": 99.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_b", "genome_ani": 99.9, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_c", "genome_ani": 99.8, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_b", "sample_2": "sample_c", "genome_ani": 99.7, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_d", "genome_ani": 99.0, "total_positions": 20000},
+        {"genome": "genome1", "sample_1": "sample_a", "sample_2": "sample_e", "genome_ani": 99.0, "total_positions": 20000},
     ]
     return pl.DataFrame(rows).lazy()
 

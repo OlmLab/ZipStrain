@@ -69,7 +69,7 @@ def _write_genome_compare_table_for_config_tests(compare_path: Path) -> None:
             "genome": ["genome1"],
             "total_positions": [10],
             "share_allele_pos": [10],
-            "genome_pop_ani": [100.0],
+            "genome_ani": [100.0],
             "max_consecutive_length": [10],
             "shared_genes_count": [0],
             "identical_gene_count": [0],
@@ -108,48 +108,6 @@ def _reference_profile_frame() -> pl.DataFrame:
             cli.ut.REF_BASE_BITMASK_COLUMN: [1, 1, 2, 8],
         }
     )
-
-
-def _reference_profile_frame_with_multiallelic() -> pl.DataFrame:
-    return pl.concat(
-        [
-            _reference_profile_frame(),
-            pl.DataFrame(
-                {
-                    "chrom": ["chr3"],
-                    "genome": ["genome3"],
-                    "gene": ["gene3"],
-                    "pos": [1],
-                    "A": [2],
-                    "C": [0],
-                    "G": [3],
-                    "T": [0],
-                    cli.ut.REF_BASE_BITMASK_COLUMN: [2],
-                }
-            ),
-        ],
-        how="vertical",
-    )
-
-
-def _parse_site_only_vcf(vcf_path: Path) -> tuple[list[str], list[str], list[dict[str, str]]]:
-    meta: list[str] = []
-    header: list[str] = []
-    rows: list[dict[str, str]] = []
-    with vcf_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.rstrip("\n")
-            if line.startswith("##"):
-                meta.append(line)
-                continue
-            if line.startswith("#"):
-                header = line.split("\t")
-                continue
-            if not line:
-                continue
-            values = line.split("\t")
-            rows.append(dict(zip(header, values, strict=True)))
-    return meta, header, rows
 
 @pytest.fixture
 def profile_1()->pl.LazyFrame:
@@ -200,7 +158,25 @@ def stb()->pl.LazyFrame:
 
 def test_cli_top_level_layout():
     commands = set(cli.cli.commands)
-    assert {"compare", "profile", "test", "utilities"} == commands
+    assert {"compare", "map", "profile", "test", "utilities"} == commands
+
+
+def test_cli_top_level_help_order_and_branding():
+    import click as _click
+
+    ctx = _click.Context(cli.cli)
+    assert cli.cli.list_commands(ctx) == ["test", "map", "profile", "compare", "utilities"]
+
+    result = CliRunner().invoke(cli.cli, ["-h"])
+    assert result.exit_code == 0
+    out = result.output
+    # Collapse whitespace since the help text wraps across terminal-width lines.
+    normalized = " ".join(out.split())
+    assert "Parsa Ghadermazi and Matt Olm" in normalized
+    assert "University of Colorado Boulder" in normalized
+    assert "https://github.com/OlmLab/ZipStrain" in normalized
+    # Commands appear in the curated order, not alphabetically.
+    assert out.index("\n  test") < out.index("\n  map") < out.index("\n  profile") < out.index("\n  compare")
 
 
 def test_cli_version_flag():
@@ -266,8 +242,8 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome", 
-        "--mpileup-contig-1", str(profile_1_dir),
-        "--mpileup-contig-2", str(profile_2_dir),
+        "--profile-location-1", str(profile_1_dir),
+        "--profile-location-2", str(profile_2_dir),
         "--stb-file", str(stb_path),
         "--output-file", str(tmp_path/"output.parquet"),
         "--duckdb-memory-limit", "512MB",
@@ -279,20 +255,30 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome",
-        "--mpileup-contig-1", str(profile_1_dir),
-        "--mpileup-contig-2", str(profile_2_dir),
+        "--profile-location-1", str(profile_1_dir),
+        "--profile-location-2", str(profile_2_dir),
         "--stb-file", str(stb_path),
         "--engine", "duckdb",
         "--output-file", str(tmp_path/"output_duckdb.parquet"),
     ])
     lf1_duckdb = pl.read_parquet(tmp_path/"output_duckdb.parquet")
     assert result.exit_code == 0
-    assert lf1.sort("genome").equals(lf1_duckdb.sort("genome"))
+    # The two engines agree, but floating point columns can differ by ~1 ULP
+    # due to non-associativity, so compare non-float columns exactly and float
+    # columns with tolerance.
+    a = lf1.sort("genome")
+    b = lf1_duckdb.sort("genome")
+    assert a.columns == b.columns
+    for col, dtype in a.schema.items():
+        if dtype.is_float():
+            assert a[col].to_list() == pytest.approx(b[col].to_list(), abs=1e-9, nan_ok=True)
+        else:
+            assert a[col].equals(b[col])
     result = runner.invoke(cli.cli, [
         "utilities",
         "single_compare_genome", 
-        "--mpileup-contig-1", str(profile_1_dir),
-        "--mpileup-contig-2", str(profile_3_dir),
+        "--profile-location-1", str(profile_1_dir),
+        "--profile-location-2", str(profile_3_dir),
         "--stb-file", str(stb_path),
         "--output-file", str(tmp_path/"output.parquet"),
     ])
@@ -320,9 +306,9 @@ def test_single_compare_genome_duckdb_scope_skips_prefilter(profile_1: pl.LazyFr
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -356,9 +342,9 @@ def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFram
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -388,9 +374,9 @@ def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profi
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--engine",
             engine,
@@ -432,9 +418,9 @@ def test_single_compare_genome_polars_scope_uses_polars_prefilter(profile_1: pl.
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -477,9 +463,9 @@ def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.La
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -510,9 +496,9 @@ def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.L
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_dir),
             "--stb-file",
             str(stb_path),
@@ -540,9 +526,9 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_polars(p
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_3_dir),
             "--engine",
             "polars",
@@ -569,9 +555,9 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_duckdb(p
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_dir),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_3_dir),
             "--engine",
             "duckdb",
@@ -585,7 +571,7 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_duckdb(p
     assert out.get_column("total_positions").to_list() == [22]
 
 
-def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
+def test_generate_sample_pair_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
     profile_1.sink_parquet(profile_dir / "profile_1_profile.parquet")
@@ -599,7 +585,7 @@ def test_generate_genome_pairs_command(profile_1: pl.LazyFrame, profile_2: pl.La
         cli.cli,
         [
             "utilities",
-            "generate-genome-pairs",
+            "generate-sample-pair",
             "--profile-dir",
             str(profile_dir),
             "--output-file",
@@ -756,30 +742,19 @@ def test_get_snp_reference_cli_outputs_only_reference_snps(tmp_path):
 
     assert result.exit_code == 0, result.output
     out = pl.read_parquet(output_path).sort(["chrom", "pos"])
-    assert out.to_dicts() == [
-        {
-            "chrom": "chr1",
-            "genome": "genome1",
-            "gene": "gene1",
-            "pos": 2,
-            "A": 0,
-            "C": 6,
-            "G": 0,
-            "T": 0,
-            cli.ut.REF_BASE_BITMASK_COLUMN: 1,
-        },
-        {
-            "chrom": "chr2",
-            "genome": "genome2",
-            "gene": "gene2",
-            "pos": 1,
-            "A": 10,
-            "C": 0,
-            "G": 0,
-            "T": 0,
-            cli.ut.REF_BASE_BITMASK_COLUMN: 8,
-        },
+    # Full classified SNV table: monomorphic reference matches (chr1 pos1) are
+    # omitted; chr1 pos2 / chr2 pos1 are fixed substitutions (SNS); chr1 pos3 is
+    # a consensus SNP that still carries the reference allele (con_SNV).
+    assert out.select(["chrom", "pos", "ref_base", "con_base", "class"]).to_dicts() == [
+        {"chrom": "chr1", "pos": 2, "ref_base": "A", "con_base": "C", "class": "SNS"},
+        {"chrom": "chr1", "pos": 3, "ref_base": "C", "con_base": "A", "class": "con_SNV"},
+        {"chrom": "chr2", "pos": 1, "ref_base": "T", "con_base": "A", "class": "SNS"},
     ]
+    row = out.filter(pl.col("pos") == 3).row(0, named=True)
+    assert row["allele_count"] == 2
+    assert row["position_coverage"] == 5
+    assert row["ref_freq"] == pytest.approx(0.4)
+    assert row["con_freq"] == pytest.approx(0.6)
 
 
 def test_get_snp_reference_cli_respects_min_cov(tmp_path):
@@ -804,124 +779,9 @@ def test_get_snp_reference_cli_respects_min_cov(tmp_path):
 
     assert result.exit_code == 0, result.output
     out = pl.read_parquet(output_path).sort(["chrom", "pos"])
-    assert out.to_dicts() == [
-        {
-            "chrom": "chr2",
-            "genome": "genome2",
-            "gene": "gene2",
-            "pos": 1,
-            "A": 10,
-            "C": 0,
-            "G": 0,
-            "T": 0,
-            cli.ut.REF_BASE_BITMASK_COLUMN: 8,
-        },
-    ]
-
-
-def test_get_snp_reference_cli_outputs_site_only_vcf_with_required_fields(tmp_path):
-    profile_path = tmp_path / "profile_with_ref.parquet"
-    output_path = tmp_path / "reference_snps.vcf"
-    _reference_profile_frame_with_multiallelic().write_parquet(profile_path)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "get-snp-reference",
-            "--profile-file",
-            str(profile_path),
-            "--min-cov",
-            "5",
-            "--fmt",
-            "vcf",
-            "--output-file",
-            str(output_path),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    meta, header, rows = _parse_site_only_vcf(output_path)
-    assert meta == [
-        "##fileformat=VCFv4.3",
-        "##source=zipstrain get-snp-reference",
-        "##zipstrain_min_cov=5",
-        '##FILTER=<ID=PASS,Description="Site passes ZipStrain reference SNP filters">',
-        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total adjusted coverage at the site">',
-        '##INFO=<ID=ACGT,Number=4,Type=Integer,Description="Adjusted A,C,G,T counts in the profile row">',
-    ]
-    assert header == ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
-    assert rows == [
-        {
-            "#CHROM": "chr1",
-            "POS": "2",
-            "ID": ".",
-            "REF": "A",
-            "ALT": "C",
-            "QUAL": ".",
-            "FILTER": "PASS",
-            "INFO": "DP=6;ACGT=0,6,0,0",
-        },
-        {
-            "#CHROM": "chr2",
-            "POS": "1",
-            "ID": ".",
-            "REF": "T",
-            "ALT": "A",
-            "QUAL": ".",
-            "FILTER": "PASS",
-            "INFO": "DP=10;ACGT=10,0,0,0",
-        },
-        {
-            "#CHROM": "chr3",
-            "POS": "1",
-            "ID": ".",
-            "REF": "C",
-            "ALT": "A,G",
-            "QUAL": ".",
-            "FILTER": "PASS",
-            "INFO": "DP=5;ACGT=2,0,3,0",
-        },
-    ]
-
-
-def test_get_snp_reference_cli_vcf_respects_min_cov(tmp_path):
-    profile_path = tmp_path / "profile_with_ref.parquet"
-    output_path = tmp_path / "reference_snps_min_cov.vcf"
-    _reference_profile_frame_with_multiallelic().write_parquet(profile_path)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "get-snp-reference",
-            "--profile-file",
-            str(profile_path),
-            "--min-cov",
-            "7",
-            "--fmt",
-            "vcf",
-            "--output-file",
-            str(output_path),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    _meta, header, rows = _parse_site_only_vcf(output_path)
-    assert header == ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
-    assert rows == [
-        {
-            "#CHROM": "chr2",
-            "POS": "1",
-            "ID": ".",
-            "REF": "T",
-            "ALT": "A",
-            "QUAL": ".",
-            "FILTER": "PASS",
-            "INFO": "DP=10;ACGT=10,0,0,0",
-        },
+    # min_cov=7 drops chr1 pos2 (cov 6) and pos3 (cov 5); only chr2 pos1 remains.
+    assert out.select(["chrom", "pos", "class"]).to_dicts() == [
+        {"chrom": "chr2", "pos": 1, "class": "SNS"},
     ]
 
 
@@ -965,14 +825,16 @@ def test_single_compare_genome_strips_profile_suffix_from_sample_columns(profile
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_path),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_path),
             "--stb-file",
             str(stb_path),
             "--engine",
             engine,
+            "--ani-method",
+            "conani",
             "--output-file",
             str(output_path),
         ],
@@ -1017,14 +879,16 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
         [
             "utilities",
             "single_compare_genome",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_path),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_path),
             "--stb-file",
             str(stb_path),
             "--engine",
             engine,
+            "--ani-method",
+            "conani",
             "--output-file",
             str(output_path),
         ],
@@ -1038,6 +902,7 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
     assert metadata[cli.ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY] == "100"
     assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
     assert metadata[cli.ut.COMPARE_USES_STB_METADATA_KEY] == "1"
+    assert metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "conani"
     assert metadata[cli.ut.COMPARE_REFERENCE_HASH_METADATA_KEY] == "ref_hash_shared"
     assert metadata[cli.ut.COMPARE_GENE_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
     assert metadata[cli.ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY] == "null_hash_shared"
@@ -1073,9 +938,9 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
         [
             "utilities",
             "single_compare_gene",
-            "--mpileup-contig-1",
+            "--profile-location-1",
             str(profile_1_path),
-            "--mpileup-contig-2",
+            "--profile-location-2",
             str(profile_2_path),
             "--engine",
             engine,
@@ -1092,6 +957,7 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
     assert metadata[cli.ut.COMPARE_SCOPE_METADATA_KEY] == "genome1:gene1"
     assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
     assert metadata[cli.ut.COMPARE_USES_STB_METADATA_KEY] == "0"
+    assert metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "popani"
     assert metadata[cli.ut.COMPARE_REFERENCE_HASH_METADATA_KEY] == "ref_hash_shared"
     assert metadata[cli.ut.COMPARE_GENE_HASH_METADATA_KEY] == "gene_hash_shared"
     assert metadata[cli.ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
@@ -1148,6 +1014,10 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
     assert "avg_wall_s_per_pair=" in result.output
 
     actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])
+    metadata = pl.read_parquet_metadata(output_file)
+    assert metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "popani"
+    assert metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "genome"
+    assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == engine
     expected_frames = []
     for sample_1, sample_2, left, right in [
         ("profile_1", "profile_2", profile_1_path, profile_2_path),
@@ -1169,7 +1039,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
                 sample_1=pl.lit(sample_1),
                 sample_2=pl.lit(sample_2),
             )
-            .select(["genome", "total_positions", "share_allele_pos", "genome_pop_ani", "sample_1", "sample_2"])
+            .select(["genome", "total_positions", "share_allele_pos", "genome_ani", "sample_1", "sample_2"])
             .collect(engine="streaming")
         )
     expected = pl.concat(expected_frames, how="vertical_relaxed").sort(["sample_1", "sample_2", "genome"])
@@ -1241,7 +1111,7 @@ def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1
                 sample_1=pl.lit(sample_1),
                 sample_2=pl.lit(sample_2),
             )
-            .select(["genome", "total_positions", "share_allele_pos", "genome_pop_ani", "sample_1", "sample_2"])
+            .select(["genome", "total_positions", "share_allele_pos", "genome_ani", "sample_1", "sample_2"])
             .collect(engine="streaming")
         )
     expected = pl.concat(expected_frames, how="vertical_relaxed").sort(["sample_1", "sample_2", "genome"])
@@ -1265,7 +1135,6 @@ def test_compare_genomes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
         cli.cli,
         [
             "compare",
-            "genomes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1301,7 +1170,6 @@ def test_compare_genomes_uses_default_versioned_docker_image(tmp_path, monkeypat
         cli.cli,
         [
             "compare",
-            "genomes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1328,7 +1196,6 @@ def test_compare_genomes_honors_container_address_override(tmp_path, monkeypatch
         cli.cli,
         [
             "compare",
-            "genomes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1357,7 +1224,7 @@ def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
         cli.cli,
         [
             "compare",
-            "genes",
+            "--compare-genes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1388,7 +1255,7 @@ def test_compare_genes_honors_apptainer_container_address_override(tmp_path, mon
         cli.cli,
         [
             "compare",
-            "genes",
+            "--compare-genes",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1402,6 +1269,123 @@ def test_compare_genes_honors_apptainer_container_address_override(tmp_path, mon
     assert result.exit_code == 0
     assert isinstance(captured["container_engine"], cli.tm.ApptainerEngine)
     assert captured["container_engine"].address == "/scratch/containers/zipstrain-0.10.1.img"
+
+
+def _write_profiles_csv_for_compare(tmp_path):
+    """A profiles CSV (profile_name,profile_location) pointing at real profile parquets."""
+    _profile_db_parquet, profile_paths = _write_profile_db_for_compare_config_tests(tmp_path)
+    csv_path = tmp_path / "profiles.csv"
+    lines = ["profile_name,profile_location"]
+    lines += [f"{name},{path}" for name, path in profile_paths.items()]
+    csv_path.write_text("\n".join(lines) + "\n")
+    return csv_path
+
+
+def test_compare_accepts_profiles_csv_without_build_profile_db(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    captured = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", lambda **kwargs: captured.update(kwargs))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        ["compare", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
+    )
+    assert result.exit_code == 0, result.output
+    # Routed to the genome path by default, with the CSV loaded into a profile db.
+    assert isinstance(captured["comps_db"], cli.db.GenomeComparisonDatabase)
+
+
+def test_compare_genes_flag_routes_to_gene_compare(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    captured = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", lambda **kwargs: captured.update(kwargs))
+    # Genome path must NOT be called in gene mode.
+    monkeypatch.setattr(
+        cli.tm, "lazy_run_compares",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("genome path called in gene mode")),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
+    )
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["comps_db"], cli.db.GeneComparisonDatabase)
+
+
+def test_compare_method_matrix_routes_to_matrix_workflow(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    captured = {}
+
+    def _fake_run_matrix_compare(**kwargs):
+        captured.update(kwargs)
+        out = Path(kwargs["run_dir"]) / "all_comparisons.parquet"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"genome": ["g"], "genome_ani": [100.0]}).write_parquet(out)
+        return out
+
+    monkeypatch.setattr(cli.matrix_workflow, "run_matrix_compare", _fake_run_matrix_compare)
+    # Standard path must not run in matrix mode.
+    monkeypatch.setattr(
+        cli.tm, "lazy_run_compares",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("standard path called in matrix mode")),
+    )
+
+    result = CliRunner().invoke(
+        cli.cli,
+        [
+            "compare", "--method", "matrix",
+            "--profile-db", str(csv_path),
+            "--stb-file", str(tmp_path / "ref.stb"),
+            "--backend", "numpy",
+            "--run-dir", str(tmp_path / "run"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Profiles were passed as (name, location) pairs, and matrix knobs propagated.
+    assert [name for name, _loc in captured["profiles"]] == ["sample_a", "sample_b", "sample_c"]
+    assert captured["backend"] == "numpy"
+    assert captured["compare_genes"] is False
+
+
+def test_compare_method_matrix_rejects_non_popani_method(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    monkeypatch.setattr(
+        cli.matrix_workflow,
+        "run_matrix_compare",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("matrix workflow should not run")),
+    )
+
+    result = CliRunner().invoke(
+        cli.cli,
+        [
+            "compare", "--method", "matrix",
+            "--profile-db", str(csv_path),
+            "--stb-file", str(tmp_path / "ref.stb"),
+            "--ani-method", "conani",
+            "--run-dir", str(tmp_path / "run"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "only supports --ani-method popani" in result.output
+
+
+def test_compare_default_scope_differs_by_mode(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+
+    genome_db = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_compares", lambda **kwargs: genome_db.update(comps_db=kwargs["comps_db"]))
+    runner = CliRunner()
+    assert runner.invoke(cli.cli, ["compare", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "g")]).exit_code == 0
+    assert genome_db["comps_db"].config.scope == "all"
+
+    gene_db = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", lambda **kwargs: gene_db.update(comps_db=kwargs["comps_db"]))
+    assert runner.invoke(cli.cli, ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "gene")]).exit_code == 0
+    assert gene_db["comps_db"].config.scope == "all:all"
 
 
 def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
@@ -1447,8 +1431,8 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["profiling_contract_file"] is None
     assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
     assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
-    assert captured["min_read_ani"] is None
-    assert captured["read_inclusion"] == cli.pf.READ_INCLUSION_ALL_MAPPED
+    assert captured["min_read_ani"] == cli.pf.PROFILE_MIN_READ_ANI_DEFAULT
+    assert captured["read_inclusion"] == cli.pf.PROFILE_READ_INCLUSION_DEFAULT
 
 
 def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
@@ -1495,6 +1479,70 @@ def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
     assert captured["min_baseq"] == 21
     assert captured["min_read_ani"] == 0.97
     assert captured["read_inclusion"] == "proper-pairs"
+
+
+def test_profile_command_auto_generates_assets_from_minimal_inputs(tmp_path, monkeypatch):
+    """profile with just input-table + reference + stb builds its own assets."""
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    reference = tmp_path / "reference.fna"
+    reference.write_text(">chr1\nACGTACGTAC\n>chr2\nTTTTGGGGCC\n")
+    stb = tmp_path / "reference.stb"
+    stb.write_text("chr1\tgenome1\nchr2\tgenome1\n")
+    run_dir = tmp_path / "run"
+
+    captured = {}
+
+    def _fake_lazy_run_profile(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", _fake_lazy_run_profile)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table", str(input_table),
+            "--reference-fasta", str(reference),
+            "--stb-file", str(stb),
+            "--run-dir", str(run_dir),
+            "--max-total-reads", "100",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    assets_dir = run_dir / cli.pf.DEFAULT_PROFILING_ASSETS_DIRNAME
+    assert assets_dir.is_dir()
+    # The paths handed to profiling point into the generated assets directory
+    # and the files actually exist.
+    assert captured["null_model_file"] == assets_dir / cli.pf.ASSET_NULL_MODEL_FILENAME
+    assert captured["bed_file"] == assets_dir / cli.pf.ASSET_BED_FILENAME
+    assert captured["genome_length_file"] == assets_dir / cli.pf.ASSET_GENOME_LENGTH_FILENAME
+    assert captured["null_model_file"].exists()
+    assert captured["bed_file"].exists()
+    assert captured["genome_length_file"].exists()
+
+
+def test_profile_command_errors_without_reference_when_autogen_needed(tmp_path, monkeypatch):
+    """Missing reference AND missing bed/genome-length is a usage error."""
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
+    stb = tmp_path / "reference.stb"
+    stb.write_text("chr1\tgenome1\n")
+
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", lambda **kwargs: None)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "profile",
+            "--input-table", str(input_table),
+            "--stb-file", str(stb),
+            "--run-dir", str(tmp_path / "run"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "reference-fasta is required" in str(result.exception)
 
 
 def test_profile_command_uses_default_versioned_apptainer_image(tmp_path, monkeypatch):
@@ -1815,8 +1863,8 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
     }
     assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
     assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
-    assert captured["min_read_ani"] is None
-    assert captured["read_inclusion"] == cli.pf.READ_INCLUSION_ALL_MAPPED
+    assert captured["min_read_ani"] == cli.pf.PROFILE_MIN_READ_ANI_DEFAULT
+    assert captured["read_inclusion"] == cli.pf.PROFILE_READ_INCLUSION_DEFAULT
 
 
 def test_profile_single_passes_custom_read_filters_to_profile_bam(tmp_path, monkeypatch):
@@ -1906,59 +1954,6 @@ def test_merge_stat_tables_command(tmp_path):
     assert result.exit_code == 0, result.output
     merged = pl.read_parquet(output_file).sort("sample")
     assert merged["sample"].to_list() == ["sample_a", "sample_b"]
-
-
-def test_get_coverage_stats_command(profile_2: pl.LazyFrame, tmp_path):
-    profile_path = tmp_path / "profile.parquet"
-    gene_bed_path = tmp_path / "genes.tsv"
-    genome_bed_path = tmp_path / "genomes.bed"
-
-    profile_2.sink_parquet(profile_path)
-    pl.DataFrame(
-        {
-            "gene": ["gene1", "gene2", "gene3", "gene1", "gene2", "gene3"],
-            "scaffold": ["chr1", "chr2", "chr2", "chr3", "chr3", "chr3"],
-            "start": [2, 2, 11, 3, 11, 22],
-            "end": [5, 6, 15, 6, 15, 26],
-        }
-    ).write_csv(gene_bed_path, separator="\t", include_header=False)
-    pl.DataFrame(
-        {
-            "scaffold": ["chr1", "chr2", "chr3"],
-            "start": [0, 0, 0],
-            "end": [10, 20, 30],
-        }
-    ).write_csv(genome_bed_path, separator="\t", include_header=False)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            "utilities",
-            "get-coverage-stats",
-            "--profile-parquet",
-            str(profile_path),
-            "--gene-bed",
-            str(gene_bed_path),
-            "--genome-bed",
-            str(genome_bed_path),
-            "--output-dir",
-            str(tmp_path),
-            "--prefix",
-            "sample1",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert "sample1_gene_stats.parquet" in result.output
-    assert "sample1_genome_stats.parquet" in result.output
-
-    gene_stats = pl.read_parquet(tmp_path / "sample1_gene_stats.parquet")
-    genome_stats = pl.read_parquet(tmp_path / "sample1_genome_stats.parquet")
-    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage", "5x_cov_sites", "ber"]
-    assert genome_stats.columns == ["genome", "length", "breadth", "coverage", "5x_cov_sites", "ber"]
-    assert gene_stats.height == 6
-    assert genome_stats.height == 2
 
 
 def test_run_group_removed():
@@ -2477,3 +2472,212 @@ def test_cli_adjust_sequence_errors_rejects_same_input_output(tmp_path):
 
     assert result.exit_code != 0
     assert "must be different paths" in result.output
+
+
+def test_dash_h_shows_help_globally():
+    runner = CliRunner()
+    for args in (["-h"], ["profile", "-h"], ["utilities", "prepare_profiling", "-h"]):
+        result = runner.invoke(cli.cli, args)
+        assert result.exit_code == 0, result.output
+        assert "Usage:" in result.output
+
+
+def test_profile_help_is_organized_into_sections_with_defaults():
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["profile", "--help"])
+    assert result.exit_code == 0, result.output
+    for header in (
+        "Required inputs:",
+        "Optional inputs:",
+        "Optional pre-built assets",
+        "Profiling parameters:",
+        "Running parameters:",
+    ):
+        assert header in result.output
+    # Defaults are surfaced for parameters that have them.
+    assert "[default: 0.001]" in result.output   # --error-rate
+    assert "[default: 8]" in result.output        # --num-procs
+    assert "[default: local]" in result.output    # --execution-mode
+
+
+def _write_small_parquet(path, rows=3):
+    pl.DataFrame({"genome": ["g"] * rows, "genome_ani": [100.0] * rows}).write_parquet(path)
+
+
+def test_maybe_write_csv_writes_small_and_respects_flags(tmp_path):
+    pq = tmp_path / "all_comparisons.parquet"
+    _write_small_parquet(pq)
+
+    # Default: small parquet gets a companion csv.
+    out = cli._maybe_write_csv(pq, no_csv=False, force_csv=False)
+    assert out == tmp_path / "all_comparisons.csv"
+    assert out.exists()
+    out.unlink()
+
+    # --no-csv: nothing written.
+    assert cli._maybe_write_csv(pq, no_csv=True, force_csv=False) is None
+    assert not (tmp_path / "all_comparisons.csv").exists()
+
+
+def test_maybe_write_csv_skips_huge_unless_forced(tmp_path, monkeypatch):
+    pq = tmp_path / "big.parquet"
+    _write_small_parquet(pq)
+    # Pretend the estimate is over the threshold.
+    monkeypatch.setattr(cli, "_estimated_csv_mb", lambda p: cli.CSV_SIZE_THRESHOLD_MB + 1)
+
+    assert cli._maybe_write_csv(pq, no_csv=False, force_csv=False) is None
+    assert not (tmp_path / "big.csv").exists()
+
+    forced = cli._maybe_write_csv(pq, no_csv=False, force_csv=True)
+    assert forced is not None and forced.exists()
+
+
+def test_parquet_to_csv_utility_converts_table(tmp_path):
+    pq = tmp_path / "table.parquet"
+    pl.DataFrame({"genome": ["g1", "g2"], "coverage": [1.5, 2.5]}).write_parquet(pq)
+    out = tmp_path / "table.csv"
+
+    result = CliRunner().invoke(cli.cli, ["utilities", "parquet-to-csv", "-i", str(pq), "-o", str(out)])
+
+    assert result.exit_code == 0, result.output
+    assert out.exists()
+    got = pl.read_csv(out)
+    assert got.to_dicts() == [{"genome": "g1", "coverage": 1.5}, {"genome": "g2", "coverage": 2.5}]
+
+
+def test_finalize_profile_outputs_writes_no_csvs(tmp_path):
+    sample = tmp_path / "sampleA"
+    sample.mkdir()
+    # genome_stats needs the presence-input columns.
+    pl.DataFrame({"genome": ["g"], "coverage": [10.0], "breadth": [1.0], "ber": [1.0], "fug": [0.1]}).write_parquet(
+        sample / "sampleA_genome_stats.parquet"
+    )
+    _write_small_parquet(sample / "sampleA_gene_stats.parquet")
+    _write_small_parquet(sample / "sampleA_profile.parquet")  # no ref bitmask -> no SNVs, no csv
+
+    cli._finalize_profile_outputs(
+        tmp_path,
+        emit_snvs=True,
+        snv_min_cov=5,
+        presence_ber=0.5,
+        presence_fug=2.0,
+        presence_min_cov_use_fug=2.0,
+        presence_min_coverage=0.1,
+    )
+
+    assert not (sample / "sampleA_genome_stats.csv").exists()
+    assert not (sample / "sampleA_gene_stats.csv").exists()
+    assert not (sample / "sampleA_profile.csv").exists()
+    # Presence column was added to the genome stats table.
+    assert "presence" in pl.read_parquet(sample / "sampleA_genome_stats.parquet").columns
+    # No reference bitmask in the profile -> SNV calling skipped without error.
+    assert not (sample / "sampleA_SNVs.parquet").exists()
+
+
+def test_add_presence_column_calls_present_and_absent(tmp_path):
+    stats = pl.DataFrame(
+        {
+            "genome": ["present_one", "absent_one"],
+            "coverage": [10.0, 0.0],
+            "breadth": [1.0, 0.0],
+            "ber": [1.0, 0.0],
+            "fug": [0.1, 5.0],
+        }
+    )
+    out = cli._add_presence_column(stats, ber=0.5, fug=1.0, min_cov_use_fug=2.0, min_coverage=0.1)
+    by_genome = {row["genome"]: row["presence"] for row in out.iter_rows(named=True)}
+    assert by_genome == {"present_one": "present", "absent_one": "absent"}
+
+
+def test_presence_fug_direction_and_coverage():
+    # coverage 0.5 is between min_coverage (0.1) and min_cov_use_fug (2), so these
+    # rows go through the FUG path; low_cov is below the coverage floor.
+    stats = pl.DataFrame(
+        {
+            "genome": ["hi_fug", "lo_fug", "low_cov"],
+            "coverage": [0.5, 0.5, 0.05],
+            "ber":      [0.9, 0.9, 0.9],
+            "fug":      [0.8, 0.3, 0.8],   # 0.8/0.632=1.27 > 1; 0.3/0.632=0.47 < 1
+        }
+    )
+    out = cli._add_presence_column(stats, ber=0.5, fug=1.0, min_cov_use_fug=2.0, min_coverage=0.1)
+    calls = {r["genome"]: r["presence"] for r in out.iter_rows(named=True)}
+    assert calls["hi_fug"] == "present"     # fug/0.632 = 1.27 > 1 -> present (correct direction)
+    assert calls["lo_fug"] == "absent"      # fug/0.632 = 0.47 < 1 -> absent
+    assert calls["low_cov"] == "absent"     # coverage 0.05 < 0.1 floor
+
+
+def test_discover_taxonomy_file_next_to_reference_and_stb(tmp_path):
+    ref = tmp_path / "reference_genomes.fna"; ref.write_text(">x\nA\n")
+    stb = tmp_path / "reference_genomes.stb"; stb.write_text("x\tg\n")
+    tax = tmp_path / "reference_genomes_taxonomy.tsv"; tax.write_text("genome\tgenome_taxonomy\ng\td__Bacteria\n")
+    assert cli._discover_taxonomy_file(str(ref), str(stb), None) == tax
+    # explicit wins
+    other = tmp_path / "custom.tsv"; other.write_text("genome\tgenome_taxonomy\n")
+    assert cli._discover_taxonomy_file(str(ref), str(stb), str(other)) == other
+    # none when absent
+    tax.unlink()
+    assert cli._discover_taxonomy_file(str(ref), str(stb), None) is None
+
+
+def test_finalize_adds_genome_taxonomy_column(tmp_path):
+    sample = tmp_path / "sampleA"; sample.mkdir()
+    pl.DataFrame({"genome": ["GCF_1.1", "GCF_2.1"], "coverage": [10.0, 10.0], "ber": [1.0, 1.0], "fug": [1.0, 1.0]}).write_parquet(
+        sample / "sampleA_genome_stats.parquet"
+    )
+    tax = tmp_path / "tax.tsv"; tax.write_text("genome\tgenome_taxonomy\nGCF_1.1\td__Bacteria;s__Foo\n")
+
+    cli._finalize_profile_outputs(
+        tmp_path, emit_snvs=False, snv_min_cov=5,
+        presence_ber=0.5, presence_fug=1.0, presence_min_cov_use_fug=2.0, presence_min_coverage=0.1,
+        taxonomy_file=tax,
+    )
+    d = pl.read_parquet(sample / "sampleA_genome_stats.parquet")
+    assert "genome_taxonomy" in d.columns
+    by = {r["genome"]: r["genome_taxonomy"] for r in d.iter_rows(named=True)}
+    assert by["GCF_1.1"] == "d__Bacteria;s__Foo"
+    assert by["GCF_2.1"] is None  # unmatched -> null
+
+
+def test_get_snp_reference_cli_vcf_includes_subconsensus_snv_sites(tmp_path):
+    """`--fmt vcf` emits any site with a non-reference allele, including SNV sites
+    where the reference is still the consensus (the superset definition)."""
+    from zipstrain import utils
+
+    # pos 1: ref=A, counts A=1 C=7 -> consensus C (differs from ref)  [con != ref]
+    # pos 2: ref=A, counts A=8 C=2 -> consensus A (== ref), minor C   [SNV: con == ref]
+    profile_path = tmp_path / "profile_subconsensus.parquet"
+    pl.DataFrame(
+        {
+            "chrom": ["chr1", "chr1"],
+            "genome": ["g", "g"],
+            "gene": ["NA", "NA"],
+            "pos": [1, 2],
+            "A": [1, 8],
+            "C": [7, 2],
+            "G": [0, 0],
+            "T": [0, 0],
+            utils.REF_BASE_BITMASK_COLUMN: [1, 1],
+        }
+    ).write_parquet(profile_path)
+    output_path = tmp_path / "reference_snps.vcf"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            "utilities", "get-snp-reference",
+            "--profile-file", str(profile_path),
+            "--min-cov", "5",
+            "--fmt", "vcf",
+            "--output-file", str(output_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    positions = [
+        line.split("\t")[1]
+        for line in output_path.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    # Superset: both the consensus-differs site (1) AND the sub-consensus SNV site (2).
+    assert positions == ["1", "2"], positions

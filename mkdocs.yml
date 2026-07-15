@@ -1,27 +1,34 @@
 site_name: ZipStrain
 
-
-
-
 theme:
-  name: "material"
+  name: "readthedocs"
+  features:
+    - toc.integrate
+    - navigation.expand
 
 nav:
   - index.md
+  - quickstart.md
+  - usermanual.md
   - installation.md
   - Tutorial.md
-  - GenomeDBFromSylph.md
-  - NextflowPipeline.md
-  - cli.md
+  - expected_output.md
   - downstream.md
   - api.md
-  
 
+markdown_extensions:
+  - toc:
+      toc_depth: 4
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
 
 plugins:
   - mkdocstrings:
       handlers:
         python:
           options:
-            heading_level: 4
+            heading_level: 3
             show_root_toc_entry: true

@@ -370,7 +370,7 @@ def _load_matrix_compare_db(compare_db: Path):
                 conn.execute(
                     """
                     SELECT sample_idx_1, sample_idx_2, sample_1, sample_2, genome_idx, genome,
-                           total_positions, share_allele_pos, genome_pop_ani, max_consecutive_length
+                           total_positions, share_allele_pos, genome_ani, max_consecutive_length
                     FROM matrix_compare_results
                     ORDER BY sample_idx_1, sample_idx_2, genome_idx
                     """
@@ -469,7 +469,7 @@ def _expected_classic_pairwise_results(
         "genome",
         "total_positions",
         "share_allele_pos",
-        "genome_pop_ani",
+        "genome_ani",
     ]
     if "ibs" in calculate:
         selected_columns.append("max_consecutive_length")
@@ -1122,7 +1122,7 @@ def test_matrix_compare_torch_cpu_matches_classic_compare(tmp_path):
     assert summary.requested_pairs == 3
     _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"]
     ).sort(["sample_1", "sample_2", "genome"])
     expected = _expected_classic_pairwise_results(profile_dir, calculate="ani")
 
@@ -1151,7 +1151,7 @@ def test_matrix_compare_torch_cpu_with_ibs_matches_classic_compare(tmp_path):
     assert summary.requested_pairs == 3
     _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
     ).sort(["sample_1", "sample_2", "genome"])
     expected = _expected_classic_pairwise_results(profile_dir, calculate="ani+ibs")
 
@@ -1186,7 +1186,7 @@ def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
     assert summary.requested_pairs == 3
     _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
     ).sort(["sample_1", "sample_2", "genome"])
     expected = _expected_classic_pairwise_results(profile_dir, calculate="ani+ibs")
 
@@ -1731,7 +1731,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
     metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     assert metadata["calculate"] == "ani"
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"]
     ).sort(["sample_1", "sample_2", "genome"])
 
     expected_frames = []
@@ -1758,7 +1758,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
                 "genome",
                 "total_positions",
                 "share_allele_pos",
-                "genome_pop_ani",
+                "genome_ani",
             ])
         )
         expected_frames.append(pair)
@@ -1787,7 +1787,7 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
     metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     assert metadata["calculate"] == "ani+ibs"
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
     ).sort(["sample_1", "sample_2", "genome"])
 
     expected_frames = []
@@ -1814,7 +1814,7 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
                 "genome",
                 "total_positions",
                 "share_allele_pos",
-                "genome_pop_ani",
+                "genome_ani",
                 "max_consecutive_length",
             ])
         )
@@ -2154,8 +2154,16 @@ def test_export_matrix_compare_parquet_supports_genome_and_gene_tables(tmp_path)
     assert written_gene == gene_export.resolve()
     genome_df = pl.read_parquet(genome_export)
     gene_df = pl.read_parquet(gene_export)
+    genome_metadata = pl.read_parquet_metadata(genome_export)
+    gene_metadata = pl.read_parquet_metadata(gene_export)
     assert genome_df.columns[:3] == ["sample_1", "sample_2", "genome"]
     assert gene_df.columns == ["sample_1", "sample_2", "genome", "gene", "gene_pop_ani"]
+    assert genome_metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "genome"
+    assert genome_metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == "matrix"
+    assert genome_metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "popani"
+    assert gene_metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "gene"
+    assert gene_metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == "matrix"
+    assert gene_metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "popani"
 
 
 def test_export_matrix_compare_parquet_gene_requires_gene_rows(tmp_path):
@@ -2473,7 +2481,7 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
     _metadata, completed_pairs, results = _load_matrix_compare_db(compare_db)
     assert completed_pairs == [(0, 1), (0, 2), (1, 2)]
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"]
     ).sort(["sample_1", "sample_2", "genome"])
 
     expected_frames = []
@@ -2491,7 +2499,7 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
             )
             .collect(engine="streaming")
             .with_columns(sample_1=pl.lit(sample_1), sample_2=pl.lit(sample_2))
-            .select(["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"])
+            .select(["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"])
         )
         expected_frames.append(pair)
     expected = pl.concat(expected_frames).sort(["sample_1", "sample_2", "genome"])
@@ -2552,7 +2560,7 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
     _metadata, completed_pairs, results = _load_matrix_compare_db(compare_db)
     assert completed_pairs == [(0, 1), (0, 2), (1, 2)]
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"]
     ).sort(["sample_1", "sample_2", "genome"])
 
     expected_frames = []
@@ -2570,7 +2578,7 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
             )
             .collect(engine="streaming")
             .with_columns(sample_1=pl.lit(sample_1), sample_2=pl.lit(sample_2))
-            .select(["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"])
+            .select(["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"])
         )
         expected_frames.append(pair)
     expected = pl.concat(expected_frames).sort(["sample_1", "sample_2", "genome"])
@@ -2606,7 +2614,7 @@ def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
     _metadata, completed_pairs, results = _load_matrix_compare_db(compare_db)
     assert completed_pairs == [(0, 1), (0, 2), (1, 2)]
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"]
     ).sort(["sample_1", "sample_2", "genome"])
 
     expected_frames = []
@@ -2624,7 +2632,7 @@ def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
             )
             .collect(engine="streaming")
             .with_columns(sample_1=pl.lit(sample_1), sample_2=pl.lit(sample_2))
-            .select(["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani"])
+            .select(["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"])
         )
         expected_frames.append(pair)
     expected = pl.concat(expected_frames).sort(["sample_1", "sample_2", "genome"])
@@ -3187,7 +3195,7 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
     _metadata, completed_pairs, results = _load_matrix_compare_db(output_file)
     assert completed_pairs == [(0, 1)]
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_pop_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
     ).sort(["sample_1", "sample_2", "genome"])
     expected = (
         cp.compare_genomes(
@@ -3212,7 +3220,7 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
                 "genome",
                 "total_positions",
                 "share_allele_pos",
-                "genome_pop_ani",
+                "genome_ani",
                 "max_consecutive_length",
             ]
         )

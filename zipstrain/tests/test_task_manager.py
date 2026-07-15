@@ -497,8 +497,8 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
 
     tasks = asyncio.run(_collect())
     assert len(tasks) == 2
-    assert tasks[0].inputs["mpile_1_file"].get_value() == str(profile_1.absolute())
-    assert tasks[0].inputs["mpile_2_file"].get_value() == str(profile_2.absolute())
+    assert tasks[0].inputs["profile_1_file"].get_value() == str(profile_1.absolute())
+    assert tasks[0].inputs["profile_2_file"].get_value() == str(profile_2.absolute())
     assert tasks[0].inputs["stb-file-arg"].get_value() == f"--stb-file {stb_file.absolute()}"
     assert tasks[0].inputs["ani-method-arg"].get_value() == "--ani-method popani"
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate all"
@@ -560,6 +560,57 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani"
 
 
+def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path):
+    # Regression: the batched standard-compare path used to reject any
+    # --calculate value other than {"all", "ani"}, even though the per-pair
+    # single_compare_genome subprocess understands '+'/','-joined combos.
+    profile_1 = tmp_path / "sample_1.parquet"
+    profile_2 = tmp_path / "sample_2.parquet"
+    profile_1.write_text("dummy")
+    profile_2.write_text("dummy")
+
+    data = pl.DataFrame(
+        {
+            "sample_name_1": ["s1"],
+            "sample_name_2": ["s2"],
+            "profile_location_1": [str(profile_1)],
+            "profile_location_2": [str(profile_2)],
+        }
+    ).lazy()
+    config = database.GenomeComparisonConfig(
+        scope="all",
+        min_cov=5,
+        min_gene_compare_len=100,
+        stb_file_loc=None,
+    )
+    generator = task_manager.CompareTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        comp_config=config,
+        calculate="ani+ibs+identical_genes",
+    )
+
+    async def _collect():
+        out = []
+        async for chunk in generator.generate_tasks():
+            out.extend(chunk)
+        return out
+
+    tasks = asyncio.run(_collect())
+    assert len(tasks) == 1
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani+ibs+identical_genes"
+
+    with pytest.raises(ValueError):
+        task_manager.CompareTaskGenerator(
+            data=data,
+            yield_size=1,
+            container_engine=task_manager.LocalEngine(""),
+            comp_config=config,
+            calculate="ani+bogus",
+        )
+
+
 def test_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path):
     profile_1 = tmp_path / "sample_1.parquet"
     profile_2 = tmp_path / "sample_2.parquet"
@@ -607,8 +658,8 @@ def test_fast_compare_batch_cleanup_is_idempotent(tmp_path):
     task = task_manager.FastCompareTask(
         id="cmp",
         inputs={
-            "mpile_1_file": task_manager.FileInput(profile_1),
-            "mpile_2_file": task_manager.FileInput(profile_2),
+            "profile_1_file": task_manager.FileInput(profile_1),
+            "profile_2_file": task_manager.FileInput(profile_2),
             "stb-file-arg": task_manager.StringInput(""),
             "min_cov": task_manager.IntInput(5),
             "min-gene-compare-len": task_manager.IntInput(100),
@@ -757,3 +808,166 @@ def test_collect_gene_comps_template_is_retry_safe():
     assert "rm -rf gene_comps" in cmd
     assert '! -path "./gene_comps/*"' in cmd
     assert "cp */*_gene_comparison.parquet gene_comps/" not in cmd
+
+
+def _make_fake_batch_run(run_dir: pathlib.Path, sample_names, batches):
+    """Build a fake raw profile-run tree: run_dir/batch_N/<sample>/ with outputs
+    plus intermediate files, batch-level logs, and a top-level batch_events.log."""
+    (run_dir / task_manager.Batch.RUN_LOG_FILE).write_text("run log\n")
+    for batch_idx, batch_samples in enumerate(batches):
+        batch_dir = run_dir / f"batch_{batch_idx}"
+        batch_dir.mkdir(parents=True)
+        (batch_dir / f"batch_{batch_idx}.sh").write_text("#!/bin/bash\n")
+        (batch_dir / f"batch_{batch_idx}.out").write_text("stdout\n")
+        (batch_dir / f"batch_{batch_idx}.err").write_text("")
+        (batch_dir / ".status").write_text("done\n")
+        (batch_dir / "batch.log").write_text("batch log\n")
+        for sample_name in batch_samples:
+            sample_dir = batch_dir / sample_name
+            sample_dir.mkdir()
+            # Real outputs
+            for suffix in ("_profile.parquet", "_genome_stats.parquet", "_gene_stats.parquet"):
+                (sample_dir / f"{sample_name}{suffix}").write_text("data")
+            # Intermediates
+            (sample_dir / ".status").write_text("done\n")
+            (sample_dir / "input.bam").write_text("bam")
+            (sample_dir / "bed_file.bed").write_text("bed")
+    return sample_names
+
+
+def test_reorganize_profile_run_output_flattens_and_tidies(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    samples = _make_fake_batch_run(run_dir, ["s1", "s2", "s3"], batches=[["s1", "s2"], ["s3"]])
+
+    task_manager._reorganize_profile_run_output(run_dir)
+
+    # No batch directories remain.
+    assert list(run_dir.glob("batch_*")) == []
+
+    # Batch logs collected under profiling_assets/log.
+    log_dir = run_dir / "profiling_assets" / "log"
+    assert (log_dir / "batch_events.log").exists()
+    assert (log_dir / "batch_0.out").exists()
+    assert (log_dir / "batch_1.out").exists()
+    # Colliding names (per-batch .status / batch.log) are all kept: the first
+    # keeps its name, later collisions are prefixed by their batch directory.
+    assert (log_dir / ".status").exists()
+    assert (log_dir / "batch_1_.status").exists()
+    assert (log_dir / "batch.log").exists()
+    assert (log_dir / "batch_1_batch.log").exists()
+
+    for sample_name in samples:
+        sample_dir = run_dir / sample_name
+        top_level = {p.name for p in sample_dir.iterdir()}
+        assert top_level == {
+            f"{sample_name}_profile.parquet",
+            f"{sample_name}_genome_stats.parquet",
+            f"{sample_name}_gene_stats.parquet",
+            "intermediate_files",
+        }
+        intermediates = {p.name for p in (sample_dir / "intermediate_files").iterdir()}
+        assert intermediates == {".status", "input.bam", "bed_file.bed"}
+
+
+def _make_profile_runner(run_dir):
+    generator = _SingleTaskGenerator(
+        WriteOutputTask(
+            id="s1",
+            inputs={},
+            expected_outputs={"output-file": task_manager.FileOutput("s1_ok.txt")},
+            engine=task_manager.LocalEngine(""),
+        )
+    )
+    return task_manager.ProfileRunner(
+        run_dir=run_dir,
+        task_generator=generator,
+        container_engine=task_manager.LocalEngine(""),
+    )
+
+
+def test_final_summary_reports_batch_count_elapsed_and_paths(tmp_path):
+    run_dir = tmp_path / "run"
+    runner = _make_profile_runner(run_dir)
+    runner._success_batches_count = 3
+    runner._failed_batches_count = 0
+    runner._produced_tasks_count = 5
+
+    text = runner._final_summary_text(total_batches=3, elapsed_str="0:01:07")
+
+    assert "Run finished!" in text
+    # Correct batch fraction (not the old total_tasks/tasks_per_batch bug).
+    assert "3/3 batches succeeded." in text
+    assert "Produced tasks: 5" in text
+    assert "Elapsed: 0:01:07" in text
+    assert f"Output: {run_dir.absolute()}" in text
+    assert f"Logs:   {(run_dir / 'profiling_assets' / 'log').absolute()}" in text
+
+
+def test_final_summary_reports_failures(tmp_path):
+    runner = _make_profile_runner(tmp_path / "run")
+    runner._success_batches_count = 2
+    runner._failed_batches_count = 1
+    runner._produced_tasks_count = 3
+
+    text = runner._final_summary_text(total_batches=3, elapsed_str="0:00:30")
+
+    assert "Run finished with failures." in text
+    assert "2/3 batches succeeded (1 failed)." in text
+
+
+def _make_fake_compare_run(run_dir, batch_name, output_filename):
+    """Build a fake raw compare-run tree: a work batch + an Outputs final batch."""
+    (run_dir / task_manager.Batch.RUN_LOG_FILE).write_text("run log\n")
+
+    work = run_dir / batch_name
+    (work / "concat_parquet").mkdir(parents=True)
+    (work / f"{batch_name}.err").write_text("")
+    (work / f"{batch_name}.out").write_text("out")
+    (work / f"{batch_name}.sh").write_text("#!/bin/bash\n")
+    (work / "batch.log").write_text("log")
+    (work / ".status").write_text("done\n")
+    (work / "concat_parquet" / ".status").write_text("done\n")
+    (work / "concat_parquet" / f"Merged_{batch_name}.parquet").write_text("data")
+
+    outputs = run_dir / "Outputs"
+    (outputs / "prepare_outputs").mkdir(parents=True)
+    (outputs / output_filename).write_text("MERGED")  # the real output
+    (outputs / "Outputs.err").write_text("")
+    (outputs / "Outputs.out").write_text("out")
+    (outputs / "Outputs.sh").write_text("#!/bin/bash\n")
+    (outputs / "batch.log").write_text("log")
+    (outputs / ".status").write_text("done\n")
+    (outputs / "prepare_outputs" / ".status").write_text("done\n")
+
+
+@pytest.mark.parametrize(
+    "batch_name,output_filename",
+    [("batch_0", "all_comparisons.parquet"), ("gene_batch_0", "all_gene_comparisons.parquet")],
+)
+def test_reorganize_compare_run_output_flattens_and_tidies(tmp_path, batch_name, output_filename):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _make_fake_compare_run(run_dir, batch_name, output_filename)
+
+    task_manager._reorganize_compare_run_output(run_dir)
+
+    # The real merged output is lifted to the top of run_dir.
+    assert (run_dir / output_filename).read_text() == "MERGED"
+
+    # No batch-like directories remain at the top level.
+    assert not (run_dir / batch_name).exists()
+    assert not (run_dir / "Outputs").exists()
+
+    # Logs collected under run_dir/log (with collisions prefixed).
+    log_dir = run_dir / "log"
+    assert (log_dir / "batch_events.log").exists()
+    assert (log_dir / f"{batch_name}.out").exists()
+    assert (log_dir / "Outputs.out").exists()
+    assert (log_dir / "batch.log").exists()
+    assert (log_dir / "Outputs_batch.log").exists()
+
+    # Intermediate task dirs preserved under intermediate_files/<batch>/.
+    inter = run_dir / "intermediate_files"
+    assert (inter / batch_name / "concat_parquet" / f"Merged_{batch_name}.parquet").exists()
+    assert (inter / "Outputs" / "prepare_outputs" / ".status").exists()

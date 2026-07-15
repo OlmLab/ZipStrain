@@ -208,3 +208,10 @@ marimo/_lsp/
 __marimo__/
 dockerfile/.DS_Store
 docs/.DS_Store
+
+# Local Nextflow cluster profiles
+conf.local.config
+
+# Nextflow runtime state
+.nextflow/
+.nextflow.log*

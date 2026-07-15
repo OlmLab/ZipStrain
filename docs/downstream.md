@@ -1,6 +1,6 @@
-# Downstream Analysis Catalogue
+# Downstream Analyses
 
-This page summarizes the downstream analysis helpers currently exposed in `zipstrain.visualize`.
+This page documents the downstream analysis tools available in `zipstrain.visualize`. These functions help you go from raw genome-comparison outputs to interpretable figures and tables — things like strain-sharing rates between populations, identity-by-state distributions, dendrograms, and cluster assignments. All examples are in Python. If you're not a programmer, you can point an AI assistant (like Claude or ChatGPT) at this page and ask it to write the code for you — just describe what you want to visualize and paste in your file paths.
 
 ## Input conventions
 
@@ -9,7 +9,7 @@ Most comparison-driven functions expect a `pl.LazyFrame` with some or all of the
 - `genome`
 - `sample_1`
 - `sample_2`
-- `genome_pop_ani`
+- `genome_ani`
 - `total_positions`
 - `max_consecutive_length`
 - `shared_genes_count`

@@ -609,7 +609,7 @@ class CompareTaskGenerator(TaskGenerator):
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
         ani_method (str): ANI method passed to single genome compare tasks.
-        calculate (str): Genome metric set passed to single genome compare tasks ("all" or "ani").
+        calculate (str): Genome metric set passed to single genome compare tasks ("all", "ani", or a '+'/','-joined combo of ani/ibs/identical_genes).
         duckdb_memory_limit (str | None): Optional DuckDB memory limit (for example "2GB").
         duckdb_threads (int | None): Optional DuckDB thread cap (for example 8).
         compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
@@ -638,8 +638,13 @@ class CompareTaskGenerator(TaskGenerator):
             raise ValueError("data must be a polars LazyFrame.")
         if self.compare_engine not in {"polars", "duckdb"}:
             raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
-        if self.calculate not in {"all", "ani"}:
-            raise ValueError("calculate must be one of {'all', 'ani'}.")
+        # Accept any calculate spec that single_compare_genome understands
+        # ("all", "ani", or a '+'/','-joined combo of ani/ibs/
+        # identical_genes). The value is forwarded verbatim to the per-pair
+        # subprocess, so validate it here with the same parser rather than a
+        # hardcoded {"all", "ani"} allowlist.
+        from . import compare as _compare
+        _compare.parse_genome_calculations(self.calculate)
         
     def get_total_tasks(self) -> int:
         """Returns total number of pairwise comparisons to be made."""
@@ -672,8 +677,8 @@ class CompareTaskGenerator(TaskGenerator):
                     else ""
                 )
                 inputs = {
-                "mpile_1_file": FileInput(row["profile_location_1"]),
-                "mpile_2_file": FileInput(row["profile_location_2"]),
+                "profile_1_file": FileInput(row["profile_location_1"]),
+                "profile_2_file": FileInput(row["profile_location_2"]),
                 "stb-file-arg": StringInput(stb_file_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
@@ -1207,6 +1212,7 @@ class Runner(ABC):
         and system stats (CPU/RAM) using Rich Live to mirror the Runner presentation.
 
         """
+        run_start = datetime.now(timezone.utc)
         asyncio.create_task(self._batcher())
         asyncio.create_task(self._refill_tasks())
         semaphore = asyncio.Semaphore(self.max_concurrent_batches)
@@ -1355,13 +1361,40 @@ class Runner(ABC):
         # final UI summary
         console.clear()
         total_batches = self._batch_counter + (1 if self._final_batch_created and self.final_batch_factory is not None else 0)
+        elapsed = datetime.now(timezone.utc) - run_start
+        elapsed_str = str(elapsed).split(".")[0]  # drop microseconds -> H:MM:SS
         summary = Panel(
-            f"[bold green]Run finished![/]\n\n{self._success_batches_count}/{self.task_generator.get_total_tasks()/self.tasks_per_batch} batches succeeded.\n\nProduced tasks: {self._produced_tasks_count}\nElapsed: (see time in UI)",
+            self._final_summary_text(total_batches, elapsed_str),
             expand=True,
             title="Summary",
-            border_style="green",
+            border_style="green" if self._failed_batches_count == 0 else "red",
         )
         console.print(summary)
+
+    def _final_summary_text(self, total_batches: int, elapsed_str: str) -> str:
+        """Build the body text for the end-of-run summary panel."""
+        headline = (
+            "[bold green]Run finished![/]"
+            if self._failed_batches_count == 0
+            else "[bold red]Run finished with failures.[/]"
+        )
+        lines = [
+            headline,
+            "",
+            f"{self._success_batches_count}/{total_batches} batches succeeded"
+            + (f" ({self._failed_batches_count} failed)" if self._failed_batches_count else "")
+            + ".",
+            f"Produced tasks: {self._produced_tasks_count}",
+            f"Elapsed: {elapsed_str}",
+        ]
+        lines.append("")
+        lines.append(f"Output: {pathlib.Path(self.run_dir).absolute()}")
+        lines.append(f"Logs:   {self._log_location().absolute()}")
+        return "\n".join(lines)
+
+    def _log_location(self) -> pathlib.Path:
+        """Directory where this run's logs live once it finishes."""
+        return pathlib.Path(self.run_dir)
     
     async def _update_statuses(self):
         active = [batch for batch in self._active_batches if batch.status not in self.TERMINAL_BATCH_STATES]
@@ -1433,7 +1466,12 @@ class ProfileRunner(Runner):
             batch_type=batch_type,
             slurm_config=slurm_config,
         )
-    
+
+    def _log_location(self) -> pathlib.Path:
+        # A successful profile run relocates its logs into profiling_assets/log
+        # (see _reorganize_profile_run_output).
+        return pathlib.Path(self.run_dir) / PROFILING_ASSETS_DIRNAME / LOG_DIRNAME
+
     async def _batcher(self):
         """
         Defines the batcher coroutine that collects tasks from the tasks_queue, groups them into batches,
@@ -1536,8 +1574,10 @@ class CompareRunner(Runner):
             slurm_config=slurm_config,
         )
 
-
-
+    def _log_location(self) -> pathlib.Path:
+        # A successful compare run relocates its logs into run_dir/log
+        # (see _reorganize_compare_run_output).
+        return pathlib.Path(self.run_dir) / LOG_DIRNAME
 
     async def _batcher(self):
         """
@@ -1707,8 +1747,8 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    zipstrain utilities single_compare_genome --mpileup-contig-1 <mpile_1_file> \
-    --mpileup-contig-2 <mpile_2_file> \
+    zipstrain utilities single_compare_genome --profile-location-1 <profile_1_file> \
+    --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
@@ -1795,6 +1835,143 @@ class PrepareCompareGenomeRunOutputsSlurmBatch(SlurmBatch):
     pass
 
 
+# Suffixes of the "real" profiling outputs a user cares about. Every other file
+# a task leaves in its directory (symlinks, .status, leftover chunk parquets) is
+# considered an intermediate.
+PROFILE_OUTPUT_SUFFIXES = (
+    "_profile.parquet",
+    "_genome_stats.parquet",
+    "_gene_stats.parquet",
+)
+INTERMEDIATE_FILES_DIRNAME = "intermediate_files"
+LOG_DIRNAME = "log"
+PROFILING_ASSETS_DIRNAME = "profiling_assets"
+# Directory name of the final "prepare outputs" batch for compare runs, and the
+# extension of the real merged comparison output(s) it produces.
+COMPARE_FINAL_BATCH_DIRNAME = "Outputs"
+
+
+def _move_into(destination_dir: pathlib.Path, source: pathlib.Path) -> None:
+    """Move ``source`` into ``destination_dir``, prefixing on name collision.
+
+    Colliding names (e.g. per-batch ``.status`` / ``batch.log`` files) are kept
+    by prefixing later ones with their parent directory name.
+    """
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    target = destination_dir / source.name
+    if target.exists():
+        target = destination_dir / f"{source.parent.name}_{source.name}"
+    shutil.move(str(source), str(target))
+
+
+def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
+    """Flatten and tidy a completed profile run's output directory.
+
+    Transforms the raw ``run_dir/batch_N/<sample>/`` layout into::
+
+        run_dir/
+            <sample>/
+                <sample>_profile.parquet        # real outputs at the top level
+                <sample>_genome_stats.parquet
+                <sample>_gene_stats.parquet
+                intermediate_files/             # everything else the task left
+            profiling_assets/
+                log/                            # batch_events.log, *.err, *.out, ...
+
+    Only called after a fully successful run, so the per-batch ``.status`` files
+    it removes are no longer needed for resume.
+    """
+    run_dir = pathlib.Path(run_dir)
+    log_dir = run_dir / PROFILING_ASSETS_DIRNAME / LOG_DIRNAME
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Top-level run log.
+    run_log = run_dir / Batch.RUN_LOG_FILE
+    if run_log.exists():
+        _move_into(log_dir, run_log)
+
+    for batch_dir in sorted(run_dir.glob("batch_*")):
+        if not batch_dir.is_dir():
+            continue
+        for entry in sorted(batch_dir.iterdir()):
+            if entry.is_dir():
+                # A per-sample task directory: lift it to run_dir/<sample> and tidy.
+                sample_dir = run_dir / entry.name
+                shutil.move(str(entry), str(sample_dir))
+                intermediate_dir = sample_dir / INTERMEDIATE_FILES_DIRNAME
+                for item in sorted(sample_dir.iterdir()):
+                    if item.name == INTERMEDIATE_FILES_DIRNAME:
+                        continue
+                    if item.is_file() and item.name.endswith(PROFILE_OUTPUT_SUFFIXES):
+                        continue
+                    _move_into(intermediate_dir, item)
+            else:
+                # A batch-level file (batch_N.sh/.err/.out, batch.log, .status).
+                _move_into(log_dir, entry)
+        # The batch directory should now be empty.
+        try:
+            batch_dir.rmdir()
+        except OSError:
+            pass
+
+
+def _reorganize_compare_run_output(run_dir: pathlib.Path) -> None:
+    """Flatten and tidy a completed compare run's output directory.
+
+    Transforms the raw layout (``batch_N/<task>/...`` plus an ``Outputs/`` final
+    batch holding the merged parquet) into::
+
+        run_dir/
+            all_comparisons.parquet        # (or all_gene_comparisons.parquet)
+            log/                           # batch_events.log, *.err, *.out, .status
+            intermediate_files/
+                batch_0/...                # per-pair comparison parquets, etc.
+                Outputs/...                # final-batch scaffolding tasks
+
+    Only called after a fully successful run.
+    """
+    run_dir = pathlib.Path(run_dir)
+    log_dir = run_dir / LOG_DIRNAME
+    intermediate_dir = run_dir / INTERMEDIATE_FILES_DIRNAME
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Top-level run log.
+    run_log = run_dir / Batch.RUN_LOG_FILE
+    if run_log.exists():
+        _move_into(log_dir, run_log)
+
+    # The real merged output(s) are the top-level parquet files in the final batch.
+    final_batch_dir = run_dir / COMPARE_FINAL_BATCH_DIRNAME
+    if final_batch_dir.is_dir():
+        for parquet in sorted(final_batch_dir.glob("*.parquet")):
+            _move_into(run_dir, parquet)
+
+    # Every batch-like directory (genome batches `batch_N`, gene batches
+    # `gene_batch_N`, plus the final Outputs batch): its loose files are
+    # logs/scaffolding, its subdirectories are intermediates.
+    batch_dirs = [
+        entry
+        for entry in sorted(run_dir.iterdir())
+        if entry.is_dir() and re.fullmatch(r"(gene_)?batch_\d+", entry.name)
+    ]
+    if final_batch_dir.is_dir():
+        batch_dirs.append(final_batch_dir)
+    for batch_dir in batch_dirs:
+        if not batch_dir.is_dir():
+            continue
+        for entry in sorted(batch_dir.iterdir()):
+            if entry.is_file():
+                _move_into(log_dir, entry)
+        # Whatever remains (task subdirectories) is intermediate output.
+        if any(batch_dir.iterdir()):
+            shutil.move(str(batch_dir), str(intermediate_dir / batch_dir.name))
+        else:
+            try:
+                batch_dir.rmdir()
+            except OSError:
+                pass
+
+
 def lazy_run_profile(
     run_dir: str | pathlib.Path,
     container_engine: Engine,
@@ -1852,8 +2029,13 @@ def lazy_run_profile(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
-    
-    
+
+    # Only tidy the output layout when every batch succeeded. On partial failure
+    # we leave the raw batch_N/<sample>/ structure intact so a re-run can resume.
+    if runner._failed_batches_count == 0:
+        _reorganize_profile_run_output(pathlib.Path(run_dir))
+
+
 def lazy_run_compares(
     run_dir: str | pathlib.Path,
     container_engine: Engine,
@@ -1880,7 +2062,7 @@ def lazy_run_compares(
         poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
         execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
         ani_method (str): ANI method passed to single genome compare tasks.
-        calculate (str): Genome metric set passed to single genome compare tasks ("all" or "ani").
+        calculate (str): Genome metric set passed to single genome compare tasks ("all", "ani", or a '+'/','-joined combo of ani/ibs/identical_genes).
         duckdb_threads (int | None): Optional DuckDB thread cap passed to compare tasks.
         compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
     """
@@ -1913,6 +2095,11 @@ def lazy_run_compares(
     )
     asyncio.run(runner.run())
 
+    # Only tidy the output layout when every batch succeeded, so a partial
+    # failure keeps the raw batch structure available for a resuming re-run.
+    if runner._failed_batches_count == 0:
+        _reorganize_compare_run_output(pathlib.Path(run_dir))
+
 
 class FastGeneCompareTask(Task):
     """A Task that performs a gene comparison using `zipstrain utilities single_compare_gene`.
@@ -1924,8 +2111,8 @@ class FastGeneCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
     """
     TEMPLATE_CMD="""
-    zipstrain utilities single_compare_gene --mpileup-contig-1 <mpile_1_file> \
-    --mpileup-contig-2 <mpile_2_file> \
+    zipstrain utilities single_compare_gene --profile-location-1 <profile_1_file> \
+    --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
@@ -2000,8 +2187,8 @@ class GeneCompareTaskGenerator(TaskGenerator):
                     else ""
                 )
                 inputs = {
-                "mpile_1_file": FileInput(row["profile_location_1"]),
-                "mpile_2_file": FileInput(row["profile_location_2"]),
+                "profile_1_file": FileInput(row["profile_location_1"]),
+                "profile_2_file": FileInput(row["profile_location_2"]),
                 "stb-file-arg": StringInput(stb_file_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
@@ -2064,6 +2251,11 @@ class GeneCompareRunner(Runner):
             batch_type=batch_type,
             slurm_config=slurm_config,
         )
+
+    def _log_location(self) -> pathlib.Path:
+        # A successful compare run relocates its logs into run_dir/log
+        # (see _reorganize_compare_run_output).
+        return pathlib.Path(self.run_dir) / LOG_DIRNAME
 
     async def _batcher(self):
         """
@@ -2280,3 +2472,8 @@ def lazy_run_gene_compares(
         slurm_config=slurm_config,
     )
     asyncio.run(runner.run())
+
+    # Only tidy the output layout when every batch succeeded, so a partial
+    # failure keeps the raw batch structure available for a resuming re-run.
+    if runner._failed_batches_count == 0:
+        _reorganize_compare_run_output(pathlib.Path(run_dir))

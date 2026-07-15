@@ -186,9 +186,9 @@ def _prepare_similarity_matrix(
         filters.append(pl.col("genome") == genome)
     filtered = (
         comps_lf.filter(pl.all_horizontal(*filters))
-        .select("sample_1", "sample_2", "genome_pop_ani")
+        .select("sample_1", "sample_2", "genome_ani")
         .group_by(["sample_1", "sample_2"])
-        .agg(pl.col("genome_pop_ani").mean().alias("genome_pop_ani"))
+        .agg(pl.col("genome_ani").mean().alias("genome_ani"))
     )
     filtered_pairs = filtered.collect(engine="streaming")
     sample_names = (
@@ -254,7 +254,7 @@ def _prepare_similarity_matrix(
         .rename({"sample_idx": "sample_idx_1"})
         .join(sample_index_lf, left_on="sample_2", right_on="sample", how="inner")
         .rename({"sample_idx": "sample_idx_2"})
-        .select("sample_idx_1", "sample_idx_2", "genome_pop_ani")
+        .select("sample_idx_1", "sample_idx_2", "genome_ani")
         .collect(engine="streaming")
     )
 
@@ -263,9 +263,9 @@ def _prepare_similarity_matrix(
     if indexed_pairs.height > 0:
         sample_idx_1 = indexed_pairs.get_column("sample_idx_1").to_numpy()
         sample_idx_2 = indexed_pairs.get_column("sample_idx_2").to_numpy()
-        genome_pop_ani = indexed_pairs.get_column("genome_pop_ani").to_numpy()
-        similarity_matrix_raw[sample_idx_1, sample_idx_2] = genome_pop_ani
-        similarity_matrix_raw[sample_idx_2, sample_idx_1] = genome_pop_ani
+        genome_ani = indexed_pairs.get_column("genome_ani").to_numpy()
+        similarity_matrix_raw[sample_idx_1, sample_idx_2] = genome_ani
+        similarity_matrix_raw[sample_idx_2, sample_idx_1] = genome_ani
 
     comparable_column_count = max(len(samples), 1)
     null_fraction = pl.DataFrame(
@@ -354,7 +354,7 @@ def calculate_strainsharing(
 
 
     """
-    Calculate strain sharing between populations based on popANI between genomes in their profiles.
+    Calculate strain sharing between populations based on genome ANI between genomes in their profiles.
     Strain sharing between two samples is defined as the ratio of genomes passing a strain similarity threshold over the total number of genomes in each sample.
     So, for two samples A and B, the strain sharing is defined as (Note the assymetric nature of the calculation):
     strain_sharing(A, B) = (number of genomes in A and B passing the strain similarity threshold) / (number of genomes in A)
@@ -429,7 +429,7 @@ def calculate_strainsharing(
     comps_lf=comps_lf.filter(
         (pl.col("breadth_1") >= min_breadth) &
         (pl.col("breadth_2") >= min_breadth) &
-        (pl.col("genome_pop_ani") >= strain_similarity_threshold)
+        (pl.col("genome_ani") >= strain_similarity_threshold)
     )
 
     comps_lf=comps_lf.group_by(
@@ -715,15 +715,15 @@ def calculate_identical_frac_vs_popani(
     min_total_positions:int=10000
     ):
     """
-    Calculate the fraction of identical genes vs  popANI for a given genome and two samples in any possible combination of populations.
+    Calculate the fraction of identical genes vs genome ANI for a given genome and two samples in any possible combination of populations.
     Args:
-        genome (str): The genome to calculate the fraction of identical genes vs popANI for.
+        genome (str): The genome to calculate the fraction of identical genes vs genome ANI for.
         population_1 (str): The first population to compare.
         population_2 (str): The second population to compare.
         sample_to_population (pl.LazyFrame): LazyFrame containing the sample to population mapping.
         comps_lf (pl.LazyFrame): LazyFrame containing the gene profiles of the samples
     Returns:
-        pl.LazyFrame: LazyFrame containing the fraction of identical genes vs popANI information for
+        pl.LazyFrame: LazyFrame containing the fraction of identical genes vs genome ANI information for
     """
     comps_lf_filtered=comps_lf.filter(
         (pl.col('genome') == genome) &
@@ -766,29 +766,29 @@ def calculate_identical_frac_vs_popani(
     )
     return comps_lf_filtered.group_by("relationship").agg(
         pl.col("perc_id_genes"),
-        pl.col("genome_pop_ani")
+        pl.col("genome_ani")
     ).collect(engine="streaming")
 
 def plot_identical_frac_vs_popani(df:pl.DataFrame,
                                   genome:str,
-                                  title:str="Fraction of Identical Genes vs popANI for <GENOME>",
-                                  xaxis_title:str="Genome-Wide popANI",
+                                  title:str="Fraction of Identical Genes vs Genome ANI for <GENOME>",
+                                  xaxis_title:str="Genome-Wide ANI",
                                   yaxis_title:str="Fraction of Identical Genes",
                                   ):
     """
-    Plot the fraction of identical genes vs popANI for a given genome and two samples in any possible combination of populations.
+    Plot the fraction of identical genes vs genome ANI for a given genome and two samples in any possible combination of populations.
     Args:
-        df (pl.DataFrame): DataFrame containing the fraction of identical genes vs popANI information.
-        title (str, optional): Title of the plot. Defaults to "Fraction of Identical Genes vs popANI".
-        xaxis_title (str, optional): Title of the x-axis. Defaults to "popANI".
+        df (pl.DataFrame): DataFrame containing the fraction of identical genes vs genome ANI information.
+        title (str, optional): Title of the plot. Defaults to "Fraction of Identical Genes vs Genome ANI".
+        xaxis_title (str, optional): Title of the x-axis. Defaults to "Genome ANI".
         yaxis_title (str, optional): Title of the y-axis. Defaults to "Fraction of Identical Genes".
     Returns:
-        go.Figure: Plotly figure containing the fraction of identical genes vs popANI plot.
+        go.Figure: Plotly figure containing the fraction of identical genes vs genome ANI plot.
     """
     fig = go.Figure()
-    for group, perc_id_genes, genome_pop_ani in zip(df["relationship"], df["perc_id_genes"], df["genome_pop_ani"]):
+    for group, perc_id_genes, genome_ani in zip(df["relationship"], df["perc_id_genes"], df["genome_ani"]):
         fig.add_trace(go.Scatter(
-            x=genome_pop_ani,
+            x=genome_ani,
             y=perc_id_genes,
             mode='markers',
             name=group

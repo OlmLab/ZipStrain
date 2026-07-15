@@ -1,6 +1,7 @@
 name: Pull Request Tests
 
 on:
+  workflow_dispatch:
   pull_request:
     types:
       - opened
@@ -38,6 +39,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y samtools
 
+      - name: Set up Java for Nextflow
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Set up Nextflow
+        env:
+          NXF_VER: "24.10.0"
+        run: |
+          curl -s https://get.nextflow.io | bash
+          sudo mv nextflow /usr/local/bin/
+          nextflow -version
+
       - name: Install ZipStrain with test dependencies
         working-directory: zipstrain
         run: |
@@ -51,7 +66,7 @@ jobs:
           OMP_NUM_THREADS: "1"
           MKL_NUM_THREADS: "1"
         run: |
-          python -m pytest tests -q \
+          python -m pytest tests -q -rs \
             --cov=src/zipstrain \
             --cov-report=xml \
             --cov-report=term-missing
