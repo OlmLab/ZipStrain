@@ -290,7 +290,6 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 <span class="w">    </span>--stb-file<span class="w"> </span>N5_271_010G1.maxbin2.stb<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--run-dir<span class="w"> </span>out_profile
 </code></pre></div>
-<p><img alt="zipstrain profile progress" src="../assets/tutorial_profile.gif" /></p>
 <p>Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. A per-sample null model (built automatically from the error rate) decides which minority alleles are real variants versus sequencing noise. The result is one profile per sample plus genome- and gene-level summary statistics.</p>
 <p>After a successful run the output directory is organized like this:</p>
 <div class="highlight"><pre><span></span><code>out_profile/

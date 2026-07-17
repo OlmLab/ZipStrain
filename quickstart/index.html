@@ -118,6 +118,7 @@ zipstrain<span class="w"> </span><span class="nb">test</span>
 </code></pre></div>
 <p>Prefer pip? <code>pip install zipstrain</code> (then install <code>samtools</code> separately). Full options: <a href="../installation/">Installation</a>.</p>
 <h2 id="the-three-commands">The three commands</h2>
+<p><img alt="ZipStrain overview: map turns reads into BAMs, profile turns BAMs into nucleotide profiles, compare turns profiles into ANI" src="../assets/program_overview.png" /></p>
 <h3 id="1-map-reads-bams">1. <code>map</code> — reads → BAMs</h3>
 <p>Aligns reads to a reference and writes sorted BAMs plus a <code>samples.txt</code> ready for profiling. Omit <code>--reference-fasta</code> to let Sylph pick and build a reference automatically. Resumable if interrupted.</p>
 <div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>map<span class="w"> </span>-i<span class="w"> </span>reads.csv<span class="w"> </span>-o<span class="w"> </span>mapped<span class="w"> </span><span class="se">\</span>
