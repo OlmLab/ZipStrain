@@ -2,6 +2,12 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 1.0.1
+
+Compared with `1.0.0`:
+
+- Readability: clarified several dense methods without changing behavior — the ANI expressions in `PolarsANIExpressions` (`popani`, `conani`, `generalized_cos_ani`) now cast base counts to `Int64` once up front instead of repeating the cast inline on every column, and the contiguous-block grouping in `add_contiguity_info` spells out its break conditions. Outputs are unchanged.
+
 ## 1.0.0
 
 First stable release. This version consolidates ZipStrain around three top-level commands — `map`, `profile`, and `compare` — plus a `test` environment check and a `utilities` group of lower-level helpers. Compared with `0.11.3`:
