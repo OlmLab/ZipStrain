@@ -25,6 +25,10 @@
 
 Developed by Parsa Ghadermazi and the [Olm Lab](https://www.colorado.edu/lab/olm/), University of Colorado Boulder.
 
+## Documentation
+
+Full documentation available at [https://olmlab.github.io/ZipStrain/](https://olmlab.github.io/ZipStrain/)
+
 **Strain-level metagenomics in three commands:** ZipStrain maps reads, profiles them at single-nucleotide resolution, and compares samples by ANI to tell whether they share a strain.
 
 <img src="docs/workflow.png" alt="ZipStrain workflow" width="520">
@@ -76,10 +80,6 @@ zipstrain compare --profile-db profiles.csv -r compared
 <img src="docs/assets/zipstrain_compare.gif" alt="zipstrain compare" width="640">
 
 Every run writes a `zipstrain_run.log` so you can tell if it is running, finished, or crashed. Prefer a pipeline? A [Nextflow implementation](https://olmlab.github.io/ZipStrain/usermanual/#nextflow-implementation) runs all of this end to end.
-
-## Documentation
-
-Full documentation available at [https://olmlab.github.io/ZipStrain/](https://olmlab.github.io/ZipStrain/)
 
 ## Citation
 
