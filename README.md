@@ -25,13 +25,13 @@
 
 Developed by Parsa Ghadermazi and the [Olm Lab](https://www.colorado.edu/lab/olm/), University of Colorado Boulder.
 
-## Documentation
-
-Full documentation available at [https://olmlab.github.io/ZipStrain/](https://olmlab.github.io/ZipStrain/)
-
 **Strain-level metagenomics in three commands:** ZipStrain maps reads, profiles them at single-nucleotide resolution, and compares samples by ANI to tell whether they share a strain.
 
 <img src="docs/workflow.png" alt="ZipStrain workflow" width="520">
+
+## Documentation
+
+Full documentation available at [https://olmlab.github.io/ZipStrain/](https://olmlab.github.io/ZipStrain/)
 
 ## Install
 
