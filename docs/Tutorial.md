@@ -145,7 +145,6 @@ zipstrain profile \
     --run-dir out_profile
 ```
 
-![zipstrain profile progress](assets/tutorial_profile.gif)
 
 Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. A per-sample null model (built automatically from the error rate) decides which minority alleles are real variants versus sequencing noise. The result is one profile per sample plus genome- and gene-level summary statistics.
 
