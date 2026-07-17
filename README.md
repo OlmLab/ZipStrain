@@ -6,7 +6,7 @@
       <p><strong>Strain-resolution metagenomics at scale.</strong></p>
       <p>
         ZipStrain is a Python package specializing in strain-level metagenomic analysis. It profiles mapped reads into per-position nucleotide counts and compares
-        metagenomic samples at genome and gene scope. ZipStrain is designed for large datasets, with an accompanying nextflow pipeline (See the documentation).
+        metagenomic samples at genome and gene scope. ZipStrain is designed for large datasets, with an accompanying nextflow pipeline (See the documentation - https://olmlab.github.io/ZipStrain)
       </p>
       <p>
         <a href="https://OlmLab.github.io/ZipStrain/"><img src="https://img.shields.io/badge/docs-online-1f6feb" alt="Documentation"></a>
