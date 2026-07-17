@@ -92,32 +92,67 @@ class PolarsANIExpressions:
     2. conani: Consensus ANI based on the consensus alleles between two profiles.
     3. cosani_<threshold>: Generalized cosine similarity ANI where threshold is a float value between 0 and 1. Once the similarity is below the threshold, it is considered a SNV.
     """
+    BASES = ["A", "C", "G", "T"]
     MPILE_1_BASES = ["A", "T", "C", "G"]
     MPILE_2_BASES = ["A_2", "T_2", "C_2", "G_2"]
 
+    def _base_counts(self):
+        """Return the two samples' A/C/G/T counts as Int64 Polars expressions.
+
+        The base counts arrive as smaller integer types, so the per-position
+        products below can overflow at high coverage. We cast to Int64 once
+        here, up front, and the ANI formulas that follow read as plain
+        arithmetic on ``sample_1``/``sample_2`` instead of repeating
+        ``.cast(pl.Int64)`` on every column.
+
+        Returns:
+            tuple[dict[str, pl.Expr], dict[str, pl.Expr]]: two dicts keyed by
+            base letter (``"A"``, ``"C"``, ``"G"``, ``"T"``); the first holds
+            sample 1's counts and the second sample 2's.
+        """
+        sample_1 = {base: pl.col(base).cast(pl.Int64) for base in self.BASES}
+        sample_2 = {base: pl.col(f"{base}_2").cast(pl.Int64) for base in self.BASES}
+        return sample_1, sample_2
+
     def popani(self):
-        return (pl.col("A").cast(pl.Int64)*pl.col("A_2").cast(pl.Int64)
-                + pl.col("C").cast(pl.Int64)*pl.col("C_2").cast(pl.Int64)
-                + pl.col("G").cast(pl.Int64)*pl.col("G_2").cast(pl.Int64)
-                + pl.col("T").cast(pl.Int64)*pl.col("T_2").cast(pl.Int64))
-    
+        # popANI treats a position as shared when the two samples have at least
+        # one allele in common. The dot product of their per-base counts is
+        # positive exactly in that case (and zero only when they share no base,
+        # i.e. an SNV), which is the >0 / ==0 signal every caller expects.
+        sample_1, sample_2 = self._base_counts()
+        return (sample_1["A"] * sample_2["A"]
+                + sample_1["C"] * sample_2["C"]
+                + sample_1["G"] * sample_2["G"]
+                + sample_1["T"] * sample_2["T"])
+
     def conani(self):
-        max_base_1=pl.max_horizontal(*[pl.col(base) for base in self.MPILE_1_BASES])
-        max_base_2=pl.max_horizontal(*[pl.col(base) for base in self.MPILE_2_BASES])
-        return pl.when((pl.col("A")==max_base_1) & (pl.col("A_2")==max_base_2) | 
-                       (pl.col("T")==max_base_1) & (pl.col("T_2")==max_base_2) | 
-                       (pl.col("C")==max_base_1) & (pl.col("C_2")==max_base_2) | 
-                       (pl.col("G")==max_base_1) & (pl.col("G_2")==max_base_2)).then(1).otherwise(0)
-    
-    def generalized_cos_ani(self,threshold:float=0.4):
-        dot_product = (pl.col("A").cast(pl.Int64)*pl.col("A_2").cast(pl.Int64)
-                       + pl.col("C").cast(pl.Int64)*pl.col("C_2").cast(pl.Int64)
-                       + pl.col("G").cast(pl.Int64)*pl.col("G_2").cast(pl.Int64)
-                       + pl.col("T").cast(pl.Int64)*pl.col("T_2").cast(pl.Int64))
-        magnitude_1 = (pl.col("A").cast(pl.Int64)**2 + pl.col("C").cast(pl.Int64)**2 + pl.col("G").cast(pl.Int64)**2 + pl.col("T").cast(pl.Int64)**2)**0.5
-        magnitude_2 = (pl.col("A_2").cast(pl.Int64)**2 + pl.col("C_2").cast(pl.Int64)**2 + pl.col("G_2").cast(pl.Int64)**2 + pl.col("T_2").cast(pl.Int64)**2)**0.5
-        cos_sim = dot_product / (magnitude_1 * magnitude_2)
-        return pl.when(cos_sim >= threshold).then(1).otherwise(0)
+        # conANI compares only the consensus (most abundant) base in each
+        # sample: the position counts as shared when the consensus base is the
+        # same in both samples. `max_horizontal` gives each sample's consensus
+        # count; the position matches when that consensus falls on the same base.
+        consensus_1 = pl.max_horizontal(*[pl.col(base) for base in self.MPILE_1_BASES])
+        consensus_2 = pl.max_horizontal(*[pl.col(base) for base in self.MPILE_2_BASES])
+        return pl.when((pl.col("A") == consensus_1) & (pl.col("A_2") == consensus_2)
+                       | (pl.col("T") == consensus_1) & (pl.col("T_2") == consensus_2)
+                       | (pl.col("C") == consensus_1) & (pl.col("C_2") == consensus_2)
+                       | (pl.col("G") == consensus_1) & (pl.col("G_2") == consensus_2)).then(1).otherwise(0)
+
+    def generalized_cos_ani(self, threshold: float = 0.4):
+        # Treat each position as a 4-vector of A/C/G/T counts per sample and
+        # take the cosine similarity between the two samples' vectors; a
+        # position counts as shared when that similarity clears `threshold`,
+        # and is otherwise treated as an SNV.
+        sample_1, sample_2 = self._base_counts()
+
+        dot_product = (sample_1["A"] * sample_2["A"]
+                       + sample_1["C"] * sample_2["C"]
+                       + sample_1["G"] * sample_2["G"]
+                       + sample_1["T"] * sample_2["T"])
+        magnitude_1 = (sample_1["A"]**2 + sample_1["C"]**2 + sample_1["G"]**2 + sample_1["T"]**2)**0.5
+        magnitude_2 = (sample_2["A"]**2 + sample_2["C"]**2 + sample_2["G"]**2 + sample_2["T"]**2)**0.5
+        cosine_similarity = dot_product / (magnitude_1 * magnitude_2)
+
+        return pl.when(cosine_similarity >= threshold).then(1).otherwise(0)
 
     def __getattribute__(self, name):
         if name.startswith("cosani_"):
@@ -831,20 +866,25 @@ def add_contiguity_info(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
         pl.LazyFrame: Updated LazyFrame with group id information added.
     """
 
-    sort_cols = ["scaffold", "pos"]
-    break_expr = (pl.col("scaffold") != pl.col("scaffold").shift(1).fill_null(pl.col("scaffold"))) | (pl.col("surr") == 0)
-    if "genome" in mpile_contig.collect_schema().names():
-        sort_cols = ["genome", "scaffold", "pos"]
-        break_expr = (
-            (pl.col("genome") != pl.col("genome").shift(1).fill_null(pl.col("genome")))
-            | (pl.col("scaffold") != pl.col("scaffold").shift(1).fill_null(pl.col("scaffold")))
-            | (pl.col("surr") == 0)
-        )
-    mpile_contig = mpile_contig.sort(sort_cols)
-    mpile_contig = mpile_contig.with_columns(
+    has_genome = "genome" in mpile_contig.collect_schema().names()
+    sort_cols = (["genome"] if has_genome else []) + ["scaffold", "pos"]
+
+    def changed(column: str) -> pl.Expr:
+        """True on the first row of each new run of `column` (once sorted)."""
+        return pl.col(column) != pl.col(column).shift(1).fill_null(pl.col(column))
+
+    # A contiguous block is a run of consecutive shared positions. It breaks at
+    # the first row of a new scaffold (or new genome, when that column exists),
+    # or at a position that is itself an SNV (surr == 0). Marking those break
+    # points and taking a cumulative sum numbers the blocks, so `group_id` is
+    # constant within each block and increments at every break.
+    break_expr = changed("scaffold") | (pl.col("surr") == 0)
+    if has_genome:
+        break_expr = changed("genome") | changed("scaffold") | (pl.col("surr") == 0)
+
+    return mpile_contig.sort(sort_cols).with_columns(
         break_expr.cast(pl.Int64).cum_sum().alias("group_id")
     )
-    return mpile_contig
 
 def add_genome_info(mpile_contig:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame) -> pl.LazyFrame:
     """
