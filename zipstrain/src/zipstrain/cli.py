@@ -379,9 +379,9 @@ def _build_null_model_frame(error_rate: float, max_total_reads: int, p_threshold
     return pf._build_null_model_frame(error_rate, max_total_reads, p_threshold, model_type)
 
 @utilities.command("build-null-model")
-@click.option('--error-rate', '-e', default=0.001, help="Error rate for the sequencing technology.")
-@click.option('--max-total-reads', '-m', default=10000, help="Maximum coverage to consider for a base")
-@click.option('--p-threshold', '-p', default=0.05, help="Significance threshold for the Poisson distribution.")
+@click.option('--error-rate', '-e', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate for the sequencing technology.")
+@click.option('--max-total-reads', '-m', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage to consider for a base")
+@click.option('--p-threshold', '-p', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold for the Poisson distribution.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
 @click.option('--model-type', '-t', default="poisson", type=click.Choice(['poisson']), help="Type of null model to build.")
 def build_null_model(error_rate, max_total_reads, p_threshold, output_file, model_type):
@@ -455,8 +455,9 @@ def parquet_to_csv(input_file, output_file, separator, no_header):
 @utilities.command("adjust-sequence-errors")
 @click.option('--profile-parquet', '-p', required=True, help="Input profile parquet file.")
 @click.option('--null-model', '-n', required=True, help="Null model parquet file.")
+@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
 @click.option('--output-file', '-o', required=True, help="Path to save the sequence-adjusted profile parquet.")
-def adjust_sequence_errors(profile_parquet, null_model, output_file):
+def adjust_sequence_errors(profile_parquet, null_model, min_freq, output_file):
     """
     Apply ZipStrain's sequence-error adjustment to an existing profile parquet.
 
@@ -468,6 +469,7 @@ def adjust_sequence_errors(profile_parquet, null_model, output_file):
             profile_parquet=pathlib.Path(profile_parquet),
             null_model_parquet=pathlib.Path(null_model),
             output_file=pathlib.Path(output_file),
+            min_freq=min_freq,
         )
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
@@ -1553,9 +1555,9 @@ def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_co
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
 @click.option('--gene-fasta', '-g', default=None, help="Optional path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--error-rate', '-e', default=0.001, show_default=True, help="Error rate for the sequencing technology when building the null model.")
-@click.option('--max-total-reads', '-m', default=10000, show_default=True, help="Maximum coverage to consider when building the null model.")
-@click.option('--p-threshold', '-p', default=0.05, show_default=True, help="Significance threshold for the null model.")
+@click.option('--error-rate', '-e', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate for the sequencing technology when building the null model.")
+@click.option('--max-total-reads', '-m', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage to consider when building the null model.")
+@click.option('--p-threshold', '-p', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold for the null model.")
 @click.option('--model-type', '-t', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Type of null model to build.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling database.")
 def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_total_reads, p_threshold, model_type, output_dir):
@@ -1589,10 +1591,11 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
 @click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
 @click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
 @click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_read_ani, read_inclusion, output_dir):
+def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, output_dir):
     """
     Profile a single BAM file using the provided BED file and optional gene range table.
     
@@ -1619,6 +1622,7 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
         profile_contract=profile_contract_values,
         min_mapq=min_mapq,
         min_baseq=min_baseq,
+        min_freq=min_freq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
     )
@@ -1731,13 +1735,14 @@ map_command.option_sections = {
 @click.option('--profiling-contract', default=None, help="Pre-built profiling_contract.json. When provided, its hashes are written into each profile parquet metadata. Auto-generated otherwise.")
 @click.option('--bed-file', '-b', default=None, help="Pre-built BED file for profiling regions. Auto-generated into <run-dir>/profiling_assets if not provided.")
 @click.option('--genome-length-file', '-l', default=None, help="Pre-built genome length file. Auto-generated into <run-dir>/profiling_assets if not provided.")
-@click.option('--error-rate', default=0.001, show_default=True, help="Error rate used when auto-generating the null model.")
-@click.option('--max-total-reads', default=10000, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
-@click.option('--p-threshold', default=0.05, show_default=True, help="Significance threshold used when auto-generating the null model.")
+@click.option('--error-rate', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate used when auto-generating the null model.")
+@click.option('--max-total-reads', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
+@click.option('--p-threshold', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold used when auto-generating the null model.")
 @click.option('--model-type', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Null model type used when auto-generating the null model.")
 @click.option('--force-prepare', is_flag=True, default=False, show_default=True, help="Regenerate all auto-generated profiling assets even if valid cached copies exist.")
 @click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
 @click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
 @click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
@@ -1755,7 +1760,7 @@ map_command.option_sections = {
 @click.option('--presence-min-cov-use-fug', default=2.0, show_default=True, help="Coverage above which the present/absent call uses BER alone (below it, FUG is also required).")
 @click.option('--presence-min-coverage', default=0.1, show_default=True, help="Minimum mean coverage required to call a genome present.")
 @click.option('--genome-taxonomy', default=None, help="Optional genome->taxonomy TSV to add a genome_taxonomy column to genome_stats. Auto-discovered next to the reference/STB when produced by `zipstrain map` (Sylph route).")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy):
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1819,6 +1824,7 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
             num_procs=num_procs,
             min_mapq=min_mapq,
             min_baseq=min_baseq,
+            min_freq=min_freq,
             min_read_ani=min_read_ani,
             read_inclusion=read_inclusion,
             tasks_per_batch=task_per_batch,
@@ -1867,6 +1873,7 @@ profile.option_sections = {
         "force_prepare",
         "min_mapq",
         "min_baseq",
+        "min_freq",
         "min_read_ani",
         "read_inclusion",
     ],

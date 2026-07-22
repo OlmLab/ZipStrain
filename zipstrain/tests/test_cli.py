@@ -1431,6 +1431,7 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["profiling_contract_file"] is None
     assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
     assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
+    assert captured["min_freq"] == cli.pf.PROFILE_MIN_FREQ_DEFAULT
     assert captured["min_read_ani"] == cli.pf.PROFILE_MIN_READ_ANI_DEFAULT
     assert captured["read_inclusion"] == cli.pf.PROFILE_READ_INCLUSION_DEFAULT
 
@@ -1468,6 +1469,8 @@ def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
             "7",
             "--min-baseq",
             "21",
+            "--min-freq",
+            "0.03",
             "--min-read-ani",
             "0.97",
             "--read-inclusion",
@@ -1477,6 +1480,7 @@ def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert captured["min_mapq"] == 7
     assert captured["min_baseq"] == 21
+    assert captured["min_freq"] == 0.03
     assert captured["min_read_ani"] == 0.97
     assert captured["read_inclusion"] == "proper-pairs"
 
@@ -1863,6 +1867,7 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
     }
     assert captured["min_mapq"] == cli.pf.PROFILE_MIN_MAPQ_DEFAULT
     assert captured["min_baseq"] == cli.pf.PROFILE_MIN_BASEQ_DEFAULT
+    assert captured["min_freq"] == cli.pf.PROFILE_MIN_FREQ_DEFAULT
     assert captured["min_read_ani"] == cli.pf.PROFILE_MIN_READ_ANI_DEFAULT
     assert captured["read_inclusion"] == cli.pf.PROFILE_READ_INCLUSION_DEFAULT
 
@@ -1901,6 +1906,8 @@ def test_profile_single_passes_custom_read_filters_to_profile_bam(tmp_path, monk
             "9",
             "--min-baseq",
             "17",
+            "--min-freq",
+            "0.02",
             "--min-read-ani",
             "0.96",
             "--read-inclusion",
@@ -1912,6 +1919,7 @@ def test_profile_single_passes_custom_read_filters_to_profile_bam(tmp_path, monk
     assert result.exit_code == 0, result.output
     assert captured["min_mapq"] == 9
     assert captured["min_baseq"] == 17
+    assert captured["min_freq"] == 0.02
     assert captured["min_read_ani"] == 0.96
     assert captured["read_inclusion"] == "paired"
 
@@ -2429,7 +2437,7 @@ def test_cli_adjust_sequence_errors(tmp_path):
     assert result.exit_code == 0
     adjusted = pl.read_parquet(output_path)
     assert adjusted.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]
-    assert set(adjusted.select("A", "C", "G", "T").rows()) == {(3, 0, 0, 0), (2, 0, 0, 0)}
+    assert set(adjusted.select("A", "C", "G", "T").rows()) == {(3, 0, 0, 0), (0, 0, 0, 0)}
 
 
 def test_cli_adjust_sequence_errors_rejects_same_input_output(tmp_path):
@@ -2495,7 +2503,10 @@ def test_profile_help_is_organized_into_sections_with_defaults():
     ):
         assert header in result.output
     # Defaults are surfaced for parameters that have them.
-    assert "[default: 0.001]" in result.output   # --error-rate
+    assert "[default: 0.01]" in result.output     # --error-rate
+    assert "[default: 50000]" in result.output    # --max-total-reads
+    assert "--min-freq FLOAT" in result.output
+    assert "0.0]" in result.output                 # --min-freq default
     assert "[default: 8]" in result.output        # --num-procs
     assert "[default: local]" in result.output    # --execution-mode
 

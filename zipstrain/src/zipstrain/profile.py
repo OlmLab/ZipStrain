@@ -30,6 +30,7 @@ MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 PROFILE_MIN_MAPQ_DEFAULT = 0
 PROFILE_MIN_BASEQ_DEFAULT = 13
+PROFILE_MIN_FREQ_DEFAULT = 0.0
 # Read-ANI floor applied by default so low-identity (typically mis-mapped) reads
 # do not inflate SNV calls; matches inStrain's default of 0.95.
 PROFILE_MIN_READ_ANI_DEFAULT = 0.95
@@ -106,6 +107,7 @@ def _validate_profile_filter_settings(
     min_baseq: int,
     min_read_ani: float | None,
     read_inclusion: str,
+    min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
 ) -> None:
     if min_mapq < 0:
         raise ValueError("min_mapq must be >= 0")
@@ -113,6 +115,8 @@ def _validate_profile_filter_settings(
         raise ValueError("min_baseq must be >= 0")
     if min_read_ani is not None and not (0.0 <= min_read_ani <= 1.0):
         raise ValueError("min_read_ani must be between 0 and 1")
+    if not 0.0 <= min_freq <= 1.0:
+        raise ValueError("min_freq must be between 0 and 1")
     if read_inclusion not in PROFILE_READ_INCLUSION_CHOICES:
         raise ValueError(
             f"read_inclusion must be one of: {', '.join(PROFILE_READ_INCLUSION_CHOICES)}"
@@ -317,17 +321,41 @@ def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
                 yield gene_id, scaffold,start,end
 
 
-def adjust_for_sequence_errors(mpile_frame:pl.LazyFrame, null_model:pl.LazyFrame) -> pl.LazyFrame:
+def adjust_for_sequence_errors(
+    mpile_frame: pl.LazyFrame,
+    null_model: pl.LazyFrame,
+    min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
+) -> pl.LazyFrame:
     """
     Adjust the mpile frame for sequence errors based on the null model.
     
     Args:
         mpile_frame (pl.LazyFrame): The input LazyFrame containing coverage data.
         null_model (pl.LazyFrame): The null model LazyFrame containing error counts.
+        min_freq (float): Minimum fraction of the original per-position A/C/G/T
+            coverage required to retain an allele count.
     
     Returns:
         pl.LazyFrame: Adjusted LazyFrame with sequence errors accounted for.
     """
+    if not 0.0 <= min_freq <= 1.0:
+        raise ValueError("min_freq must be between 0 and 1")
+
+    observed_max_cov = mpile_frame.select(
+        pl.sum_horizontal(["A", "T", "C", "G"]).max().alias("max_cov")
+    ).collect(engine="streaming").item()
+    null_model_max_cov = null_model.select(
+        pl.col("cov").max().alias("max_cov")
+    ).collect(engine="streaming").item()
+    if null_model_max_cov is None:
+        raise ValueError("Null model is empty.")
+    if observed_max_cov is not None and observed_max_cov > null_model_max_cov:
+        raise ValueError(
+            f"Observed coverage {observed_max_cov} exceeds the null-model maximum "
+            f"coverage {null_model_max_cov}. Rebuild the null model with "
+            f"--max-total-reads at least {observed_max_cov}."
+        )
+
     mpile_frame = mpile_frame.with_columns(
         pl.sum_horizontal(["A", "T", "C", "G"]).alias("cov")
     )
@@ -337,7 +365,10 @@ def adjust_for_sequence_errors(mpile_frame:pl.LazyFrame, null_model:pl.LazyFrame
         how="left",
         maintain_order="left",
     ).with_columns([
-        pl.when(pl.col(base) >= pl.col("max_error_count"))
+        pl.when(
+            (pl.col(base) > pl.col("max_error_count"))
+            & (pl.col(base).cast(pl.Float64) >= pl.col("cov") * min_freq)
+        )
         .then(pl.col(base))
         .otherwise(0)
         .alias(base)
@@ -349,6 +380,7 @@ def adjust_profile_parquet_for_sequence_errors(
     profile_parquet: pathlib.Path,
     null_model_parquet: pathlib.Path,
     output_file: pathlib.Path,
+    min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
 ) -> None:
     """
     Apply sequence-error adjustment to an existing profile parquet.
@@ -367,6 +399,7 @@ def adjust_profile_parquet_for_sequence_errors(
     adjusted = adjust_for_sequence_errors(
         mpile_frame=profile_scan,
         null_model=pl.scan_parquet(null_model_parquet),
+        min_freq=min_freq,
     )
     adjusted.select(input_columns).sink_parquet(
         output_path,
@@ -734,6 +767,7 @@ def _process_raw_profile_chunk_with_polars(
     scaffold_to_genome: pl.LazyFrame,
     gene_range: pl.LazyFrame,
     include_reference_base: bool = True,
+    min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
 ) -> None:
     """Adjust and annotate one coordinate-sorted raw chunk using Polars."""
     raw_columns = ["chrom", "pos", "A", "C", "G", "T"]
@@ -741,7 +775,11 @@ def _process_raw_profile_chunk_with_polars(
         raw_columns.append(utils.REF_BASE_BITMASK_COLUMN)
 
     raw_lf = pl.scan_parquet(raw_parquet).set_sorted(["chrom", "pos"])
-    adjusted = adjust_for_sequence_errors(raw_lf, null_model).select(raw_columns)
+    adjusted = adjust_for_sequence_errors(
+        raw_lf,
+        null_model,
+        min_freq=min_freq,
+    ).select(raw_columns)
     with_genome = add_genome_info_to_mpileup(
         mpileup_df=adjusted,
         scaffold_to_genome=scaffold_to_genome,
@@ -1182,6 +1220,7 @@ def _profile_chunk_task(
     chunk_id:int,
     min_mapq: int,
     min_baseq: int,
+    min_freq: float,
 )->None:
     include_reference_base = reference_fasta is not None
     raw_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.parquet"
@@ -1213,6 +1252,7 @@ def _profile_chunk_task(
         scaffold_to_genome=scaffold_to_genome,
         gene_range=gene_range,
         include_reference_base=include_reference_base,
+        min_freq=min_freq,
     )
     if _parquet_rows_are_coordinate_sorted(candidate_chunk_path):
         os.replace(candidate_chunk_path, final_chunk_path)
@@ -1267,6 +1307,7 @@ def profile_bam_in_chunks(
     min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
     min_read_ani: float | None = None,
     read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
+    min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1280,6 +1321,8 @@ def profile_bam_in_chunks(
     output_dir (pathlib.Path): Directory to save output files.
     num_chunks (int): Number of BED chunks to create.
     max_concurrency (int): Maximum number of chunks to process concurrently.
+    min_freq (float): Minimum fraction of the original per-position A/C/G/T
+        coverage required to retain an allele count.
     """
     
     output_dir=pathlib.Path(output_dir)
@@ -1293,6 +1336,7 @@ def profile_bam_in_chunks(
         min_baseq=min_baseq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
+        min_freq=min_freq,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1358,6 +1402,7 @@ def profile_bam_in_chunks(
                 chunk_id=chunk_id,
                 min_mapq=min_mapq,
                 min_baseq=min_baseq,
+                min_freq=min_freq,
             )
             for chunk_id, bed_chunk_file in enumerate(bed_chunk_files)
         ]
@@ -1434,6 +1479,7 @@ def profile_bam(
     min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
     min_read_ani: float | None = None,
     read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
+    min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1447,6 +1493,8 @@ def profile_bam(
     output_dir (pathlib.Path): Directory to save output files.
     num_chunks (int): Number of BED chunks to create.
     max_concurrency (int): Maximum number of chunks to process concurrently.
+    min_freq (float): Minimum fraction of the original per-position A/C/G/T
+        coverage required to retain an allele count.
     """
     profile_bam_in_chunks(
         bed_file=bed_file,
@@ -1463,6 +1511,7 @@ def profile_bam(
         min_baseq=min_baseq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
+        min_freq=min_freq,
     )
 
 
@@ -1519,9 +1568,9 @@ def prepare_profiling_assets(
     stb_file: str | pathlib.Path,
     output_dir: str | pathlib.Path,
     gene_fasta: str | pathlib.Path | None = None,
-    error_rate: float = 0.001,
-    max_total_reads: int = 10000,
-    p_threshold: float = 0.05,
+    error_rate: float = utils.NULL_MODEL_ERROR_RATE_DEFAULT,
+    max_total_reads: int = utils.NULL_MODEL_MAX_COVERAGE_DEFAULT,
+    p_threshold: float = utils.NULL_MODEL_P_THRESHOLD_DEFAULT,
     model_type: str = "poisson",
 ) -> ProfilingAssets:
     """Build every intermediate profiling asset into ``output_dir``.
@@ -1660,9 +1709,9 @@ def resolve_profiling_assets(
     genome_length_file: str | pathlib.Path | None = None,
     gene_range_table: str | pathlib.Path | None = None,
     profiling_contract_file: str | pathlib.Path | None = None,
-    error_rate: float = 0.001,
-    max_total_reads: int = 10000,
-    p_threshold: float = 0.05,
+    error_rate: float = utils.NULL_MODEL_ERROR_RATE_DEFAULT,
+    max_total_reads: int = utils.NULL_MODEL_MAX_COVERAGE_DEFAULT,
+    p_threshold: float = utils.NULL_MODEL_P_THRESHOLD_DEFAULT,
     model_type: str = "poisson",
     force_prepare: bool = False,
 ) -> ProfilingAssets:

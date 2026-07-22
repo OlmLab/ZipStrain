@@ -1,5 +1,6 @@
 from zipstrain import profile
 from zipstrain import cli as cli_module
+from zipstrain import utils
 import polars as pl
 import pytest
 from click.testing import CliRunner
@@ -43,6 +44,60 @@ def profile_1()->pl.LazyFrame:
         "C": c_chr1 + c_chr2 + c_chr3,
         "G": g_chr1 + g_chr2 + g_chr3,
     }).lazy()
+
+
+def test_null_model_defaults_and_poisson_boundary():
+    assert utils.NULL_MODEL_ERROR_RATE_DEFAULT == 0.01
+    assert utils.NULL_MODEL_MAX_COVERAGE_DEFAULT == 50_000
+    records = utils.build_null_poisson(max_total_reads=1_000)
+    assert len(records) == 1_000
+    # At 1% total error and 1,000x depth, seven observations are still
+    # compatible with error; an allele must have at least eight to survive.
+    assert records[-1] == (1_000, 7)
+
+
+def test_adjust_for_sequence_errors_uses_strict_ceiling_and_min_freq():
+    raw = pl.DataFrame(
+        {"A": [90], "C": [5], "G": [4], "T": [1]}
+    ).lazy()
+    null_model = pl.DataFrame(
+        {"cov": [100], "max_error_count": [4]}
+    ).lazy()
+
+    adjusted = profile.adjust_for_sequence_errors(
+        raw,
+        null_model,
+        min_freq=0.05,
+    ).collect()
+
+    # C is exactly at the frequency cutoff and survives; G is exactly at the
+    # null-model ceiling and is removed.
+    assert adjusted.select("A", "C", "G", "T").row(0) == (90, 5, 0, 0)
+
+
+def test_adjust_for_sequence_errors_rejects_coverage_above_model_limit():
+    raw = pl.DataFrame(
+        {"A": [101], "C": [0], "G": [0], "T": [0]}
+    ).lazy()
+    null_model = pl.DataFrame(
+        {"cov": [100], "max_error_count": [4]}
+    ).lazy()
+
+    with pytest.raises(ValueError, match="Observed coverage 101 exceeds"):
+        profile.adjust_for_sequence_errors(raw, null_model)
+
+
+@pytest.mark.parametrize("min_freq", [-0.01, 1.01])
+def test_adjust_for_sequence_errors_rejects_invalid_min_freq(min_freq):
+    raw = pl.DataFrame(
+        {"A": [1], "C": [0], "G": [0], "T": [0]}
+    ).lazy()
+    null_model = pl.DataFrame(
+        {"cov": [1], "max_error_count": [0]}
+    ).lazy()
+
+    with pytest.raises(ValueError, match="min_freq must be between 0 and 1"):
+        profile.adjust_for_sequence_errors(raw, null_model, min_freq=min_freq)
     
 
 def test_duckdb_chunk_annotation_matches_polars_for_unsorted_chunk(tmp_path: Path):

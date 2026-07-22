@@ -75,7 +75,7 @@ The core output: one row per reference position with the observed base counts. T
 | `genome` | Genome the scaffold belongs to (`NA` if unbinned) |
 | `gene` | Gene at this position (`NA` if none / unannotated) |
 | `pos` | Position on the scaffold (**1-based**) |
-| `A`, `C`, `G`, `T` | Read counts of each base at this position |
+| `A`, `C`, `G`, `T` | Read counts that pass both the Poisson error ceiling and `--min-freq` allele-frequency filter |
 | `ref_base_bitmask` | Reference base as a bitmask: **A = 1, C = 2, G = 4, T = 8** (`0` = reference base unknown). Only present when `--reference-fasta` was used |
 
 Example:
@@ -85,6 +85,8 @@ chrom                    genome           gene  pos      A   C   G   T   ref_bas
 GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892095  0   51  0   0   0
 GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 ```
+
+The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. `--min-freq` is applied against the original A+C+G+T depth before any allele is removed and defaults to `0`. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.
 
 ### `<sample>_SNVs.parquet`
 

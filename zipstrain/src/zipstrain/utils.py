@@ -20,6 +20,11 @@ from collections import Counter
 from scipy.stats import poisson
 import subprocess
 import duckdb
+import numpy as np
+
+NULL_MODEL_ERROR_RATE_DEFAULT = 0.01
+NULL_MODEL_MAX_COVERAGE_DEFAULT = 50_000
+NULL_MODEL_P_THRESHOLD_DEFAULT = 0.05
 
 CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
 REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
@@ -518,9 +523,11 @@ class EstimateAbundance:
 
 
 
-def build_null_poisson(error_rate:float=0.001,
-                       max_total_reads:int=10000,
-                       p_threshold:float=0.05)->list[float]:
+def build_null_poisson(
+    error_rate: float = NULL_MODEL_ERROR_RATE_DEFAULT,
+    max_total_reads: int = NULL_MODEL_MAX_COVERAGE_DEFAULT,
+    p_threshold: float = NULL_MODEL_P_THRESHOLD_DEFAULT,
+) -> list[tuple[int, int]]:
     """
     Build a null model to correct for sequencing errors based on the Poisson distribution.
 
@@ -530,16 +537,21 @@ def build_null_poisson(error_rate:float=0.001,
     p_threshold (float): Significance threshold for the Poisson distribution.
 
     Returns:
-    pl.DataFrame: DataFrame containing total reads and maximum error count thresholds.
+    list[tuple[int, int]]: Coverage and maximum plausible error-count pairs.
     """ 
-    records = []
-    for n in range(1, max_total_reads + 1):
-        lam = n * (error_rate / 3)
-        k = 0
-        while poisson.sf(k - 1, lam) > p_threshold:
-            k += 1
-        records.append((n, k - 1))
-    return records
+    if not 0.0 <= error_rate <= 1.0:
+        raise ValueError("error_rate must be between 0 and 1")
+    if max_total_reads < 1:
+        raise ValueError("max_total_reads must be >= 1")
+    if not 0.0 < p_threshold < 1.0:
+        raise ValueError("p_threshold must be between 0 and 1")
+
+    coverage = np.arange(1, max_total_reads + 1, dtype=np.int64)
+    lambdas = coverage.astype(np.float64) * (error_rate / 3.0)
+    # This is the largest count still compatible with the error model.
+    # Profiling retains only counts strictly greater than this value.
+    max_error_counts = poisson.isf(p_threshold, lambdas).astype(np.int64)
+    return list(zip(coverage.tolist(), max_error_counts.tolist()))
 
 
 

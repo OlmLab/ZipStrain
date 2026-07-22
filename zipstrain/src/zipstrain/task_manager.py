@@ -507,6 +507,7 @@ class ProfileTaskGenerator(TaskGenerator):
         num_procs: int = 4,
         min_mapq: int = 0,
         min_baseq: int = 13,
+        min_freq: float = 0.0,
         min_read_ani: float | None = None,
         read_inclusion: str = "all-mapped",
     ) -> None:
@@ -521,6 +522,7 @@ class ProfileTaskGenerator(TaskGenerator):
         self.num_procs = num_procs
         self.min_mapq = min_mapq
         self.min_baseq = min_baseq
+        self.min_freq = min_freq
         self.min_read_ani = min_read_ani
         self.read_inclusion = read_inclusion
         self.engine = container_engine
@@ -588,6 +590,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 "max-concurrency": IntInput(self.num_procs),
                 "min-mapq": IntInput(self.min_mapq),
                 "min-baseq": IntInput(self.min_baseq),
+                "min-freq": StringInput(str(self.min_freq)),
                 "min-read-ani-arg": StringInput(min_read_ani_arg),
                 "read-inclusion": StringInput(self.read_inclusion),
                 }
@@ -1729,6 +1732,7 @@ class ProfileBamTask(Task):
     --max-concurrency <max-concurrency> \
     --min-mapq <min-mapq> \
     --min-baseq <min-baseq> \
+    --min-freq <min-freq> \
     <min-read-ani-arg> \
     --read-inclusion <read-inclusion> \
     --output-dir .
@@ -1986,6 +1990,7 @@ def lazy_run_profile(
     num_procs:int=8,
     min_mapq: int = 0,
     min_baseq: int = 13,
+    min_freq: float = 0.0,
     min_read_ani: float | None = None,
     read_inclusion: str = "all-mapped",
     tasks_per_batch: int = 10,
@@ -2008,6 +2013,7 @@ def lazy_run_profile(
         num_procs=num_procs,
         min_mapq=min_mapq,
         min_baseq=min_baseq,
+        min_freq=min_freq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
     )

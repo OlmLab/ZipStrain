@@ -1,5 +1,5 @@
-params.error_rate=0.001
-params.max_total_reads=10000
+params.error_rate=0.01
+params.max_total_reads=50000
 params.p_threshold=0.05
 params.mode = null
 params.parallel_mode="batched"
@@ -18,6 +18,7 @@ params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
 params.min_mapq=0
 params.min_baseq=13
+params.min_freq=0.0
 params.min_read_ani=0.95
 params.read_inclusion="paired"
 params.sylph_db = null
@@ -299,6 +300,7 @@ process profile_bam {
                         --max-concurrency ${task.cpus} \\
                         --min-mapq ${params.min_mapq} \\
                         --min-baseq ${params.min_baseq} \\
+                        --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
                         --output-dir .
@@ -514,6 +516,7 @@ process fromSRAtoProfile{
                         --max-concurrency ${task.cpus} \\
                         --min-mapq ${params.min_mapq} \\
                         --min-baseq ${params.min_baseq} \\
+                        --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
                         --output-dir .
@@ -600,6 +603,7 @@ process fromSRAtoProfileBuildDb{
         --max-concurrency ${task.cpus} \\
         --min-mapq ${params.min_mapq} \\
         --min-baseq ${params.min_baseq} \\
+        --min-freq ${params.min_freq} \\
         --min-read-ani ${params.min_read_ani} \\
         --read-inclusion ${params.read_inclusion} \\
         --output-dir .

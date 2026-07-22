@@ -204,7 +204,8 @@ Major options:
 - `-i, --input-table`, `-f, --reference-fasta`, `-s, --stb-file`, `-r, --run-dir` (required)
 - `--gene-fasta` — enables gene-level profiling (auto-generates a gene range table)
 - `-u/-b/-l/-g/--profiling-contract` — supply pre-built assets to override auto-generation; `--force-prepare` regenerates them all
-- Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain); pass `--min-read-ani 0 --read-inclusion all-mapped` for the old permissive behavior
+- Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain).
+- Allele filters: the Poisson null model assumes a 1% total error rate by default and removes counts at or below its error ceiling. `--min-freq` (0) can additionally remove alleles below a chosen within-position frequency; for example, `--min-freq 0.01` requires at least 1%. The denominator is the original A+C+G+T depth before allele filtering.
 - Presence & SNVs: `--no-snvs`, `--snv-min-cov` (5), `--presence-ber` (0.5), `--presence-fug` (1.0), `--presence-min-cov-use-fug` (2.0), `--presence-min-coverage` (0.1), `--genome-taxonomy`
 - Execution: `-n, --num-procs` (8), `-m, --max-concurrent-batches` (5), `-t, --task-per-batch` (10), `-e, --execution-mode` (`local`/`slurm`), `-c, --slurm-config`, `-o, --container-engine`, `--container-address`
 
@@ -259,9 +260,9 @@ Optional pre-built assets (auto-generated if omitted):
 
 Profiling parameters:
   --error-rate FLOAT              Error rate used when auto-generating the
-                                  null model.  [default: 0.001]
+                                  null model.  [default: 0.01]
   --max-total-reads INTEGER       Maximum coverage considered when auto-
-                                  generating the null model.  [default: 10000]
+                                  generating the null model.  [default: 50000]
   --p-threshold FLOAT             Significance threshold used when auto-
                                   generating the null model.  [default: 0.05]
   --model-type [poisson]          Null model type used when auto-generating
@@ -272,6 +273,9 @@ Profiling parameters:
                                   used during profiling.  [default: 0]
   --min-baseq INTEGER             Minimum base quality for a base to be
                                   counted during profiling.  [default: 13]
+  --min-freq FLOAT                Minimum within-position allele frequency to
+                                  retain after null-model filtering.
+                                  [default: 0.0]
   --min-read-ani FLOAT            Minimum read ANI (from the NM tag / aligned
                                   span) to use a read; filters low-identity/mis-
                                   mapped reads. Reads lacking an NM tag are
@@ -581,8 +585,8 @@ Options:
 - `-r, --reference-fasta` (required)
 - `-g, --gene-fasta` (optional)
 - `-s, --stb-file` (required)
-- `-e, --error-rate` (default: `0.001`)
-- `-m, --max-total-reads` (default: `10000`)
+- `-e, --error-rate` (default: `0.01`)
+- `-m, --max-total-reads` (default: `50000`)
 - `-p, --p-threshold` (default: `0.05`)
 - `-t, --model-type` (default: `poisson`)
 - `-o, --output-dir` (required)
@@ -624,6 +628,7 @@ Options:
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
 - `--min-mapq` (default: `0`)
 - `--min-baseq` (default: `13`)
+- `--min-freq` (default: `0`) — after the null-model test, retain an allele only when `count / original A+C+G+T coverage >= min_freq`
 - `--min-read-ani` (default: `0.95`) — filters low-identity / mis-mapped reads before pileup using the BAM `NM` tag and aligned query span; reads without an `NM` tag are kept; pass `0` to disable
 - `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `paired`)
 - `-o, --output-dir` (required)
@@ -639,6 +644,8 @@ Outputs include:
 - `<sample>_profile.parquet`
 - `<sample>_genome_stats.parquet`
 - `<sample>_gene_stats.parquet`
+
+`zipstrain utilities adjust-sequence-errors` applies the same strict null-model boundary to an existing profile parquet. It also accepts `--min-freq` with the same definition and default (`0`) as profiling. If the profile contains coverage above the supplied model, the command fails and reports the minimum `--max-total-reads` needed to rebuild that model.
 
 When `--reference-fasta` is provided during profiling, the profile parquet includes `ref_base_bitmask`.
 In the same case, the generated genome and gene stat tables also include a `ref_ani` column.
@@ -1275,7 +1282,8 @@ Conventions used by every example below:
 - `--sylph_db` / `--sylph_db_link`: path to the Sylph database, or the URL to download it from if the path is missing (defaults to the GTDB r220 database).
 - `--genome_db_cache_dir`: cache directory for genomes downloaded during Sylph-based reference building.
 - `--prefetch_max_size` (default `200g`): SRA Toolkit prefetch size limit for SRA modes.
-- `--min_mapq`, `--min_baseq`, `--min_read_ani`, `--read_inclusion`: profiling read/base filters passed through to `zipstrain utilities profile-single`.
+- `--error_rate` (default `0.01`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.05`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
+- `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0`.
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows.
 - `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).

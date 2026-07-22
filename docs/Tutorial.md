@@ -146,7 +146,7 @@ zipstrain profile \
 ```
 
 
-Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. A per-sample null model (built automatically from the error rate) decides which minority alleles are real variants versus sequencing noise. The result is one profile per sample plus genome- and gene-level summary statistics.
+Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. An automatically generated Poisson null model (1% total error rate by default) removes allele counts at or below the sequencing-error ceiling. The optional `--min-freq` filter then removes alleles below a chosen fraction of the original A+C+G+T depth; it defaults to `0`, so frequency filtering is off unless requested. The result is one profile per sample plus genome- and gene-level summary statistics.
 
 After a successful run the output directory is organized like this:
 
@@ -170,7 +170,7 @@ python -c "import polars as pl; print(pl.read_parquet('out_profile/N5_271_010G1/
 ```
 
 !!! tip "Gene profiling and tuning"
-    Pass `--gene-fasta` to enable gene-level profiling, or the null-model options (`--error-rate`, `--max-total-reads`, `--p-threshold`) to tune SNV calling. Use `--force-prepare` to rebuild the cached assets. Run `zipstrain profile -h` to see all options grouped by category.
+    Pass `--gene-fasta` to enable gene-level profiling, use the null-model options (`--error-rate`, `--max-total-reads`, `--p-threshold`) to tune sequencing-error filtering, or set `--min-freq 0.01` to require a 1% allele frequency. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use `--force-prepare` to rebuild cached assets after changing null-model parameters. Run `zipstrain profile -h` to see all options grouped by category.
 
 ??? note "Preparing assets separately (advanced / cluster use)"
     You can still build the intermediate files ahead of time with `zipstrain utilities prepare_profiling` and pass them in explicitly via `--null-model`, `--bed-file`, `--genome-length-file`, etc. This is useful on clusters where you prepare once and profile many BAMs across nodes, and it is the path the Nextflow pipeline uses internally.

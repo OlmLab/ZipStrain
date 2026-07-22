@@ -7,6 +7,8 @@ Entries are brief by design and describe changes relative to the previous releas
 Compared with `1.0.0`:
 
 - Readability: clarified several dense methods without changing behavior — the ANI expressions in `PolarsANIExpressions` (`popani`, `conani`, `generalized_cos_ani`) now cast base counts to `Int64` once up front instead of repeating the cast inline on every column, and the contiguous-block grouping in `add_contiguity_info` spells out its break conditions. Outputs are unchanged.
+- Profiling: fixed the null-model boundary so counts equal to the maximum plausible error count are removed; raised the default assumed error rate to 1% and the default coverage ceiling to 50,000; coverage above that ceiling now fails explicitly instead of being silently zeroed.
+- Profiling: added `--min-freq` (default `0`) to the CLI, task-manager, and Nextflow profiling paths for optional within-position allele-frequency filtering.
 
 ## 1.0.0
 

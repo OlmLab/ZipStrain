@@ -313,6 +313,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
     assert expected_outputs["profile"]._expected_file_name == "sample_1_profile.parquet"
     assert expected_outputs["genome-stats"]._expected_file_name == "sample_1_genome_stats.parquet"
     assert expected_outputs["gene-stats"]._expected_file_name == "sample_1_gene_stats.parquet"
+    assert tasks[0].inputs["min-freq"].get_value() == "0.0"
 
 
 def test_profile_bam_task_template_moves_gene_stats():
@@ -323,6 +324,7 @@ def test_profile_bam_task_template_moves_gene_stats():
     assert "<profiling-contract-arg>" in cmd
     assert "--min-mapq <min-mapq>" in cmd
     assert "--min-baseq <min-baseq>" in cmd
+    assert "--min-freq <min-freq>" in cmd
     assert "<min-read-ani-arg>" in cmd
     assert "--read-inclusion <read-inclusion>" in cmd
     assert "--null-model null_model.parquet" in cmd
