@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>popANI depth bias - ZipStrain</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+        <link href="../assets/paramsel.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "popANI depth bias";
+        var mkdocs_page_input_path = "parameter_selection/index.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> ZipStrain
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../quickstart/">Quick Start</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../usermanual/">User Manual</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../expected_output/">Expected output</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Parameter selection guide</span></p>
+              <ul class="current">
+                  <li class="toctree-l1 current"><a class="reference internal current" >Profiling parameters</a>
+    <ul class="current">
+                <li class="toctree-l2 current"><a class="reference internal current" href="#">popANI depth bias</a>
+    <ul class="current">
+    <li class="toctree-l3"><a class="reference internal" href="#the-problem">The problem</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#seeing-it-ani-across-depth">Seeing it: ANI across depth</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#the-headline-two-knobs-the-same-cure">The headline: two knobs, the same cure</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#the-cost-essentially-none">The cost: essentially none</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#recommendation">Recommendation</a>
+    </li>
+    </ul>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">ZipStrain</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Parameter selection guide</li>
+          <li class="breadcrumb-item">Profiling parameters</li>
+      <li class="breadcrumb-item active">popANI depth bias</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="keeping-popani-honest-across-depth">Keeping popANI honest across depth</h1>
+<p>popANI creeps upward as sequencing depth goes up, far enough to push a genuine same-strain pair over
+the "same clone" line for no biological reason.</p>
+<p>This is one of the <strong>profiling parameter</strong> guides. It covers two choices you make together: how
+strict to build the <strong>sequencing-error null model</strong> (its error rate, plus an optional <code>min_freq</code>
+post-filter), and which <strong>ANI metric</strong> to pair it with (<code>popANI</code>, <code>cosANI</code>, or <code>conANI</code>). Get these
+right and the score stays stable across sequencing depth. The rest of the page shows the effect,
+measures three ways to remove it, and recommends what ZipStrain ships with.</p>
+<div class="admonition note">
+<p class="admonition-title">Test data</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Pair</strong></td>
+<td>SRR30025063 × SRR30025566</td>
+</tr>
+<tr>
+<td><strong>Genome</strong></td>
+<td>GCF_900475675.1</td>
+</tr>
+<tr>
+<td><strong>Relationship</strong></td>
+<td>Known same strain</td>
+</tr>
+<tr>
+<td><strong>Depth axis</strong></td>
+<td>f005 / f025 / f050 / f100</td>
+</tr>
+</tbody>
+</table>
+<p>A single reference pair that we know carries the same strain is downsampled to four read
+fractions. Because the biology never changes, any movement in ANI across those fractions is pure
+depth bias, which makes this pair an ideal ruler.</p>
+</div>
+<h2 id="the-problem">The problem</h2>
+<p>popANI calls a position "shared" when the two samples have <strong>at least one allele in common</strong>. Deeper
+sequencing turns up more alleles, both real rare variants and leftover sequencing error, so more
+positions clear that low bar and the score creeps toward 100.</p>
+<p>To pin this down, we ran a simple experiment. We took <strong>one pair of samples that we know carry the
+same strain</strong> and subsampled their raw reads to four increasing depths (<code>f005 → f100</code>). That gives us
+a depth axis while the biology stays completely fixed: the same pair, the same genome, just more or
+fewer reads. So anything that moves in popANI across those depths is a depth artefact, not real
+signal. On this pair, popANI climbs steadily from <strong>99.9227</strong> at the shallowest depth to <strong>99.9920</strong>
+at full depth, crossing the <code>99.99</code> "same clone" line for no reason other than the reads we added.
+Everything that follows is about removing that artefact: flattening the depth curve while leaving the
+real same-versus-different-strain signal alone.</p>
+<h2 id="seeing-it-ani-across-depth">Seeing it: ANI across depth</h2>
+<p>Each line is one ANI method. A flat line means the method is depth-invariant; a rising line is the
+inflation. The dashed and dotted curves are the compare-time <code>min_freq</code> references. The y-axis is
+zoomed into the top fraction of a percent so the small differences are actually visible.</p>
+<div class="zs-tabs" id="depthtabs"><div class="zs-tabbar"><button class="zs-tab active" data-t="t1c">Both samples deepen together</button><button class="zs-tab" data-t="t1a">Sample 1 varies</button><button class="zs-tab" data-t="t1b">Sample 2 varies</button></div><div class="zs-panel active" id="t1c"><div class="zs-plotwrap"><iframe class="zs-plot" src="fig1c_matched_depths.html" style="width:1410px;height:1600px" loading="lazy"></iframe></div><p class="zs-cap">Matched downsampling. As both samples get deeper (f005 to f100), popANI climbs while cosANI, conANI and the compare-time min_freq references stay flat. Each small panel is one null-model setting.</p></div><div class="zs-panel" id="t1a"><div class="zs-plotwrap"><iframe class="zs-plot" src="fig1a_sample1_varies.html" style="width:1410px;height:1600px" loading="lazy"></iframe></div><p class="zs-cap">Only Sample 1 is downsampled, with Sample 2 held at full depth.</p></div><div class="zs-panel" id="t1b"><div class="zs-plotwrap"><iframe class="zs-plot" src="fig1b_sample2_varies.html" style="width:1410px;height:1600px" loading="lazy"></iframe></div><p class="zs-cap">Only Sample 2 is downsampled while Sample 1 stays at full depth. It is the mirror image, which confirms the effect is symmetric.</p></div></div>
+
+<h2 id="the-headline-two-knobs-the-same-cure">The headline: two knobs, the same cure</h2>
+<p>You can attack the bias at two stages: a stricter sequencing-error <strong>null model</strong> (the rows) or a
+stricter <strong>ANI metric</strong> (the columns). The grid below shows the residual depth bias for every
+combination, and darker means flatter.</p>
+<div class="zs-plotwrap"><iframe class="zs-plot" src="fig2_residual_bias_heatmap.html" style="width:860px;height:700px" loading="lazy"></iframe></div>
+<p class="zs-cap">Residual depth bias, measured as max minus min ANI across depth. Reading down a column shows what the null model buys you at a fixed metric; reading across a row shows what the metric buys you at a fixed null model. Both routes reach the same near-flat floor, and they overlap: they are correcting the <em>same</em> error, so stacking them buys you very little.</p>
+
+<p>Two settings are enough on their own: a null model built at a <strong>1% error rate</strong> (span 0.009) and
+<strong>cosANI at a threshold of 0.01</strong> (span 0.002). Either one pulls the bias down from 0.069 into the
+range of ordinary measurement noise.</p>
+<h2 id="the-cost-essentially-none">The cost: essentially none</h2>
+<p>A fix that flattens the curve by throwing away data would be a hollow win. That is not what happens
+here. Every correction leaves the number of compared positions basically untouched (around 1.71M),
+so the choice between them comes down to <em>where</em> the correction lives, not to lost data.</p>
+<div class="zs-plotwrap"><iframe class="zs-plot" src="fig3_fixes_bias_vs_breadth.html" style="width:1260px;height:770px" loading="lazy"></iframe></div>
+<p class="zs-cap">Each fix on its own: bias removed on the left (lower is better) against positions kept on the right (higher is better). The right-hand bars are all about the same height, so none of the fixes costs meaningful breadth on this pair.</p>
+
+<h2 id="recommendation">Recommendation</h2>
+<div class="admonition tip">
+<p class="admonition-title">Recommended parameters</p>
+<p><strong>Pick one: a 1% null model, or cosANI at 0.01.</strong> Either one removes the depth bias on its own.
+They correct the same error, so there is no reason to apply both.</p>
+<p><strong>If you want your profiles to stay general, keep the null model loose and use cosANI.</strong> A loose
+null model at profiling time keeps all of the profile's allele detail, so the same profiles work
+for any downstream comparison. You then apply the depth correction later, at compare time, with
+cosANI, and you can change the cosANI threshold whenever you like without re-profiling. Baking a
+strict null model into the profile does the opposite: it throws away information up front and
+locks one level of strictness into the file.</p>
+<p><strong>Why there is no compare-time <code>min_freq</code> option.</strong> A frequency filter applied only at compare
+time reproduces cosANI almost exactly (a depth span of 0.003 versus 0.002 at the 0.01 level). It
+adds nothing new, and because it runs as a custom per-comparison step it slows things down. So its
+job lives in the two places that already do it efficiently: <strong>null-model generation</strong> at profile
+time, and <strong>cosANI</strong> at compare time.</p>
+</div>
+<hr />
+<p class="zs-foot">Depth-bias parameter study. One same-strain pair (SRR30025063 × SRR30025566,
+GCF_900475675.1), four read fractions, swept over null-model strictness, ANI metric, and a
+compare-time frequency filter. The figures are interactive, so hover for exact values.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../downstream/" class="btn btn-neutral float-left" title="Downstream Analyses"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../api/" class="btn btn-neutral float-right" title="API">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../downstream/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../api/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../assets/paramsel_tabs.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

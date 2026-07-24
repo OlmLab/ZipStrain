@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="../css/theme_extra.css" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
         <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+        <link href="../assets/paramsel.css" rel="stylesheet" />
     
       <script>
         // Current page data
@@ -83,6 +84,15 @@
               <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
                 </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Parameter selection guide</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" >Profiling parameters</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../parameter_selection/">popANI depth bias</a>
+                </li>
+    </ul>
+                  </li>
               </ul>
               <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
@@ -271,7 +281,7 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 </tr>
 <tr>
 <td><code>A</code>, <code>C</code>, <code>G</code>, <code>T</code></td>
-<td>Read counts of each base at this position</td>
+<td>Read counts that pass both the Poisson error ceiling and <code>--min-freq</code> allele-frequency filter</td>
 </tr>
 <tr>
 <td><code>ref_base_bitmask</code></td>
@@ -284,6 +294,7 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892095  0   51  0   0   0
 GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 </code></pre></div>
+<p>The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. <code>--min-freq</code> is applied against the original A+C+G+T depth before any allele is removed and defaults to <code>0</code>. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.</p>
 <h3 id="sample_snvsparquet"><code>&lt;sample&gt;_SNVs.parquet</code></h3>
 <p>Every covered position that is <strong>divergent</strong> from the reference — either polymorphic or a substitution — classified in the style of inStrain's <code>SNVs.tsv</code>. Skipped without <code>--reference-fasta</code> (or with <code>--no-snvs</code>). Because the profile counts are sequence-error adjusted, a base with <code>count &gt; 0</code> is a "passing" allele.</p>
 <table>
@@ -428,6 +439,7 @@ SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           10
     <script>var base_url = "..";</script>
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
+      <script src="../assets/paramsel_tabs.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);

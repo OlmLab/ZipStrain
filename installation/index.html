@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="../css/theme_extra.css" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
         <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+        <link href="../assets/paramsel.css" rel="stylesheet" />
     
       <script>
         // Current page data
@@ -105,6 +106,15 @@
               <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
                 </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Parameter selection guide</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" >Profiling parameters</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../parameter_selection/">popANI depth bias</a>
+                </li>
+    </ul>
+                  </li>
               </ul>
               <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
@@ -282,7 +292,7 @@ docker<span class="w"> </span>run<span class="w"> </span>-it<span class="w"> </s
 <tbody>
 <tr>
 <td>zipstrain</td>
-<td>1.0.0</td>
+<td>1.0.1</td>
 <td>—</td>
 </tr>
 <tr>
@@ -400,7 +410,7 @@ conda<span class="w"> </span>install<span class="w"> </span>-c<span class="w"> <
 </tr>
 <tr>
 <td>ZipStrain container</td>
-<td><code>parsaghadermazi/zipstrain:1.0.0</code></td>
+<td><code>parsaghadermazi/zipstrain:1.0.1</code></td>
 </tr>
 </tbody>
 </table>
@@ -450,6 +460,7 @@ conda<span class="w"> </span>install<span class="w"> </span>-c<span class="w"> <
     <script>var base_url = "..";</script>
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
+      <script src="../assets/paramsel_tabs.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);

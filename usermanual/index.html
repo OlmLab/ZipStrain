@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="../css/theme_extra.css" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
         <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+        <link href="../assets/paramsel.css" rel="stylesheet" />
     
       <script>
         // Current page data
@@ -163,6 +164,15 @@
               <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
                 </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Parameter selection guide</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" >Profiling parameters</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../parameter_selection/">popANI depth bias</a>
+                </li>
+    </ul>
+                  </li>
               </ul>
               <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
@@ -365,7 +375,8 @@ zipstrain<span class="w"> </span>profile<span class="w"> </span><span class="se"
 <li><code>-i, --input-table</code>, <code>-f, --reference-fasta</code>, <code>-s, --stb-file</code>, <code>-r, --run-dir</code> (required)</li>
 <li><code>--gene-fasta</code> — enables gene-level profiling (auto-generates a gene range table)</li>
 <li><code>-u/-b/-l/-g/--profiling-contract</code> — supply pre-built assets to override auto-generation; <code>--force-prepare</code> regenerates them all</li>
-<li>Read filters: <code>--min-mapq</code> (0), <code>--min-baseq</code> (13), <code>--min-read-ani</code> (0.95), <code>--read-inclusion</code> (<code>paired</code>). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain); pass <code>--min-read-ani 0 --read-inclusion all-mapped</code> for the old permissive behavior</li>
+<li>Read filters: <code>--min-mapq</code> (0), <code>--min-baseq</code> (13), <code>--min-read-ani</code> (0.95), <code>--read-inclusion</code> (<code>paired</code>). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain).</li>
+<li>Allele filters: the Poisson null model assumes a 1% total error rate by default and removes counts at or below its error ceiling. <code>--min-freq</code> (0) can additionally remove alleles below a chosen within-position frequency; for example, <code>--min-freq 0.01</code> requires at least 1%. The denominator is the original A+C+G+T depth before allele filtering.</li>
 <li>Presence &amp; SNVs: <code>--no-snvs</code>, <code>--snv-min-cov</code> (5), <code>--presence-ber</code> (0.5), <code>--presence-fug</code> (1.0), <code>--presence-min-cov-use-fug</code> (2.0), <code>--presence-min-coverage</code> (0.1), <code>--genome-taxonomy</code></li>
 <li>Execution: <code>-n, --num-procs</code> (8), <code>-m, --max-concurrent-batches</code> (5), <code>-t, --task-per-batch</code> (10), <code>-e, --execution-mode</code> (<code>local</code>/<code>slurm</code>), <code>-c, --slurm-config</code>, <code>-o, --container-engine</code>, <code>--container-address</code></li>
 </ul>
@@ -419,9 +430,9 @@ Optional pre-built assets (auto-generated if omitted):
 
 Profiling parameters:
   --error-rate FLOAT              Error rate used when auto-generating the
-                                  null model.  [default: 0.001]
+                                  null model.  [default: 0.01]
   --max-total-reads INTEGER       Maximum coverage considered when auto-
-                                  generating the null model.  [default: 10000]
+                                  generating the null model.  [default: 50000]
   --p-threshold FLOAT             Significance threshold used when auto-
                                   generating the null model.  [default: 0.05]
   --model-type [poisson]          Null model type used when auto-generating
@@ -432,6 +443,9 @@ Profiling parameters:
                                   used during profiling.  [default: 0]
   --min-baseq INTEGER             Minimum base quality for a base to be
                                   counted during profiling.  [default: 13]
+  --min-freq FLOAT                Minimum within-position allele frequency to
+                                  retain after null-model filtering.
+                                  [default: 0.0]
   --min-read-ani FLOAT            Minimum read ANI (from the NM tag / aligned
                                   span) to use a read; filters low-identity/mis-
                                   mapped reads. Reads lacking an NM tag are
@@ -783,8 +797,8 @@ Commands:
 <li><code>-r, --reference-fasta</code> (required)</li>
 <li><code>-g, --gene-fasta</code> (optional)</li>
 <li><code>-s, --stb-file</code> (required)</li>
-<li><code>-e, --error-rate</code> (default: <code>0.001</code>)</li>
-<li><code>-m, --max-total-reads</code> (default: <code>10000</code>)</li>
+<li><code>-e, --error-rate</code> (default: <code>0.01</code>)</li>
+<li><code>-m, --max-total-reads</code> (default: <code>50000</code>)</li>
 <li><code>-p, --p-threshold</code> (default: <code>0.05</code>)</li>
 <li><code>-t, --model-type</code> (default: <code>poisson</code>)</li>
 <li><code>-o, --output-dir</code> (required)</li>
@@ -822,6 +836,7 @@ Commands:
 <li><code>-c, --max-concurrency</code> (default: <code>4</code>) — how many chunks run simultaneously</li>
 <li><code>--min-mapq</code> (default: <code>0</code>)</li>
 <li><code>--min-baseq</code> (default: <code>13</code>)</li>
+<li><code>--min-freq</code> (default: <code>0</code>) — after the null-model test, retain an allele only when <code>count / original A+C+G+T coverage &gt;= min_freq</code></li>
 <li><code>--min-read-ani</code> (default: <code>0.95</code>) — filters low-identity / mis-mapped reads before pileup using the BAM <code>NM</code> tag and aligned query span; reads without an <code>NM</code> tag are kept; pass <code>0</code> to disable</li>
 <li><code>--read-inclusion</code> (<code>proper-pairs|paired|all-mapped</code>, default: <code>paired</code>)</li>
 <li><code>-o, --output-dir</code> (required)</li>
@@ -838,6 +853,7 @@ Commands:
 <li><code>&lt;sample&gt;_genome_stats.parquet</code></li>
 <li><code>&lt;sample&gt;_gene_stats.parquet</code></li>
 </ul>
+<p><code>zipstrain utilities adjust-sequence-errors</code> applies the same strict null-model boundary to an existing profile parquet. It also accepts <code>--min-freq</code> with the same definition and default (<code>0</code>) as profiling. If the profile contains coverage above the supplied model, the command fails and reports the minimum <code>--max-total-reads</code> needed to rebuild that model.</p>
 <p>When <code>--reference-fasta</code> is provided during profiling, the profile parquet includes <code>ref_base_bitmask</code>.
 In the same case, the generated genome and gene stat tables also include a <code>ref_ani</code> column.</p>
 <p><code>ref_ani</code> is the percentage of covered sites whose observed allele set still contains the reference allele after ZipStrain's sequence-error adjustment.</p>
@@ -1347,7 +1363,7 @@ zipstrain<span class="w"> </span><span class="nb">test</span><span class="w"> </
 <p>You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a <code>nextflow.config</code> that:</p>
 <ul>
 <li>enables <strong>Docker by default</strong> (with <code>--platform linux/amd64</code> for Apple Silicon), so a laptop run needs no <code>-profile</code>;</li>
-<li>sets the default container to <code>parsaghadermazi/zipstrain:1.0.0</code>;</li>
+<li>sets the default container to <code>parsaghadermazi/zipstrain:1.0.1</code>;</li>
 <li>declares <code>zipstrain.nf</code> as the main script (so <code>-main-script</code> is not needed);</li>
 <li><code>includeConfig</code>s <code>conf.config</code>, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.</li>
 </ul>
@@ -1411,7 +1427,8 @@ zipstrain<span class="w"> </span><span class="nb">test</span><span class="w"> </
 <li><code>--sylph_db</code> / <code>--sylph_db_link</code>: path to the Sylph database, or the URL to download it from if the path is missing (defaults to the GTDB r220 database).</li>
 <li><code>--genome_db_cache_dir</code>: cache directory for genomes downloaded during Sylph-based reference building.</li>
 <li><code>--prefetch_max_size</code> (default <code>200g</code>): SRA Toolkit prefetch size limit for SRA modes.</li>
-<li><code>--min_mapq</code>, <code>--min_baseq</code>, <code>--min_read_ani</code>, <code>--read_inclusion</code>: profiling read/base filters passed through to <code>zipstrain utilities profile-single</code>.</li>
+<li><code>--error_rate</code> (default <code>0.01</code>), <code>--max_total_reads</code> (default <code>50000</code>), <code>--p_threshold</code> (default <code>0.05</code>): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.</li>
+<li><code>--min_mapq</code>, <code>--min_baseq</code>, <code>--min_freq</code>, <code>--min_read_ani</code>, <code>--read_inclusion</code>: profiling read/base/allele filters passed through to <code>zipstrain utilities profile-single</code>; <code>--min_freq</code> defaults to <code>0</code>.</li>
 <li><code>--parallel_mode</code> (<code>single</code> | <code>batched</code>) and <code>--batch_size</code> / <code>--batch_compare_n_parallel</code>: parallelization of the comparison workflows.</li>
 <li><code>--compare_genome_scope</code> / <code>--compare_gene_scope</code>: comparison scope (<code>all</code>, a genome ID, or <code>all:all</code>-style gene scope).</li>
 <li><code>--compare_ani_method</code>: ANI method (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;threshold&gt;</code>).</li>
@@ -1572,6 +1589,7 @@ S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
     <script>var base_url = "..";</script>
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
+      <script src="../assets/paramsel_tabs.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);
