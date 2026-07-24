@@ -832,21 +832,7 @@ def compute_silhouette_curve(
         )
     for distance_threshold in distances:
         labels = fcluster(bundle.linkage_matrix, t=distance_threshold, criterion="distance")
-        if len(np.unique(labels)) > 1:
-            if use_sklearn:
-                scores.append(
-                    float(
-                        _sklearn_silhouette_score(
-                            bundle.distance_matrix,
-                            labels,
-                            metric="precomputed",
-                        )
-                    )
-                )
-            else:
-                scores.append(_silhouette_score_precomputed_manual(bundle.distance_matrix, labels))
-        else:
-            scores.append(float("nan"))
+        scores.append(_silhouette_score_precomputed(bundle.distance_matrix, labels))
 
     thresholds = 100 * (1 - distances)
     clean_thresholds, clean_scores, candidate_peaks, best_peak = _summarize_silhouette_curve(

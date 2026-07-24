@@ -271,6 +271,25 @@ def test_silhouette_score_precomputed_uses_sklearn_when_available(monkeypatch):
     }
 
 
+def test_silhouette_score_precomputed_skips_sklearn_for_singleton_clusters(monkeypatch):
+    def _unexpected_sklearn_call(*args, **kwargs):
+        raise AssertionError("sklearn must not receive one cluster per sample")
+
+    monkeypatch.setattr(vz, "_sklearn_silhouette_score", _unexpected_sklearn_call)
+
+    distance_matrix = np.array(
+        [
+            [0.0, 0.1, 0.5],
+            [0.1, 0.0, 0.4],
+            [0.5, 0.4, 0.0],
+        ]
+    )
+
+    score = vz._silhouette_score_precomputed(distance_matrix, np.array([1, 2, 3]))
+
+    assert np.isnan(score)
+
+
 def test_silhouette_score_precomputed_falls_back_to_manual(monkeypatch):
     monkeypatch.setattr(vz, "_sklearn_silhouette_score", None)
 
