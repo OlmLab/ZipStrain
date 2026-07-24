@@ -56,6 +56,7 @@ from zipstrain import database
 from rich.columns import Columns
 import polars as pl
 import psutil
+import os
 import shutil
 import signal 
 from datetime import datetime, timezone
@@ -684,6 +685,7 @@ class CompareTaskGenerator(TaskGenerator):
                 "profile_2_file": FileInput(row["profile_location_2"]),
                 "stb-file-arg": StringInput(stb_file_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
+                "min-snp-freq-arg": StringInput(f"--min-snp-freq {self.comp_config.min_snp_freq}"),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "ani-method-arg": StringInput(ani_method_arg),
                 "calculate-arg": StringInput(calculate_arg),
@@ -1755,6 +1757,7 @@ class FastCompareTask(Task):
     --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
+    <min-snp-freq-arg> \
     --min-gene-compare-len <min-gene-compare-len> \
     <ani-method-arg> \
     <calculate-arg> \
@@ -1855,6 +1858,55 @@ PROFILING_ASSETS_DIRNAME = "profiling_assets"
 COMPARE_FINAL_BATCH_DIRNAME = "Outputs"
 
 
+def _cifs_safe_move(src, dst) -> None:
+    """Move ``src`` to ``dst`` without permission-preserving copies.
+
+    ``shutil.move`` falls back to ``copytree``/``copy2`` when ``os.rename``
+    fails, and those call ``copystat``/``chmod`` which raise
+    ``Operation not permitted`` on CIFS/SMB mounts such as PetaLibrary
+    (``/pl``). Here we try an atomic rename first, then fall back to a manual
+    recursive move that copies file *contents only* (``shutil.copyfile``,
+    no metadata) and recreates symlinks verbatim.
+    """
+    src = os.fspath(src)
+    dst = os.fspath(dst)
+    if os.path.islink(src):
+        target = os.readlink(src)
+        if os.path.lexists(dst):
+            if os.path.isdir(dst) and not os.path.islink(dst):
+                shutil.rmtree(dst, ignore_errors=True)
+            else:
+                try:
+                    os.remove(dst)
+                except OSError:
+                    pass
+        os.symlink(target, dst)
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+        return
+    try:
+        os.replace(src, dst)  # fast atomic path on POSIX filesystems
+        return
+    except OSError:
+        pass
+    if os.path.isdir(src):
+        os.makedirs(dst, exist_ok=True)
+        for name in os.listdir(src):
+            _cifs_safe_move(os.path.join(src, name), os.path.join(dst, name))
+        try:
+            os.rmdir(src)
+        except OSError:
+            shutil.rmtree(src, ignore_errors=True)
+    else:
+        shutil.copyfile(src, dst)  # data only; no chmod/copystat (CIFS-safe)
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+
+
 def _move_into(destination_dir: pathlib.Path, source: pathlib.Path) -> None:
     """Move ``source`` into ``destination_dir``, prefixing on name collision.
 
@@ -1865,7 +1917,7 @@ def _move_into(destination_dir: pathlib.Path, source: pathlib.Path) -> None:
     target = destination_dir / source.name
     if target.exists():
         target = destination_dir / f"{source.parent.name}_{source.name}"
-    shutil.move(str(source), str(target))
+    _cifs_safe_move(source, target)
 
 
 def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
@@ -1901,7 +1953,7 @@ def _reorganize_profile_run_output(run_dir: pathlib.Path) -> None:
             if entry.is_dir():
                 # A per-sample task directory: lift it to run_dir/<sample> and tidy.
                 sample_dir = run_dir / entry.name
-                shutil.move(str(entry), str(sample_dir))
+                _cifs_safe_move(entry, sample_dir)
                 intermediate_dir = sample_dir / INTERMEDIATE_FILES_DIRNAME
                 for item in sorted(sample_dir.iterdir()):
                     if item.name == INTERMEDIATE_FILES_DIRNAME:
@@ -1968,7 +2020,7 @@ def _reorganize_compare_run_output(run_dir: pathlib.Path) -> None:
                 _move_into(log_dir, entry)
         # Whatever remains (task subdirectories) is intermediate output.
         if any(batch_dir.iterdir()):
-            shutil.move(str(batch_dir), str(intermediate_dir / batch_dir.name))
+            _cifs_safe_move(batch_dir, intermediate_dir / batch_dir.name)
         else:
             try:
                 batch_dir.rmdir()

@@ -1368,7 +1368,8 @@ def get_gene_range_table(gene_file, output_file):
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+@click.option('--min-snp-freq', type=float, default=cp.DEFAULT_MIN_SNP_FREQ, show_default=True, help="Minor-allele frequency floor for popANI: a base counts as a present allele only if its frequency is >= this value (or it is the consensus base). Removes low-frequency sequencing errors so popANI is not inflated at high coverage. Set 0 to disable (legacy raw-count behaviour).")
+def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads, min_snp_freq):
     """
     Compare two profile parquets and calculate genome-level comparison statistics.
     
@@ -1424,6 +1425,7 @@ def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_
             memory_limit=duckdb_memory_limit,
             temp_directory=duckdb_temp_directory,
             threads=duckdb_threads,
+            min_snp_freq=min_snp_freq,
         )
         ut.rewrite_parquet_with_metadata(output_file, compare_metadata)
         return
@@ -1441,6 +1443,7 @@ def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_
         engine="polars",
         stb_file=stb_file,
         calculate=calculations,
+        min_snp_freq=min_snp_freq,
     ).with_columns(
         sample_1=pl.lit(profile_1_name),
         sample_2=pl.lit(profile_2_name),
@@ -1986,6 +1989,7 @@ def _run_matrix_compare_method(
 @click.option("--compare-genes", is_flag=True, default=False, show_default=True, help="Compare genes instead of genomes.")
 @click.option("--scope", default=None, help="Comparison scope. Defaults to 'all' for genomes and 'all:all' for genes.")
 @click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
+@click.option("--min-snp-freq", type=float, default=cp.DEFAULT_MIN_SNP_FREQ, show_default=True, help="Minor-allele frequency floor for popANI: a base counts as a present allele only if its frequency is >= this value (or it is the consensus base). Removes low-frequency sequencing errors so popANI is not inflated at high coverage. Set 0 to disable (legacy raw-count behaviour).")
 @click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum gene length to consider for comparison.")
 @click.option("--stb-file", default=None, help="Scaffold-to-genome mapping file. Required for --method matrix.")
 @click.option("--comp-db-file", default=None, help="Optional existing comparison parquet to resume/extend (standard method). Auto-detected from --run-dir if omitted.")
@@ -2008,7 +2012,7 @@ def _run_matrix_compare_method(
 @click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Write the companion .csv even when the estimated size exceeds 100 MB.")
-def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
+def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_snp_freq, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
     """
     Compare profiled samples at the genome level (default) or gene level (--compare-genes).
 
@@ -2097,6 +2101,7 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                     min_cov=min_cov,
                     min_gene_compare_len=min_gene_compare_len,
                     stb_file_loc=stb_file,
+                    min_snp_freq=min_snp_freq,
                 ),
                 comp_db_loc=comp_db_file,
             )

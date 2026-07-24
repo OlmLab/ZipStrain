@@ -194,6 +194,29 @@ def _duckdb_configure_connection(
         conn.execute(f"SET threads={int(threads)}")
 
 
+DEFAULT_MIN_SNP_FREQ = 0.01
+
+
+def _apply_snp_floor(lf: "pl.LazyFrame", min_snp_freq: float) -> "pl.LazyFrame":
+    """Zero minor-allele counts below ``min_snp_freq`` frequency; the consensus base is
+    always kept. Removes low-frequency sequencing-error alleles so that popANI (which
+    counts a position as "shared" when the two samples share any present allele) is not
+    inflated toward 100% at high coverage. ``min_snp_freq <= 0`` disables the floor
+    (legacy raw-count behaviour)."""
+    if not min_snp_freq or min_snp_freq <= 0:
+        return lf
+    bases = ("A", "T", "C", "G")
+    cov = pl.col("A") + pl.col("T") + pl.col("C") + pl.col("G")
+    mx = pl.max_horizontal(*[pl.col(b) for b in bases])
+    return lf.with_columns([
+        pl.when((pl.col(b) >= min_snp_freq * cov) | (pl.col(b) >= mx))
+        .then(pl.col(b))
+        .otherwise(0)
+        .alias(b)
+        for b in bases
+    ])
+
+
 def _duckdb_ani_expression(ani_method: str) -> str:
     if ani_method == "popani":
         # Cast at expression time (post-join) to avoid upfront casting in filtered scans.
@@ -249,11 +272,23 @@ def _duckdb_shared_query(
     genome_scope: str,
     ani_method: str,
     gene_scope: str = "all",
+    min_snp_freq: float = DEFAULT_MIN_SNP_FREQ,
 ) -> str:
     ani_expr = _duckdb_ani_expression(ani_method)
     con_expr = _duckdb_ani_expression("conani")
     genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
     gene_scope_sql = _duckdb_quote_sql_string(gene_scope)
+    if min_snp_freq and min_snp_freq > 0:
+        # A base is a "present allele" only if its frequency is >= min_snp_freq or it is
+        # the consensus (max) base; low-frequency sequencing-error alleles are zeroed so
+        # popANI is not inflated at high coverage. WHERE still filters on raw coverage.
+        base_cols = ",\n        ".join(
+            f"CASE WHEN CAST({b} AS DOUBLE) >= {float(min_snp_freq)} * (A + T + C + G) "
+            f"OR {b} >= GREATEST(A, T, C, G) THEN {b} ELSE 0 END AS {b}"
+            for b in ("A", "T", "C", "G")
+        )
+    else:
+        base_cols = "A,\n        T,\n        C,\n        G"
     return f"""
     WITH p1f AS (
       SELECT
@@ -261,10 +296,7 @@ def _duckdb_shared_query(
         pos,
         gene,
         genome,
-        A,
-        T,
-        C,
-        G
+        {base_cols}
       FROM {p1_source} p1
       WHERE (A + T + C + G) >= {min_cov}
         AND ('{genome_scope_sql}' = 'all' OR genome = '{genome_scope_sql}')
@@ -276,10 +308,7 @@ def _duckdb_shared_query(
         pos,
         gene,
         genome,
-        A,
-        T,
-        C,
-        G
+        {base_cols}
       FROM {p2_source} p2
       WHERE (A + T + C + G) >= {min_cov}
         AND ('{genome_scope_sql}' = 'all' OR genome = '{genome_scope_sql}')
@@ -558,6 +587,7 @@ def _shared_loci_polars(
     genome_scope: str = "all",
     gene_scope: str = "all",
     ani_method: str = "popani",
+    min_snp_freq: float = DEFAULT_MIN_SNP_FREQ,
 ) -> pl.LazyFrame:
     ani_expr = getattr(PolarsANIExpressions(), ani_method)()
     con_expr = PolarsANIExpressions().conani()
@@ -566,6 +596,8 @@ def _shared_loci_polars(
         mpile2=mpile2,
         min_cov=min_cov,
     )
+    p1 = _apply_snp_floor(p1, min_snp_freq)
+    p2 = _apply_snp_floor(p2, min_snp_freq)
     if _profile_is_coordinate_sorted(mpile1) and _profile_is_coordinate_sorted(mpile2):
         p1 = p1.set_sorted(["chrom", "pos"])
         p2 = p2.set_sorted(["chrom", "pos"])
@@ -719,6 +751,7 @@ def duckdb_compare_genomes_to_parquet(
     memory_limit: Optional[str] = None,
     temp_directory: Optional[Union[str, Path]] = None,
     threads: Optional[int] = None,
+    min_snp_freq: float = DEFAULT_MIN_SNP_FREQ,
 ) -> None:
     """Run genome comparison in DuckDB and write final output directly to parquet.
 
@@ -740,6 +773,7 @@ def duckdb_compare_genomes_to_parquet(
             min_cov=min_cov,
             genome_scope=genome_scope,
             ani_method=ani_method,
+            min_snp_freq=min_snp_freq,
         )
         query = _duckdb_genome_compare_query(
             shared_query=shared_query,
@@ -767,6 +801,7 @@ def duckdb_compare_genomes(
     memory_limit: Optional[str] = None,
     temp_directory: Optional[Union[str, Path]] = None,
     threads: Optional[int] = None,
+    min_snp_freq: float = DEFAULT_MIN_SNP_FREQ,
 ) -> pl.LazyFrame:
     """Run genome comparison in DuckDB and return selected metrics as a LazyFrame."""
     con = duckdb.connect()
@@ -785,6 +820,7 @@ def duckdb_compare_genomes(
             min_cov=min_cov,
             genome_scope=genome_scope,
             ani_method=ani_method,
+            min_snp_freq=min_snp_freq,
         )
         query = _duckdb_genome_compare_query(
             shared_query=shared_query,
@@ -989,6 +1025,7 @@ def compare_genomes_polars(
     ani_method: str = "popani",
     stb_file: Optional[Union[str, Path]] = None,
     calculate: Optional[Union[str, Iterable[str]]] = None,
+    min_snp_freq: float = DEFAULT_MIN_SNP_FREQ,
 ) -> pl.LazyFrame:
     """Compare two profiles fully in Polars and return genome-level statistics."""
     calculations = parse_genome_calculations(calculate)
@@ -998,6 +1035,7 @@ def compare_genomes_polars(
         min_cov=min_cov,
         genome_scope=genome_scope,
         ani_method=ani_method,
+        min_snp_freq=min_snp_freq,
     )
     genome_comp_parts: list[pl.LazyFrame] = []
     if "ani" in calculations:
@@ -1129,6 +1167,7 @@ def compare_genomes(
     engine: Literal["polars", "duckdb"] = "polars",
     stb_file: Optional[Union[str, Path]] = None,
     calculate: Optional[Union[str, Iterable[str]]] = None,
+    min_snp_freq: float = DEFAULT_MIN_SNP_FREQ,
 ) -> pl.LazyFrame:
     """Compare two profiles with selectable execution engine."""
     calculations = parse_genome_calculations(calculate)
@@ -1142,6 +1181,7 @@ def compare_genomes(
             ani_method=ani_method,
             stb_file=stb_file,
             calculate=calculations,
+            min_snp_freq=min_snp_freq,
         )
     if engine == "duckdb":
         return duckdb_compare_genomes(
@@ -1156,6 +1196,7 @@ def compare_genomes(
             memory_limit=duckdb_memory_limit,
             temp_directory=duckdb_temp_directory,
             threads=duckdb_threads,
+            min_snp_freq=min_snp_freq,
         )
     raise ValueError(f"Unsupported engine: {engine}")
 

@@ -224,6 +224,7 @@ class GenomeComparisonConfig(BaseModel):
     min_cov: int =Field(description="Minimum coverage a base on the reference fasta that must have in order to be compared.")
     min_gene_compare_len: int=Field(description="Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
     stb_file_loc:str | None = Field(default=None, description="Optional location of the scaffold to bin file.")
+    min_snp_freq: float = Field(default=0.01, description="Minor-allele frequency floor for popANI presence: a base counts as a present allele only if its frequency is >= this value (or it is the consensus base). Removes low-frequency sequencing errors so popANI is not inflated at high coverage. Set 0 to disable.")
 
     def is_compatible(self, other: GenomeComparisonConfig) -> bool:
         """

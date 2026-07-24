@@ -2,6 +2,13 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 1.1.0
+
+Compared with `1.0.1`:
+
+- Compare: popANI now applies a **minor-allele frequency floor** before counting shared alleles (`--min-snp-freq`, default `0.01`). A base is a "present allele" only if its frequency is ≥ the floor or it is the consensus base, so low-frequency sequencing errors no longer make two deeply-sequenced samples share an allele at (nearly) every position. This fixes popANI being inflated toward 100% at high coverage. Set `--min-snp-freq 0` for the previous raw-count behaviour. Applied consistently in the polars and duckdb engines; `GenomeComparisonConfig` gains a `min_snp_freq` field. (Distinct from the profile-side `--min-freq`: this floor is applied at compare time, so it also corrects popANI on already-written profiles.)
+- Profiling: fixed a crash when the output directory is on a CIFS/SMB mount (e.g. PetaLibrary `/pl`). The post-run reorganize step used `shutil.move`, which falls back to permission-preserving copies (`copystat`/`chmod`) that raise `Operation not permitted` on such mounts, aborting `zipstrain profile` *after* all profiles were written (leaving them stranded in `batch_*/`). It now uses a CIFS-safe move (atomic rename, else metadata-free copy + symlink recreation).
+
 ## 1.0.1
 
 Compared with `1.0.0`:
