@@ -86,7 +86,7 @@ GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892095  0   51  0   0   0
 GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 ```
 
-The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. `--min-freq` is applied against the original A+C+G+T depth before any allele is removed and defaults to `0`. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.
+The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. `--min-freq` is applied against the original A+C+G+T depth before any allele is removed and defaults to `0.01` (1%); set it to `0` to disable frequency filtering. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.
 
 ### `<sample>_SNVs.parquet`
 
@@ -137,7 +137,7 @@ One row per genome, per pair of samples.
 With gene ranges available, genome-level gene identity summary columns are also added by the default `--calculate all`: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
 
 !!! note "ANI method is stored in the parquet header"
-    `--ani-method conani` changes how the ANI match indicator is computed, but it does not add separate consensus-specific output columns to the comparison table. Check `zipstrain_compare_ani_method` in the parquet metadata to know what `genome_ani` represents. Matrix mode supports `popani` only.
+    `--ani-method conani` or `--ani-method cosani_<threshold>` changes how the ANI match indicator is computed, but it does not add method-specific output columns. Check `zipstrain_compare_ani_method` in the parquet metadata to know what `genome_ani` represents. Both standard and matrix comparison support `popani`, `conani`, and `cosani_<threshold>`.
 
 Example (same-strain replicates → 100% popANI):
 

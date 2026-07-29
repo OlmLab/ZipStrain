@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use ZipStrain, please cite the software using the metadata in this file."
 type: software
 title: "ZipStrain"
-version: "1.0.1"
+version: "1.0.2"
 license: "MIT"
 authors:
   - family-names: "Ghadermazi"

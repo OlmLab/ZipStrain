@@ -2,14 +2,21 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 1.0.2
+
+Compared with `1.0.1`:
+
+- Release metadata: bumped the Python package, citation metadata, Nextflow container defaults, and installation documentation to `1.0.2`.
+
 ## 1.0.1
 
 Compared with `1.0.0`:
 
 - Readability: clarified several dense methods without changing behavior — the ANI expressions in `PolarsANIExpressions` (`popani`, `conani`, `generalized_cos_ani`) now cast base counts to `Int64` once up front instead of repeating the cast inline on every column, and the contiguous-block grouping in `add_contiguity_info` spells out its break conditions. Outputs are unchanged.
-- Profiling: fixed the null-model boundary so counts equal to the maximum plausible error count are removed; raised the default assumed error rate to 1% and the default coverage ceiling to 50,000; coverage above that ceiling now fails explicitly instead of being silently zeroed.
-- Profiling: added `--min-freq` (default `0`) to the CLI, task-manager, and Nextflow profiling paths for optional within-position allele-frequency filtering.
+- Profiling: fixed the null-model boundary so counts equal to the maximum plausible error count are removed; set the default assumed error rate to 0.1% and raised the default coverage ceiling to 50,000; coverage above that ceiling now fails explicitly instead of being silently zeroed.
+- Profiling: added `--min-freq` (default `0.01`) to the CLI, task-manager, and Nextflow profiling paths, requiring a 1% within-position allele frequency by default.
 - Visualization: fixed the scikit-learn silhouette path for thresholds that produce one singleton cluster per sample; these undefined scores are now recorded as `NaN` instead of raising an error.
+- Matrix comparison: added compact packed-allele bitmask storage for popANI and exact `A,T,C,G` count storage for popANI, conANI, and thresholded cosANI on NumPy or Torch backends. Matrix coverage filtering is now fixed at build time, count dtypes are overflow-checked (`auto|uint16|uint32`), and sparse stores preserve nonzero values.
 
 ## 1.0.0
 

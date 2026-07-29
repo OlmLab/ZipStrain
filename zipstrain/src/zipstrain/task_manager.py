@@ -507,7 +507,7 @@ class ProfileTaskGenerator(TaskGenerator):
         num_procs: int = 4,
         min_mapq: int = 0,
         min_baseq: int = 13,
-        min_freq: float = 0.0,
+        min_freq: float = 0.01,
         min_read_ani: float | None = None,
         read_inclusion: str = "all-mapped",
     ) -> None:
@@ -1990,7 +1990,7 @@ def lazy_run_profile(
     num_procs:int=8,
     min_mapq: int = 0,
     min_baseq: int = 13,
-    min_freq: float = 0.0,
+    min_freq: float = 0.01,
     min_read_ani: float | None = None,
     read_inclusion: str = "all-mapped",
     tasks_per_batch: int = 10,

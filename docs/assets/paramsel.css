@@ -1,0 +1,29 @@
+/* Depth-bias / parameter-selection page — components the readthedocs theme doesn't provide. */
+
+/* stat tiles */
+.zs-stats { display:flex; gap:14px; flex-wrap:wrap; margin:22px 0; }
+.zs-stat  { flex:1 1 155px; background:#fff; border:1px solid #e1e4e5; border-top:3px solid #2980b9;
+            border-radius:4px; padding:13px 16px; }
+.zs-stat .n { font-size:25px; font-weight:900; letter-spacing:-0.01em; line-height:1.1; }
+.zs-stat .l { font-size:12.5px; color:#7a8794; margin-top:4px; line-height:1.4; }
+.zs-stat.hi { border-top-color:#e67e22; } .zs-stat.hi .n { color:#d35400; }
+.zs-stat.lo { border-top-color:#27ae60; } .zs-stat.lo .n { color:#1e8449; }
+
+/* interactive figure frames */
+.zs-plotwrap { overflow-x:auto; border:1px solid #e1e4e5; border-radius:4px; background:#fff;
+               padding:6px 4px; margin:16px 0 4px; }
+.zs-plot { border:0; display:block; }
+.zs-cap  { font-size:13px; color:#7a8794; margin:6px 0 20px; }
+
+/* self-contained tabs (readthedocs theme has no tab styling of its own) */
+.zs-tabs .zs-tabbar { display:flex; gap:6px; flex-wrap:wrap; margin:16px 0 0; }
+.zs-tab { border:1px solid #e1e4e5; border-bottom:none; background:#f3f5f7; color:#5b6b7b;
+          padding:8px 15px; border-radius:4px 4px 0 0; font-weight:700; font-size:14px; cursor:pointer; }
+.zs-tab.active { background:#fff; color:#2980b9; border-color:#2980b9; border-bottom:1px solid #fff;
+                 margin-bottom:-1px; }
+.zs-panel { display:none; border:1px solid #e1e4e5; border-radius:0 4px 4px 4px;
+            padding:8px 8px 2px; background:#fff; }
+.zs-panel.active { display:block; }
+.zs-panel .zs-plotwrap { border:none; margin-top:0; }
+
+.zs-foot { color:#7a8794; font-size:13px; }

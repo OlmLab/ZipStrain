@@ -146,7 +146,7 @@ zipstrain profile \
 ```
 
 
-Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. An automatically generated Poisson null model (1% total error rate by default) removes allele counts at or below the sequencing-error ceiling. The optional `--min-freq` filter then removes alleles below a chosen fraction of the original A+C+G+T depth; it defaults to `0`, so frequency filtering is off unless requested. The result is one profile per sample plus genome- and gene-level summary statistics.
+Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. An automatically generated Poisson null model (0.1% total error rate by default) removes allele counts at or below the sequencing-error ceiling. The `--min-freq` filter then removes alleles below a chosen fraction of the original A+C+G+T depth; it defaults to `0.01`, requiring a 1% within-position allele frequency. Set `--min-freq 0` to disable frequency filtering. The result is one profile per sample plus genome- and gene-level summary statistics.
 
 After a successful run the output directory is organized like this:
 
@@ -170,7 +170,7 @@ python -c "import polars as pl; print(pl.read_parquet('out_profile/N5_271_010G1/
 ```
 
 !!! tip "Gene profiling and tuning"
-    Pass `--gene-fasta` to enable gene-level profiling, use the null-model options (`--error-rate`, `--max-total-reads`, `--p-threshold`) to tune sequencing-error filtering, or set `--min-freq 0.01` to require a 1% allele frequency. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use `--force-prepare` to rebuild cached assets after changing null-model parameters. Run `zipstrain profile -h` to see all options grouped by category.
+    Pass `--gene-fasta` to enable gene-level profiling, use the null-model options (`--error-rate`, `--max-total-reads`, `--p-threshold`) to tune sequencing-error filtering, or change `--min-freq` from its 1% default. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use `--force-prepare` to rebuild cached assets after changing null-model parameters. Run `zipstrain profile -h` to see all options grouped by category.
 
 ??? note "Preparing assets separately (advanced / cluster use)"
     You can still build the intermediate files ahead of time with `zipstrain utilities prepare_profiling` and pass them in explicitly via `--null-model`, `--bed-file`, `--genome-length-file`, etc. This is useful on clusters where you prepare once and profile many BAMs across nodes, and it is the path the Nextflow pipeline uses internally.
@@ -214,7 +214,7 @@ That's the whole command. By default it compares **genomes**; every profile in t
 
 **Standard (`--method standard`, the default)** compares profiles **directly and pairwise**. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.
 
-**Matrix (`--method matrix`)** first turns your profiles into a **matrix store**: for each genome, one dense `samples × positions × 4` array of base counts (built once, saved as HDF5 in `intermediate_files/`). The comparison then becomes vectorized array math over that store — all-vs-all in one sweep — which can run on a **GPU** (`--backend torch-mps` on Apple Silicon, `--backend torch-cuda` on NVIDIA). It records completed pairs in a resumable DuckDB, so it never redoes work, and new samples can be **appended** to the store without rebuilding it. That reusable, appendable substrate is the whole point: it pays a one-time build cost so that repeated all-vs-all comparisons — especially focused on one genome or a small set, over a cohort that keeps growing — stay fast. It needs the matrix extra (`pip install "zipstrain[matrix]"`).
+**Matrix (`--method matrix`)** first turns your profiles into a reusable HDF5 **matrix store**, then performs vectorized all-vs-all comparisons. For default popANI, each covered position is packed into one byte: `A=1`, `T=2`, `C=4`, and `G=8`, with multiple observed alleles combined by bitwise OR (for example, `A+C=5`). For conANI or cosANI, ZipStrain instead stores the four `A,T,C,G` counts. The high-level command chooses the correct representation automatically. Comparison can run on a **GPU** (`--backend torch-mps` on Apple Silicon, `--backend torch-cuda` on NVIDIA), records completed pairs in a resumable DuckDB, and appends new samples without rebuilding existing rows. This approach is highly optimized when you have many samples but only one or a few genomes, because parallelization across sample pairs is efficient. It needs the matrix extra (`pip install "zipstrain[matrix]"`).
 
 | | Standard | Matrix |
 |---|----------|--------|
@@ -246,6 +246,8 @@ Both are invoked the same way — just add `--method matrix` to switch:
     ```
 
     The matrix store and its resumable compare database are kept in `out_compare/intermediate_files/` and reused on later runs. The bed file the store needs is auto-discovered from the `profiling_assets/` folder created during profiling; pass `--bed-file` if it can't be found.
+
+    `--ani-method popani` builds the compact bitmask store. `--ani-method conani` or `--ani-method cosani_0.95` builds a count store instead. `--min-cov` is applied while the matrix is built: positions below it become zero. A run directory therefore has a fixed ANI method and minimum coverage; use a different `--run-dir` to change either contract.
 
 #### Adding more samples later
 

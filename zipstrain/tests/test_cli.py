@@ -1350,13 +1350,18 @@ def test_compare_method_matrix_routes_to_matrix_workflow(tmp_path, monkeypatch):
     assert captured["compare_genes"] is False
 
 
-def test_compare_method_matrix_rejects_non_popani_method(tmp_path, monkeypatch):
+def test_compare_method_matrix_forwards_non_popani_method(tmp_path, monkeypatch):
     csv_path = _write_profiles_csv_for_compare(tmp_path)
-    monkeypatch.setattr(
-        cli.matrix_workflow,
-        "run_matrix_compare",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("matrix workflow should not run")),
-    )
+    captured = {}
+
+    def _fake_run_matrix_compare(**kwargs):
+        captured.update(kwargs)
+        output = Path(kwargs["run_dir"]) / "all_comparisons.parquet"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"genome": ["g"], "genome_ani": [100.0]}).write_parquet(output)
+        return output
+
+    monkeypatch.setattr(cli.matrix_workflow, "run_matrix_compare", _fake_run_matrix_compare)
 
     result = CliRunner().invoke(
         cli.cli,
@@ -1369,8 +1374,9 @@ def test_compare_method_matrix_rejects_non_popani_method(tmp_path, monkeypatch):
         ],
     )
 
-    assert result.exit_code != 0
-    assert "only supports --ani-method popani" in result.output
+    assert result.exit_code == 0, result.output
+    assert captured["ani_method"] == "conani"
+    assert captured["min_cov"] == 5
 
 
 def test_compare_default_scope_differs_by_mode(tmp_path, monkeypatch):
@@ -2494,6 +2500,7 @@ def test_profile_help_is_organized_into_sections_with_defaults():
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["profile", "--help"])
     assert result.exit_code == 0, result.output
+    normalized_help = " ".join(result.output.split())
     for header in (
         "Required inputs:",
         "Optional inputs:",
@@ -2503,12 +2510,12 @@ def test_profile_help_is_organized_into_sections_with_defaults():
     ):
         assert header in result.output
     # Defaults are surfaced for parameters that have them.
-    assert "[default: 0.01]" in result.output     # --error-rate
-    assert "[default: 50000]" in result.output    # --max-total-reads
+    assert "[default: 0.001]" in normalized_help  # --error-rate
+    assert "[default: 50000]" in normalized_help  # --max-total-reads
     assert "--min-freq FLOAT" in result.output
-    assert "0.0]" in result.output                 # --min-freq default
-    assert "[default: 8]" in result.output        # --num-procs
-    assert "[default: local]" in result.output    # --execution-mode
+    assert "[default: 0.01]" in normalized_help   # --min-freq
+    assert "[default: 8]" in normalized_help      # --num-procs
+    assert "[default: local]" in normalized_help  # --execution-mode
 
 
 def _write_small_parquet(path, rows=3):

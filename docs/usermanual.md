@@ -205,7 +205,7 @@ Major options:
 - `--gene-fasta` — enables gene-level profiling (auto-generates a gene range table)
 - `-u/-b/-l/-g/--profiling-contract` — supply pre-built assets to override auto-generation; `--force-prepare` regenerates them all
 - Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain).
-- Allele filters: the Poisson null model assumes a 1% total error rate by default and removes counts at or below its error ceiling. `--min-freq` (0) can additionally remove alleles below a chosen within-position frequency; for example, `--min-freq 0.01` requires at least 1%. The denominator is the original A+C+G+T depth before allele filtering.
+- Allele filters: the Poisson null model assumes a 0.1% total error rate by default and removes counts at or below its error ceiling. `--min-freq` defaults to `0.01`, requiring at least 1% within-position frequency; set it to `0` to disable frequency filtering. The denominator is the original A+C+G+T depth before allele filtering.
 - Presence & SNVs: `--no-snvs`, `--snv-min-cov` (5), `--presence-ber` (0.5), `--presence-fug` (1.0), `--presence-min-cov-use-fug` (2.0), `--presence-min-coverage` (0.1), `--genome-taxonomy`
 - Execution: `-n, --num-procs` (8), `-m, --max-concurrent-batches` (5), `-t, --task-per-batch` (10), `-e, --execution-mode` (`local`/`slurm`), `-c, --slurm-config`, `-o, --container-engine`, `--container-address`
 
@@ -373,6 +373,11 @@ Major options:
 - Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
+
+For matrix comparison, `popani` automatically uses the compact bitmask store;
+`conani` and `cosani_<threshold>` automatically use a count store. The selected
+ANI method and `--min-cov` become part of that run directory's persistent
+matrix/compare contract. To change either, use a new `--run-dir`.
 
 <details>
 <summary><code>zipstrain compare --help</code></summary>
@@ -585,7 +590,7 @@ Options:
 - `-r, --reference-fasta` (required)
 - `-g, --gene-fasta` (optional)
 - `-s, --stb-file` (required)
-- `-e, --error-rate` (default: `0.01`)
+- `-e, --error-rate` (default: `0.001`)
 - `-m, --max-total-reads` (default: `50000`)
 - `-p, --p-threshold` (default: `0.05`)
 - `-t, --model-type` (default: `poisson`)
@@ -628,7 +633,7 @@ Options:
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
 - `--min-mapq` (default: `0`)
 - `--min-baseq` (default: `13`)
-- `--min-freq` (default: `0`) — after the null-model test, retain an allele only when `count / original A+C+G+T coverage >= min_freq`
+- `--min-freq` (default: `0.01`) — after the null-model test, retain an allele only when `count / original A+C+G+T coverage >= min_freq`
 - `--min-read-ani` (default: `0.95`) — filters low-identity / mis-mapped reads before pileup using the BAM `NM` tag and aligned query span; reads without an `NM` tag are kept; pass `0` to disable
 - `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `paired`)
 - `-o, --output-dir` (required)
@@ -645,7 +650,7 @@ Outputs include:
 - `<sample>_genome_stats.parquet`
 - `<sample>_gene_stats.parquet`
 
-`zipstrain utilities adjust-sequence-errors` applies the same strict null-model boundary to an existing profile parquet. It also accepts `--min-freq` with the same definition and default (`0`) as profiling. If the profile contains coverage above the supplied model, the command fails and reports the minimum `--max-total-reads` needed to rebuild that model.
+`zipstrain utilities adjust-sequence-errors` applies the same strict null-model boundary to an existing profile parquet. It also accepts `--min-freq` with the same definition and default (`0.01`) as profiling. If the profile contains coverage above the supplied model, the command fails and reports the minimum `--max-total-reads` needed to rebuild that model.
 
 When `--reference-fasta` is provided during profiling, the profile parquet includes `ref_base_bitmask`.
 In the same case, the generated genome and gene stat tables also include a `ref_ani` column.
@@ -956,6 +961,8 @@ zipstrain utilities build-matrix-db \
   --bed-file genomes_bed_file.bed \
   --stb-file reference.stb \
   --gene-range-table gene_range_table.tsv \
+  --storage-mode bitmask \
+  --min-cov 5 \
   --memory-limit-gb 16
 ```
 
@@ -964,8 +971,8 @@ What it does:
 - scans a directory of standard ZipStrain profile parquets
 - builds one matrix store directly from those profiles
 - uses the BED and STB files as the explicit scaffold/genome contract for the store
-- stores each genome as one sample-major dense dataset with shape `samples x positions x 4`
-- positions with total coverage below `5` are zeroed during matrix build
+- stores each genome in either compact allele-bitmask or full-count form
+- applies `--min-cov` during matrix construction; positions below it are stored as zero
 - can optionally store scaffold-relative gene ranges for later gene ANI
 - is intended for repeated cohort-scale comparison runs against the same reference set
 
@@ -977,7 +984,9 @@ Important options:
 - `-b, --bed-file` (required) BED file defining scaffold coordinate extents for the matrix contract
 - `-s, --stb-file` (required) STB file defining scaffold-to-genome membership for the matrix contract
 - `--gene-range-table` optional headerless TSV of `gene, scaffold, start, end` for gene ANI support
-- `--count-dtype` stored matrix dtype (`uint16|uint32`, default: `uint16`)
+- `--storage-mode` (`bitmask|counts`, default: `bitmask`); for compatibility, supplying `--count-dtype` without this option selects `counts`
+- `--count-dtype` (`auto|uint16|uint32`) applies only to `--storage-mode counts`; omitted means `auto`
+- `--min-cov` build-time minimum coverage (default: `5`)
 - `--memory-limit-gb` approximate maximum memory budget for the entire build process (default: `16.0`)
 - `--export-batch-mb` approximate matrix-store sample-axis chunk target size in MiB (default: `128.0`)
 - `--sparse` store genome matrices sparsely in HDF5
@@ -992,6 +1001,12 @@ Notes:
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
 - if `--gene-range-table` is omitted, matrix compare can still compute genome ANI and IBS, but not gene ANI
 - `--sparse` reduces on-disk HDF5 size, but matrix compare currently materializes sparse storage back into dense arrays when loading for comparison
+
+Storage modes:
+
+- `bitmask` stores one `uint8` per sample and position. The exact encoding is `A=1`, `T=2`, `C=4`, `G=8`; observed alleles are combined by bitwise OR. Thus `A+T=3`, `A+C=5`, and `A+T+C+G=15`. Zero means the position did not pass `--min-cov`. This is the smallest representation and supports popANI only.
+- `counts` stores four values per sample and position in `A,T,C,G` order. It supports popANI, conANI, and cosANI. `auto` scans the profile count range and chooses `uint16` when every count is at most 65,535, otherwise `uint32`. An explicit dtype fails before writing if a count does not fit; counts are never clipped or wrapped. An append that exceeds the store's existing dtype also fails before mutation, so use `uint32` at the initial build when later samples may exceed 65,535.
+- `--min-cov` is part of the store contract. Appends inherit it, and comparison cannot replace it. Rebuild the store to use another threshold.
 
 #### `zipstrain utilities append-matrix-db`
 
@@ -1050,6 +1065,7 @@ Important options:
 zipstrain utilities matrix-compare \
   --matrix-db-file matrix_db.h5 \
   --output-file matrix_compare.duckdb \
+  --ani-method popani \
   --memory-limit-gb 16 \
   --anchor-queue-size 1 \
   --target-queue-size 1 \
@@ -1076,6 +1092,7 @@ Important options:
 - `-m, --matrix-db-file` (required)
 - `-o, --output-file` (required)
 - `-g, --genome` optional genome scope (default: `all`)
+- `-a, --ani-method` ANI method: `popani`, `conani`, or `cosani_<threshold>`, where the cosine threshold is from `0` through `1`
 - `--memory-limit-gb` approximate compare memory budget
 - `--anchor-queue-size` number of torch anchor matrices to keep queued in host RAM while still transferring only one anchor at a time to the GPU (default: `1`)
 - `--target-queue-size` number of torch target blocks to keep queued in host RAM; `1` preserves the current synchronous target-load behavior (default: `1`)
@@ -1096,6 +1113,11 @@ Important options:
 
 Notes:
 
+- popANI works with bitmask and count stores; conANI and cosANI require a count store
+- conANI derives each sample's consensus allele set at every covered position; ties are retained, and a position matches when the two consensus sets intersect
+- cosANI casts counts to `float32`, scales the four-base dot product to cosine similarity in `[0,1]`, and counts a position as shared when it meets the requested threshold
+- ANI, IBS, and gene ANI all use the same method-specific shared-position mask
+- the compare database and exported parquet record the full ANI method, including a cosANI threshold, and resume rejects a different method
 - install Torch support with `pip install "zipstrain[matrix]"`
 - `--backend numpy` works without Torch and is the simplest CPU-only path
 - on Apple Silicon, the standard `torch` wheel can use MPS
@@ -1241,7 +1263,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:1.0.1`;
+- sets the default container to `parsaghadermazi/zipstrain:1.0.2`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 
@@ -1282,8 +1304,8 @@ Conventions used by every example below:
 - `--sylph_db` / `--sylph_db_link`: path to the Sylph database, or the URL to download it from if the path is missing (defaults to the GTDB r220 database).
 - `--genome_db_cache_dir`: cache directory for genomes downloaded during Sylph-based reference building.
 - `--prefetch_max_size` (default `200g`): SRA Toolkit prefetch size limit for SRA modes.
-- `--error_rate` (default `0.01`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.05`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
-- `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0`.
+- `--error_rate` (default `0.001`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.05`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
+- `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0.01`.
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows.
 - `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).

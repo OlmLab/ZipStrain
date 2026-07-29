@@ -30,7 +30,7 @@ MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 PROFILE_MIN_MAPQ_DEFAULT = 0
 PROFILE_MIN_BASEQ_DEFAULT = 13
-PROFILE_MIN_FREQ_DEFAULT = 0.0
+PROFILE_MIN_FREQ_DEFAULT = 0.01
 # Read-ANI floor applied by default so low-identity (typically mis-mapped) reads
 # do not inflate SNV calls; matches inStrain's default of 0.95.
 PROFILE_MIN_READ_ANI_DEFAULT = 0.95

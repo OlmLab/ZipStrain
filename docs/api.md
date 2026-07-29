@@ -45,6 +45,13 @@ These power the CLI commands:
 - `zipstrain utilities matrix-compare`
 - `zipstrain utilities matrix-compare-export`
 
+`build_matrix_hdf5(...)` defaults to the compact popANI bitmask layout
+(`A=1`, `T=2`, `C=4`, `G=8`). Use `storage_mode="counts"` with
+`count_dtype="auto"` to retain `A,T,C,G` counts for conANI or cosANI.
+`min_cov` is applied at build time and persisted in the store contract.
+`matrix_compare(..., ani_method=...)` accepts `popani`, `conani`, and
+`cosani_<threshold>`; the latter two require count storage.
+
 For usage patterns and examples, see the [Tutorial](./Tutorial.md) and the [CLI reference](./usermanual.md#zipstrain-command-line-interface).
 
 ## Task Manager

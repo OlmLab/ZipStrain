@@ -47,13 +47,13 @@ def profile_1()->pl.LazyFrame:
 
 
 def test_null_model_defaults_and_poisson_boundary():
-    assert utils.NULL_MODEL_ERROR_RATE_DEFAULT == 0.01
+    assert utils.NULL_MODEL_ERROR_RATE_DEFAULT == 0.001
     assert utils.NULL_MODEL_MAX_COVERAGE_DEFAULT == 50_000
     records = utils.build_null_poisson(max_total_reads=1_000)
     assert len(records) == 1_000
-    # At 1% total error and 1,000x depth, seven observations are still
-    # compatible with error; an allele must have at least eight to survive.
-    assert records[-1] == (1_000, 7)
+    # At 0.1% total error and 1,000x depth, one observation is still
+    # compatible with error; an allele must have at least two to survive.
+    assert records[-1] == (1_000, 1)
 
 
 def test_adjust_for_sequence_errors_uses_strict_ceiling_and_min_freq():

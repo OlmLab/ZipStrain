@@ -24,11 +24,26 @@ COUNT_DTYPES = {
     "uint16": np.uint16,
     "uint32": np.uint32,
 }
+MATRIX_DTYPES = {
+    "uint8": np.uint8,
+    **COUNT_DTYPES,
+}
+MATRIX_COUNT_DTYPE_CHOICES = ("auto", "uint16", "uint32")
 MATRIX_BUILD_MIN_COV = 5
 FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
+BITMASK_MATRIX_VALUE_SEMANTICS = "packed_allele_presence_after_cov_filter"
+COUNT_MATRIX_VALUE_SEMANTICS = "allele_counts_after_cov_filter"
+MATRIX_STORAGE_BITMASK = "bitmask"
+MATRIX_STORAGE_COUNTS = "counts"
+MATRIX_STORAGE_LEGACY_PRESENCE = "legacy-presence"
+MATRIX_STORAGE_MODES = (MATRIX_STORAGE_BITMASK, MATRIX_STORAGE_COUNTS)
+BITMASK_DTYPE_NAME = "uint8"
+BITMASK_BASE_BITS = np.asarray([1, 2, 4, 8], dtype=np.uint8)  # A, T, C, G
 CURRENT_MATRIX_DB_LAYOUT = "per_sample_per_genome_dense_matrix"
 CURRENT_MATRIX_HDF5_LAYOUT = "per_genome_sample_major_dense_matrix_hdf5"
 CURRENT_MATRIX_HDF5_SPARSE_LAYOUT = "per_genome_sample_major_sparse_indices_matrix_hdf5"
+CURRENT_MATRIX_HDF5_BITMASK_LAYOUT = "per_genome_sample_major_bitmask_hdf5"
+CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT = "per_genome_sample_major_sparse_bitmask_hdf5"
 MATRIX_HDF5_FILE_VERSION = "1"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
@@ -49,6 +64,7 @@ MATRIX_COMPARISON_CALCULATION_ALIASES = {
     "genes": "gene",
     "gene_ani": "gene",
 }
+MATRIX_ANI_METHODS = ("popani", "conani", "cosani_<threshold>")
 MATRIX_BUILD_FIXED_HEADROOM_BYTES = 128 * 1024 * 1024
 MATRIX_BUILD_TEMP_BYTES_PER_POSITION = 32
 MATRIX_BUILD_MIN_DUCKDB_MEMORY_BYTES = 256 * 1024 * 1024
@@ -150,6 +166,28 @@ def parse_matrix_calculations(
     if supported:
         return supported
     raise ValueError("Matrix compare requires at least one supported calculation.")
+
+
+def parse_matrix_ani_method(ani_method: str) -> tuple[str, Optional[float]]:
+    """Validate a matrix ANI method and return its normalized name and threshold."""
+    normalized = str(ani_method).strip().lower()
+    if normalized in {"popani", "conani"}:
+        return normalized, None
+    if normalized.startswith("cosani_"):
+        threshold_text = normalized.split("_", 1)[1]
+        try:
+            threshold = float(threshold_text)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid cosANI threshold {threshold_text!r}; expected a number between 0 and 1."
+            ) from exc
+        if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            raise ValueError("cosANI threshold must be between 0 and 1.")
+        return normalized, threshold
+    raise ValueError(
+        f"Unsupported matrix ANI method {ani_method!r}. "
+        "Supported values: popani, conani, cosani_<threshold>."
+    )
 
 
 def matrix_metric_output_columns(calculate: Optional[str] = None) -> list[str]:
@@ -269,6 +307,7 @@ class MatrixDbSummary:
     count_dtype: str
     genome_scope: str
     memory_limit_gb: float
+    storage_mode: str = MATRIX_STORAGE_LEGACY_PRESENCE
 
 
 @dataclass(frozen=True)
@@ -281,6 +320,7 @@ class MatrixHdf5Summary:
     count_dtype: str
     genome_scope: str
     memory_limit_gb: float
+    storage_mode: str = MATRIX_STORAGE_LEGACY_PRESENCE
 
 
 @dataclass(frozen=True)
@@ -295,6 +335,7 @@ class MatrixDbAppendSummary:
     count_dtype: str
     genome_scope: str
     memory_limit_gb: float
+    storage_mode: str = MATRIX_STORAGE_LEGACY_PRESENCE
 
 
 @dataclass(frozen=True)
@@ -309,6 +350,7 @@ class MatrixHdf5AppendSummary:
     count_dtype: str
     genome_scope: str
     memory_limit_gb: float
+    storage_mode: str = MATRIX_STORAGE_LEGACY_PRESENCE
 
 
 @dataclass(frozen=True)
@@ -325,6 +367,7 @@ class MatrixCompareSummary:
     backend: str
     device: str
     memory_limit_gb: float
+    ani_method: str = "popani"
 
 
 @dataclass(frozen=True)
@@ -572,30 +615,89 @@ def _matrix_hdf5_chunk_sample_count(
     sample_count: int,
     matrix_length: int,
     dtype_name: str,
+    channels: int = 4,
     target_batch_mb: float,
 ) -> int:
     if target_batch_mb <= 0:
         raise ValueError("target_batch_mb must be > 0")
-    dtype = COUNT_DTYPES[dtype_name]
-    per_sample_bytes = max(1, matrix_length * 4 * np.dtype(dtype).itemsize)
+    dtype = MATRIX_DTYPES[dtype_name]
+    per_sample_bytes = max(1, matrix_length * channels * np.dtype(dtype).itemsize)
     target_batch_bytes = int(target_batch_mb * (1024 ** 2))
     return max(1, min(sample_count, int(target_batch_bytes // per_sample_bytes) or 1))
 
 
 def _matrix_hdf5_layout_is_sparse(layout: str) -> bool:
-    return str(layout) == CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+    return str(layout) in {
+        CURRENT_MATRIX_HDF5_SPARSE_LAYOUT,
+        CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT,
+    }
 
 
 def _matrix_hdf5_supported_layouts() -> tuple[str, ...]:
-    return (CURRENT_MATRIX_HDF5_LAYOUT, CURRENT_MATRIX_HDF5_SPARSE_LAYOUT)
+    return (
+        CURRENT_MATRIX_HDF5_LAYOUT,
+        CURRENT_MATRIX_HDF5_SPARSE_LAYOUT,
+        CURRENT_MATRIX_HDF5_BITMASK_LAYOUT,
+        CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT,
+    )
 
 
-def _matrix_hdf5_sparse_indices_chunk_length(matrix_length: int) -> int:
-    return max(1024, min(max(matrix_length * 4, 1), 1_048_576))
+def _matrix_hdf5_layout_is_bitmask(layout: str) -> bool:
+    return str(layout) in {
+        CURRENT_MATRIX_HDF5_BITMASK_LAYOUT,
+        CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT,
+    }
+
+
+def _matrix_storage_mode_from_metadata(metadata: dict[str, str]) -> str:
+    explicit = metadata.get("storage_mode")
+    if explicit in MATRIX_STORAGE_MODES:
+        return str(explicit)
+    semantics = metadata.get("matrix_value_semantics", "")
+    if semantics == BITMASK_MATRIX_VALUE_SEMANTICS:
+        return MATRIX_STORAGE_BITMASK
+    if semantics == COUNT_MATRIX_VALUE_SEMANTICS:
+        return MATRIX_STORAGE_COUNTS
+    if semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+        return MATRIX_STORAGE_LEGACY_PRESENCE
+    raise ValueError(
+        f"Unsupported matrix value semantics {semantics!r}. Rebuild the matrix store."
+    )
+
+
+def _matrix_dtype_name_from_metadata(metadata: dict[str, str]) -> str:
+    storage_mode = _matrix_storage_mode_from_metadata(metadata)
+    if storage_mode == MATRIX_STORAGE_BITMASK:
+        return BITMASK_DTYPE_NAME
+    dtype_name = metadata.get("count_dtype", "")
+    if dtype_name not in COUNT_DTYPES:
+        raise ValueError(f"Unsupported matrix count dtype {dtype_name!r}.")
+    return str(dtype_name)
+
+
+def _matrix_channels_from_metadata(metadata: dict[str, str]) -> int:
+    return 1 if _matrix_storage_mode_from_metadata(metadata) == MATRIX_STORAGE_BITMASK else 4
+
+
+def _matrix_hdf5_sparse_indices_chunk_length(matrix_length: int, channels: int = 4) -> int:
+    return max(1024, min(max(matrix_length * channels, 1), 1_048_576))
+
+
+def _dense_matrix_to_sparse_components(
+    matrix: np.ndarray,
+    *,
+    store_values: bool,
+) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    flattened = matrix.reshape(-1)
+    indices = np.flatnonzero(flattened).astype(np.int64, copy=False)
+    if not store_values:
+        return indices, None
+    return indices, flattened[indices]
 
 
 def _dense_matrix_to_sparse_flat_indices(matrix: np.ndarray) -> np.ndarray:
-    return np.flatnonzero(matrix.reshape(-1)).astype(np.int64, copy=False)
+    indices, _values = _dense_matrix_to_sparse_components(matrix, store_values=False)
+    return indices
 
 
 def _create_sparse_hdf5_genome_store(
@@ -604,6 +706,8 @@ def _create_sparse_hdf5_genome_store(
     genome_idx: int,
     sample_count: int,
     matrix_length: int,
+    channels: int = 4,
+    value_dtype=None,
 ):
     group = matrices_group.create_group(str(genome_idx))
     group.create_dataset(
@@ -618,10 +722,19 @@ def _create_sparse_hdf5_genome_store(
         "indices",
         shape=(0,),
         dtype=np.int64,
-        chunks=(_matrix_hdf5_sparse_indices_chunk_length(matrix_length),),
+        chunks=(_matrix_hdf5_sparse_indices_chunk_length(matrix_length, channels),),
         maxshape=(None,),
         fillvalue=0,
     )
+    if value_dtype is not None:
+        group.create_dataset(
+            "values",
+            shape=(0,),
+            dtype=value_dtype,
+            chunks=(_matrix_hdf5_sparse_indices_chunk_length(matrix_length, channels),),
+            maxshape=(None,),
+            fillvalue=0,
+        )
     return group
 
 
@@ -632,12 +745,19 @@ def _append_sparse_hdf5_matrix_row(
     sample_row: int,
     flat_indices: np.ndarray,
     current_nnz: int,
+    values_dataset=None,
+    flat_values: Optional[np.ndarray] = None,
 ) -> int:
     flat_indices = np.asarray(flat_indices, dtype=np.int64)
     next_nnz = current_nnz + int(flat_indices.size)
     if flat_indices.size > 0:
         indices_dataset.resize((next_nnz,))
         indices_dataset[current_nnz:next_nnz] = flat_indices
+        if values_dataset is not None:
+            if flat_values is None or len(flat_values) != len(flat_indices):
+                raise ValueError("Sparse values must align with sparse indices.")
+            values_dataset.resize((next_nnz,))
+            values_dataset[current_nnz:next_nnz] = flat_values
     indptr_dataset[int(sample_row) + 1] = next_nnz
     return next_nnz
 
@@ -649,9 +769,11 @@ def _load_dense_rows_from_sparse_hdf5(
     sample_rows: np.ndarray,
     matrix_length: int,
     numpy_dtype,
+    channels: int = 4,
+    values_dataset=None,
 ) -> np.ndarray:
     sample_rows = np.asarray(sample_rows, dtype=np.int64)
-    flat_width = int(matrix_length) * 4
+    flat_width = int(matrix_length) * int(channels)
     dense = np.zeros((len(sample_rows), flat_width), dtype=numpy_dtype)
     for out_idx, sample_row in enumerate(sample_rows.tolist()):
         start = int(indptr_dataset[int(sample_row)])
@@ -660,8 +782,17 @@ def _load_dense_rows_from_sparse_hdf5(
             continue
         row_indices = np.asarray(indices_dataset[start:stop], dtype=np.int64)
         if row_indices.size > 0:
-            dense[out_idx, row_indices] = 1
-    return dense.reshape(len(sample_rows), int(matrix_length), 4)
+            if values_dataset is None:
+                dense[out_idx, row_indices] = 1
+            else:
+                dense[out_idx, row_indices] = np.asarray(
+                    values_dataset[start:stop],
+                    dtype=numpy_dtype,
+                )
+    reshaped = dense.reshape(len(sample_rows), int(matrix_length), int(channels))
+    if int(channels) == 1:
+        return reshaped[:, :, 0]
+    return reshaped
 
 
 def _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file: Path) -> bool:
@@ -686,6 +817,10 @@ def _matrix_hdf5_store_is_append_resizable(matrix_hdf5_file: Path) -> bool:
                         return False
                     if indices_ds.maxshape is None or indices_ds.maxshape[0] is not None:
                         return False
+                    if "values" in node:
+                        values_ds = node["values"]
+                        if values_ds.maxshape is None or values_ds.maxshape[0] is not None:
+                            return False
                 else:
                     if node.maxshape is None or node.maxshape[0] is not None:
                         return False
@@ -1240,12 +1375,20 @@ def _commit_batch_bytes(commit_batch_gb: float) -> int:
     return int(commit_batch_gb * (1024 ** 3))
 
 
-def _estimate_sample_scaffold_bytes(vector_length: int, dtype_name: str) -> int:
-    return vector_length * 4 * np.dtype(COUNT_DTYPES[dtype_name]).itemsize
+def _estimate_sample_scaffold_bytes(
+    vector_length: int,
+    dtype_name: str,
+    channels: int = 4,
+) -> int:
+    return vector_length * channels * np.dtype(MATRIX_DTYPES[dtype_name]).itemsize
 
 
-def _estimate_builder_python_peak_bytes(matrix_length: int, dtype_name: str) -> int:
-    matrix_bytes = _estimate_sample_scaffold_bytes(matrix_length, dtype_name)
+def _estimate_builder_python_peak_bytes(
+    matrix_length: int,
+    dtype_name: str,
+    channels: int = 4,
+) -> int:
+    matrix_bytes = _estimate_sample_scaffold_bytes(matrix_length, dtype_name, channels)
     temp_bytes = matrix_length * MATRIX_BUILD_TEMP_BYTES_PER_POSITION
     return matrix_bytes * 2 + temp_bytes + MATRIX_BUILD_FIXED_HEADROOM_BYTES
 
@@ -1455,6 +1598,7 @@ def _compare_db_metadata_rows(
     genome_scope: Optional[str],
     calculations: tuple[str, ...],
     min_cov: int,
+    ani_method: str,
 ) -> list[tuple[str, str]]:
     return [
         ("matrix_input_format", "hdf5"),
@@ -1463,7 +1607,7 @@ def _compare_db_metadata_rows(
         ("matrix_count_dtype", matrix_metadata.get("count_dtype", "")),
         ("genome_scope", genome_scope or "all"),
         ("calculate", "+".join(calculations)),
-        ("ani_method", "popani"),
+        ("ani_method", ani_method),
         ("min_cov", str(min_cov)),
     ]
 
@@ -1475,6 +1619,7 @@ def _validate_matrix_compare_db_metadata(
     genome_scope: Optional[str],
     calculations: tuple[str, ...],
     min_cov: int,
+    ani_method: str,
 ) -> None:
     expected = dict(
         _compare_db_metadata_rows(
@@ -1482,6 +1627,7 @@ def _validate_matrix_compare_db_metadata(
             genome_scope=genome_scope,
             calculations=calculations,
             min_cov=min_cov,
+            ani_method=ani_method,
         )
     )
     mismatches: list[str] = []
@@ -1567,6 +1713,7 @@ def _prepare_matrix_compare_db(
     genome_scope: Optional[str],
     calculations: tuple[str, ...],
     min_cov: int,
+    ani_method: str,
 ) -> duckdb.DuckDBPyConnection:
     existed_before = output_file.exists() and output_file.stat().st_size > 0
     compare_conn = duckdb.connect(str(output_file))
@@ -1580,6 +1727,7 @@ def _prepare_matrix_compare_db(
                 genome_scope=genome_scope,
                 calculations=calculations,
                 min_cov=min_cov,
+                ani_method=ani_method,
             ),
         )
     else:
@@ -1604,6 +1752,7 @@ def _prepare_matrix_compare_db(
             genome_scope=genome_scope,
             calculations=calculations,
             min_cov=min_cov,
+            ani_method=ani_method,
         )
         _ensure_matrix_compare_completed_table(compare_conn)
         _ensure_matrix_compare_gene_results_table(compare_conn)
@@ -1838,32 +1987,26 @@ def _validate_matrix_db_appendable(metadata: dict[str, str]) -> tuple[str, str]:
     return count_dtype, genome_scope
 
 
-def _validate_matrix_hdf5_appendable(metadata: dict[str, str]) -> tuple[str, str, str]:
+def _validate_matrix_hdf5_appendable(
+    metadata: dict[str, str],
+) -> tuple[str, str, str, str, int]:
     layout = metadata.get("layout", "")
     if layout not in _matrix_hdf5_supported_layouts():
         raise ValueError(
             "Matrix store layout is not append-compatible with this builder. "
             "Rebuild the matrix store with the current builder."
         )
-    semantics = metadata.get("matrix_value_semantics", "")
-    if semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
-        raise ValueError(
-            "Matrix store value semantics are incompatible with append. "
-            "Rebuild the matrix store with the current builder."
-        )
-    min_cov = metadata.get("coverage_filter_min_cov")
-    if min_cov != str(MATRIX_BUILD_MIN_COV):
-        raise ValueError(
-            "Matrix store coverage filter is incompatible with append. "
-            "Rebuild the matrix store with the current builder."
-        )
-    count_dtype = metadata.get("count_dtype", "")
-    if count_dtype not in COUNT_DTYPES:
-        raise ValueError(
-            f"Matrix store count dtype '{count_dtype}' is not supported for append."
-        )
+    storage_mode = _matrix_storage_mode_from_metadata(metadata)
+    min_cov_text = metadata.get("coverage_filter_min_cov")
+    try:
+        min_cov = int(str(min_cov_text))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Matrix store has an invalid build-time coverage filter.") from exc
+    if min_cov < 1:
+        raise ValueError("Matrix store has an invalid build-time coverage filter.")
+    count_dtype = _matrix_dtype_name_from_metadata(metadata)
     genome_scope = metadata.get("genome_scope", "all")
-    return count_dtype, genome_scope, str(layout)
+    return count_dtype, genome_scope, str(layout), storage_mode, min_cov
 
 
 def _open_matrix_build_connection(
@@ -1889,15 +2032,89 @@ def _restart_matrix_build_transaction(
     return conn
 
 
+def _profile_count_range(
+    profile_paths: list[Path],
+    *,
+    accepted_genomes: Optional[set[str]] = None,
+) -> tuple[int, int]:
+    profiles = pl.scan_parquet([str(path) for path in profile_paths])
+    if accepted_genomes is not None:
+        profiles = profiles.filter(pl.col("genome").is_in(sorted(accepted_genomes)))
+    stats = (
+        profiles
+        .select(
+            *[pl.col(base).min().cast(pl.Int64).alias(f"{base}_min") for base in ("A", "T", "C", "G")],
+            *[pl.col(base).max().cast(pl.Int64).alias(f"{base}_max") for base in ("A", "T", "C", "G")],
+        )
+        .collect(engine="streaming")
+    )
+    minima = [int(stats[f"{base}_min"][0] or 0) for base in ("A", "T", "C", "G")]
+    maxima = [int(stats[f"{base}_max"][0] or 0) for base in ("A", "T", "C", "G")]
+    return min(minima, default=0), max(maxima, default=0)
+
+
+def _resolve_matrix_build_dtype(
+    *,
+    profile_paths: list[Path],
+    storage_mode: str,
+    count_dtype: Optional[str],
+    accepted_genomes: Optional[set[str]] = None,
+) -> str:
+    if storage_mode == MATRIX_STORAGE_BITMASK:
+        if count_dtype is not None:
+            raise ValueError("--count-dtype is only valid with --storage-mode counts.")
+        return BITMASK_DTYPE_NAME
+    if storage_mode != MATRIX_STORAGE_COUNTS:
+        raise ValueError(
+            f"Unsupported storage mode {storage_mode!r}. "
+            f"Choose one of: {', '.join(MATRIX_STORAGE_MODES)}."
+        )
+    requested = "auto" if count_dtype is None else str(count_dtype)
+    if requested not in MATRIX_COUNT_DTYPE_CHOICES:
+        raise ValueError(
+            f"Unsupported count dtype {requested!r}. "
+            f"Choose one of: {', '.join(MATRIX_COUNT_DTYPE_CHOICES)}."
+        )
+    min_count, max_count = _profile_count_range(
+        profile_paths,
+        accepted_genomes=accepted_genomes,
+    )
+    if min_count < 0:
+        raise ValueError(f"Profile allele counts must be non-negative; observed {min_count}.")
+    if requested == "auto":
+        if max_count <= np.iinfo(np.uint16).max:
+            return "uint16"
+        if max_count <= np.iinfo(np.uint32).max:
+            return "uint32"
+        raise ValueError(
+            f"Observed allele count {max_count} exceeds uint32 maximum "
+            f"{np.iinfo(np.uint32).max}."
+        )
+    max_allowed = int(np.iinfo(COUNT_DTYPES[requested]).max)
+    if max_count > max_allowed:
+        raise ValueError(
+            f"Observed allele count {max_count} exceeds {requested} maximum {max_allowed}. "
+            "Use --count-dtype uint32."
+        )
+    return requested
+
+
 def _load_profile_genome_matrix(
     profile_path: Path,
     genome_spec: GenomeSpec,
     genome_offsets: list[GenomeScaffoldOffset],
     count_dtype: str,
     min_cov: int,
+    storage_mode: str = MATRIX_STORAGE_LEGACY_PRESENCE,
 ) -> np.ndarray:
-    np_dtype = COUNT_DTYPES[count_dtype]
-    matrix = np.zeros((genome_spec.matrix_length, 4), dtype=np_dtype)
+    if storage_mode == MATRIX_STORAGE_BITMASK:
+        np_dtype = np.dtype(np.uint8)
+        matrix = np.zeros(genome_spec.matrix_length, dtype=np_dtype)
+    else:
+        if count_dtype not in COUNT_DTYPES:
+            raise ValueError(f"Unsupported count dtype {count_dtype!r}.")
+        np_dtype = np.dtype(COUNT_DTYPES[count_dtype])
+        matrix = np.zeros((genome_spec.matrix_length, 4), dtype=np_dtype)
     frame = (
         pl.scan_parquet(profile_path)
         .filter(pl.col("genome") == genome_spec.genome)
@@ -1924,10 +2141,23 @@ def _load_profile_genome_matrix(
             - offset.index_base
             + offset.axis_start
         )
-        matrix[axis_pos, 0] = (scaffold_frame["A"].to_numpy() > 0).astype(np_dtype, copy=False)
-        matrix[axis_pos, 1] = (scaffold_frame["T"].to_numpy() > 0).astype(np_dtype, copy=False)
-        matrix[axis_pos, 2] = (scaffold_frame["C"].to_numpy() > 0).astype(np_dtype, copy=False)
-        matrix[axis_pos, 3] = (scaffold_frame["G"].to_numpy() > 0).astype(np_dtype, copy=False)
+        counts = scaffold_frame.select("A", "T", "C", "G").to_numpy()
+        if storage_mode == MATRIX_STORAGE_COUNTS:
+            max_count = int(counts.max(initial=0))
+            max_allowed = int(np.iinfo(np_dtype).max)
+            if max_count > max_allowed:
+                raise ValueError(
+                    f"Observed allele count {max_count} in {profile_path.name} exceeds "
+                    f"{count_dtype} maximum {max_allowed}. Use --count-dtype uint32."
+                )
+            matrix[axis_pos, :] = counts.astype(np_dtype, copy=False)
+        elif storage_mode == MATRIX_STORAGE_BITMASK:
+            presence = counts > 0
+            matrix[axis_pos] = (presence * BITMASK_BASE_BITS).sum(axis=1, dtype=np.uint8)
+        elif storage_mode == MATRIX_STORAGE_LEGACY_PRESENCE:
+            matrix[axis_pos, :] = (counts > 0).astype(np_dtype, copy=False)
+        else:
+            raise ValueError(f"Unsupported matrix storage mode {storage_mode!r}.")
     return matrix
 
 
@@ -1998,7 +2228,9 @@ def build_matrix_db(
     profile_dir: Path,
     output_file: Path,
     genome: str = "all",
-    count_dtype: str = "uint16",
+    storage_mode: Optional[str] = None,
+    count_dtype: Optional[str] = None,
+    min_cov: int = MATRIX_BUILD_MIN_COV,
     memory_limit_gb: float = 16.0,
     commit_batch_gb: Optional[float] = None,
     bed_file: Optional[Path] = None,
@@ -2010,7 +2242,9 @@ def build_matrix_db(
         profile_dir=profile_dir,
         output_file=output_file,
         genome=genome,
+        storage_mode=storage_mode,
         count_dtype=count_dtype,
+        min_cov=min_cov,
         memory_limit_gb=memory_limit_gb,
         bed_file=bed_file,
         stb_file=stb_file,
@@ -2030,6 +2264,7 @@ def build_matrix_db(
         count_dtype=summary.count_dtype,
         genome_scope=summary.genome_scope,
         memory_limit_gb=summary.memory_limit_gb,
+        storage_mode=summary.storage_mode,
     )
 
 
@@ -2037,7 +2272,9 @@ def build_matrix_hdf5(
     profile_dir: Path,
     output_file: Path,
     genome: str = "all",
-    count_dtype: str = "uint16",
+    storage_mode: Optional[str] = None,
+    count_dtype: Optional[str] = None,
+    min_cov: int = MATRIX_BUILD_MIN_COV,
     memory_limit_gb: float = 16.0,
     bed_file: Optional[Path] = None,
     stb_file: Optional[Path] = None,
@@ -2051,13 +2288,33 @@ def build_matrix_hdf5(
     The resulting matrix store keeps one whole-genome matrix per genome and is
     intended for repeated, resumable matrix comparisons.
     """
-    if count_dtype not in COUNT_DTYPES:
-        raise ValueError(f"Unsupported count dtype '{count_dtype}'. Choose one of {', '.join(COUNT_DTYPES)}.")
+    if storage_mode is None:
+        storage_mode = (
+            MATRIX_STORAGE_COUNTS
+            if count_dtype is not None
+            else MATRIX_STORAGE_BITMASK
+        )
+    if storage_mode not in MATRIX_STORAGE_MODES:
+        raise ValueError(
+            f"Unsupported storage mode {storage_mode!r}. "
+            f"Choose one of: {', '.join(MATRIX_STORAGE_MODES)}."
+        )
+    if min_cov < 1:
+        raise ValueError("min_cov must be >= 1")
     if export_batch_mb <= 0:
         raise ValueError("export_batch_mb must be > 0")
     if bed_file is None or stb_file is None:
         raise ValueError("build_matrix_hdf5 requires both bed_file and stb_file.")
     profile_paths = discover_profile_parquets(profile_dir)
+    matrix_dtype_name = _resolve_matrix_build_dtype(
+        profile_paths=profile_paths,
+        storage_mode=storage_mode,
+        count_dtype=count_dtype,
+    )
+    matrix_channels = 1 if storage_mode == MATRIX_STORAGE_BITMASK else 4
+    resolved_count_dtype = (
+        matrix_dtype_name if storage_mode == MATRIX_STORAGE_COUNTS else BITMASK_DTYPE_NAME
+    )
     genome_scope = None if genome == "all" else genome
     contract_scaffolds = _collect_scaffold_specs_from_bed_and_stb(
         bed_file=Path(bed_file),
@@ -2125,14 +2382,30 @@ def build_matrix_hdf5(
     build_succeeded = False
     try:
         sample_rows = [(idx, path.stem, str(path.resolve()), path) for idx, path in enumerate(profile_paths)]
+        layout = (
+            CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT
+            if storage_mode == MATRIX_STORAGE_BITMASK and sparse
+            else CURRENT_MATRIX_HDF5_BITMASK_LAYOUT
+            if storage_mode == MATRIX_STORAGE_BITMASK
+            else CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+            if sparse
+            else CURRENT_MATRIX_HDF5_LAYOUT
+        )
+        value_semantics = (
+            BITMASK_MATRIX_VALUE_SEMANTICS
+            if storage_mode == MATRIX_STORAGE_BITMASK
+            else COUNT_MATRIX_VALUE_SEMANTICS
+        )
         metadata_rows = {
             "profiles_dir": str(profile_dir.resolve()),
             "profile_format": "classic_zipstrain_profile_parquet",
             "genome_scope": genome_scope or "all",
-            "count_dtype": count_dtype,
-            "layout": CURRENT_MATRIX_HDF5_SPARSE_LAYOUT if sparse else CURRENT_MATRIX_HDF5_LAYOUT,
-            "matrix_value_semantics": FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS,
-            "coverage_filter_min_cov": str(MATRIX_BUILD_MIN_COV),
+            "storage_mode": storage_mode,
+            "matrix_dtype": matrix_dtype_name,
+            "count_dtype": resolved_count_dtype,
+            "layout": layout,
+            "matrix_value_semantics": value_semantics,
+            "coverage_filter_min_cov": str(min_cov),
             "memory_limit_gb": str(memory_limit_gb),
             "export_batch_mb": str(export_batch_mb),
             "separator_rows_between_scaffolds": "1",
@@ -2206,7 +2479,11 @@ def build_matrix_hdf5(
             matrix_datasets: dict[int, object] = {}
             sparse_states: dict[int, tuple[object, object, int]] = {}
             for spec in genomes:
-                estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
+                estimated_python_peak = _estimate_builder_python_peak_bytes(
+                    spec.matrix_length,
+                    matrix_dtype_name,
+                    matrix_channels,
+                )
                 if estimated_python_peak > memory_limit_bytes:
                     raise MemoryError(
                         f"Genome {spec.genome} is estimated to require about "
@@ -2219,6 +2496,8 @@ def build_matrix_hdf5(
                         genome_idx=spec.genome_idx,
                         sample_count=len(sample_rows),
                         matrix_length=spec.matrix_length,
+                        channels=matrix_channels,
+                        value_dtype=MATRIX_DTYPES[matrix_dtype_name],
                     )
                     matrix_datasets[spec.genome_idx] = matrix_group
                     sparse_states[spec.genome_idx] = (matrix_group["indptr"], matrix_group["indices"], 0)
@@ -2226,15 +2505,31 @@ def build_matrix_hdf5(
                     chunk_samples = _matrix_hdf5_chunk_sample_count(
                         sample_count=len(sample_rows),
                         matrix_length=spec.matrix_length,
-                        dtype_name=count_dtype,
+                        dtype_name=matrix_dtype_name,
+                        channels=matrix_channels,
                         target_batch_mb=export_batch_mb,
+                    )
+                    dataset_shape = (
+                        (len(sample_rows), spec.matrix_length)
+                        if storage_mode == MATRIX_STORAGE_BITMASK
+                        else (len(sample_rows), spec.matrix_length, 4)
+                    )
+                    dataset_chunks = (
+                        (chunk_samples, spec.matrix_length)
+                        if storage_mode == MATRIX_STORAGE_BITMASK
+                        else (chunk_samples, spec.matrix_length, 4)
+                    )
+                    dataset_maxshape = (
+                        (None, spec.matrix_length)
+                        if storage_mode == MATRIX_STORAGE_BITMASK
+                        else (None, spec.matrix_length, 4)
                     )
                     matrix_datasets[spec.genome_idx] = matrices_group.create_dataset(
                         str(spec.genome_idx),
-                        shape=(len(sample_rows), spec.matrix_length, 4),
-                        dtype=COUNT_DTYPES[count_dtype],
-                        chunks=(chunk_samples, spec.matrix_length, 4),
-                        maxshape=(None, spec.matrix_length, 4),
+                        shape=dataset_shape,
+                        dtype=MATRIX_DTYPES[matrix_dtype_name],
+                        chunks=dataset_chunks,
+                        maxshape=dataset_maxshape,
                         fillvalue=0,
                     )
 
@@ -2256,21 +2551,28 @@ def build_matrix_hdf5(
                         profile_path=profile_path,
                         genome_spec=genome_spec,
                         genome_offsets=scaffolds_by_genome_idx[genome_spec.genome_idx],
-                        count_dtype=count_dtype,
-                        min_cov=MATRIX_BUILD_MIN_COV,
+                        count_dtype=resolved_count_dtype,
+                        min_cov=min_cov,
+                        storage_mode=storage_mode,
                     )
                     if sparse:
                         indptr_ds, indices_ds, current_nnz = sparse_states[genome_spec.genome_idx]
+                        flat_indices, flat_values = _dense_matrix_to_sparse_components(
+                            matrix,
+                            store_values=True,
+                        )
                         current_nnz = _append_sparse_hdf5_matrix_row(
                             indptr_dataset=indptr_ds,
                             indices_dataset=indices_ds,
                             sample_row=sample_idx,
-                            flat_indices=_dense_matrix_to_sparse_flat_indices(matrix),
+                            flat_indices=flat_indices,
                             current_nnz=current_nnz,
+                            values_dataset=matrix_datasets[genome_spec.genome_idx]["values"],
+                            flat_values=flat_values,
                         )
                         sparse_states[genome_spec.genome_idx] = (indptr_ds, indices_ds, current_nnz)
                     else:
-                        matrix_datasets[genome_spec.genome_idx][sample_idx, :, :] = matrix
+                        matrix_datasets[genome_spec.genome_idx][sample_idx, ...] = matrix
                     stored_rows += 1
                     completed_work += 1
                     if progress_callback is not None:
@@ -2312,9 +2614,10 @@ def build_matrix_hdf5(
         sample_count=len(profile_paths),
         scaffold_count=len(genome_scaffolds),
         stored_rows=stored_rows,
-        count_dtype=count_dtype,
+        count_dtype=resolved_count_dtype,
         genome_scope=genome_scope or "all",
         memory_limit_gb=memory_limit_gb,
+        storage_mode=storage_mode,
     )
 
 
@@ -2327,6 +2630,8 @@ def _append_matrix_hdf5_in_place(
     appended_samples: list[tuple[int, str, str, Path]],
     count_dtype: str,
     layout: str,
+    storage_mode: str,
+    min_cov: int,
     genome_scope: str,
     ignored_genome_count: int,
     memory_limit_gb: float,
@@ -2338,6 +2643,7 @@ def _append_matrix_hdf5_in_place(
     stored_rows = 0
     total_sample_count = len(existing_samples) + len(appended_samples)
     existing_sample_count = len(existing_samples)
+    matrix_channels = 1 if storage_mode == MATRIX_STORAGE_BITMASK else 4
 
     if progress_callback is not None:
         progress_callback(
@@ -2371,9 +2677,13 @@ def _append_matrix_hdf5_in_place(
             dtype=object,
         )
 
-        sparse_states: dict[int, tuple[object, object, int]] = {}
+        sparse_states: dict[int, tuple[object, object, object, int]] = {}
         for spec in genomes:
-            estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
+            estimated_python_peak = _estimate_builder_python_peak_bytes(
+                spec.matrix_length,
+                count_dtype,
+                matrix_channels,
+            )
             if estimated_python_peak > memory_limit_bytes:
                 raise MemoryError(
                     f"Genome {spec.genome} is estimated to require about "
@@ -2388,11 +2698,15 @@ def _append_matrix_hdf5_in_place(
                 sparse_states[spec.genome_idx] = (
                     indptr_ds,
                     indices_ds,
+                    node.get("values"),
                     int(indptr_ds[existing_sample_count]),
                 )
             else:
                 dataset = node
-                dataset.resize((total_sample_count, spec.matrix_length, 4))
+                if storage_mode == MATRIX_STORAGE_BITMASK:
+                    dataset.resize((total_sample_count, spec.matrix_length))
+                else:
+                    dataset.resize((total_sample_count, spec.matrix_length, 4))
             for appended_offset, (_sample_idx, sample_name, _profile_path_str, profile_path) in enumerate(appended_samples):
                 if progress_callback is not None:
                     progress_callback(
@@ -2411,20 +2725,32 @@ def _append_matrix_hdf5_in_place(
                     genome_spec=spec,
                     genome_offsets=scaffolds_by_genome_idx[spec.genome_idx],
                     count_dtype=count_dtype,
-                    min_cov=MATRIX_BUILD_MIN_COV,
+                    min_cov=min_cov,
+                    storage_mode=storage_mode,
                 )
                 if _matrix_hdf5_layout_is_sparse(layout):
-                    indptr_ds, indices_ds, current_nnz = sparse_states[spec.genome_idx]
+                    indptr_ds, indices_ds, values_ds, current_nnz = sparse_states[spec.genome_idx]
+                    flat_indices, flat_values = _dense_matrix_to_sparse_components(
+                        matrix,
+                        store_values=values_ds is not None,
+                    )
                     current_nnz = _append_sparse_hdf5_matrix_row(
                         indptr_dataset=indptr_ds,
                         indices_dataset=indices_ds,
                         sample_row=existing_sample_count + appended_offset,
-                        flat_indices=_dense_matrix_to_sparse_flat_indices(matrix),
+                        flat_indices=flat_indices,
                         current_nnz=current_nnz,
+                        values_dataset=values_ds,
+                        flat_values=flat_values,
                     )
-                    sparse_states[spec.genome_idx] = (indptr_ds, indices_ds, current_nnz)
+                    sparse_states[spec.genome_idx] = (
+                        indptr_ds,
+                        indices_ds,
+                        values_ds,
+                        current_nnz,
+                    )
                 else:
-                    dataset[existing_sample_count + appended_offset, :, :] = matrix
+                    dataset[existing_sample_count + appended_offset, ...] = matrix
                 stored_rows += 1
                 completed_work += 1
                 if progress_callback is not None:
@@ -2464,6 +2790,7 @@ def _append_matrix_hdf5_in_place(
         count_dtype=count_dtype,
         genome_scope=genome_scope or "all",
         memory_limit_gb=memory_limit_gb,
+        storage_mode=storage_mode,
     )
 
 
@@ -2480,6 +2807,8 @@ def _append_matrix_hdf5_via_rewrite(
     appended_samples: list[tuple[int, str, str, Path]],
     count_dtype: str,
     layout: str,
+    storage_mode: str,
+    min_cov: int,
     genome_scope: str,
     ignored_genome_count: int,
     memory_limit_gb: float,
@@ -2491,6 +2820,7 @@ def _append_matrix_hdf5_via_rewrite(
     completed_work = 0
     stored_rows = 0
     source_gene_ranges = None if gene_ranges is not None else _load_matrix_hdf5_gene_ranges(matrix_hdf5_file)
+    matrix_channels = 1 if storage_mode == MATRIX_STORAGE_BITMASK else 4
 
     if progress_callback is not None:
         progress_callback(
@@ -2585,7 +2915,11 @@ def _append_matrix_hdf5_via_rewrite(
 
             matrices_group = dst_h5.create_group("matrices")
             for spec in genomes:
-                estimated_python_peak = _estimate_builder_python_peak_bytes(spec.matrix_length, count_dtype)
+                estimated_python_peak = _estimate_builder_python_peak_bytes(
+                    spec.matrix_length,
+                    count_dtype,
+                    matrix_channels,
+                )
                 if estimated_python_peak > memory_limit_bytes:
                     raise MemoryError(
                         f"Genome {spec.genome} is estimated to require about "
@@ -2599,16 +2933,34 @@ def _append_matrix_hdf5_via_rewrite(
                         genome_idx=spec.genome_idx,
                         sample_count=total_sample_count,
                         matrix_length=spec.matrix_length,
+                        channels=matrix_channels,
+                        value_dtype=(
+                            MATRIX_DTYPES[count_dtype]
+                            if storage_mode != MATRIX_STORAGE_LEGACY_PRESENCE
+                            else None
+                        ),
                     )
                     dst_indptr = dst_group["indptr"]
                     dst_indices = dst_group["indices"]
+                    dst_values = dst_group.get("values")
                     if src_node is not None:
                         src_indptr = src_node["indptr"]
                         src_indices = src_node["indices"]
+                        src_values = src_node.get("values")
                         existing_indices_len = int(src_indices.shape[0])
                         if existing_indices_len > 0:
                             dst_indices.resize((existing_indices_len,))
                             dst_indices[:] = np.asarray(src_indices[...], dtype=np.int64)
+                            if dst_values is not None:
+                                if src_values is None:
+                                    raise ValueError(
+                                        "Sparse matrix store is missing values required by its storage mode."
+                                    )
+                                dst_values.resize((existing_indices_len,))
+                                dst_values[:] = np.asarray(
+                                    src_values[...],
+                                    dtype=MATRIX_DTYPES[count_dtype],
+                                )
                         dst_indptr[: existing_sample_count + 1] = np.asarray(
                             src_indptr[: existing_sample_count + 1],
                             dtype=np.int64,
@@ -2624,22 +2976,38 @@ def _append_matrix_hdf5_via_rewrite(
                             sample_count=total_sample_count,
                             matrix_length=spec.matrix_length,
                             dtype_name=count_dtype,
+                            channels=matrix_channels,
                             target_batch_mb=export_batch_mb,
                         )
                     )
                     chunk_samples = max(1, min(total_sample_count, src_chunk_samples))
+                    dataset_shape = (
+                        (total_sample_count, spec.matrix_length)
+                        if storage_mode == MATRIX_STORAGE_BITMASK
+                        else (total_sample_count, spec.matrix_length, 4)
+                    )
+                    dataset_chunks = (
+                        (chunk_samples, spec.matrix_length)
+                        if storage_mode == MATRIX_STORAGE_BITMASK
+                        else (chunk_samples, spec.matrix_length, 4)
+                    )
+                    dataset_maxshape = (
+                        (None, spec.matrix_length)
+                        if storage_mode == MATRIX_STORAGE_BITMASK
+                        else (None, spec.matrix_length, 4)
+                    )
                     dst_dataset = matrices_group.create_dataset(
                         str(spec.genome_idx),
-                        shape=(total_sample_count, spec.matrix_length, 4),
-                        dtype=COUNT_DTYPES[count_dtype],
-                        chunks=(chunk_samples, spec.matrix_length, 4),
-                        maxshape=(None, spec.matrix_length, 4),
+                        shape=dataset_shape,
+                        dtype=MATRIX_DTYPES[count_dtype],
+                        chunks=dataset_chunks,
+                        maxshape=dataset_maxshape,
                         fillvalue=0,
                     )
                     if src_node is not None:
                         for batch_start in range(0, existing_sample_count, chunk_samples):
                             batch_stop = min(existing_sample_count, batch_start + chunk_samples)
-                            dst_dataset[batch_start:batch_stop, :, :] = src_node[batch_start:batch_stop, :, :]
+                            dst_dataset[batch_start:batch_stop, ...] = src_node[batch_start:batch_stop, ...]
 
                 for appended_offset, (_sample_idx, sample_name, _profile_path_str, profile_path) in enumerate(appended_samples):
                     if progress_callback is not None:
@@ -2659,18 +3027,25 @@ def _append_matrix_hdf5_via_rewrite(
                         genome_spec=spec,
                         genome_offsets=scaffolds_by_genome_idx[spec.genome_idx],
                         count_dtype=count_dtype,
-                        min_cov=MATRIX_BUILD_MIN_COV,
+                        min_cov=min_cov,
+                        storage_mode=storage_mode,
                     )
                     if _matrix_hdf5_layout_is_sparse(layout):
+                        flat_indices, flat_values = _dense_matrix_to_sparse_components(
+                            matrix,
+                            store_values=dst_values is not None,
+                        )
                         current_nnz = _append_sparse_hdf5_matrix_row(
                             indptr_dataset=dst_indptr,
                             indices_dataset=dst_indices,
                             sample_row=existing_sample_count + appended_offset,
-                            flat_indices=_dense_matrix_to_sparse_flat_indices(matrix),
+                            flat_indices=flat_indices,
                             current_nnz=current_nnz,
+                            values_dataset=dst_values,
+                            flat_values=flat_values,
                         )
                     else:
-                        dst_dataset[existing_sample_count + appended_offset, :, :] = matrix
+                        dst_dataset[existing_sample_count + appended_offset, ...] = matrix
                     stored_rows += 1
                     completed_work += 1
                     if progress_callback is not None:
@@ -2715,6 +3090,7 @@ def _append_matrix_hdf5_via_rewrite(
         count_dtype=count_dtype,
         genome_scope=genome_scope or "all",
         memory_limit_gb=memory_limit_gb,
+        storage_mode=storage_mode,
     )
 
 
@@ -2744,7 +3120,9 @@ def append_matrix_hdf5(
         )
 
     metadata = _load_matrix_hdf5_metadata(matrix_hdf5_file)
-    count_dtype, genome_scope, layout = _validate_matrix_hdf5_appendable(metadata)
+    count_dtype, genome_scope, layout, storage_mode, min_cov = _validate_matrix_hdf5_appendable(
+        metadata
+    )
     genomes = _load_matrix_hdf5_genomes(matrix_hdf5_file)
     genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_hdf5_file)
     contract_genomes, contract_genome_scaffolds = _load_matrix_hdf5_reference_contract(matrix_hdf5_file)
@@ -2759,6 +3137,13 @@ def append_matrix_hdf5(
         if genome_scope == "all"
         else {genome_scope} & contract_genome_names
     )
+    if storage_mode == MATRIX_STORAGE_COUNTS:
+        _resolve_matrix_build_dtype(
+            profile_paths=profile_paths,
+            storage_mode=storage_mode,
+            count_dtype=count_dtype,
+            accepted_genomes=allowed_genome_names,
+        )
     existing_samples = _load_matrix_hdf5_samples(matrix_hdf5_file)
 
     existing_sample_names = {sample_name for _sample_idx, sample_name in existing_samples}
@@ -2828,6 +3213,8 @@ def append_matrix_hdf5(
             appended_samples=appended_samples,
             count_dtype=count_dtype,
             layout=layout,
+            storage_mode=storage_mode,
+            min_cov=min_cov,
             genome_scope=genome_scope,
             ignored_genome_count=len(ignored_genome_names),
             memory_limit_gb=memory_limit_gb,
@@ -2846,6 +3233,8 @@ def append_matrix_hdf5(
         appended_samples=appended_samples,
         count_dtype=count_dtype,
         layout=layout,
+        storage_mode=storage_mode,
+        min_cov=min_cov,
         genome_scope=genome_scope,
         ignored_genome_count=len(ignored_genome_names),
         memory_limit_gb=memory_limit_gb,
@@ -2878,6 +3267,7 @@ def append_matrix_db(
         count_dtype=summary.count_dtype,
         genome_scope=summary.genome_scope,
         memory_limit_gb=summary.memory_limit_gb,
+        storage_mode=summary.storage_mode,
     )
 
 
@@ -3420,16 +3810,18 @@ def _plan_chunk_sizes(
     dtype_name: str,
     memory_limit_bytes: int,
     backend_kind: str,
+    channels: int = 4,
 ) -> tuple[int, int]:
-    dtype_bytes = np.dtype(COUNT_DTYPES[dtype_name]).itemsize
+    dtype_bytes = np.dtype(MATRIX_DTYPES[dtype_name]).itemsize
     reserve = int(memory_limit_bytes * 0.15)
     budget = max(memory_limit_bytes - reserve, 64 * 1024 * 1024)
 
-    per_position_anchor = 4 * dtype_bytes + 8
-    per_position_target = 4 * dtype_bytes + 8
+    per_position_anchor = channels * dtype_bytes + 8
+    per_position_target = channels * dtype_bytes + 8
     if backend_kind == "torch":
-        per_position_anchor += 4 * dtype_bytes
-        per_position_target += 4 * dtype_bytes
+        compute_dtype_bytes = 4 if channels == 4 else dtype_bytes
+        per_position_anchor += channels * compute_dtype_bytes
+        per_position_target += channels * compute_dtype_bytes
 
     max_targets_full = max(
         1,
@@ -3531,6 +3923,235 @@ def _compare_tile_presence_torch_tensors_with_shared_mask(
     return totals, shared, shared_mask
 
 
+def _compare_tile_bitmask_numpy(
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    anchor = anchor_matrix.astype(np.uint8, copy=False)
+    targets = target_matrices.astype(np.uint8, copy=False)
+    total_mask = (anchor[:, np.newaxis] != 0) & (targets != 0)
+    shared_mask = total_mask & ((anchor[:, np.newaxis] & targets) != 0)
+    totals = total_mask.sum(axis=0, dtype=np.int64)
+    shared = shared_mask.sum(axis=0, dtype=np.int64)
+    return totals, shared, total_mask, shared_mask
+
+
+def _consensus_presence_numpy(matrix: np.ndarray, *, target_batch: bool) -> np.ndarray:
+    if target_batch:
+        covered = matrix.sum(axis=1, dtype=np.float64) > 0
+        maxima = matrix.max(axis=1, keepdims=True)
+        return (matrix == maxima) & covered[:, np.newaxis, :]
+    covered = matrix.sum(axis=1, dtype=np.float64) > 0
+    maxima = matrix.max(axis=1, keepdims=True)
+    return (matrix == maxima) & covered[:, np.newaxis]
+
+
+def _compare_tile_counts_numpy(
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+    *,
+    ani_kind: str,
+    cos_threshold: Optional[float],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if ani_kind == "popani":
+        anchor_presence = (anchor_matrix > 0).astype(np.int8, copy=False)
+        target_presence = (target_matrices > 0).astype(np.int8, copy=False)
+        totals, shared, shared_mask = _compare_tile_presence_numpy_with_mask(
+            anchor_matrix=anchor_presence,
+            target_matrices=target_presence,
+        )
+        total_mask = (
+            (anchor_presence.max(axis=1) > 0)[:, np.newaxis]
+            & (target_presence.max(axis=1) > 0)
+        )
+        return totals, shared, total_mask, shared_mask
+
+    anchor_covered = anchor_matrix.sum(axis=1, dtype=np.float64) > 0
+    target_covered = target_matrices.sum(axis=1, dtype=np.float64) > 0
+    total_mask = anchor_covered[:, np.newaxis] & target_covered
+
+    if ani_kind == "conani":
+        anchor_consensus = _consensus_presence_numpy(anchor_matrix, target_batch=False)
+        target_consensus = _consensus_presence_numpy(target_matrices, target_batch=True)
+        shared_mask = (
+            np.matmul(
+                anchor_consensus.astype(np.int8, copy=False)[:, np.newaxis, :],
+                target_consensus.astype(np.int8, copy=False),
+            ).squeeze(1)
+            > 0
+        )
+    elif ani_kind == "cosani":
+        if cos_threshold is None:
+            raise ValueError("cosANI requires a similarity threshold.")
+        anchor_float = anchor_matrix.astype(np.float32, copy=False)
+        target_float = target_matrices.astype(np.float32, copy=False)
+        dot = np.matmul(anchor_float[:, np.newaxis, :], target_float).squeeze(1)
+        anchor_norm = np.sqrt(
+            np.sum(anchor_float * anchor_float, axis=1, dtype=np.float32)
+        )
+        target_norm = np.sqrt(
+            np.sum(target_float * target_float, axis=1, dtype=np.float32)
+        )
+        denominator = anchor_norm[:, np.newaxis] * target_norm
+        cosine = np.divide(
+            dot,
+            denominator,
+            out=np.zeros_like(dot, dtype=np.float32),
+            where=denominator > 0,
+        )
+        shared_mask = total_mask & (cosine >= np.float32(cos_threshold))
+    else:
+        raise ValueError(f"Unsupported count-matrix ANI method {ani_kind!r}.")
+
+    shared_mask &= total_mask
+    totals = total_mask.sum(axis=0, dtype=np.int64)
+    shared = shared_mask.sum(axis=0, dtype=np.int64)
+    return totals, shared, total_mask, shared_mask
+
+
+def _compare_tile_bitmask_torch_tensors(
+    torch_module,
+    anchor_t,
+    targets_t,
+):
+    anchor = anchor_t.to(torch_module.int32)
+    targets = targets_t.to(torch_module.int32)
+    total_mask = (anchor.unsqueeze(1) != 0) & (targets != 0)
+    shared_mask = total_mask & ((anchor.unsqueeze(1) & targets) != 0)
+    totals = total_mask.sum(dim=0, dtype=torch_module.int64)
+    shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
+    return totals, shared, total_mask, shared_mask
+
+
+def _compare_tile_counts_torch_tensors(
+    torch_module,
+    anchor_t,
+    targets_t,
+    *,
+    ani_kind: str,
+    cos_threshold: Optional[float],
+):
+    if ani_kind == "popani":
+        return _compare_tile_presence_torch_tensors_with_mask(
+            torch_module=torch_module,
+            anchor_t=(anchor_t > 0).to(torch_module.float32),
+            targets_t=(targets_t > 0).to(torch_module.float32),
+        )
+    if ani_kind == "conani" and anchor_t.ndim == 1 and targets_t.ndim == 2:
+        return _compare_tile_bitmask_torch_tensors(
+            torch_module,
+            anchor_t,
+            targets_t,
+        )
+
+    anchor_covered = (anchor_t != 0).any(dim=1)
+    target_covered = (targets_t != 0).any(dim=1)
+    total_mask = anchor_covered.unsqueeze(1) & target_covered
+
+    if ani_kind == "conani":
+        anchor_counts = anchor_t.to(torch_module.int64)
+        target_counts = targets_t.to(torch_module.int64)
+        anchor_max = anchor_counts.amax(dim=1, keepdim=True)
+        target_max = target_counts.amax(dim=1, keepdim=True)
+        anchor_consensus = (anchor_counts == anchor_max) & anchor_covered.unsqueeze(1)
+        target_consensus = (target_counts == target_max) & target_covered.unsqueeze(1)
+        shared_mask = (
+            torch_module.matmul(
+                anchor_consensus.to(torch_module.float32).unsqueeze(1),
+                target_consensus.to(torch_module.float32),
+            ).squeeze(1)
+            > 0
+        )
+    elif ani_kind == "cosani":
+        if cos_threshold is None:
+            raise ValueError("cosANI requires a similarity threshold.")
+        anchor_float = anchor_t.to(torch_module.float32)
+        target_float = targets_t.to(torch_module.float32)
+        dot = torch_module.matmul(anchor_float.unsqueeze(1), target_float).squeeze(1)
+        anchor_norm = torch_module.sqrt((anchor_float * anchor_float).sum(dim=1))
+        target_norm = torch_module.sqrt((target_float * target_float).sum(dim=1))
+        denominator = anchor_norm.unsqueeze(1) * target_norm
+        cosine = torch_module.where(
+            denominator > 0,
+            dot / denominator.clamp_min(torch_module.finfo(torch_module.float32).tiny),
+            torch_module.zeros_like(dot),
+        )
+        shared_mask = total_mask & (cosine >= float(cos_threshold))
+    else:
+        raise ValueError(f"Unsupported count-matrix ANI method {ani_kind!r}.")
+
+    shared_mask = shared_mask & total_mask
+    totals = total_mask.sum(dim=0, dtype=torch_module.int64)
+    shared = shared_mask.sum(dim=0, dtype=torch_module.int64)
+    return totals, shared, total_mask, shared_mask
+
+
+def _compare_matrix_tile_numpy(
+    *,
+    anchor_matrix: np.ndarray,
+    target_matrices: np.ndarray,
+    matrix_value_semantics: str,
+    ani_kind: str,
+    cos_threshold: Optional[float],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS:
+        if ani_kind != "popani":
+            raise ValueError("Bitmask matrix stores support only popANI.")
+        return _compare_tile_bitmask_numpy(anchor_matrix, target_matrices)
+    if matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS:
+        return _compare_tile_counts_numpy(
+            anchor_matrix,
+            target_matrices,
+            ani_kind=ani_kind,
+            cos_threshold=cos_threshold,
+        )
+    if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+        if ani_kind != "popani":
+            raise ValueError("Legacy presence matrix stores support only popANI.")
+        totals, shared, shared_mask = _compare_tile_presence_numpy_with_mask(
+            anchor_matrix=anchor_matrix,
+            target_matrices=target_matrices,
+        )
+        total_mask = (
+            (anchor_matrix.max(axis=1) > 0)[:, np.newaxis]
+            & (target_matrices.max(axis=1) > 0)
+        )
+        return totals, shared, total_mask, shared_mask
+    raise ValueError(f"Unsupported matrix value semantics {matrix_value_semantics!r}.")
+
+
+def _compare_matrix_tile_torch(
+    *,
+    torch_module,
+    anchor_t,
+    targets_t,
+    matrix_value_semantics: str,
+    ani_kind: str,
+    cos_threshold: Optional[float],
+):
+    if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS:
+        if ani_kind != "popani":
+            raise ValueError("Bitmask matrix stores support only popANI.")
+        return _compare_tile_bitmask_torch_tensors(torch_module, anchor_t, targets_t)
+    if matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS:
+        return _compare_tile_counts_torch_tensors(
+            torch_module,
+            anchor_t,
+            targets_t,
+            ani_kind=ani_kind,
+            cos_threshold=cos_threshold,
+        )
+    if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+        if ani_kind != "popani":
+            raise ValueError("Legacy presence matrix stores support only popANI.")
+        return _compare_tile_presence_torch_tensors_with_mask(
+            torch_module=torch_module,
+            anchor_t=anchor_t,
+            targets_t=targets_t,
+        )
+    raise ValueError(f"Unsupported matrix value semantics {matrix_value_semantics!r}.")
+
+
 def _accumulate_gene_counts_from_full_torch_masks(
     *,
     torch_module,
@@ -3567,6 +4188,36 @@ def _accumulate_gene_counts_from_full_torch_masks(
     gene_total_positions = (total_stop - total_start).detach().cpu().numpy().astype(np.int64, copy=False)
     gene_share_allele_pos = (shared_stop - shared_start).detach().cpu().numpy().astype(np.int64, copy=False)
     return gene_total_positions, gene_share_allele_pos
+
+
+def _accumulate_gene_counts_from_full_numpy_masks(
+    *,
+    total_mask: np.ndarray,
+    shared_mask: np.ndarray,
+    gene_ranges: list[GeneRangeSpec],
+) -> tuple[np.ndarray, np.ndarray]:
+    target_count = int(total_mask.shape[1]) if total_mask.ndim > 1 else 0
+    if not gene_ranges:
+        empty = np.zeros((0, target_count), dtype=np.int64)
+        return empty, empty
+    total_prefix = np.vstack(
+        [
+            np.zeros((1, target_count), dtype=np.int64),
+            np.cumsum(total_mask, axis=0, dtype=np.int64),
+        ]
+    )
+    shared_prefix = np.vstack(
+        [
+            np.zeros((1, target_count), dtype=np.int64),
+            np.cumsum(shared_mask, axis=0, dtype=np.int64),
+        ]
+    )
+    starts = np.asarray([gene.axis_start for gene in gene_ranges], dtype=np.int64)
+    stops = np.asarray([gene.axis_end + 1 for gene in gene_ranges], dtype=np.int64)
+    return (
+        total_prefix[stops] - total_prefix[starts],
+        shared_prefix[stops] - shared_prefix[starts],
+    )
 
 
 def _update_ibs_numpy(
@@ -3750,12 +4401,34 @@ def _prepare_torch_matrix(
         tensor = matrix.contiguous()
     else:
         tensor = torch_module.from_numpy(np.ascontiguousarray(matrix))
+    if (
+        matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+        and getattr(compute_backend, "matrix_ani_kind", "popani") == "conani"
+    ):
+        counts = tensor.detach().cpu().numpy()
+        covered = np.any(counts != 0, axis=1)
+        maxima = np.max(counts, axis=1, keepdims=True)
+        bit_shape = (1, 4) + (1,) * max(counts.ndim - 2, 0)
+        consensus_bits = np.sum(
+            ((counts == maxima) & np.expand_dims(covered, axis=1))
+            * BITMASK_BASE_BITS.reshape(bit_shape),
+            axis=1,
+            dtype=np.uint8,
+        )
+        tensor = torch_module.from_numpy(np.ascontiguousarray(consensus_bits))
     if compute_backend.device == "cuda" and hasattr(tensor, "pin_memory"):
         tensor = tensor.pin_memory()
         kwargs: dict[str, object] = {"device": compute_backend.device, "non_blocking": True}
     else:
         kwargs = {"device": compute_backend.device}
-    if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+    if matrix_value_semantics in {
+        FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS,
+    }:
+        kwargs["dtype"] = torch_module.float32
+    elif (
+        matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+        and getattr(compute_backend, "matrix_ani_kind", "popani") != "conani"
+    ):
         kwargs["dtype"] = torch_module.float32
     return tensor.to(**kwargs)
 
@@ -3767,6 +4440,12 @@ def _torch_host_matrix_dtype(
 ):
     if matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
         return torch_module.float32
+    if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS:
+        return torch_module.uint8
+    if matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS:
+        if hasattr(torch_module, dtype_name):
+            return getattr(torch_module, dtype_name)
+        return torch_module.int64
     attr_name = dtype_name
     if hasattr(torch_module, attr_name):
         return getattr(torch_module, attr_name)
@@ -3799,9 +4478,18 @@ class _Hdf5GenomeMatrixTorchDataset:
         self._matrix_dataset = None
         self._matrix_sparse_indptr = None
         self._matrix_sparse_indices = None
+        self._matrix_sparse_values = None
         self.torch_module = torch_module or importlib.import_module("torch")
         self.h5py_module = _import_h5py()
-        self.numpy_dtype = COUNT_DTYPES[dtype_name]
+        self.numpy_dtype = MATRIX_DTYPES[dtype_name]
+        self.storage_mode = (
+            MATRIX_STORAGE_BITMASK
+            if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
+            else MATRIX_STORAGE_COUNTS
+            if matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+            else MATRIX_STORAGE_LEGACY_PRESENCE
+        )
+        self.channels = 1 if self.storage_mode == MATRIX_STORAGE_BITMASK else 4
         self.host_dtype = _torch_host_matrix_dtype(
             torch_module=self.torch_module,
             dtype_name=dtype_name,
@@ -3818,17 +4506,20 @@ class _Hdf5GenomeMatrixTorchDataset:
         else:
             self._matrix_sparse_indptr = node["indptr"]
             self._matrix_sparse_indices = node["indices"]
+            self._matrix_sparse_values = node.get("values")
 
     def _load_batch_numpy(self, sample_rows: np.ndarray) -> np.ndarray:
         self._ensure_open()
         if self._matrix_dataset is not None:
-            return np.asarray(self._matrix_dataset[sample_rows.tolist(), :, :])
+            return np.asarray(self._matrix_dataset[sample_rows.tolist(), ...])
         return _load_dense_rows_from_sparse_hdf5(
             indptr_dataset=self._matrix_sparse_indptr,
             indices_dataset=self._matrix_sparse_indices,
             sample_rows=sample_rows,
             matrix_length=self.matrix_length,
             numpy_dtype=self.numpy_dtype,
+            channels=self.channels,
+            values_dataset=self._matrix_sparse_values,
         )
 
     def close(self) -> None:
@@ -3838,6 +4529,7 @@ class _Hdf5GenomeMatrixTorchDataset:
         self._matrix_dataset = None
         self._matrix_sparse_indptr = None
         self._matrix_sparse_indices = None
+        self._matrix_sparse_values = None
 
     def __del__(self) -> None:
         self.close()
@@ -3860,6 +4552,8 @@ class _Hdf5GenomeMatrixTorchDataset:
         batch_tensor = self.torch_module.from_numpy(batch_np)
         if batch_tensor.dtype != self.host_dtype:
             batch_tensor = batch_tensor.to(dtype=self.host_dtype)
+        if self.storage_mode == MATRIX_STORAGE_BITMASK:
+            return batch_tensor.transpose(0, 1).contiguous()
         return batch_tensor.permute(1, 2, 0).contiguous()
 
 
@@ -3870,16 +4564,26 @@ class _Hdf5GenomeMatrixNumpyDataset:
         genome_idx: int,
         matrix_length: int,
         dtype_name: str,
+        matrix_value_semantics: str = FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS,
     ) -> None:
         self.matrix_hdf5_file = str(matrix_hdf5_file)
         self.genome_idx = int(genome_idx)
         self.matrix_length = int(matrix_length)
         self.h5py_module = _import_h5py()
-        self.numpy_dtype = COUNT_DTYPES[dtype_name]
+        self.numpy_dtype = MATRIX_DTYPES[dtype_name]
+        self.storage_mode = (
+            MATRIX_STORAGE_BITMASK
+            if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
+            else MATRIX_STORAGE_COUNTS
+            if matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+            else MATRIX_STORAGE_LEGACY_PRESENCE
+        )
+        self.channels = 1 if self.storage_mode == MATRIX_STORAGE_BITMASK else 4
         self._h5_file = None
         self._matrix_dataset = None
         self._matrix_sparse_indptr = None
         self._matrix_sparse_indices = None
+        self._matrix_sparse_values = None
 
     def _ensure_open(self) -> None:
         if self._h5_file is not None:
@@ -3891,17 +4595,23 @@ class _Hdf5GenomeMatrixNumpyDataset:
         else:
             self._matrix_sparse_indptr = node["indptr"]
             self._matrix_sparse_indices = node["indices"]
+            self._matrix_sparse_values = node.get("values")
 
     def _load_batch_numpy(self, sample_rows: np.ndarray) -> np.ndarray:
         self._ensure_open()
         if self._matrix_dataset is not None:
-            return np.asarray(self._matrix_dataset[sample_rows.tolist(), :, :], dtype=self.numpy_dtype)
+            return np.asarray(
+                self._matrix_dataset[sample_rows.tolist(), ...],
+                dtype=self.numpy_dtype,
+            )
         return _load_dense_rows_from_sparse_hdf5(
             indptr_dataset=self._matrix_sparse_indptr,
             indices_dataset=self._matrix_sparse_indices,
             sample_rows=sample_rows,
             matrix_length=self.matrix_length,
             numpy_dtype=self.numpy_dtype,
+            channels=self.channels,
+            values_dataset=self._matrix_sparse_values,
         )
 
     def close(self) -> None:
@@ -3911,6 +4621,7 @@ class _Hdf5GenomeMatrixNumpyDataset:
         self._matrix_dataset = None
         self._matrix_sparse_indptr = None
         self._matrix_sparse_indices = None
+        self._matrix_sparse_values = None
 
     def __del__(self) -> None:
         self.close()
@@ -3920,6 +4631,8 @@ class _Hdf5GenomeMatrixNumpyDataset:
 
     def load_indices(self, sample_rows: np.ndarray) -> np.ndarray:
         batch_np = self._load_batch_numpy(sample_rows)
+        if self.storage_mode == MATRIX_STORAGE_BITMASK:
+            return np.transpose(batch_np, (1, 0))
         return np.transpose(batch_np, (1, 2, 0))
 
 
@@ -3937,7 +4650,15 @@ def _load_target_queue_block_for_hdf5_torch(
         torch_module = importlib.import_module("torch")
     block_ids = np.array([sample_idx for sample_idx, _sample_name in block_rows], dtype=np.int64)
     block_names = [sample_name for _sample_idx, sample_name in block_rows]
-    zero_matrix = np.zeros((matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
+    storage_mode = (
+        MATRIX_STORAGE_BITMASK
+        if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
+        else MATRIX_STORAGE_COUNTS
+        if matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+        else MATRIX_STORAGE_LEGACY_PRESENCE
+    )
+    zero_shape = (matrix_length,) if storage_mode == MATRIX_STORAGE_BITMASK else (matrix_length, 4)
+    zero_matrix = np.zeros(zero_shape, dtype=MATRIX_DTYPES[dtype_name])
     dataset = _Hdf5GenomeMatrixTorchDataset(
         matrix_hdf5_file=matrix_hdf5_file,
         genome_idx=genome_idx,
@@ -3980,12 +4701,13 @@ def _load_anchor_queue_batch_for_hdf5_torch(
         anchor_tensor = dataset.load_range(batch_start, batch_start + len(batch_rows))
     finally:
         dataset.close()
+    if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS:
+        return [
+            (sample_idx, sample_name, anchor_tensor[:, pos])
+            for pos, (sample_idx, sample_name) in enumerate(batch_rows)
+        ]
     return [
-        (
-            sample_idx,
-            sample_name,
-            anchor_tensor[:, :, pos],
-        )
+        (sample_idx, sample_name, anchor_tensor[:, :, pos])
         for pos, (sample_idx, sample_name) in enumerate(batch_rows)
     ]
 
@@ -4028,10 +4750,22 @@ def _compare_anchor_against_target_chunk_torch_device(
     target_torch,
     vector_length: int,
     matrix_value_semantics: str,
+    ani_kind: str = "popani",
+    cos_threshold: Optional[float] = None,
     need_ibs: bool = False,
     gene_ranges: Optional[list[GeneRangeSpec]] = None,
 ):
-    target_count = int(target_torch.shape[2])
+    target_axis = (
+        1
+        if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
+        or (
+            matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+            and ani_kind == "conani"
+            and target_torch.ndim == 2
+        )
+        else 2
+    )
+    target_count = int(target_torch.shape[target_axis])
     chunk_totals_torch = compute_backend.torch.zeros(
         target_count,
         dtype=compute_backend.torch.int64,
@@ -4045,14 +4779,46 @@ def _compare_anchor_against_target_chunk_torch_device(
     max_runs = None
     gene_total_positions = None
     gene_share_allele_pos = None
-    if gene_ranges:
-        total_inc, shared_inc, total_mask, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
+    anchor_slice = anchor_torch[:vector_length, ...]
+    target_slice = target_torch[:vector_length, ...]
+    if (
+        matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS
+        and ani_kind == "popani"
+    ):
+        if gene_ranges:
+            total_inc, shared_inc, total_mask, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
+                torch_module=compute_backend.torch,
+                anchor_t=anchor_slice,
+                targets_t=target_slice,
+            )
+        elif need_ibs:
+            total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_shared_mask(
+                torch_module=compute_backend.torch,
+                anchor_t=anchor_slice,
+                targets_t=target_slice,
+            )
+            total_mask = None
+        else:
+            total_inc, shared_inc = _compare_tile_presence_torch_tensors(
+                torch_module=compute_backend.torch,
+                anchor_t=anchor_slice,
+                targets_t=target_slice,
+            )
+            total_mask = None
+            shared_mask = None
+    else:
+        total_inc, shared_inc, total_mask, shared_mask = _compare_matrix_tile_torch(
             torch_module=compute_backend.torch,
-            anchor_t=anchor_torch[:vector_length, :],
-            targets_t=target_torch[:vector_length, :, :],
+            anchor_t=anchor_slice,
+            targets_t=target_slice,
+            matrix_value_semantics=matrix_value_semantics,
+            ani_kind=ani_kind,
+            cos_threshold=cos_threshold,
         )
-        chunk_totals_torch += total_inc
-        chunk_shared_torch += shared_inc
+
+    chunk_totals_torch += total_inc
+    chunk_shared_torch += shared_inc
+    if gene_ranges:
         gene_total_positions, gene_share_allele_pos = _accumulate_gene_counts_from_full_torch_masks(
             torch_module=compute_backend.torch,
             total_mask=total_mask,
@@ -4062,22 +4828,7 @@ def _compare_anchor_against_target_chunk_torch_device(
         if need_ibs:
             max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
     elif need_ibs:
-        total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_shared_mask(
-            torch_module=compute_backend.torch,
-            anchor_t=anchor_torch[:vector_length, :],
-            targets_t=target_torch[:vector_length, :, :],
-        )
-        chunk_totals_torch += total_inc
-        chunk_shared_torch += shared_inc
         max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
-    else:
-        total_inc, shared_inc = _compare_tile_presence_torch_tensors(
-            torch_module=compute_backend.torch,
-            anchor_t=anchor_torch[:vector_length, :],
-            targets_t=target_torch[:vector_length, :, :],
-        )
-        chunk_totals_torch += total_inc
-        chunk_shared_torch += shared_inc
     return chunk_totals_torch, chunk_shared_torch, max_runs, gene_total_positions, gene_share_allele_pos
 
 
@@ -4144,6 +4895,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     writer_executor_kind: str,
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
+    ani_method: str,
     calculations: tuple[str, ...],
     gene_ranges: list[GeneRangeSpec],
     emit_writer_logs: bool,
@@ -4155,7 +4907,11 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     written_rows = 0
     target_chunks = 0
     anchor_groups = max(len(samples) - 1, 0)
-    dtype_name = str(metadata.get("count_dtype", "uint16"))
+    parsed_ani_method, cos_threshold = parse_matrix_ani_method(ani_method)
+    ani_kind = "cosani" if parsed_ani_method.startswith("cosani_") else parsed_ani_method
+    compute_backend.matrix_ani_kind = ani_kind
+    dtype_name = _matrix_dtype_name_from_metadata(metadata)
+    matrix_channels = _matrix_channels_from_metadata(metadata)
     max_vector_length = max(spec.matrix_length for spec in genomes)
     global_block_size, _ = _plan_chunk_sizes(
         vector_length=max_vector_length,
@@ -4511,6 +5267,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     target_torch=target_torch,
                     vector_length=spec.matrix_length,
                     matrix_value_semantics=matrix_value_semantics,
+                    ani_kind=ani_kind,
+                    cos_threshold=cos_threshold,
                     need_ibs="ibs" in calculations,
                     gene_ranges=genome_gene_ranges if "gene" in calculations else None,
                 )
@@ -4562,10 +5320,28 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     continue
                 total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
-                    anchor_torch=target_torch[:, :, local_anchor_pos],
-                    target_torch=target_torch[:, :, local_anchor_pos + 1:],
+                    anchor_torch=(
+                        target_torch[:, local_anchor_pos]
+                        if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
+                        or (
+                            matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+                            and ani_kind == "conani"
+                        )
+                        else target_torch[:, :, local_anchor_pos]
+                    ),
+                    target_torch=(
+                        target_torch[:, local_anchor_pos + 1:]
+                        if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
+                        or (
+                            matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
+                            and ani_kind == "conani"
+                        )
+                        else target_torch[:, :, local_anchor_pos + 1:]
+                    ),
                     vector_length=spec.matrix_length,
                     matrix_value_semantics=matrix_value_semantics,
+                    ani_kind=ani_kind,
+                    cos_threshold=cos_threshold,
                     need_ibs="ibs" in calculations,
                     gene_ranges=genome_gene_ranges if "gene" in calculations else None,
                 )
@@ -4641,6 +5417,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
         backend=compute_backend.kind,
         device=compute_backend.device,
         memory_limit_gb=memory_limit_gb,
+        ani_method=ani_method,
     )
 
 
@@ -4665,6 +5442,7 @@ def _matrix_compare_reuse_target_chunks_torch(
     writer_executor_kind: str,
     compute_backend: MatrixPairComputeBackend,
     matrix_value_semantics: str,
+    ani_method: str,
     calculations: tuple[str, ...],
     gene_ranges: list[GeneRangeSpec],
     emit_writer_logs: bool,
@@ -4693,6 +5471,7 @@ def _matrix_compare_reuse_target_chunks_torch(
             writer_executor_kind=writer_executor_kind,
             compute_backend=compute_backend,
             matrix_value_semantics=matrix_value_semantics,
+            ani_method=ani_method,
             calculations=calculations,
             gene_ranges=gene_ranges,
             emit_writer_logs=emit_writer_logs,
@@ -4705,7 +5484,7 @@ def _matrix_compare_reuse_target_chunks_torch(
 def matrix_compare(
     matrix_db_file: Path,
     output_file: Path,
-    min_cov: int = 5,
+    min_cov: Optional[int] = None,
     genome: str = "all",
     memory_limit_gb: float = 16.0,
     anchor_queue_size: int = 1,
@@ -4714,6 +5493,7 @@ def matrix_compare(
     loader_executor_kind: str = "thread",
     writer_executor_kind: str = "thread",
     backend: str = "numpy",
+    ani_method: str = "popani",
     calculate: Optional[str] = "all",
     emit_writer_logs: bool = False,
     progress_callback: Optional[CompareProgressCallback] = None,
@@ -4724,8 +5504,9 @@ def matrix_compare(
     command against an existing compare database resumes from the remaining
     uncompleted pairs.
     """
-    if min_cov < 1:
+    if min_cov is not None and min_cov < 1:
         raise ValueError("min_cov must be >= 1")
+    normalized_ani_method, _cos_threshold = parse_matrix_ani_method(ani_method)
     if anchor_queue_size < 1:
         raise ValueError("anchor_queue_size must be >= 1")
     if target_queue_size < 1:
@@ -4759,12 +5540,37 @@ def matrix_compare(
         gene_ranges: list[GeneRangeSpec] = []
         metadata = _load_matrix_hdf5_metadata(matrix_db_file)
         metadata["input_format"] = "hdf5"
-        matrix_value_semantics = metadata.get("matrix_value_semantics")
-        if matrix_value_semantics != FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS:
+        matrix_value_semantics = str(metadata.get("matrix_value_semantics", ""))
+        storage_mode = _matrix_storage_mode_from_metadata(metadata)
+        if matrix_value_semantics not in {
+            FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS,
+            BITMASK_MATRIX_VALUE_SEMANTICS,
+            COUNT_MATRIX_VALUE_SEMANTICS,
+        }:
             raise ValueError(
                 "This matrix store uses an unsupported storage layout. "
                 "Rebuild it with 'zipstrain utilities build-matrix-db'."
             )
+        if storage_mode != MATRIX_STORAGE_COUNTS and normalized_ani_method != "popani":
+            raise ValueError(
+                f"{normalized_ani_method} requires a count matrix store. "
+                "Rebuild with '--storage-mode counts'."
+            )
+        try:
+            build_min_cov = int(metadata["coverage_filter_min_cov"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "Matrix store is missing a valid build-time coverage threshold."
+            ) from exc
+        if build_min_cov < 1:
+            raise ValueError("Matrix store has an invalid build-time coverage threshold.")
+        if min_cov is not None and min_cov != build_min_cov:
+            raise ValueError(
+                f"This matrix store was built with min_cov={build_min_cov}; "
+                f"compare-time min_cov={min_cov} cannot change stored values. "
+                "Rebuild the matrix to use a different threshold."
+            )
+        min_cov = build_min_cov
         samples = _load_matrix_hdf5_samples(matrix_db_file)
         genomes = _load_matrix_hdf5_genomes(matrix_db_file, genome=genome_scope)
         if not genomes:
@@ -4788,6 +5594,7 @@ def matrix_compare(
             genome_scope=genome_scope,
             calculations=calculations,
             min_cov=min_cov,
+            ani_method=normalized_ani_method,
         )
         completed_pairs_by_genome, requested_pairs, total_work = _load_matrix_compare_resume_state(
             compare_conn,
@@ -4808,6 +5615,7 @@ def matrix_compare(
                 backend=compute_backend.kind,
                 device=compute_backend.device,
                 memory_limit_gb=memory_limit_gb,
+                ani_method=normalized_ani_method,
             )
 
         if compute_backend.kind == "torch":
@@ -4834,6 +5642,7 @@ def matrix_compare(
                 writer_executor_kind=writer_executor_kind,
                 compute_backend=compute_backend,
                 matrix_value_semantics=matrix_value_semantics,
+                ani_method=normalized_ani_method,
                 calculations=calculations,
                 gene_ranges=gene_ranges,
                 emit_writer_logs=emit_writer_logs,
@@ -4846,7 +5655,11 @@ def matrix_compare(
         target_chunks = 0
         anchor_groups = 0
 
-        dtype_name = str(metadata.get("count_dtype", "uint16"))
+        parsed_ani_method, cos_threshold = parse_matrix_ani_method(normalized_ani_method)
+        ani_kind = "cosani" if parsed_ani_method.startswith("cosani_") else parsed_ani_method
+        dtype_name = _matrix_dtype_name_from_metadata(metadata)
+        matrix_channels = _matrix_channels_from_metadata(metadata)
+        gene_ranges_by_genome = _group_gene_ranges_by_genome(gene_ranges)
         for anchor_offset, (sample_1_idx, sample_1_name) in enumerate(samples[:-1]):
             target_sample_rows = samples[anchor_offset + 1 :]
             if not target_sample_rows:
@@ -4871,32 +5684,43 @@ def matrix_compare(
                 )
                 target_ids_all = np.array([sample_idx for sample_idx, _sample_name in remaining_target_rows], dtype=np.int64)
                 target_names_all = [sample_name for _sample_idx, sample_name in remaining_target_rows]
-                zero_matrix = np.zeros((spec.matrix_length, 4), dtype=COUNT_DTYPES[dtype_name])
                 dataset = _Hdf5GenomeMatrixNumpyDataset(
                     matrix_hdf5_file=matrix_db_file,
                     genome_idx=spec.genome_idx,
                     matrix_length=spec.matrix_length,
                     dtype_name=dtype_name,
+                    matrix_value_semantics=matrix_value_semantics,
                 )
                 try:
                     anchor_matrix = dataset.get_row(anchor_offset)
                     pending_tables: list[pa.Table] = []
+                    pending_gene_tables: list[pa.Table] = []
                     pending_completed_rows: list[tuple[int, int, int]] = []
                     pending_progress: list[dict[str, int]] = []
 
                     def flush_pending_numpy_chunks() -> None:
                         nonlocal written_rows, completed_work
-                        if not pending_tables and not pending_completed_rows and not pending_progress:
+                        if (
+                            not pending_tables
+                            and not pending_gene_tables
+                            and not pending_completed_rows
+                            and not pending_progress
+                        ):
                             return
                         batch_rows = 0
                         batch_pairs = sum(progress_info["delta"] for progress_info in pending_progress)
-                        if pending_tables:
+                        if pending_tables or pending_gene_tables:
                             compare_conn.commit()
                             compare_conn.execute("BEGIN")
                             try:
                                 for table in pending_tables:
                                     _insert_matrix_compare_result_table(compare_conn, table)
                                     batch_rows += table.num_rows
+                                for gene_table in pending_gene_tables:
+                                    _insert_matrix_compare_gene_result_table(
+                                        compare_conn,
+                                        gene_table,
+                                    )
                                 _mark_completed_pair_genomes(compare_conn, pending_completed_rows)
                                 compare_conn.execute("COMMIT")
                             except Exception:
@@ -4944,6 +5768,7 @@ def matrix_compare(
                                     }
                                 )
                         pending_tables.clear()
+                        pending_gene_tables.clear()
                         pending_completed_rows.clear()
                         pending_progress.clear()
 
@@ -4960,16 +5785,13 @@ def matrix_compare(
                         chunk_names = target_names_all[target_offset: target_offset + max_targets]
                         chunk_rows = remaining_target_row_indices[target_offset: target_offset + max_targets]
                         target_matrices = dataset.load_indices(chunk_rows)
-                        if "ibs" in calculations:
-                            totals_chunk, shared_chunk, shared_mask = _compare_tile_presence_numpy_with_mask(
-                                anchor_matrix=anchor_matrix,
-                                target_matrices=target_matrices,
-                            )
-                        else:
-                            totals_chunk, shared_chunk = _compare_tile_presence_numpy(
-                                anchor_matrix=anchor_matrix,
-                                target_matrices=target_matrices,
-                            )
+                        totals_chunk, shared_chunk, total_mask, shared_mask = _compare_matrix_tile_numpy(
+                            anchor_matrix=anchor_matrix,
+                            target_matrices=target_matrices,
+                            matrix_value_semantics=matrix_value_semantics,
+                            ani_kind=ani_kind,
+                            cos_threshold=cos_threshold,
+                        )
                         ibs_max = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
                         current_runs = np.zeros(len(chunk_ids), dtype=np.int64) if "ibs" in calculations else None
                         if "ibs" in calculations and current_runs is not None and ibs_max is not None:
@@ -4979,6 +5801,28 @@ def matrix_compare(
                                 max_runs=ibs_max,
                             )
                             ibs_max[:] = updated_max
+                        if "gene" in calculations:
+                            genome_gene_ranges = gene_ranges_by_genome.get(spec.genome_idx, [])
+                            gene_total, gene_shared = _accumulate_gene_counts_from_full_numpy_masks(
+                                total_mask=total_mask,
+                                shared_mask=shared_mask,
+                                gene_ranges=genome_gene_ranges,
+                            )
+                            gene_table = _make_gene_arrow_table_from_compare_payload(
+                                {
+                                    "sample_1_idx": sample_1_idx,
+                                    "sample_1": sample_1_name,
+                                    "sample_2_idx": chunk_ids,
+                                    "sample_2": chunk_names,
+                                    "genome_idx": spec.genome_idx,
+                                    "genome": spec.genome,
+                                    "gene_names": [gene.gene for gene in genome_gene_ranges],
+                                    "gene_total_positions": gene_total,
+                                    "gene_share_allele_pos": gene_shared,
+                                }
+                            )
+                            if gene_table is not None:
+                                pending_gene_tables.append(gene_table)
                         mask = totals_chunk > 0
                         if mask.any():
                             pending_tables.append(
@@ -5027,7 +5871,8 @@ def matrix_compare(
             backend=compute_backend.kind,
             device=compute_backend.device,
             memory_limit_gb=memory_limit_gb,
-            )
+            ani_method=normalized_ani_method,
+        )
     finally:
         if compare_conn is not None:
             compare_conn.close()

@@ -14,7 +14,16 @@ nav:
   - Tutorial.md
   - expected_output.md
   - downstream.md
+  - Parameter selection guide:
+      - Profiling parameters:
+          - popANI depth bias: parameter_selection/index.md
   - api.md
+
+extra_css:
+  - assets/paramsel.css
+
+extra_javascript:
+  - assets/paramsel_tabs.js
 
 markdown_extensions:
   - toc:

@@ -354,6 +354,12 @@ def test_parse_matrix_calculations_supports_all_and_gene_aliases():
     assert mp.parse_matrix_calculations("popani,max_block") == ("ani", "ibs")
 
 
+@pytest.mark.parametrize("ani_method", ["cosani_bad", "cosani_-0.1", "cosani_1.1", "other"])
+def test_parse_matrix_ani_method_rejects_invalid_values(ani_method):
+    with pytest.raises(ValueError):
+        mp.parse_matrix_ani_method(ani_method)
+
+
 def _load_matrix_compare_db(compare_db: Path):
     conn = duckdb.connect(str(compare_db), read_only=True)
     try:
@@ -407,7 +413,8 @@ def _load_matrix_hdf5_store(matrix_hdf5: Path):
     scaffolds = mp._load_matrix_hdf5_genome_scaffolds(matrix_hdf5)
     sample_rows = np.arange(len(samples), dtype=np.int64)
     matrix_lengths = {str(spec.genome_idx): spec.matrix_length for spec in genomes}
-    numpy_dtype = mp.COUNT_DTYPES[metadata["count_dtype"]]
+    numpy_dtype = mp.MATRIX_DTYPES[mp._matrix_dtype_name_from_metadata(metadata)]
+    channels = mp._matrix_channels_from_metadata(metadata)
     with h5py.File(str(matrix_hdf5), "r") as h5_file:
         matrices = {}
         for genome_key, node in h5_file["matrices"].items():
@@ -420,6 +427,8 @@ def _load_matrix_hdf5_store(matrix_hdf5: Path):
                     sample_rows=sample_rows,
                     matrix_length=matrix_lengths[genome_key],
                     numpy_dtype=numpy_dtype,
+                    channels=channels,
+                    values_dataset=node.get("values"),
                 )
     genes = mp._load_matrix_hdf5_gene_ranges(matrix_hdf5)
     return metadata, samples, genomes, scaffolds, matrices, genes
@@ -638,7 +647,6 @@ def test_build_matrix_hdf5(tmp_path):
     summary = _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
         progress_callback=progress_events.append,
     )
@@ -646,7 +654,8 @@ def test_build_matrix_hdf5(tmp_path):
     assert summary.profile_files == 3
     assert summary.sample_count == 3
     assert summary.scaffold_count == 2
-    assert summary.count_dtype == "uint16"
+    assert summary.count_dtype == "uint8"
+    assert summary.storage_mode == mp.MATRIX_STORAGE_BITMASK
     assert summary.stored_rows == 6
     assert progress_events[0]["phase"] == "start"
     assert progress_events[-1]["phase"] == "done"
@@ -660,7 +669,7 @@ def test_build_matrix_hdf5(tmp_path):
     scaffolds = mp._load_matrix_hdf5_genome_scaffolds(matrix_hdf5)
 
     assert metadata["input_format"] == "hdf5"
-    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_LAYOUT
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_BITMASK_LAYOUT
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
     assert [spec.genome for spec in genomes] == ["genome1", "genome2"]
     assert [spec.chrom for spec in scaffolds] == ["chr1", "chr2"]
@@ -668,17 +677,17 @@ def test_build_matrix_hdf5(tmp_path):
     with h5py.File(str(matrix_hdf5), "r") as h5_file:
         assert h5_file["samples"]["sample_idx"].maxshape == (None,)
         assert h5_file["samples"]["sample_name"].maxshape == (None,)
-        assert h5_file["matrices"]["0"].maxshape == (None, 3, 4)
-        assert h5_file["matrices"]["1"].maxshape == (None, 3, 4)
+        assert h5_file["matrices"]["0"].maxshape == (None, 3)
+        assert h5_file["matrices"]["1"].maxshape == (None, 3)
         genome1 = np.asarray(h5_file["matrices"]["0"][...])
         genome2 = np.asarray(h5_file["matrices"]["1"][...])
 
-    assert genome1[0].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
-    assert genome1[1].tolist() == [[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
-    assert genome1[2].tolist() == [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
-    assert genome2[0].tolist() == [[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
-    assert genome2[1].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
-    assert genome2[2].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+    assert genome1[0].tolist() == [1, 0, 12]
+    assert genome1[1].tolist() == [0, 2, 0]
+    assert genome1[2].tolist() == [1, 2, 0]
+    assert genome2[0].tolist() == [2, 0, 0]
+    assert genome2[1].tolist() == [0, 0, 8]
+    assert genome2[2].tolist() == [0, 0, 8]
 
 
 def test_build_matrix_hdf5_sparse(tmp_path):
@@ -690,22 +699,22 @@ def test_build_matrix_hdf5_sparse(tmp_path):
     summary = _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
         sparse=True,
     )
 
     assert summary.sample_count == 3
     metadata, _samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
-    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
-    assert matrices["0"][0].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
-    assert matrices["1"][2].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT
+    assert matrices["0"][0].tolist() == [1, 0, 12]
+    assert matrices["1"][2].tolist() == [0, 0, 8]
 
     with h5py.File(str(matrix_hdf5), "r") as h5_file:
         matrix_node = h5_file["matrices"]["0"]
         assert isinstance(matrix_node, h5py.Group)
         assert matrix_node["indptr"].maxshape == (None,)
         assert matrix_node["indices"].maxshape == (None,)
+        assert matrix_node["values"].maxshape == (None,)
 
 
 def test_build_matrix_hdf5_with_gene_ranges(tmp_path):
@@ -719,7 +728,6 @@ def test_build_matrix_hdf5_with_gene_ranges(tmp_path):
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
         gene_range_table=gene_range_table,
     )
@@ -765,7 +773,6 @@ def test_build_matrix_hdf5_expands_scaffold_span_for_scaffold_relative_gene_rang
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
         gene_range_table=gene_range_table,
     )
@@ -780,9 +787,9 @@ def test_build_matrix_hdf5_expands_scaffold_span_for_scaffold_relative_gene_rang
         ("gene_observed", 90, 91),
     ]
     genome_matrix = matrices["0"]
-    assert genome_matrix.shape == (1, 92, 4)
-    assert genome_matrix[0, 90].tolist() == [1, 0, 0, 0]
-    assert genome_matrix[0, 91].tolist() == [0, 1, 0, 0]
+    assert genome_matrix.shape == (1, 92)
+    assert genome_matrix[0, 90] == 1
+    assert genome_matrix[0, 91] == 2
 
 
 def test_build_matrix_hdf5_gene_ranges_follow_multiscaffold_axis_offsets(tmp_path):
@@ -803,7 +810,6 @@ def test_build_matrix_hdf5_gene_ranges_follow_multiscaffold_axis_offsets(tmp_pat
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
         gene_range_table=gene_range_table,
     )
@@ -1169,7 +1175,6 @@ def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_hdf5,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
     )
     summary = mp.matrix_compare(
@@ -1203,7 +1208,6 @@ def test_build_matrix_db(tmp_path):
     summary = _build_matrix_db_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
         progress_callback=progress_events.append,
     )
@@ -1211,7 +1215,8 @@ def test_build_matrix_db(tmp_path):
     assert summary.profile_files == 3
     assert summary.sample_count == 3
     assert summary.scaffold_count == 2
-    assert summary.count_dtype == "uint16"
+    assert summary.count_dtype == "uint8"
+    assert summary.storage_mode == mp.MATRIX_STORAGE_BITMASK
     assert summary.stored_rows == 6
     assert progress_events[0]["phase"] == "start"
     assert any(event["phase"] == "start" for event in progress_events)
@@ -1232,17 +1237,17 @@ def test_build_matrix_db(tmp_path):
         (0, 0, "genome1", "chr1", 0, 2, 3),
         (1, 0, "genome2", "chr2", 0, 2, 3),
     ]
-    assert metadata["matrix_value_semantics"] == mp.FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS
+    assert metadata["matrix_value_semantics"] == mp.BITMASK_MATRIX_VALUE_SEMANTICS
     assert metadata["coverage_filter_min_cov"] == str(mp.MATRIX_BUILD_MIN_COV)
-    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_LAYOUT
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_BITMASK_LAYOUT
     assert metadata["separator_rows_between_scaffolds"] == "1"
 
-    assert matrices["0"][0].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]]
-    assert matrices["0"][1].tolist() == [[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
-    assert matrices["0"][2].tolist() == [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]
-    assert matrices["1"][0].tolist() == [[0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
-    assert matrices["1"][1].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
-    assert matrices["1"][2].tolist() == [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]
+    assert matrices["0"][0].tolist() == [1, 0, 12]
+    assert matrices["0"][1].tolist() == [0, 2, 0]
+    assert matrices["0"][2].tolist() == [1, 2, 0]
+    assert matrices["1"][0].tolist() == [2, 0, 0]
+    assert matrices["1"][1].tolist() == [0, 0, 8]
+    assert matrices["1"][2].tolist() == [0, 0, 8]
 
 
 def test_build_matrix_db_with_small_commit_batches(tmp_path):
@@ -1254,7 +1259,6 @@ def test_build_matrix_db_with_small_commit_batches(tmp_path):
     summary = _build_matrix_db_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_db,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
         commit_batch_gb=1e-9,
     )
@@ -1280,7 +1284,6 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
         profile_dir=profile_dir,
         output_file=matrix_db,
         bed_file=bed_file,
-        count_dtype="uint16",
         memory_limit_gb=1.0,
     )
 
@@ -1296,20 +1299,8 @@ def test_build_matrix_db_with_optional_bed_file(tmp_path):
         (0, 0, "genome1", "chr1", 0, 4, 5),
         (1, 0, "genome2", "chr2", 0, 4, 5),
     ]
-    assert matrices["0"][0].tolist() == [
-        [1, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 1, 1],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-    ]
-    assert matrices["0"][1].tolist() == [
-        [0, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-    ]
+    assert matrices["0"][0].tolist() == [1, 0, 12, 0, 0]
+    assert matrices["0"][1].tolist() == [0, 2, 0, 0, 0]
 
 
 def test_append_matrix_db_success(tmp_path):
@@ -1440,7 +1431,7 @@ def test_append_matrix_hdf5_sparse_success(tmp_path):
 
     assert append_summary.appended_sample_count == 1
     metadata, samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(matrix_hdf5)
-    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT
     assert [sample_name for _sample_idx, sample_name in samples] == ["sample_a", "sample_b", "sample_c"]
     assert matrices["0"].shape[0] == 3
     assert matrices["1"].shape[0] == 3
@@ -1520,7 +1511,7 @@ def test_append_matrix_hdf5_scoped_store_ignores_non_scope_genomes(tmp_path):
     assert [spec.genome for spec in genomes] == ["genome1"]
     assert [offset.chrom for offset in scaffolds] == ["chr1"]
     assert matrices["0"].shape[0] == 4
-    assert matrices["0"][3].tolist() == [[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+    assert matrices["0"][3].tolist() == [1, 0, 0]
 
 
 def test_append_matrix_hdf5_ignores_contract_unknown_genomes(tmp_path):
@@ -1558,8 +1549,8 @@ def test_append_matrix_hdf5_ignores_contract_unknown_genomes(tmp_path):
     assert [spec.chrom for spec in scaffolds] == ["chr1", "chr2"]
     assert matrices["0"].shape[0] == 3
     assert matrices["1"].shape[0] == 3
-    assert np.array_equal(matrices["0"][2], np.zeros((3, 4), dtype=matrices["0"].dtype))
-    assert np.array_equal(matrices["1"][2], np.zeros((3, 4), dtype=matrices["1"].dtype))
+    assert np.array_equal(matrices["0"][2], np.zeros(3, dtype=matrices["0"].dtype))
+    assert np.array_equal(matrices["1"][2], np.zeros(3, dtype=matrices["1"].dtype))
 
 
 def test_append_matrix_hdf5_materializes_contract_known_genome(tmp_path):
@@ -1610,16 +1601,10 @@ def test_append_matrix_hdf5_materializes_contract_known_genome(tmp_path):
     ]
     assert [spec.genome for spec in genomes] == ["genome1", "genome2", "genome3"]
     assert [offset.chrom for offset in scaffolds] == ["chr1", "chr2", "chr3"]
-    assert matrices["2"].shape == (3, 5, 4)
-    assert np.array_equal(matrices["2"][0], np.zeros((5, 4), dtype=matrices["2"].dtype))
-    assert np.array_equal(matrices["2"][1], np.zeros((5, 4), dtype=matrices["2"].dtype))
-    assert matrices["2"][2].tolist() == [
-        [1, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-    ]
+    assert matrices["2"].shape == (3, 5)
+    assert np.array_equal(matrices["2"][0], np.zeros(5, dtype=matrices["2"].dtype))
+    assert np.array_equal(matrices["2"][1], np.zeros(5, dtype=matrices["2"].dtype))
+    assert matrices["2"][2].tolist() == [1, 0, 0, 0, 0]
 
 
 def test_append_matrix_db_rejects_incompatible_profile_without_mutation(tmp_path):
@@ -1995,7 +1980,7 @@ def test_cli_matrix_build_sparse_and_compare(tmp_path):
     assert build_result.exit_code == 0
 
     metadata = mp._load_matrix_hdf5_metadata(matrix_db)
-    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT
 
     compare_result = runner.invoke(
         cli.cli,
@@ -2725,24 +2710,22 @@ def test_matrix_compare_torch_backend_requires_torch(tmp_path, monkeypatch):
         )
 
 
-def test_matrix_compare_ignores_requested_min_cov(tmp_path):
+def test_matrix_compare_rejects_requested_min_cov_different_from_store(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_db = tmp_path / "matrix.duckdb"
     output_file = tmp_path / "matrix_compare.duckdb"
     _write_profiles(profile_dir)
     _build_matrix_db_with_contract(profile_dir=profile_dir, output_file=matrix_db, memory_limit_gb=1.0)
 
-    summary = mp.matrix_compare(
-        matrix_db_file=matrix_db,
-        output_file=output_file,
-        min_cov=1,
-        memory_limit_gb=1.0,
-        backend="numpy",
-        calculate="ani",
-    )
-
-    assert summary.requested_pairs == 3
-    _metadata, _completed_pairs, _results = _load_matrix_compare_db(output_file)
+    with pytest.raises(ValueError, match="was built with min_cov=5"):
+        mp.matrix_compare(
+            matrix_db_file=matrix_db,
+            output_file=output_file,
+            min_cov=1,
+            memory_limit_gb=1.0,
+            backend="numpy",
+            calculate="ani",
+        )
 
 
 
@@ -2831,12 +2814,14 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         target_torch,
         vector_length: int,
         matrix_value_semantics: str,
+        ani_kind: str = "popani",
+        cos_threshold=None,
         need_ibs: bool = False,
         gene_ranges=None,
     ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
         return (
-            np.zeros(target_torch.shape[2], dtype=np.int64),
-            np.zeros(target_torch.shape[2], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
             None,
             None,
             None,
@@ -2913,12 +2898,14 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
         target_torch,
         vector_length: int,
         matrix_value_semantics: str,
+        ani_kind: str = "popani",
+        cos_threshold=None,
         need_ibs: bool = False,
         gene_ranges=None,
     ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
         return (
-            np.zeros(target_torch.shape[2], dtype=np.int64),
-            np.zeros(target_torch.shape[2], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
             None,
             None,
             None,
@@ -2996,12 +2983,14 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
         target_torch,
         vector_length: int,
         matrix_value_semantics: str,
+        ani_kind: str = "popani",
+        cos_threshold=None,
         need_ibs: bool = False,
         gene_ranges=None,
     ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
         return (
-            np.zeros(target_torch.shape[2], dtype=np.int64),
-            np.zeros(target_torch.shape[2], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
             None,
             None,
             None,
@@ -3070,12 +3059,14 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
         target_torch,
         vector_length: int,
         matrix_value_semantics: str,
+        ani_kind: str = "popani",
+        cos_threshold=None,
         need_ibs: bool = False,
         gene_ranges=None,
     ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
         return (
-            np.zeros(target_torch.shape[2], dtype=np.int64),
-            np.zeros(target_torch.shape[2], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
+            np.zeros(target_torch.shape[-1], dtype=np.int64),
             None,
             None,
             None,
@@ -3171,8 +3162,8 @@ def test_build_matrix_db_inserts_separator_rows_for_multiscaffold_genome(tmp_pat
         (0, 1, "genome1", "chr2", 3, 4, 2),
     ]
     # row 2 is the synthetic separator row between the two scaffolds
-    assert matrices["0"][0][2].tolist() == [0, 0, 0, 0]
-    assert matrices["0"][1][2].tolist() == [0, 0, 0, 0]
+    assert matrices["0"][0][2] == 0
+    assert matrices["0"][1][2] == 0
 
 
 def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
@@ -3229,3 +3220,515 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
 
     assert actual.equals(expected)
     assert actual.get_column("max_consecutive_length").to_list() == [2]
+
+
+def _write_count_metric_profiles(profile_dir: Path, *, high_count: bool = False) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    first_count = 100_000 if high_count else 10
+    common = {
+        "chrom": ["chr1"] * 4,
+        "pos": [1, 2, 3, 4],
+        "gene": ["gene1"] * 4,
+        "genome": ["genome1"] * 4,
+    }
+    pl.DataFrame(
+        {
+            **common,
+            "A": [first_count, 6, 5, 0],
+            "T": [0, 4, 5, 0],
+            "C": [0, 0, 0, 10],
+            "G": [0, 0, 0, 0],
+        }
+    ).write_parquet(profile_dir / "sample_a.parquet")
+    pl.DataFrame(
+        {
+            **common,
+            "A": [9, 4, 5, 0],
+            "T": [0, 6, 5, 0],
+            "C": [0, 0, 0, 0],
+            "G": [0, 0, 0, 10],
+        }
+    ).write_parquet(profile_dir / "sample_b.parquet")
+
+
+def test_count_matrix_auto_dtype_preserves_counts_and_applies_min_cov(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts.h5"
+    _write_count_metric_profiles(profile_dir, high_count=True)
+    low_coverage = pl.read_parquet(profile_dir / "sample_a.parquet").with_columns(
+        pl.when(pl.col("pos") == 4).then(4).otherwise(pl.col("C")).alias("C")
+    )
+    low_coverage.write_parquet(profile_dir / "sample_a.parquet")
+
+    summary = _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="auto",
+        min_cov=5,
+        memory_limit_gb=1.0,
+    )
+
+    metadata, _samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(
+        matrix_file
+    )
+    assert summary.count_dtype == "uint32"
+    assert summary.storage_mode == mp.MATRIX_STORAGE_COUNTS
+    assert metadata["matrix_value_semantics"] == mp.COUNT_MATRIX_VALUE_SEMANTICS
+    assert metadata["coverage_filter_min_cov"] == "5"
+    assert matrices["0"].dtype == np.uint32
+    assert matrices["0"][0, 0].tolist() == [100_000, 0, 0, 0]
+    assert matrices["0"][0, 3].tolist() == [0, 0, 0, 0]
+
+
+def test_count_matrix_explicit_uint16_rejects_overflow_before_writing(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts.h5"
+    _write_count_metric_profiles(profile_dir, high_count=True)
+
+    with pytest.raises(ValueError, match="exceeds uint16 maximum"):
+        _build_matrix_hdf5_with_contract(
+            profile_dir=profile_dir,
+            output_file=matrix_file,
+            storage_mode=mp.MATRIX_STORAGE_COUNTS,
+            count_dtype="uint16",
+            memory_limit_gb=1.0,
+        )
+    assert not matrix_file.exists()
+
+
+def test_bitmask_matrix_rejects_count_dtype(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "bitmask.h5"
+    _write_count_metric_profiles(profile_dir)
+
+    with pytest.raises(ValueError, match="only valid with --storage-mode counts"):
+        _build_matrix_hdf5_with_contract(
+            profile_dir=profile_dir,
+            output_file=matrix_file,
+            storage_mode=mp.MATRIX_STORAGE_BITMASK,
+            count_dtype="uint16",
+            memory_limit_gb=1.0,
+        )
+
+
+def test_count_dtype_without_storage_mode_selects_count_storage(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts.h5"
+    _write_count_metric_profiles(profile_dir)
+
+    summary = _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+    )
+
+    metadata = mp._load_matrix_hdf5_metadata(matrix_file)
+    assert summary.storage_mode == mp.MATRIX_STORAGE_COUNTS
+    assert metadata["storage_mode"] == mp.MATRIX_STORAGE_COUNTS
+    assert metadata["count_dtype"] == "uint16"
+
+
+def test_bitmask_matrix_uses_documented_base_bits(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    matrix_file = tmp_path / "bitmask.h5"
+    pl.DataFrame(
+        {
+            "chrom": ["chr1"] * 7,
+            "pos": list(range(1, 8)),
+            "gene": ["gene1"] * 7,
+            "genome": ["genome1"] * 7,
+            "A": [5, 0, 0, 0, 5, 5, 5],
+            "T": [0, 5, 0, 0, 5, 0, 5],
+            "C": [0, 0, 5, 0, 0, 5, 5],
+            "G": [0, 0, 0, 5, 0, 0, 5],
+        }
+    ).write_parquet(profile_dir / "sample_a.parquet")
+
+    _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        memory_limit_gb=1.0,
+    )
+
+    _metadata, _samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(
+        matrix_file
+    )
+    assert matrices["0"][0].tolist() == [1, 2, 4, 8, 3, 5, 15]
+
+
+def test_sparse_count_matrix_roundtrip_preserves_values(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts_sparse.h5"
+    _write_count_metric_profiles(profile_dir)
+
+    _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="auto",
+        sparse=True,
+        memory_limit_gb=1.0,
+    )
+
+    metadata, _samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(
+        matrix_file
+    )
+    assert metadata["layout"] == mp.CURRENT_MATRIX_HDF5_SPARSE_LAYOUT
+    assert matrices["0"][0].tolist() == [
+        [10, 0, 0, 0],
+        [6, 4, 0, 0],
+        [5, 5, 0, 0],
+        [0, 0, 10, 0],
+    ]
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(str(matrix_file), "r") as h5_file:
+        assert "values" in h5_file["matrices"]["0"]
+
+
+@pytest.mark.parametrize(
+    ("ani_method", "expected_shared", "expected_ibs"),
+    [
+        ("popani", 3, 3),
+        ("conani", 2, 1),
+        ("cosani_0.95", 2, 1),
+    ],
+)
+@pytest.mark.parametrize("backend", ["numpy", "torch-cpu"])
+def test_count_matrix_ani_methods_match_numpy_and_torch(
+    tmp_path,
+    ani_method,
+    expected_shared,
+    expected_ibs,
+    backend,
+):
+    if backend == "torch-cpu":
+        pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts.h5"
+    output_file = tmp_path / f"{backend}_{ani_method}.duckdb"
+    _write_count_metric_profiles(profile_dir)
+    _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="auto",
+        memory_limit_gb=1.0,
+    )
+
+    summary = mp.matrix_compare(
+        matrix_db_file=matrix_file,
+        output_file=output_file,
+        backend=backend,
+        ani_method=ani_method,
+        calculate="ani+ibs",
+        memory_limit_gb=1.0,
+    )
+
+    metadata, completed_pairs, results = _load_matrix_compare_db(output_file)
+    assert summary.ani_method == ani_method
+    assert metadata["ani_method"] == ani_method
+    assert completed_pairs == [(0, 1)]
+    assert results["total_positions"].to_list() == [4]
+    assert results["share_allele_pos"].to_list() == [expected_shared]
+    assert results["genome_ani"].to_list() == [expected_shared / 4 * 100.0]
+    assert results["max_consecutive_length"].to_list() == [expected_ibs]
+    classic = cp.compare_genomes(
+        mpile_contig_1=profile_dir / "sample_a.parquet",
+        mpile_contig_2=profile_dir / "sample_b.parquet",
+        min_cov=5,
+        genome_scope="all",
+        ani_method=ani_method,
+        engine="polars",
+        calculate="ani",
+        stb_file=None,
+    ).collect(engine="streaming")
+    assert classic["total_positions"].to_list() == [4]
+    assert classic["share_allele_pos"].to_list() == [expected_shared]
+    assert classic["genome_ani"].to_list() == [expected_shared / 4 * 100.0]
+
+
+def test_torch_conani_keeps_uint32_consensus_selection_exact():
+    torch = pytest.importorskip("torch")
+    anchor = torch.tensor(
+        [[16_777_216, 16_777_217, 0, 0]],
+        dtype=torch.int64,
+    )
+    targets = torch.tensor(
+        [[[10], [0], [0], [0]]],
+        dtype=torch.int64,
+    )
+
+    totals, shared, _total_mask, shared_mask = mp._compare_tile_counts_torch_tensors(
+        torch,
+        anchor,
+        targets,
+        ani_kind="conani",
+        cos_threshold=None,
+    )
+
+    assert totals.tolist() == [1]
+    assert shared.tolist() == [0]
+    assert shared_mask.tolist() == [[False]]
+
+
+def test_torch_conani_keeps_uint32_counts_exact_through_hdf5_loading(tmp_path):
+    pytest.importorskip("torch")
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    matrix_file = tmp_path / "counts.h5"
+    output_file = tmp_path / "compare.duckdb"
+    common = {
+        "chrom": ["chr1"],
+        "pos": [1],
+        "gene": ["gene1"],
+        "genome": ["genome1"],
+    }
+    pl.DataFrame(
+        {
+            **common,
+            "A": [16_777_216],
+            "T": [16_777_217],
+            "C": [0],
+            "G": [0],
+        }
+    ).write_parquet(profile_dir / "sample_a.parquet")
+    pl.DataFrame(
+        {
+            **common,
+            "A": [10],
+            "T": [0],
+            "C": [0],
+            "G": [0],
+        }
+    ).write_parquet(profile_dir / "sample_b.parquet")
+    _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="uint32",
+        memory_limit_gb=1.0,
+    )
+
+    mp.matrix_compare(
+        matrix_db_file=matrix_file,
+        output_file=output_file,
+        backend="torch-cpu",
+        ani_method="conani",
+        calculate="ani",
+        memory_limit_gb=1.0,
+    )
+
+    _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
+    assert results["total_positions"].to_list() == [1]
+    assert results["share_allele_pos"].to_list() == [0]
+    assert results["genome_ani"].to_list() == [0.0]
+
+
+def test_count_matrix_numpy_gene_results_use_selected_ani_method(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts.h5"
+    output_file = tmp_path / "conani.duckdb"
+    gene_ranges = tmp_path / "gene_ranges.tsv"
+    _write_count_metric_profiles(profile_dir)
+    gene_ranges.write_text("gene1\tchr1\t1\t4\n")
+    _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="auto",
+        gene_range_table=gene_ranges,
+        memory_limit_gb=1.0,
+    )
+
+    mp.matrix_compare(
+        matrix_db_file=matrix_file,
+        output_file=output_file,
+        backend="numpy",
+        ani_method="conani",
+        calculate="gene",
+        memory_limit_gb=1.0,
+    )
+
+    gene_results = _load_matrix_compare_gene_results(output_file)
+    assert gene_results["gene_pop_ani"].to_list() == [50.0]
+
+
+def test_bitmask_matrix_rejects_non_popani(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "bitmask.h5"
+    output_file = tmp_path / "compare.duckdb"
+    _write_count_metric_profiles(profile_dir)
+    _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        memory_limit_gb=1.0,
+    )
+
+    with pytest.raises(ValueError, match="requires a count matrix store"):
+        mp.matrix_compare(
+            matrix_db_file=matrix_file,
+            output_file=output_file,
+            ani_method="conani",
+            calculate="ani",
+            memory_limit_gb=1.0,
+        )
+
+
+def test_matrix_compare_resume_rejects_different_ani_method(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts.h5"
+    output_file = tmp_path / "compare.duckdb"
+    _write_count_metric_profiles(profile_dir)
+    _build_matrix_hdf5_with_contract(
+        profile_dir=profile_dir,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="auto",
+        memory_limit_gb=1.0,
+    )
+    mp.matrix_compare(
+        matrix_db_file=matrix_file,
+        output_file=output_file,
+        ani_method="popani",
+        calculate="ani",
+        memory_limit_gb=1.0,
+    )
+
+    with pytest.raises(ValueError, match="ani_method expected='conani'"):
+        mp.matrix_compare(
+            matrix_db_file=matrix_file,
+            output_file=output_file,
+            ani_method="conani",
+            calculate="ani",
+            memory_limit_gb=1.0,
+        )
+
+
+def test_cli_builds_count_matrix_and_compares_conani(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    matrix_file = tmp_path / "counts.h5"
+    output_file = tmp_path / "compare.duckdb"
+    bed_file = tmp_path / "reference.bed"
+    stb_file = tmp_path / "reference.stb"
+    _write_count_metric_profiles(profile_dir)
+    _write_contract_from_profiles(profile_dir, bed_file, stb_file)
+    runner = CliRunner()
+
+    build_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "build-matrix-db",
+            "--profile-dir",
+            str(profile_dir),
+            "--output-file",
+            str(matrix_file),
+            "--bed-file",
+            str(bed_file),
+            "--stb-file",
+            str(stb_file),
+            "--storage-mode",
+            "counts",
+            "--count-dtype",
+            "auto",
+            "--min-cov",
+            "5",
+            "--memory-limit-gb",
+            "1",
+        ],
+    )
+    assert build_result.exit_code == 0, build_result.output
+
+    compare_result = runner.invoke(
+        cli.cli,
+        [
+            "utilities",
+            "matrix-compare",
+            "--matrix-db-file",
+            str(matrix_file),
+            "--output-file",
+            str(output_file),
+            "--ani-method",
+            "conani",
+            "--calculate",
+            "ani",
+            "--memory-limit-gb",
+            "1",
+        ],
+    )
+    assert compare_result.exit_code == 0, compare_result.output
+    metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
+    assert metadata["ani_method"] == "conani"
+    assert results["genome_ani"].to_list() == [50.0]
+
+
+def test_count_matrix_append_inherits_dtype_and_min_cov(tmp_path):
+    all_profiles = tmp_path / "all_profiles"
+    initial_profiles = tmp_path / "initial_profiles"
+    append_profiles = tmp_path / "append_profiles"
+    matrix_file = tmp_path / "counts_sparse.h5"
+    _write_count_metric_profiles(all_profiles)
+    initial_profiles.mkdir()
+    append_profiles.mkdir()
+    (all_profiles / "sample_a.parquet").replace(initial_profiles / "sample_a.parquet")
+    (all_profiles / "sample_b.parquet").replace(append_profiles / "sample_b.parquet")
+
+    _build_matrix_hdf5_with_contract(
+        profile_dir=initial_profiles,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="auto",
+        min_cov=5,
+        sparse=True,
+        memory_limit_gb=1.0,
+    )
+    summary = mp.append_matrix_hdf5(
+        profile_dir=append_profiles,
+        matrix_hdf5_file=matrix_file,
+        memory_limit_gb=1.0,
+    )
+
+    metadata, samples, _genomes, _scaffolds, matrices, _genes = _load_matrix_hdf5_store(
+        matrix_file
+    )
+    assert summary.storage_mode == mp.MATRIX_STORAGE_COUNTS
+    assert summary.count_dtype == "uint16"
+    assert metadata["coverage_filter_min_cov"] == "5"
+    assert [name for _idx, name in samples] == ["sample_a", "sample_b"]
+    assert matrices["0"][1, 1].tolist() == [4, 6, 0, 0]
+
+
+def test_count_matrix_append_rejects_overflow_before_mutating_store(tmp_path):
+    all_profiles = tmp_path / "all_profiles"
+    initial_profiles = tmp_path / "initial_profiles"
+    append_profiles = tmp_path / "append_profiles"
+    matrix_file = tmp_path / "counts.h5"
+    _write_count_metric_profiles(all_profiles)
+    initial_profiles.mkdir()
+    append_profiles.mkdir()
+    (all_profiles / "sample_a.parquet").replace(initial_profiles / "sample_a.parquet")
+    sample_b = pl.read_parquet(all_profiles / "sample_b.parquet").with_columns(
+        pl.when(pl.col("pos") == 1).then(100_000).otherwise(pl.col("A")).alias("A")
+    )
+    sample_b.write_parquet(append_profiles / "sample_b.parquet")
+    _build_matrix_hdf5_with_contract(
+        profile_dir=initial_profiles,
+        output_file=matrix_file,
+        storage_mode=mp.MATRIX_STORAGE_COUNTS,
+        count_dtype="uint16",
+        memory_limit_gb=1.0,
+    )
+
+    with pytest.raises(ValueError, match="exceeds uint16 maximum"):
+        mp.append_matrix_hdf5(
+            profile_dir=append_profiles,
+            matrix_hdf5_file=matrix_file,
+            memory_limit_gb=1.0,
+        )
+
+    assert [name for _idx, name in mp._load_matrix_hdf5_samples(matrix_file)] == [
+        "sample_a"
+    ]

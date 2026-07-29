@@ -636,12 +636,18 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
 @click.option('--stb-file', '-s', required=True, help="STB file defining scaffold-to-genome mapping for the matrix contract.")
 @click.option('--gene-range-table', default=None, help="Optional headerless TSV of gene, scaffold, start, end to store gene-coordinate ranges for gene ANI.")
 @click.option(
-    '--count-dtype',
-    type=click.Choice(sorted(mp.COUNT_DTYPES.keys())),
-    default="uint16",
-    show_default=True,
-    help="Stored dtype for whole-genome dense matrices.",
+    '--storage-mode',
+    type=click.Choice(mp.MATRIX_STORAGE_MODES),
+    default=None,
+    help="Storage representation. Omitted uses bitmask, unless --count-dtype is supplied for compatibility with older count-store commands.",
 )
+@click.option(
+    '--count-dtype',
+    type=click.Choice(mp.MATRIX_COUNT_DTYPE_CHOICES),
+    default=None,
+    help="Count dtype for --storage-mode counts. auto selects uint16 or uint32 after checking all profiles.",
+)
+@click.option('--min-cov', type=int, default=mp.MATRIX_BUILD_MIN_COV, show_default=True, help="Build-time minimum coverage. Positions below it are stored as zero.")
 @click.option(
     '--memory-limit-gb',
     type=float,
@@ -662,12 +668,12 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
     default=False,
     help="Store genome matrices sparsely in HDF5. Compare currently materializes them back to dense on load.",
 )
-def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_range_table, count_dtype, memory_limit_gb, export_batch_mb, sparse):
+def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_range_table, storage_mode, count_dtype, min_cov, memory_limit_gb, export_batch_mb, sparse):
     """
     Build a matrix store directly from classic profile parquets.
 
-    Each genome is stored as one sample-major matrix with shape
-    samples x positions x 4, while preserving the same whole-genome axis and
+    Bitmask stores use shape samples x positions. Count stores use shape
+    samples x positions x 4. Both preserve the same whole-genome axis and
     separator-row rules used by matrix compare.
     """
     progress_console = Console(stderr=True)
@@ -710,7 +716,9 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
                 bed_file=pathlib.Path(bed_file),
                 stb_file=pathlib.Path(stb_file),
                 gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
+                storage_mode=storage_mode,
                 count_dtype=count_dtype,
+                min_cov=min_cov,
                 memory_limit_gb=memory_limit_gb,
                 export_batch_mb=export_batch_mb,
                 sparse=sparse,
@@ -728,7 +736,9 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
             bed_file=pathlib.Path(bed_file),
             stb_file=pathlib.Path(stb_file),
             gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
+            storage_mode=storage_mode,
             count_dtype=count_dtype,
+            min_cov=min_cov,
             memory_limit_gb=memory_limit_gb,
             export_batch_mb=export_batch_mb,
             sparse=sparse,
@@ -738,7 +748,10 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
         f"wrote={summary.output_file} "
         f"samples={summary.sample_count} "
         f"scaffolds={summary.scaffold_count} "
-        f"stored_rows={summary.stored_rows}"
+        f"stored_rows={summary.stored_rows} "
+        f"storage_mode={summary.storage_mode} "
+        f"dtype={summary.count_dtype} "
+        f"min_cov={min_cov}"
     )
 
 
@@ -827,7 +840,9 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
         f"total_samples={summary.total_sample_count} "
         f"scaffolds={summary.scaffold_count} "
         f"stored_rows={summary.stored_rows} "
-        f"ignored_genomes={summary.ignored_genome_count}"
+        f"ignored_genomes={summary.ignored_genome_count} "
+        f"storage_mode={summary.storage_mode} "
+        f"dtype={summary.count_dtype}"
     )
 
 
@@ -835,6 +850,7 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
 @click.option('--matrix-db-file', '-m', required=True, help="Input matrix store from build-matrix-db or matrix-db-to-hdf5.")
 @click.option('--output-file', '-o', required=True, help="Output DuckDB compare database. If it already exists, only remaining pairs are added.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
+@click.option('--ani-method', '-a', default="popani", show_default=True, help="ANI method: popani, conani, or cosani_<threshold> where threshold is between 0 and 1.")
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--anchor-queue-size', type=int, default=1, show_default=True, help="Host-side torch anchor queue size. Only one anchor is transferred to the GPU at a time.")
 @click.option('--target-queue-size', type=int, default=1, show_default=True, help="Host-side torch target queue size. `1` keeps the current synchronous target-load behavior.")
@@ -865,6 +881,7 @@ def matrix_compare(
     matrix_db_file,
     output_file,
     genome,
+    ani_method,
     memory_limit_gb,
     anchor_queue_size,
     target_queue_size,
@@ -921,7 +938,6 @@ def matrix_compare(
             summary = mp.matrix_compare(
                 matrix_db_file=pathlib.Path(matrix_db_file),
                 output_file=pathlib.Path(output_file),
-                min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome=genome,
                 memory_limit_gb=memory_limit_gb,
                 anchor_queue_size=anchor_queue_size,
@@ -930,6 +946,7 @@ def matrix_compare(
                 loader_executor_kind=loader_executor,
                 writer_executor_kind=writer_executor,
                 backend=backend,
+                ani_method=ani_method,
                 calculate=calculate,
                 emit_writer_logs=False,
                 progress_callback=_progress_callback,
@@ -938,7 +955,6 @@ def matrix_compare(
         summary = mp.matrix_compare(
             matrix_db_file=pathlib.Path(matrix_db_file),
             output_file=pathlib.Path(output_file),
-            min_cov=mp.MATRIX_BUILD_MIN_COV,
             genome=genome,
             memory_limit_gb=memory_limit_gb,
             anchor_queue_size=anchor_queue_size,
@@ -947,6 +963,7 @@ def matrix_compare(
             loader_executor_kind=loader_executor,
             writer_executor_kind=writer_executor,
             backend=backend,
+            ani_method=ani_method,
             calculate=calculate,
             emit_writer_logs=True,
             progress_callback=None,
@@ -1909,6 +1926,7 @@ def _run_matrix_compare_method(
     scope,
     backend,
     memory_limit_gb,
+    min_cov,
     compare_genes,
     ani_method,
     no_csv=False,
@@ -1931,9 +1949,6 @@ def _run_matrix_compare_method(
         if run_log is not None:
             run_log.step(message)
 
-    if ani_method != "popani":
-        raise click.UsageError("--method matrix only supports --ani-method popani.")
-
     console.print(Panel.fit("[bold magenta]ZipStrain compare (matrix)[/]", border_style="magenta"))
     try:
         output = matrix_workflow.run_matrix_compare(
@@ -1945,6 +1960,8 @@ def _run_matrix_compare_method(
             scope=scope if scope is not None else "all",
             backend=backend,
             memory_limit_gb=memory_limit_gb,
+            min_cov=min_cov,
+            ani_method=ani_method,
             compare_genes=compare_genes,
             progress_callback=_on_step,
         )
@@ -2035,6 +2052,7 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                 scope=scope,
                 backend=backend,
                 memory_limit_gb=memory_limit_gb,
+                min_cov=min_cov,
                 compare_genes=compare_genes,
                 ani_method=ani_method,
                 no_csv=no_csv,

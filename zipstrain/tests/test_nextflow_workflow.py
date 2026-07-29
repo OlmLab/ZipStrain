@@ -182,11 +182,11 @@ def test_nextflow_profile_processes_pass_profiling_contract():
 
 def test_nextflow_profile_processes_pass_read_filters_and_null_model_params():
     text = NEXTFLOW_FILE.read_text()
-    assert "params.error_rate=0.01" in text
+    assert "params.error_rate=0.001" in text
     assert "params.max_total_reads=50000" in text
     assert "params.min_mapq=0" in text
     assert "params.min_baseq=13" in text
-    assert "params.min_freq=0.0" in text
+    assert "params.min_freq=0.01" in text
     assert "params.min_read_ani=0.95" in text
     assert 'params.read_inclusion="paired"' in text
     assert "--min-mapq ${params.min_mapq}" in text

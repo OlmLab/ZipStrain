@@ -15,6 +15,7 @@ import pathlib
 import shutil
 from typing import Callable
 
+import duckdb
 import polars as pl
 
 from zipstrain import matrix_pairs as mp
@@ -72,6 +73,64 @@ def _existing_store_sample_names(store: pathlib.Path) -> set[str]:
     return {name for _idx, name in mp._load_matrix_hdf5_samples(store)}
 
 
+def _validate_existing_matrix_run(
+    *,
+    store: pathlib.Path,
+    compare_db: pathlib.Path,
+    scope: str,
+    min_cov: int,
+    ani_method: str,
+) -> None:
+    metadata = mp._load_matrix_hdf5_metadata(store)
+    normalized_ani_method, _threshold = mp.parse_matrix_ani_method(ani_method)
+    storage_mode = mp._matrix_storage_mode_from_metadata(metadata)
+    if storage_mode != mp.MATRIX_STORAGE_COUNTS and normalized_ani_method != "popani":
+        raise ValueError(
+            f"{normalized_ani_method} requires a count matrix store. "
+            "Use a different --run-dir."
+        )
+    try:
+        stored_min_cov = int(metadata["coverage_filter_min_cov"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Existing matrix store has no valid build-time min_cov.") from exc
+    if stored_min_cov != min_cov:
+        raise ValueError(
+            f"This run directory contains a matrix built with min_cov={stored_min_cov}; "
+            f"requested min_cov={min_cov}. Use a different --run-dir."
+        )
+
+    if not compare_db.exists() or compare_db.stat().st_size == 0:
+        return
+    conn = duckdb.connect(str(compare_db), read_only=True)
+    try:
+        if not mp._matrix_compare_table_exists(conn, "matrix_compare_metadata"):
+            raise ValueError(
+                "Existing matrix compare DB is missing metadata and cannot be resumed safely."
+            )
+        compare_metadata = {
+            str(key): str(value)
+            for key, value in conn.execute(
+                "SELECT key, value FROM matrix_compare_metadata"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    compare_metadata.setdefault("matrix_input_format", "hdf5")
+    gene_ranges = mp._load_matrix_hdf5_gene_ranges(store)
+    calculations = mp.parse_matrix_calculations(
+        "all",
+        include_gene_from_all=bool(gene_ranges),
+    )
+    mp._validate_matrix_compare_db_metadata(
+        compare_metadata=compare_metadata,
+        matrix_metadata=metadata,
+        genome_scope=None if scope == "all" else scope,
+        calculations=calculations,
+        min_cov=min_cov,
+        ani_method=normalized_ani_method,
+    )
+
+
 def _clean_stb(stb_file: pathlib.Path, dest: pathlib.Path) -> pathlib.Path:
     """Write a whitespace-stripped copy of an STB file.
 
@@ -126,6 +185,8 @@ def run_matrix_compare(
     scope: str = "all",
     backend: str = "numpy",
     memory_limit_gb: float = 16.0,
+    min_cov: int = mp.MATRIX_BUILD_MIN_COV,
+    ani_method: str = "popani",
     compare_genes: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> pathlib.Path:
@@ -159,6 +220,14 @@ def run_matrix_compare(
 
     cleaned_stb = _clean_stb(pathlib.Path(stb_file), intermediate / "reference_cleaned.stb")
 
+    if store.exists():
+        _validate_existing_matrix_run(
+            store=store,
+            compare_db=compare_db,
+            scope=scope,
+            min_cov=min_cov,
+            ani_method=ani_method,
+        )
     existing_names = _existing_store_sample_names(store)
     new_profiles = [(name, location) for name, location in profiles if name not in existing_names]
     stage_dir = intermediate / MATRIX_STAGE_DIRNAME
@@ -166,6 +235,12 @@ def run_matrix_compare(
     if not store.exists():
         _notify(progress_callback, f"Building matrix store from {len(new_profiles)} profile(s)")
         _stage_profiles(new_profiles, stage_dir)
+        ani_kind, _cos_threshold = mp.parse_matrix_ani_method(ani_method)
+        storage_mode = (
+            mp.MATRIX_STORAGE_BITMASK
+            if ani_kind == "popani"
+            else mp.MATRIX_STORAGE_COUNTS
+        )
         mp.build_matrix_hdf5(
             profile_dir=stage_dir,
             output_file=store,
@@ -173,6 +248,9 @@ def run_matrix_compare(
             bed_file=pathlib.Path(bed_file),
             stb_file=cleaned_stb,
             gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
+            storage_mode=storage_mode,
+            count_dtype=None,
+            min_cov=min_cov,
             memory_limit_gb=memory_limit_gb,
         )
     elif new_profiles:
@@ -190,10 +268,11 @@ def run_matrix_compare(
     mp.matrix_compare(
         matrix_db_file=store,
         output_file=compare_db,
-        min_cov=mp.MATRIX_BUILD_MIN_COV,
+        min_cov=min_cov,
         genome=scope,
         memory_limit_gb=memory_limit_gb,
         backend=backend,
+        ani_method=ani_method,
         calculate="all",
         emit_writer_logs=False,
         progress_callback=None,
