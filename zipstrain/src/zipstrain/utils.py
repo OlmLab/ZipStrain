@@ -26,7 +26,7 @@ NULL_MODEL_ERROR_RATE_DEFAULT = 0.001
 NULL_MODEL_MAX_COVERAGE_DEFAULT = 50_000
 NULL_MODEL_P_THRESHOLD_DEFAULT = 0.05
 
-CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "genome", "A", "T", "C", "G"}
 REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
 REF_BASE_BIT_VALUES = {
     "A": 1,
@@ -1738,10 +1738,20 @@ def get_gene_stats(
     stb: pl.LazyFrame,
     ref_ani_min_cov: int = 5,
 )->pl.LazyFrame:
+    """Per-gene breadth, coverage and (optionally) reference ANI for one profile.
+
+    Every statistic here is a sum over the positions inside a gene's range, and a
+    range sum is the difference of two cumulative values. So the positions are
+    folded onto one monotone axis, summed cumulatively once, and each gene reads
+    its own two boundaries. Overlapping and nested genes therefore each see all
+    of their positions, which a per-position gene label could not express.
+    """
+    from zipstrain import compare as cp
+
     include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
     profile_columns = [
-        pl.col("genome").cast(pl.Utf8).alias("genome"),
-        pl.col("gene").cast(pl.Utf8).alias("gene"),
+        pl.col("chrom").cast(pl.Utf8).alias("chrom"),
+        pl.col("pos").cast(pl.Int64).alias("pos"),
         pl.col("A"),
         pl.col("C"),
         pl.col("G"),
@@ -1749,69 +1759,104 @@ def get_gene_stats(
     ]
     if include_reference_ani:
         profile_columns.append(pl.col(REF_BASE_BITMASK_COLUMN).cast(pl.UInt8).alias(REF_BASE_BITMASK_COLUMN))
+
     with TemporaryDirectory(prefix="zipstrain_gene_stats_") as tmp_dir:
         profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
         profile.select(profile_columns).sink_parquet(profile_path, compression="zstd", engine="streaming")
 
+        axis_map = cp.scaffold_axis_map(
+            pl.scan_parquet(profile_path)
+            .select("chrom")
+            .unique()
+            .collect(engine="streaming")["chrom"]
+            .to_list()
+        )
+        gene_ranges = gene_bed.select("gene", "scaffold", "start", "end").join(
+            stb.select("scaffold", "genome"), on="scaffold", how="left"
+        ).with_columns(pl.col("genome").fill_null("NA"))
+
         conn = _duckdb_connect_with_temp_dir(tmp_dir)
         try:
             conn.register(
-                "gene_bed_src",
-                gene_bed.select("gene", "scaffold", "start", "end").collect().to_arrow(),
+                "scaffold_axis",
+                pl.DataFrame(
+                    {"scaffold": list(axis_map.keys()), "scaffold_id": list(axis_map.values())},
+                    schema={"scaffold": pl.Utf8, "scaffold_id": pl.Int64},
+                ).to_arrow(),
             )
             conn.register(
-                "stb_src",
-                stb.select("scaffold", "genome").collect().to_arrow(),
+                "gene_bounds",
+                cp.gene_boundary_table(gene_ranges, axis_map).collect().to_arrow(),
             )
+            conn.register("gene_bed_src", gene_bed.select("gene", "scaffold", "start", "end").collect().to_arrow())
+            conn.register("stb_src", stb.select("scaffold", "genome").collect().to_arrow())
             profile_sql = _duckdb_quote_sql_string(str(profile_path))
-            ref_cov_sql = ""
+
+            ref_site_sql = "0"
+            ref_share_sql = "0"
+            ref_prefix_sql = ""
+            ref_gene_sql = ""
             ref_select_sql = ""
             if include_reference_ani:
-                ref_cov_sql = f""",
-                    SUM(
-                      CASE
-                        WHEN (
-                          CAST(A AS DOUBLE) +
-                          CAST(C AS DOUBLE) +
-                          CAST(G AS DOUBLE) +
-                          CAST(T AS DOUBLE)
-                        ) >= {int(ref_ani_min_cov)}
-                         AND CAST(ref_base_bitmask AS BIGINT) > 0
-                        THEN 1
-                        ELSE 0
-                      END
-                    )::BIGINT AS ref_total_positions,
-                    SUM(
-                      CASE
-                        WHEN (
-                          CAST(A AS DOUBLE) +
-                          CAST(C AS DOUBLE) +
-                          CAST(G AS DOUBLE) +
-                          CAST(T AS DOUBLE)
-                        ) >= {int(ref_ani_min_cov)}
-                         AND CAST(ref_base_bitmask AS BIGINT) > 0
-                         AND (
-                           (CAST(ref_base_bitmask AS BIGINT) = 1 AND CAST(A AS DOUBLE) > 0)
-                           OR (CAST(ref_base_bitmask AS BIGINT) = 2 AND CAST(C AS DOUBLE) > 0)
-                           OR (CAST(ref_base_bitmask AS BIGINT) = 4 AND CAST(G AS DOUBLE) > 0)
-                           OR (CAST(ref_base_bitmask AS BIGINT) = 8 AND CAST(T AS DOUBLE) > 0)
-                         )
-                        THEN 1
-                        ELSE 0
-                      END
-                    )::BIGINT AS ref_share_allele_pos"""
+                covered = (
+                    f"(CAST(A AS DOUBLE) + CAST(C AS DOUBLE) + CAST(G AS DOUBLE) + CAST(T AS DOUBLE))"
+                    f" >= {int(ref_ani_min_cov)} AND CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) > 0"
+                )
+                matches = (
+                    f"((CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 1 AND CAST(A AS DOUBLE) > 0)"
+                    f" OR (CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 2 AND CAST(C AS DOUBLE) > 0)"
+                    f" OR (CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 4 AND CAST(G AS DOUBLE) > 0)"
+                    f" OR (CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 8 AND CAST(T AS DOUBLE) > 0))"
+                )
+                ref_site_sql = f"CASE WHEN {covered} THEN 1 ELSE 0 END"
+                ref_share_sql = f"CASE WHEN {covered} AND {matches} THEN 1 ELSE 0 END"
+                ref_prefix_sql = """,
+                    SUM(ref_site) OVER (ORDER BY axis) AS cum_ref_sites,
+                    SUM(ref_share) OVER (ORDER BY axis) AS cum_ref_share"""
+                ref_gene_sql = """,
+                    SUM(COALESCE(p.cum_ref_sites, 0) * b.sign)::BIGINT AS ref_total_positions,
+                    SUM(COALESCE(p.cum_ref_share, 0) * b.sign)::BIGINT AS ref_share_allele_pos"""
                 ref_select_sql = """
                   ,
                   CASE
-                    WHEN COALESCE(cs.ref_total_positions, 0) > 0
-                    THEN COALESCE(cs.ref_share_allele_pos, 0)::DOUBLE / cs.ref_total_positions * 100.0
+                    WHEN COALESCE(gc.ref_total_positions, 0) > 0
+                    THEN COALESCE(gc.ref_share_allele_pos, 0)::DOUBLE * 100.0 / gc.ref_total_positions
                     ELSE NULL
                   END AS ref_ani"""
+
             table = conn.execute(
                 f"""
-                WITH gene_lengths AS (
+                WITH pos_axis AS (
+                  SELECT
+                    sa.scaffold_id * {cp.GENE_AXIS_OFFSET} + p.pos AS axis,
+                    (CAST(A AS DOUBLE) + CAST(C AS DOUBLE) + CAST(G AS DOUBLE) + CAST(T AS DOUBLE)) AS bases,
+                    {ref_site_sql} AS ref_site,
+                    {ref_share_sql} AS ref_share
+                  FROM read_parquet('{profile_sql}') AS p
+                  JOIN scaffold_axis AS sa ON p.chrom = sa.scaffold
+                ),
+                prefix AS (
+                  SELECT
+                    axis,
+                    row_number() OVER (ORDER BY axis) AS cum_sites,
+                    SUM(bases) OVER (ORDER BY axis) AS cum_bases
+                    {ref_prefix_sql}
+                  FROM pos_axis
+                ),
+                gene_cov AS (
+                  SELECT
+                    b.genome,
+                    b.gene,
+                    SUM(COALESCE(p.cum_sites, 0) * b.sign)::BIGINT AS total_covered_sites,
+                    SUM(COALESCE(p.cum_bases, 0) * b.sign)::DOUBLE AS covered_bases
+                    {ref_gene_sql}
+                  FROM gene_bounds AS b
+                  ASOF LEFT JOIN prefix AS p ON b.baxis >= p.axis
+                  GROUP BY b.genome, b.gene
+                ),
+                gene_lengths AS (
                   SELECT DISTINCT
-                    CAST(s.genome AS VARCHAR) AS genome,
+                    CAST(COALESCE(s.genome, 'NA') AS VARCHAR) AS genome,
                     CAST(g.gene AS VARCHAR) AS gene,
                     CASE
                       WHEN CAST(g."end" AS BIGINT) >= CAST(g.start AS BIGINT)
@@ -1821,23 +1866,6 @@ def get_gene_stats(
                   FROM gene_bed_src AS g
                   LEFT JOIN stb_src AS s
                     ON CAST(g.scaffold AS VARCHAR) = CAST(s.scaffold AS VARCHAR)
-                ),
-                covered_stats AS (
-                  SELECT
-                    CAST(genome AS VARCHAR) AS genome,
-                    CAST(gene AS VARCHAR) AS gene,
-                    COUNT(*)::BIGINT AS total_covered_sites,
-                    SUM(
-                      CAST(A AS DOUBLE) +
-                      CAST(C AS DOUBLE) +
-                      CAST(G AS DOUBLE) +
-                      CAST(T AS DOUBLE)
-                    )::DOUBLE AS covered_bases
-                    {ref_cov_sql}
-                  FROM read_parquet('{profile_sql}')
-                  WHERE gene IS NOT NULL
-                    AND CAST(gene AS VARCHAR) <> 'NA'
-                  GROUP BY 1, 2
                 )
                 SELECT
                   CAST(gl.genome AS VARCHAR) AS genome,
@@ -1845,19 +1873,19 @@ def get_gene_stats(
                   CAST(gl.length AS BIGINT) AS length,
                   CASE
                     WHEN gl.length > 0
-                    THEN COALESCE(cs.total_covered_sites, 0)::DOUBLE / gl.length
+                    THEN COALESCE(gc.total_covered_sites, 0)::DOUBLE / gl.length
                     ELSE 0.0
                   END AS breadth,
                   CASE
                     WHEN gl.length > 0
-                    THEN COALESCE(cs.covered_bases, 0)::DOUBLE / gl.length
+                    THEN COALESCE(gc.covered_bases, 0)::DOUBLE / gl.length
                     ELSE 0.0
                   END AS coverage
                   {ref_select_sql}
                 FROM gene_lengths AS gl
-                LEFT JOIN covered_stats AS cs
-                  ON gl.genome = cs.genome
-                 AND gl.gene = cs.gene
+                LEFT JOIN gene_cov AS gc
+                  ON gl.genome = gc.genome
+                 AND gl.gene = gc.gene
                 """
             ).fetch_arrow_table()
         finally:

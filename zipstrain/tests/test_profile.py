@@ -121,33 +121,19 @@ def test_duckdb_chunk_annotation_matches_polars_for_unsorted_chunk(tmp_path: Pat
             "genome": ["genome1", "genome2"],
         }
     ).lazy()
-    gene_lf = pl.DataFrame(
-        {
-            "gene": ["geneA", "geneB"],
-            "scaffold": ["chr1", "chr2"],
-            "start": [1, 2],
-            "end": [3, 2],
-        }
-    ).lazy()
-
     profile._annotate_mpileup_chunk_with_duckdb(
         adjusted_mpileup_parquet=adjusted_pf,
         output_parquet=out_pf,
         scaffold_to_genome=stb_lf,
-        gene_range=gene_lf,
     )
 
     got = pl.read_parquet(out_pf).sort(["genome", "chrom", "pos"])
     expected = (
-        profile.add_gene_info_to_mpileup(
-            mpileup_df=profile.add_genome_info_to_mpileup(
-                mpileup_df=pl.scan_parquet(adjusted_pf),
-                scaffold_to_genome=stb_lf,
-            ),
-            gene_range=gene_lf,
+        profile.add_genome_info_to_mpileup(
+            mpileup_df=pl.scan_parquet(adjusted_pf),
+            scaffold_to_genome=stb_lf,
         )
-        .drop(["start", "end"])
-        .select(["chrom", "genome", "gene", "pos", "A", "C", "G", "T"])
+        .select(["chrom", "genome", "pos", "A", "C", "G", "T"])
         .collect()
         .sort(["genome", "chrom", "pos"])
     )
@@ -505,14 +491,13 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert not (tmp_path / "tmp").exists()
 
     prof = pl.read_parquet(profile_file)
-    assert prof.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T", "ref_base_bitmask"]
+    assert prof.columns == ["chrom", "genome", "pos", "A", "C", "G", "T", "ref_base_bitmask"]
     assert prof.height == 6
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
     assert observed_limits
     assert observed_reference_flags
     assert all(observed_reference_flags)
-    assert prof.schema["gene"] == pl.Utf8
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()
     assert prof["ref_base_bitmask"].to_list() == [1, 2, 4, 8, 1, 2]
@@ -609,7 +594,7 @@ def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monk
     assert genome_stats_file.exists()
 
     prof = pl.read_parquet(profile_file)
-    assert set(prof["gene"].unique().to_list()) == {"NA"}
+    assert "gene" not in prof.columns
     assert "ref_base_bitmask" in prof.columns
     assert (
         pl.read_parquet_metadata(profile_file)[profile.PROFILE_SORTED_METADATA_KEY]
@@ -718,7 +703,7 @@ def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monk
     )
     assert result.exit_code == 0, result.output
     prof = pl.read_parquet(out_dir / "sample_profile.parquet")
-    assert set(prof["gene"].unique().to_list()) == {"NA"}
+    assert "gene" not in prof.columns
     assert "ref_base_bitmask" in prof.columns
 
 

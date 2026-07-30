@@ -109,13 +109,11 @@ def _expected_profile_frame(sample_name: str) -> pl.DataFrame:
     rows: list[dict[str, object]] = []
     for chrom in ("contigA", "contigB"):
         genome = SCAFFOLD_TO_GENOME[chrom]
-        gene = f"{chrom}_1"
         for pos, base in enumerate(SAMPLE_SEQUENCES[sample_name][chrom], start=1):
             rows.append(
                 {
                     "chrom": chrom,
                     "genome": genome,
-                    "gene": gene,
                     "pos": pos,
                     "A": READ_DEPTH if base == "A" else 0,
                     "C": READ_DEPTH if base == "C" else 0,
@@ -462,6 +460,8 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         [
             "utilities",
             "single_compare_gene",
+            "--gene-range-table",
+            str(paths["prep_dir"] / "gene_range_table.tsv"),
             "--profile-location-1",
             str(paths["sample_alpha_profile"]),
             "--profile-location-2",
@@ -487,8 +487,8 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
     assert gene_by_name["contigA_1"]["genome"] == "genome_a"
     assert gene_by_name["contigA_1"]["total_positions"] == 10
     assert gene_by_name["contigA_1"]["share_allele_pos"] == 10
-    assert gene_by_name["contigA_1"]["ani"] == pytest.approx(100.0)
+    assert gene_by_name["contigA_1"]["gene_ani"] == pytest.approx(100.0)
     assert gene_by_name["contigB_1"]["genome"] == "genome_b"
     assert gene_by_name["contigB_1"]["total_positions"] == 10
     assert gene_by_name["contigB_1"]["share_allele_pos"] == 9
-    assert gene_by_name["contigB_1"]["ani"] == pytest.approx(90.0)
+    assert gene_by_name["contigB_1"]["gene_ani"] == pytest.approx(90.0)

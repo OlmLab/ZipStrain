@@ -71,9 +71,6 @@ def _write_genome_compare_table_for_config_tests(compare_path: Path) -> None:
             "share_allele_pos": [10],
             "genome_ani": [100.0],
             "max_consecutive_length": [10],
-            "shared_genes_count": [0],
-            "identical_gene_count": [0],
-            "perc_id_genes": [0.0],
             "sample_1": ["sample_a"],
             "sample_2": ["sample_b"],
         }
@@ -108,6 +105,30 @@ def _reference_profile_frame() -> pl.DataFrame:
             cli.ut.REF_BASE_BITMASK_COLUMN: [1, 1, 2, 8],
         }
     )
+
+@pytest.fixture
+def gene_range_table(tmp_path) -> Path:
+    """Gene ranges matching the gene_locs labels the profile fixtures carry.
+
+    Gene boundaries live in this table rather than in the profile, so the ranges
+    are derived from the same label data the fixtures were built from.
+    """
+    chroms = ["chr1"] * 10 + ["chr2"] * 20 + ["chr3"] * 30
+    positions = list(range(10)) + list(range(20)) + list(range(30))
+    spans: dict[tuple[str, str], tuple[int, int]] = {}
+    for chrom, pos, gene in zip(chroms, positions, gene_locs):
+        if gene == "NA":
+            continue
+        low, high = spans.get((gene, chrom), (pos, pos))
+        spans[(gene, chrom)] = (min(low, pos), max(high, pos))
+    path = tmp_path / "gene_ranges.tsv"
+    pl.DataFrame(
+        [(gene, chrom, low, high) for (gene, chrom), (low, high) in spans.items()],
+        schema=["gene", "scaffold", "start", "end"],
+        orient="row",
+    ).write_csv(path, separator="\t", include_header=False)
+    return path
+
 
 @pytest.fixture
 def profile_1()->pl.LazyFrame:
@@ -324,7 +345,7 @@ def test_single_compare_genome_duckdb_scope_skips_prefilter(profile_1: pl.LazyFr
     assert (tmp_path / "scoped_duckdb.parquet").exists()
 
 
-def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, gene_range_table, tmp_path, monkeypatch):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     stb_path = tmp_path / "stb.tsv"
@@ -342,6 +363,8 @@ def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFram
         [
             "utilities",
             "single_compare_gene",
+            "--gene-range-table",
+            str(gene_range_table),
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -361,7 +384,7 @@ def test_single_compare_gene_duckdb_scope_skips_prefilter(profile_1: pl.LazyFram
 
 
 @pytest.mark.parametrize("engine", ["polars", "duckdb"])
-def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path, engine):
+def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, gene_range_table, tmp_path, engine):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     output_path = tmp_path / f"gene_no_stb_{engine}.parquet"
@@ -374,6 +397,8 @@ def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profi
         [
             "utilities",
             "single_compare_gene",
+            "--gene-range-table",
+            str(gene_range_table),
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -436,26 +461,19 @@ def test_single_compare_genome_polars_scope_uses_polars_prefilter(profile_1: pl.
     assert calls["polars"] == 1
 
 
-def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+def test_single_compare_gene_scope_restricts_to_one_gene(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, gene_range_table, tmp_path):
+    """Gene scoping now filters gene ranges, not per-position labels.
+
+    The profile no longer stores a gene column, so a GENOME:GENE scope narrows
+    the gene range table rather than pre-filtering profile rows.
+    """
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     stb_path = tmp_path / "stb.tsv"
+    out_path = tmp_path / "scoped_gene_polars.parquet"
     profile_1.sink_parquet(profile_1_dir)
     profile_2.sink_parquet(profile_2_dir)
     stb.sink_csv(stb_path, separator="\t", include_header=False)
-
-    calls = {"polars": 0}
-    original_polars_prefilter = cp.polars_prefilter_by_scope
-
-    def _should_not_use_duckdb(*args, **kwargs):
-        raise AssertionError("duckdb_prefilter_by_scope should not be called for --engine polars")
-
-    def _polars_prefilter(*args, **kwargs):
-        calls["polars"] += 1
-        return original_polars_prefilter(*args, **kwargs)
-
-    monkeypatch.setattr(cli.cp, "duckdb_prefilter_by_scope", _should_not_use_duckdb)
-    monkeypatch.setattr(cli.cp, "polars_prefilter_by_scope", _polars_prefilter)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -463,6 +481,8 @@ def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.La
         [
             "utilities",
             "single_compare_gene",
+            "--gene-range-table",
+            str(gene_range_table),
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -471,14 +491,20 @@ def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.La
             str(stb_path),
             "--engine",
             "polars",
+            "--min-cov",
+            "1",
+            "--min-gene-compare-len",
+            "1",
             "--scope",
             "genome1:gene1",
             "--output-file",
-            str(tmp_path / "scoped_gene_polars.parquet"),
+            str(out_path),
         ],
     )
-    assert result.exit_code == 0
-    assert calls["polars"] == 1
+    assert result.exit_code == 0, result.output
+    out = pl.read_parquet(out_path)
+    assert out["gene"].unique().to_list() == ["gene1"]
+    assert out["genome"].unique().to_list() == ["genome1"]
 
 
 def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
@@ -910,7 +936,7 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
 
 
 @pytest.mark.parametrize("engine", ["polars", "duckdb"])
-def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path, engine):
+def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, gene_range_table, tmp_path, engine):
     profile_1_path = tmp_path / f"gene_metadata_left_{engine}.parquet"
     profile_2_path = tmp_path / f"gene_metadata_right_{engine}.parquet"
     output_path = tmp_path / f"gene_metadata_compare_{engine}.parquet"
@@ -938,6 +964,8 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
         [
             "utilities",
             "single_compare_gene",
+            "--gene-range-table",
+            str(gene_range_table),
             "--profile-location-1",
             str(profile_1_path),
             "--profile-location-2",
@@ -1225,6 +1253,8 @@ def test_compare_genes_batch_passes_duckdb_threads(tmp_path, monkeypatch):
         [
             "compare",
             "--compare-genes",
+            "--gene-range-table",
+            str(gene_range_table),
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1256,6 +1286,8 @@ def test_compare_genes_honors_apptainer_container_address_override(tmp_path, mon
         [
             "compare",
             "--compare-genes",
+            "--gene-range-table",
+            str(gene_range_table),
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1309,7 +1341,7 @@ def test_compare_genes_flag_routes_to_gene_compare(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(
         cli.cli,
-        ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
+        ["compare", "--compare-genes", "--gene-range-table", str(gene_range_table), "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
     )
     assert result.exit_code == 0, result.output
     assert isinstance(captured["comps_db"], cli.db.GeneComparisonDatabase)
@@ -1390,7 +1422,7 @@ def test_compare_default_scope_differs_by_mode(tmp_path, monkeypatch):
 
     gene_db = {}
     monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", lambda **kwargs: gene_db.update(comps_db=kwargs["comps_db"]))
-    assert runner.invoke(cli.cli, ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "gene")]).exit_code == 0
+    assert runner.invoke(cli.cli, ["compare", "--compare-genes", "--gene-range-table", str(gene_range_table), "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "gene")]).exit_code == 0
     assert gene_db["comps_db"].config.scope == "all:all"
 
 

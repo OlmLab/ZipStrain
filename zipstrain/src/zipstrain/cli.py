@@ -1467,40 +1467,32 @@ def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_
 @utilities.command("single_compare_gene")
 @click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
 @click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
-@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. Currently unused for gene compare, and accepted for workflow consistency.")
+@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file.")
+@click.option('--gene-range-table', '-g', 'gene_range_table', required=True, help="Headerless TSV of gene, scaffold, start, end. Required: gene ranges define gene boundaries, which are no longer stored in the profile.")
 @click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
+@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum shared positions in a gene to report it.")
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
-@click.option('--scope', '-g', default="all:all", help="If provided, do the comparison only for the specified genome-gene pair.")
+@click.option('--scope', default="all:all", help="Restrict the comparison to a GENOME:GENE pair.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
-    """
-    Compare two profile parquets and calculate gene-level comparison statistics.
-    
-    Args:
-    profile_location_1 (str): Path to the first profile parquet.
-    profile_location_2 (str): Path to the second profile parquet.
-    stb_file (str | None): Optional path to the scaffold to genome mapping file.
-    min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    output_file (str): Path to save the parquet file.
-    scope (str): If provided, do the comparison only for the specified genome-gene pair.
-    ani_method (str): ANI calculation method to use.
-    """
+def single_compare_gene(profile_location_1, profile_location_2, stb_file, gene_range_table, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+    """Compare two profiles and write a gene-grained comparison table.
 
-    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
-    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
+    Thin wrapper over the unified comparison path with ``--calculate gene``;
+    gene and genome metrics come from one implementation so the two grains can
+    never disagree.
+    """
     if duckdb_threads is not None and duckdb_threads < 1:
         raise ValueError("--duckdb-threads must be >= 1")
-
-    _ = stb_file
     if ":" not in scope:
         raise ValueError("scope must be in 'GENOME:GENE' format (e.g., all:all).")
     genome_scope, gene_scope = scope.split(":", 1)
+
+    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
+    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
     compare_metadata = ut.build_single_compare_metadata(
         profile_location_1,
         profile_location_2,
@@ -1512,61 +1504,28 @@ def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_co
         uses_stb=stb_file is not None,
         ani_method=ani_method,
     )
-
-    profile_1_for_compare = profile_location_1
-    profile_2_for_compare = profile_location_2
-    if engine == "polars" and (genome_scope != "all" or gene_scope != "all"):
-        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-        )
-
-    if engine == "duckdb":
-        cp.duckdb_compare_genes_to_parquet(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
-            output_file=output_file,
-            sample_1_name=profile_1_name,
-            sample_2_name=profile_2_name,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-            ani_method=ani_method,
-            memory_limit=duckdb_memory_limit,
-            temp_directory=duckdb_temp_directory,
-            threads=duckdb_threads,
-        )
-        ut.rewrite_parquet_with_metadata(output_file, compare_metadata)
-        return
-
-    gene_comp = cp.compare_genes(
-        mpile_contig_1=profile_1_for_compare,
-        mpile_contig_2=profile_2_for_compare,
+    calculations = cp.parse_genome_calculations("genome_ani+ibs+gene")
+    gene_comp = cp.compare_genomes(
+        mpile_contig_1=profile_location_1,
+        mpile_contig_2=profile_location_2,
         min_cov=min_cov,
         min_gene_compare_len=min_gene_compare_len,
         genome_scope=genome_scope,
         gene_scope=gene_scope,
         ani_method=ani_method,
+        engine=engine,
+        stb_file=stb_file,
+        calculate=calculations,
+        gene_range=gene_range_table,
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_temp_directory=duckdb_temp_directory,
         duckdb_threads=duckdb_threads,
-        engine="polars",
     ).with_columns(
         sample_1=pl.lit(profile_1_name),
         sample_2=pl.lit(profile_2_name),
-    ).select(
-        "genome",
-        "gene",
-        "total_positions",
-        "share_allele_pos",
-        "ani",
-        "sample_1",
-        "sample_2",
-    )
+    ).select(cp.gene_metric_output_columns(calculations) + ["sample_1", "sample_2"])
     gene_comp.sink_parquet(output_file, compression='zstd', metadata=compare_metadata)
+
 
 @utilities.command("prepare_profiling", help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
@@ -2080,6 +2039,12 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
 
         if compare_genes:
             resolved_scope = scope if scope is not None else "all:all"
+            if not gene_range_table:
+                raise click.UsageError(
+                    "--gene-range-table is required with --compare-genes. Gene boundaries "
+                    "are resolved from gene ranges at compare time, so they are no longer "
+                    "available from the profile itself."
+                )
             comps_db = db.GeneComparisonDatabase(
                 profile_db=profile_database,
                 config=db.GeneComparisonConfig(
@@ -2087,6 +2052,7 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                     min_cov=min_cov,
                     min_gene_compare_len=min_gene_compare_len,
                     stb_file_loc=stb_file,
+                    gene_range_table_loc=gene_range_table,
                 ),
                 comp_db_loc=comp_db_file,
             )

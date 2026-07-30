@@ -73,10 +73,16 @@ The core output: one row per reference position with the observed base counts. T
 |--------|---------|
 | `chrom` | Scaffold / contig name |
 | `genome` | Genome the scaffold belongs to (`NA` if unbinned) |
-| `gene` | Gene at this position (`NA` if none / unannotated) |
 | `pos` | Position on the scaffold (**1-based**) |
 | `A`, `C`, `G`, `T` | Read counts that pass both the Poisson error ceiling and `--min-freq` allele-frequency filter |
 | `ref_base_bitmask` | Reference base as a bitmask: **A = 1, C = 2, G = 4, T = 8** (`0` = reference base unknown). Only present when `--reference-fasta` was used |
+
+!!! note "No `gene` column"
+    Profiles no longer carry a per-position `gene` label. A position can fall
+    inside several overlapping or nested genes, which one label cannot express,
+    so gene membership is resolved from a gene range table at comparison time
+    (`--gene-range-table`). Profiles written by earlier versions still work —
+    the extra column is simply ignored.
 
 Example:
 
@@ -94,7 +100,7 @@ Every covered position that is **divergent** from the reference — either polym
 
 | Column | Meaning |
 |--------|---------|
-| `chrom`, `genome`, `gene`, `pos` | Location (`pos` is 1-based) |
+| `chrom`, `genome`, `pos` | Location (`pos` is 1-based) |
 | `position_coverage` | Total (error-adjusted) depth at the position |
 | `allele_count` | Number of passing alleles (bases with count > 0) |
 | `ref_base`, `con_base`, `var_base` | Reference, consensus (majority), and top variant base |
@@ -134,7 +140,47 @@ One row per genome, per pair of samples.
 | `genome_ani` | Genome-wide ANI (%) = `share_allele_pos` / `total_positions` × 100. The parquet metadata key `zipstrain_compare_ani_method` records whether this is `popani`, `conani`, or `cosani_<threshold>` |
 | `max_consecutive_length` | Longest run of consecutive shared positions (an identical-by-state / IBS measure) |
 
-With gene ranges available, genome-level gene identity summary columns are also added by the default `--calculate all`: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
+### `all_gene_comparisons.parquet`
+
+When gene ranges are supplied (`--gene-range-table`) and `gene` is among the
+calculations, the table becomes **gene-grained**: one row per gene, per genome,
+per pair of samples. The requested genome-level metrics are repeated on every
+gene row so the table can be read on its own.
+
+| Column | Meaning |
+|--------|---------|
+| `sample_1`, `sample_2` | The two samples being compared |
+| `genome`, `gene` | Genome and gene compared between them |
+| `total_positions` | Positions inside this gene covered in **both** samples (≥ `--min-cov`) |
+| `share_allele_pos` | Of those, positions that match under the selected ANI method |
+| `gene_ani` | Gene-level ANI (%) = `share_allele_pos` / `total_positions` × 100 |
+| `genome_ani` | Genome-wide ANI, repeated on each gene row |
+| `max_consecutive_length` | Genome-wide IBS block length, repeated on each gene row |
+
+Genes with fewer than `--min-gene-compare-len` shared positions are dropped.
+
+!!! note "Overlapping genes"
+    Gene boundaries come from the gene range table at comparison time, not from a
+    per-position label in the profile. A position inside several overlapping or
+    nested genes therefore counts toward **each** of them, which a single label
+    per position could not represent.
+
+!!! warning "Removed in this version"
+    The genome-level gene summary columns `shared_genes_count`,
+    `identical_gene_count` and `perc_id_genes` (and the `identical_genes`
+    calculation) have been removed. Derive them from the gene table instead:
+
+    ```python
+    (gene_df
+        .group_by(["sample_1", "sample_2", "genome"])
+        .agg(
+            shared_genes_count=pl.len(),
+            identical_gene_count=(pl.col("gene_ani") == 100.0).sum(),
+        )
+        .with_columns(
+            perc_id_genes=pl.col("identical_gene_count") / pl.col("shared_genes_count") * 100
+        ))
+    ```
 
 !!! note "ANI method is stored in the parquet header"
     `--ani-method conani` or `--ani-method cosani_<threshold>` changes how the ANI match indicator is computed, but it does not add method-specific output columns. Check `zipstrain_compare_ani_method` in the parquet metadata to know what `genome_ani` represents. Both standard and matrix comparison support `popani`, `conani`, and `cosani_<threshold>`.

@@ -166,26 +166,10 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_ge
     assert res_dict["genome2"]["max_consecutive_length"]==max([len([i for i in zip(a_chr3,t_chr3,c_chr3,g_chr3) if sum(i)>=min_cov])])
 
 
-    covered_gene_counts=profile_1.filter((pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")>=min_cov) & (pl.col("gene")!="NA")).group_by(["gene","genome"]).agg(pl.len()).filter(pl.col("len")>=min_gene_compare_len).group_by("genome").agg(pl.len()).collect().rows_by_key(key="genome",unique=True,named=True)
-    
-    
-    if "genome1" in covered_gene_counts and "genome1" in res_dict:
-        assert res_dict["genome1"]["shared_genes_count"]==covered_gene_counts["genome1"]["len"]
-    
-    if "genome2" in covered_gene_counts and "genome2" in res_dict:
-        assert res_dict["genome2"]["shared_genes_count"]==covered_gene_counts["genome2"]["len"]
-
-    if "genome1" in res_dict and "genome1" in covered_gene_counts:
-        assert res_dict["genome1"]["identical_gene_count"]==covered_gene_counts["genome1"]["len"]
-
-    if "genome2" in res_dict and "genome2" in covered_gene_counts:
-        assert res_dict["genome2"]["identical_gene_count"]==covered_gene_counts["genome2"]["len"]
-
-    if "genome1" in res_dict:
-        assert res_dict["genome1"]["perc_id_genes"]==100.0 if "genome1" in covered_gene_counts else -1
-    
-    if "genome2" in res_dict:
-        assert res_dict["genome2"]["perc_id_genes"]==100.0 if "genome2" in covered_gene_counts else -1
+    # Without a gene range table "all" resolves to genome-level metrics only, so
+    # the table stays genome-grained and carries no gene columns.
+    assert "gene" not in res_dict["genome1"]
+    assert "gene_ani" not in res_dict["genome1"]
 
 def test_con_ani_expression():
     profile_1=pl.DataFrame({
@@ -291,9 +275,6 @@ def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
         "share_allele_pos",
         "genome_ani",
         "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
         "sample_1",
         "sample_2",
     }
@@ -528,9 +509,6 @@ def test_compare_genomes_default_calculate_is_all_metrics(profile_1, profile_2, 
         "share_allele_pos",
         "genome_ani",
         "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
     }
 
 
@@ -558,3 +536,149 @@ def test_compare_genomes_calculate_all_matches_between_engines(profile_1, profil
         stb_file=stb_path,
     ).collect().sort("genome")
     assert out_polars.equals(out_duckdb)
+
+
+# --- gene-grained comparison over gene ranges -------------------------------
+#
+# Gene ANI is computed from a gene range table rather than a per-position gene
+# label, so a position covered by several genes counts toward every one of them.
+# The label-based approach could only ever attribute a position to one gene.
+
+
+@pytest.fixture
+def overlap_profiles(tmp_path):
+    """Two profiles over one scaffold; every 7th position is an SNV."""
+    n = 300
+    positions = list(range(1, n + 1))
+    alt = [10 if (p - 1) % 7 == 0 else 0 for p in positions]
+    base = {"chrom": ["s1"] * n, "genome": ["genome1"] * n, "pos": positions}
+    p1 = pl.DataFrame({**base, "A": [10] * n, "C": [0] * n, "G": [0] * n, "T": [0] * n})
+    p2 = pl.DataFrame(
+        {**base, "A": [10 - a for a in alt], "C": alt, "G": [0] * n, "T": [0] * n}
+    )
+    path_1 = tmp_path / "ov1.parquet"
+    path_2 = tmp_path / "ov2.parquet"
+    p1.write_parquet(path_1)
+    p2.write_parquet(path_2)
+    return path_1, path_2
+
+
+@pytest.fixture
+def overlap_gene_range(tmp_path):
+    """gene_b and gene_c sit strictly inside gene_a."""
+    path = tmp_path / "genes.tsv"
+    pl.DataFrame(
+        {
+            "gene": ["gene_a", "gene_b", "gene_c"],
+            "scaffold": ["s1", "s1", "s1"],
+            "start": [10, 50, 200],
+            "end": [280, 90, 260],
+        }
+    ).write_csv(path, separator="\t", include_header=False)
+    return path
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_nested_genes_each_get_their_full_range(
+    overlap_profiles, overlap_gene_range, engine
+):
+    profile_1, profile_2 = overlap_profiles
+    out = (
+        compare.compare_genomes(
+            mpile_contig_1=profile_1,
+            mpile_contig_2=profile_2,
+            min_cov=1,
+            min_gene_compare_len=1,
+            engine=engine,
+            calculate="all",
+            gene_range=overlap_gene_range,
+        )
+        .collect()
+        .sort("gene")
+        .rows_by_key(key="gene", unique=True, named=True)
+    )
+    # Every position in [start, end] belongs to the gene, including those the
+    # enclosing gene shares with a nested one.
+    assert out["gene_a"]["total_positions"] == 280 - 10 + 1
+    assert out["gene_b"]["total_positions"] == 90 - 50 + 1
+    assert out["gene_c"]["total_positions"] == 260 - 200 + 1
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_gene_grained_output_carries_genome_metrics(
+    overlap_profiles, overlap_gene_range, engine
+):
+    profile_1, profile_2 = overlap_profiles
+    out = compare.compare_genomes(
+        mpile_contig_1=profile_1,
+        mpile_contig_2=profile_2,
+        min_cov=1,
+        min_gene_compare_len=1,
+        engine=engine,
+        calculate="all",
+        gene_range=overlap_gene_range,
+    ).collect()
+    assert set(out.columns) == {
+        "genome",
+        "gene",
+        "total_positions",
+        "share_allele_pos",
+        "gene_ani",
+        "genome_ani",
+        "max_consecutive_length",
+    }
+    # Genome-level values are repeated on each gene row, so they must be constant.
+    assert out["genome_ani"].n_unique() == 1
+    assert out["max_consecutive_length"].n_unique() == 1
+
+
+def test_gene_grained_output_matches_between_engines(
+    overlap_profiles, overlap_gene_range
+):
+    profile_1, profile_2 = overlap_profiles
+    kwargs = dict(
+        mpile_contig_1=profile_1,
+        mpile_contig_2=profile_2,
+        min_cov=1,
+        min_gene_compare_len=1,
+        calculate="all",
+        gene_range=overlap_gene_range,
+    )
+    out_polars = compare.compare_genomes(engine="polars", **kwargs).collect().sort("gene")
+    out_duckdb = compare.compare_genomes(engine="duckdb", **kwargs).collect().sort("gene")
+    assert out_polars.equals(out_duckdb)
+
+
+def test_gene_calculation_without_ranges_is_rejected(overlap_profiles):
+    profile_1, profile_2 = overlap_profiles
+    with pytest.raises(ValueError, match="gene range table"):
+        compare.compare_genomes(
+            mpile_contig_1=profile_1,
+            mpile_contig_2=profile_2,
+            engine="polars",
+            calculate="gene",
+        ).collect()
+
+
+def test_all_without_gene_ranges_stays_genome_grained(overlap_profiles):
+    profile_1, profile_2 = overlap_profiles
+    out = compare.compare_genomes(
+        mpile_contig_1=profile_1,
+        mpile_contig_2=profile_2,
+        min_cov=1,
+        engine="polars",
+        calculate="all",
+    ).collect()
+    assert "gene" not in out.columns
+    assert "genome_ani" in out.columns
+
+
+def test_identical_genes_calculation_is_removed(overlap_profiles):
+    profile_1, profile_2 = overlap_profiles
+    with pytest.raises(ValueError, match="Unsupported calculation"):
+        compare.compare_genomes(
+            mpile_contig_1=profile_1,
+            mpile_contig_2=profile_2,
+            engine="polars",
+            calculate="identical_genes",
+        ).collect()

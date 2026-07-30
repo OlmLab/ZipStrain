@@ -590,7 +590,7 @@ def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path
         yield_size=1,
         container_engine=task_manager.LocalEngine(""),
         comp_config=config,
-        calculate="ani+ibs+identical_genes",
+        calculate="genome_ani+ibs",
     )
 
     async def _collect():
@@ -601,7 +601,7 @@ def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path
 
     tasks = asyncio.run(_collect())
     assert len(tasks) == 1
-    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani+ibs+identical_genes"
+    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate genome_ani+ibs"
 
     with pytest.raises(ValueError):
         task_manager.CompareTaskGenerator(
@@ -699,6 +699,7 @@ def test_gene_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_pat
         }
     ).lazy()
     config = database.GeneComparisonConfig(
+        gene_range_table_loc="genes.tsv",
         scope="all:all",
         min_cov=5,
         min_gene_compare_len=100,
@@ -743,6 +744,7 @@ def test_gene_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path)
         }
     ).lazy()
     config = database.GeneComparisonConfig(
+        gene_range_table_loc="genes.tsv",
         scope="all:all",
         min_cov=5,
         min_gene_compare_len=100,
@@ -973,3 +975,26 @@ def test_reorganize_compare_run_output_flattens_and_tidies(tmp_path, batch_name,
     inter = run_dir / "intermediate_files"
     assert (inter / batch_name / "concat_parquet" / f"Merged_{batch_name}.parquet").exists()
     assert (inter / "Outputs" / "prepare_outputs" / ".status").exists()
+
+
+def test_gene_compare_task_forwards_gene_range_table(tmp_path):
+    """The bulk gene-compare command must carry --gene-range-table.
+
+    Gene boundaries come from ranges at compare time now, so a generated
+    `single_compare_gene` command without this argument fails at runtime. This
+    path had no coverage, which is how that regression went unnoticed.
+    """
+    gene_range_table = tmp_path / "gene_ranges.tsv"
+    pl.DataFrame(
+        {"gene": ["g1"], "scaffold": ["chr1"], "start": [1], "end": [10]}
+    ).write_csv(gene_range_table, separator="\t", include_header=False)
+
+    config = database.GeneComparisonConfig(
+        scope="all:all",
+        min_cov=5,
+        min_gene_compare_len=1,
+        gene_range_table_loc=str(gene_range_table),
+    )
+    assert config.gene_range_table_loc == str(gene_range_table)
+    assert "<gene-range-table>" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
+    assert "--gene-range-table" in task_manager.FastGeneCompareTask.TEMPLATE_CMD

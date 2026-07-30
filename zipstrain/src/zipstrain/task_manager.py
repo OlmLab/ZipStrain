@@ -2121,6 +2121,7 @@ class FastGeneCompareTask(Task):
     --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
+    --gene-range-table <gene-range-table> \
     --min-gene-compare-len <min-gene-compare-len> \
     <duckdb-memory-limit-arg> \
     <duckdb-threads-arg> \
@@ -2187,6 +2188,13 @@ class GeneCompareTaskGenerator(TaskGenerator):
                     else ""
                 )
                 compare_engine_arg = f"--engine {self.compare_engine}"
+                if not self.comp_config.gene_range_table_loc:
+                    raise ValueError(
+                        "Gene comparison requires a gene range table. Set "
+                        "GeneComparisonConfig.gene_range_table_loc (CLI: --gene-range-table); "
+                        "gene boundaries are no longer stored in the profile."
+                    )
+                gene_range_table_arg = str(pathlib.Path(self.comp_config.gene_range_table_loc).absolute())
                 stb_file_arg = (
                     f"--stb-file {pathlib.Path(self.comp_config.stb_file_loc).absolute()}"
                     if self.comp_config.stb_file_loc
@@ -2196,6 +2204,7 @@ class GeneCompareTaskGenerator(TaskGenerator):
                 "profile_1_file": FileInput(row["profile_location_1"]),
                 "profile_2_file": FileInput(row["profile_location_2"]),
                 "stb-file-arg": StringInput(stb_file_arg),
+                "gene-range-table": StringInput(gene_range_table_arg),
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),

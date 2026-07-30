@@ -278,12 +278,15 @@ class GeneComparisonConfig(BaseModel):
     Attributes:
         scope (str): The scope of the comparison in format "GENOME:GENE" (e.g., "all:gene1" compares gene1 across all genomes, "genome1:gene1" compares gene1 only in genome1 across samples).
         stb_file_loc (str | None): Optional location of the scaffold-to-genome mapping file.
+        gene_range_table_loc (str | None): Location of the gene range table. Required for gene
+            comparisons, which resolve gene boundaries from ranges rather than from the profile.
         min_cov (int): Minimum coverage threshold for considering a position.
         min_gene_compare_len (int): Minimum gene length required for comparison.
     """
     model_config = ConfigDict(extra="forbid")
     scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
     stb_file_loc: str | None = Field(default=None, description="Optional location of the scaffold-to-genome mapping file")
+    gene_range_table_loc: str | None = Field(default=None, description="Location of the gene range table used to resolve gene boundaries")
     min_cov: int = Field(default=5, description="Minimum coverage threshold")
     min_gene_compare_len: int = Field(default=100, description="Minimum gene length for comparison")
     
@@ -377,10 +380,6 @@ class GenomeComparisonDatabase:
     
     - max_consecutive_length
     
-    - shared_genes_count
-    
-    - identical_gene_count
-    
     - sample_1
     
     - sample_2
@@ -400,9 +399,6 @@ class GenomeComparisonDatabase:
         "share_allele_pos",
         "genome_ani",
         "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
         "sample_1",
         "sample_2"
     ]
@@ -412,9 +408,6 @@ class GenomeComparisonDatabase:
         "share_allele_pos": pl.Int64,
         "genome_ani": pl.Float64,
         "max_consecutive_length": pl.Int64,
-        "shared_genes_count": pl.Int64,
-        "identical_gene_count": pl.Int64,
-        "perc_id_genes": pl.Float64,
         "sample_1": pl.Utf8,
         "sample_2": pl.Utf8,
     }
@@ -437,9 +430,6 @@ class GenomeComparisonDatabase:
                 "share_allele_pos": [],
                 "genome_ani": [],
                 "max_consecutive_length": [],
-                "shared_genes_count": [],
-                "identical_gene_count": [],
-                "perc_id_genes": [],
                 "sample_1": [],
                 "sample_2": []
             }, schema=self.COLUMN_DTYPES)
@@ -596,7 +586,7 @@ class GeneComparisonDatabase:
         "gene",
         "total_positions",
         "share_allele_pos",
-        "ani",
+        "gene_ani",
         "sample_1",
         "sample_2"
     ]
@@ -618,7 +608,7 @@ class GeneComparisonDatabase:
                 "gene": [],
                 "total_positions": [],
                 "share_allele_pos": [],
-                "ani": [],
+                "gene_ani": [],
                 "sample_1": [],
                 "sample_2": []
             }, schema={
@@ -626,7 +616,7 @@ class GeneComparisonDatabase:
                 "gene": pl.Utf8,
                 "total_positions": pl.Int64,
                 "share_allele_pos": pl.Int64,
-                "ani": pl.Float64,
+                "gene_ani": pl.Float64,
                 "sample_1": pl.Utf8,
                 "sample_2": pl.Utf8
             })

@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 
 from zipstrain import compare as cp
 
-PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "genome", "A", "T", "C", "G"}
 COUNT_DTYPES = {
     "uint16": np.uint16,
     "uint32": np.uint32,

@@ -25,6 +25,12 @@ import pyarrow.parquet as pq
 
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
+# Bumped when the profile column layout changes incompatibly. Version 2 dropped
+# the per-position `gene` column: gene membership is resolved from gene ranges at
+# comparison time, because one label per position cannot represent a position
+# that falls inside several overlapping genes.
+PROFILE_SCHEMA_METADATA_KEY = "zipstrain_profile_schema"
+PROFILE_SCHEMA_VERSION = "2"
 PROFILE_WRITE_BATCH_SIZE = 10_000
 MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
@@ -91,7 +97,6 @@ RAW_PROFILE_PARQUET_FIELDS = [
 PROFILE_PARQUET_BASE_FIELDS = [
     ("chrom", pa.string()),
     ("genome", pa.string()),
-    ("gene", pa.string()),
     ("pos", pa.int32()),
     ("A", pa.int32()),
     ("C", pa.int32()),
@@ -471,26 +476,6 @@ def add_genome_info_to_mpileup(mpileup_df:pl.LazyFrame, scaffold_to_genome:pl.La
     )
     return mpileup_df.set_sorted(["chrom", "pos"])
 
-def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->pl.LazyFrame:
-    mpileup_df=mpileup_df.sort(["chrom", "pos"]).set_sorted(["chrom", "pos"])
-    gene_range=gene_range.sort(["scaffold", "start"]).set_sorted(["scaffold", "start"])
-    annotated_mpileup=mpileup_df.join_asof(
-        gene_range,
-        left_on="pos",
-        right_on="start",
-        by_left="chrom",
-        by_right="scaffold",
-        strategy="backward",
-        check_sortedness=False,
-    ).with_columns(
-            pl.when(pl.col("pos") <= pl.col("end"))
-            .then(pl.col("gene"))
-            .otherwise(pl.lit("NA"))
-            .alias("gene")
-        )
-    return annotated_mpileup.set_sorted(["chrom", "pos"])
-
-
 def _duckdb_quote_sql_string(value: str) -> str:
     """Quote a string literal for embedding in DuckDB SQL."""
     return value.replace("'", "''")
@@ -515,6 +500,7 @@ def _write_sorted_profile_with_metadata(
 
     output_metadata = dict(metadata or {})
     output_metadata[PROFILE_SORTED_METADATA_KEY] = PROFILE_SORTED_METADATA_VALUE
+    output_metadata[PROFILE_SCHEMA_METADATA_KEY] = PROFILE_SCHEMA_VERSION
 
     if _parquet_rows_are_coordinate_sorted(candidate_path):
         pl.scan_parquet(candidate_path).sink_parquet(
@@ -566,6 +552,7 @@ def _sort_existing_profile_parquet(
     if metadata:
         output_metadata.update(metadata)
     output_metadata[PROFILE_SORTED_METADATA_KEY] = PROFILE_SORTED_METADATA_VALUE
+    output_metadata[PROFILE_SCHEMA_METADATA_KEY] = PROFILE_SCHEMA_VERSION
 
     pl.scan_parquet(sorted_path).sink_parquet(
         output_file,
@@ -765,7 +752,6 @@ def _process_raw_profile_chunk_with_polars(
     output_parquet: pathlib.Path,
     null_model: pl.LazyFrame,
     scaffold_to_genome: pl.LazyFrame,
-    gene_range: pl.LazyFrame,
     include_reference_base: bool = True,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
 ) -> None:
@@ -785,32 +771,12 @@ def _process_raw_profile_chunk_with_polars(
         scaffold_to_genome=scaffold_to_genome,
     )
 
-    gene_schema_names = gene_range.collect_schema().names()
-    if gene_schema_names:
-        annotated = (
-            with_genome.set_sorted(["chrom", "pos"])
-            .join_asof(
-                gene_range,
-                left_on="pos",
-                right_on="start",
-                by_left="chrom",
-                by_right="scaffold",
-                strategy="backward",
-                check_sortedness=False,
-            )
-            .with_columns(
-                pl.when(pl.col("pos") <= pl.col("end"))
-                .then(pl.col("gene"))
-                .otherwise(pl.lit("NA"))
-                .alias("gene")
-            )
-            .drop(["start", "end"])
-            .set_sorted(["chrom", "pos"])
-        )
-    else:
-        annotated = with_genome.with_columns(pl.lit("NA").alias("gene")).set_sorted(["chrom", "pos"])
+    # Gene membership is no longer stored per position: a position can fall in
+    # several overlapping genes, which a single label cannot express. Gene ranges
+    # are applied at comparison time instead.
+    annotated = with_genome.set_sorted(["chrom", "pos"])
 
-    final_columns = ["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]
+    final_columns = ["chrom", "genome", "pos", "A", "C", "G", "T"]
     if include_reference_base:
         final_columns.append(utils.REF_BASE_BITMASK_COLUMN)
 
@@ -825,11 +791,9 @@ def _annotate_mpileup_chunk_with_duckdb(
     adjusted_mpileup_parquet: pathlib.Path,
     output_parquet: pathlib.Path,
     scaffold_to_genome: pl.LazyFrame,
-    gene_range: pl.LazyFrame,
     mpileup_sorted: Optional[bool] = None,
-    gene_range_sorted: bool = False,
 ) -> None:
-    """Annotate one adjusted mpileup chunk with genome+gene in DuckDB."""
+    """Annotate one adjusted mpileup chunk with its genome assignment in DuckDB."""
     if mpileup_sorted is None:
         mpileup_sorted = _profile_parquet_is_coordinate_sorted(adjusted_mpileup_parquet)
     conn = duckdb.connect()
@@ -838,14 +802,9 @@ def _annotate_mpileup_chunk_with_duckdb(
             "stb_src",
             scaffold_to_genome.select(["scaffold", "genome"]).collect().to_arrow(),
         )
-        conn.register(
-            "gene_src",
-            gene_range.select(["gene", "scaffold", "start", "end"]).collect().to_arrow(),
-        )
         in_sql = _duckdb_quote_sql_string(str(adjusted_mpileup_parquet))
         out_sql = _duckdb_quote_sql_string(str(output_parquet))
         mpileup_order_sql = "" if mpileup_sorted else "ORDER BY chrom, pos"
-        gene_range_order_sql = "" if gene_range_sorted else "ORDER BY scaffold, start"
         conn.execute(
             f"""
             COPY (
@@ -866,15 +825,6 @@ def _annotate_mpileup_chunk_with_duckdb(
                   CAST(genome AS VARCHAR) AS genome
                 FROM stb_src
               ),
-              gene_range AS (
-                SELECT
-                  CAST(gene AS VARCHAR) AS gene,
-                  CAST(scaffold AS VARCHAR) AS scaffold,
-                  CAST(start AS INTEGER) AS start,
-                  CAST("end" AS INTEGER) AS "end"
-                FROM gene_src
-                {gene_range_order_sql}
-              ),
               mp_with_genome AS (
                 SELECT
                   mp.chrom,
@@ -891,24 +841,16 @@ def _annotate_mpileup_chunk_with_duckdb(
                 SELECT
                   mg.chrom,
                   mg.genome,
-                  CASE
-                    WHEN mg.pos <= gr."end" THEN gr.gene
-                    ELSE 'NA'
-                  END AS gene,
                   mg.pos,
                   mg.A,
                   mg.C,
                   mg.G,
                   mg.T
                 FROM mp_with_genome AS mg
-                ASOF LEFT JOIN gene_range AS gr
-                  ON mg.chrom = gr.scaffold
-                 AND mg.pos >= gr.start
               )
               SELECT
                 chrom,
                 genome,
-                gene,
                 pos,
                 A,
                 C,
@@ -994,13 +936,10 @@ def get_reference_ani(
         group_cols = ["genome"]
         renamed_cols = {}
         sort_cols = ["genome"]
-    elif agg_level == "gene":
-        prepared = prepared.filter(pl.col("gene") != "NA")
-        group_cols = ["genome", "chrom", "gene"]
-        renamed_cols = {"chrom": "scaffold"}
-        sort_cols = ["genome", "scaffold", "gene"]
     else:
-        raise ValueError("agg_level must be one of: scaffold, genome, gene")
+        # Gene-level reference ANI moved to get_gene_stats, which resolves gene
+        # ranges properly instead of relying on one gene label per position.
+        raise ValueError("agg_level must be one of: scaffold, genome")
 
     result = (
         prepared.group_by(group_cols)
@@ -1019,8 +958,10 @@ def get_reference_ani(
     return result.sort(sort_cols)
 
 
+# No gene column: a position can fall in several overlapping genes, so SNV rows
+# are joined to gene ranges downstream instead of carrying one gene label each.
 SNV_TABLE_COLUMNS = [
-    "chrom", "genome", "gene", "pos", "position_coverage", "allele_count",
+    "chrom", "genome", "pos", "position_coverage", "allele_count",
     "ref_base", "con_base", "var_base", "ref_freq", "con_freq", "var_freq",
     "A", "C", "G", "T", "class", "ref_base_bitmask",
 ]
@@ -1214,7 +1155,6 @@ def _profile_chunk_task(
     bam_file:pathlib.Path,
     reference_fasta: pathlib.Path | None,
     scaffold_to_genome: pl.LazyFrame,
-    gene_range: pl.LazyFrame,
     null_model: pl.LazyFrame,
     output_dir:pathlib.Path,
     chunk_id:int,
@@ -1250,7 +1190,6 @@ def _profile_chunk_task(
         output_parquet=candidate_chunk_path,
         null_model=null_model,
         scaffold_to_genome=scaffold_to_genome,
-        gene_range=gene_range,
         include_reference_base=include_reference_base,
         min_freq=min_freq,
     )
@@ -1396,7 +1335,6 @@ def profile_bam_in_chunks(
                 bam_file=effective_bam_file,
                 reference_fasta=reference_fasta,
                 scaffold_to_genome=stb,
-                gene_range=gene_range_lf,
                 null_model=null_model,
                 output_dir=output_dir/"tmp",
                 chunk_id=chunk_id,

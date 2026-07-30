@@ -440,27 +440,34 @@ def _load_matrix_hdf5_contract(matrix_hdf5: Path):
 
 def _expected_classic_pairwise_gene_results(
     profile_dir: Path,
+    gene_range_table: Path,
     *,
     sample_names: tuple[str, ...] = ("sample_a", "sample_b", "sample_c"),
 ) -> pl.DataFrame:
+    """Gene results from the standard compare path, for matrix parity checks.
+
+    Gene ranges are supplied explicitly now that gene boundaries are a compare
+    time input rather than a per-position column on the profile.
+    """
     expected_frames = []
     for sample_1, sample_2 in combinations(sample_names, 2):
         pair = (
-            cp.compare_genes_polars(
+            cp.compare_genomes_polars(
                 mpile_contig_1=profile_dir / f"{sample_1}.parquet",
                 mpile_contig_2=profile_dir / f"{sample_2}.parquet",
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 min_gene_compare_len=1,
                 genome_scope="all",
-                gene_scope="all",
                 ani_method="popani",
+                calculate="gene",
+                gene_range=gene_range_table,
             )
             .collect(engine="streaming")
             .with_columns(
                 sample_1=pl.lit(sample_1),
                 sample_2=pl.lit(sample_2),
             )
-            .select(["sample_1", "sample_2", "genome", "gene", pl.col("ani").alias("gene_pop_ani")])
+            .select(["sample_1", "sample_2", "genome", "gene", pl.col("gene_ani").alias("gene_pop_ani")])
         )
         expected_frames.append(pair)
     return pl.concat(expected_frames).sort(["sample_1", "sample_2", "genome", "gene"])
@@ -895,7 +902,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare(tmp_path):
     gene_results = _load_matrix_compare_gene_results(compare_db).select(
         ["sample_1", "sample_2", "genome", "gene", "gene_pop_ani"]
     )
-    expected = _expected_classic_pairwise_gene_results(profile_dir)
+    expected = _expected_classic_pairwise_gene_results(profile_dir, gene_range_table)
 
     assert metadata["calculate"] == "ani+ibs+gene"
     assert gene_results.sort(["sample_1", "sample_2", "genome", "gene"]).equals(expected)
@@ -940,6 +947,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare_multiscaffold(tm
     )
     expected = _expected_classic_pairwise_gene_results(
         profile_dir,
+        gene_range_table,
         sample_names=("sample_a", "sample_b"),
     )
 
@@ -1072,7 +1080,7 @@ def test_matrix_compare_hdf5_explicit_gene_results_match_classic_compare(tmp_pat
     gene_results = _load_matrix_compare_gene_results(compare_db).select(
         ["sample_1", "sample_2", "genome", "gene", "gene_pop_ani"]
     )
-    expected = _expected_classic_pairwise_gene_results(profile_dir)
+    expected = _expected_classic_pairwise_gene_results(profile_dir, gene_range_table)
 
     assert metadata["calculate"] == "ani+gene"
     assert results.select(["sample_1", "sample_2", "genome"]).height == 3

@@ -14,28 +14,41 @@ import duckdb
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
 PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 
+# Stride between scaffolds on the global comparison axis. Must exceed the length
+# of any single scaffold so that scaffold_id * GENE_AXIS_OFFSET + pos stays
+# monotone and no gene range can straddle a scaffold boundary.
+GENE_AXIS_OFFSET = 1 << 32
 
-GENOME_COMPARISON_CALCULATIONS = ("ani", "ibs", "identical_genes")
-GENOME_COMPARISON_DEFAULT_CALCULATIONS = GENOME_COMPARISON_CALCULATIONS
+
+GENOME_COMPARISON_CALCULATIONS = ("genome_ani", "ibs", "gene")
+GENOME_COMPARISON_DEFAULT_CALCULATIONS = ("genome_ani", "ibs")
 GENOME_COMPARISON_CALCULATION_ALIASES = {
-    "ani": "ani",
-    "popani": "ani",
+    "genome_ani": "genome_ani",
+    "ani": "genome_ani",
+    "popani": "genome_ani",
     "ibs": "ibs",
     "max_block": "ibs",
     "max_consecutive_length": "ibs",
-    "identical_genes": "identical_genes",
-    "gene_identity": "identical_genes",
-    "id_genes": "identical_genes",
+    "gene": "gene",
+    "genes": "gene",
+    "gene_ani": "gene",
 }
 
-def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = None) -> tuple[str, ...]:
-    """Parse and normalize genome metric selection tokens.
+def parse_genome_calculations(
+    calculate: Optional[Union[str, Iterable[str]]] = None,
+    include_gene_from_all: bool = False,
+) -> tuple[str, ...]:
+    """Parse and normalize comparison metric selection tokens.
 
     Accepted input formats:
-      - None -> default ("ani", "ibs", "identical_genes")
-      - "ani+ibs+identical_genes"
+      - None -> default ("genome_ani", "ibs")
+      - "genome_ani+ibs+gene"
       - "all"
       - iterable of token strings
+
+    ``gene`` needs a gene range table, so ``"all"`` only pulls it in when
+    ``include_gene_from_all`` says one is available; asking for it explicitly
+    without ranges is an error raised by the caller rather than a silent drop.
     """
     if calculate is None:
         return GENOME_COMPARISON_DEFAULT_CALCULATIONS
@@ -52,11 +65,16 @@ def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = N
 
     if not raw_tokens:
         return tuple()
-    if "all" in raw_tokens:
-        return GENOME_COMPARISON_CALCULATIONS
 
     normalized: set[str] = set()
+    if "all" in raw_tokens:
+        normalized.update(("genome_ani", "ibs"))
+        if include_gene_from_all:
+            normalized.add("gene")
+
     for token in raw_tokens:
+        if token == "all":
+            continue
         mapped = GENOME_COMPARISON_CALCULATION_ALIASES.get(token)
         if mapped is None:
             supported = "all," + ",".join(GENOME_COMPARISON_CALCULATIONS)
@@ -64,17 +82,44 @@ def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = N
         normalized.add(mapped)
     return tuple(metric for metric in GENOME_COMPARISON_CALCULATIONS if metric in normalized)
 
+
+def comparison_is_gene_grained(calculate: Optional[Union[str, Iterable[str]]] = None) -> bool:
+    """True when the output table is one row per gene rather than per genome."""
+    return "gene" in parse_genome_calculations(calculate)
+
+
 def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
-    """Return ordered output columns for selected genome-level calculations."""
+    """Return ordered output columns for a genome-grained comparison table."""
     calculations = parse_genome_calculations(calculate)
     cols = ["genome"]
-    if "ani" in calculations:
+    if "genome_ani" in calculations:
         cols.extend(["total_positions", "share_allele_pos", "genome_ani"])
     if "ibs" in calculations:
         cols.append("max_consecutive_length")
-    if "identical_genes" in calculations:
-        cols.extend(["shared_genes_count", "identical_gene_count", "perc_id_genes"])
     return cols
+
+
+def gene_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
+    """Return ordered output columns for a gene-grained comparison table.
+
+    ``total_positions``/``share_allele_pos`` are the gene's own counts; the
+    genome-level metrics that were also requested ride along on every gene row
+    so the table can be read without joining back to a genome table.
+    """
+    calculations = parse_genome_calculations(calculate)
+    cols = ["genome", "gene", "total_positions", "share_allele_pos", "gene_ani"]
+    if "genome_ani" in calculations:
+        cols.append("genome_ani")
+    if "ibs" in calculations:
+        cols.append("max_consecutive_length")
+    return cols
+
+
+def comparison_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
+    """Ordered output columns for whichever grain the selection implies."""
+    if comparison_is_gene_grained(calculate):
+        return gene_metric_output_columns(calculate)
+    return genome_metric_output_columns(calculate)
 
 
 class PolarsANIExpressions:
@@ -253,13 +298,12 @@ def _duckdb_shared_query(
     ani_expr = _duckdb_ani_expression(ani_method)
     con_expr = _duckdb_ani_expression("conani")
     genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
-    gene_scope_sql = _duckdb_quote_sql_string(gene_scope)
+    _ = gene_scope  # gene scoping is applied to gene ranges, not to positions
     return f"""
     WITH p1f AS (
       SELECT
         chrom,
         pos,
-        gene,
         genome,
         A,
         T,
@@ -268,13 +312,11 @@ def _duckdb_shared_query(
       FROM {p1_source} p1
       WHERE (A + T + C + G) >= {min_cov}
         AND ('{genome_scope_sql}' = 'all' OR genome = '{genome_scope_sql}')
-        AND ('{gene_scope_sql}' = 'all' OR gene = '{gene_scope_sql}')
     ),
     p2f AS (
       SELECT
         chrom,
         pos,
-        gene,
         genome,
         A,
         T,
@@ -283,14 +325,12 @@ def _duckdb_shared_query(
       FROM {p2_source} p2
       WHERE (A + T + C + G) >= {min_cov}
         AND ('{genome_scope_sql}' = 'all' OR genome = '{genome_scope_sql}')
-        AND ('{gene_scope_sql}' = 'all' OR gene = '{gene_scope_sql}')
     )
     SELECT
       {ani_expr} AS surr,
       {con_expr} AS con_surr,
       p1.chrom AS scaffold,
       p1.pos,
-      p1.gene,
       p1.genome
     FROM p1f p1
     INNER JOIN p2f p2
@@ -407,29 +447,49 @@ max_blocks AS (
     return ctes
 
 
-def _duckdb_gene_stats_ctes(min_gene_compare_len: int, contig_source: str = "contig") -> list[str]:
+def _duckdb_gene_ani_ctes(
+    min_gene_compare_len: int,
+    shared_source: str = "shared",
+    bounds_source: str = "gene_bounds",
+    axis_map_source: str = "scaffold_axis",
+) -> list[str]:
+    """CTEs computing per-gene ANI by range-summing a running total.
+
+    Mirrors :func:`get_gene_ani`: fold (scaffold, pos) onto one monotone axis,
+    take cumulative counts once over the positions, then let each gene read its
+    two boundaries. ``ASOF LEFT JOIN`` resolves a boundary coordinate that is not
+    itself a covered position to the last covered position before it, and the
+    signed sum turns the two lookups into ``count(<= end) - count(< start)``.
+    Overlapping and nested genes each read the same running total independently.
+    """
     return [
         f"""
-gene_base AS (
+shared_axis AS (
   SELECT
-    genome,
-    gene,
-    COUNT(*)::BIGINT AS total_positions,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos
-  FROM {contig_source}
-  WHERE gene != 'NA'
-  GROUP BY genome, gene
-  HAVING COUNT(*) >= {min_gene_compare_len}
+    s.surr,
+    sa.scaffold_id * {GENE_AXIS_OFFSET} + s.pos AS axis
+  FROM {shared_source} s
+  JOIN {axis_map_source} sa ON s.scaffold = sa.scaffold
 )""".strip(),
         """
-gene_stats AS (
+gene_prefix AS (
   SELECT
-    genome,
-    COUNT(*)::BIGINT AS shared_genes_count,
-    SUM(CASE WHEN share_allele_pos = total_positions THEN 1 ELSE 0 END)::BIGINT AS identical_gene_count,
-    SUM(CASE WHEN share_allele_pos = total_positions THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS perc_id_genes
-  FROM gene_base
-  GROUP BY genome
+    axis,
+    row_number() OVER (ORDER BY axis) AS cum_total,
+    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) OVER (ORDER BY axis) AS cum_shared
+  FROM shared_axis
+)""".strip(),
+        f"""
+gene_ani AS (
+  SELECT
+    b.genome,
+    b.gene,
+    SUM(COALESCE(p.cum_total, 0) * b.sign)::BIGINT AS total_positions,
+    SUM(COALESCE(p.cum_shared, 0) * b.sign)::BIGINT AS share_allele_pos
+  FROM {bounds_source} b
+  ASOF LEFT JOIN gene_prefix p ON b.baxis >= p.axis
+  GROUP BY b.genome, b.gene
+  HAVING SUM(COALESCE(p.cum_total, 0) * b.sign) >= {min_gene_compare_len}
 )""".strip(),
     ]
 
@@ -454,9 +514,9 @@ def _duckdb_genome_compare_query(
     sample_2_name: Optional[str] = None,
 ) -> str:
     calculations = parse_genome_calculations(calculate)
-    need_ani = "ani" in calculations
+    need_genome_ani = "genome_ani" in calculations
     need_ibs = "ibs" in calculations
-    need_identical_genes = "identical_genes" in calculations
+    need_gene = "gene" in calculations
 
     genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
     ctes = [f"shared AS (\n{shared_query}\n)"]
@@ -466,45 +526,63 @@ def _duckdb_genome_compare_query(
         stb_sql = _duckdb_quote_sql_string(str(stb_file))
         ctes.append(_duckdb_genomes_scope_cte(stb_sql=stb_sql, genome_scope_sql=genome_scope_sql))
 
-    if need_ani or need_ibs:
+    if need_genome_ani or need_ibs:
         ctes.extend(
             _duckdb_contig_pop_max_ctes(
                 shared_source="shared",
-                include_pop=need_ani,
+                include_pop=need_genome_ani,
                 include_max_blocks=need_ibs,
             )
         )
-    if need_identical_genes:
-        ctes.extend(_duckdb_gene_stats_ctes(min_gene_compare_len=min_gene_compare_len, contig_source="shared"))
+    if need_gene:
+        ctes.extend(_duckdb_gene_ani_ctes(min_gene_compare_len=min_gene_compare_len))
 
-    select_parts = ["g.genome AS genome"]
+    # Genome-level metrics are selected the same way in both grains; when genes
+    # are requested the driving table becomes gene_ani, so each gene row carries
+    # its own counts plus the repeated genome-level values.
+    genome_selects: list[str] = []
     joins: list[str] = []
-    if need_ani:
-        select_parts.extend(
-            [
-                "COALESCE(p.total_positions, 0)::BIGINT AS total_positions",
-                "COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos",
-                "COALESCE(p.genome_ani, 0.0)::DOUBLE AS genome_ani",
-            ]
-        )
+    if need_genome_ani:
+        if not need_gene:
+            genome_selects.extend(
+                [
+                    "COALESCE(p.total_positions, 0)::BIGINT AS total_positions",
+                    "COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos",
+                ]
+            )
+        genome_selects.append("COALESCE(p.genome_ani, 0.0)::DOUBLE AS genome_ani")
         joins.append("LEFT JOIN pop p ON g.genome = p.genome")
     if need_ibs:
-        select_parts.append("COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length")
+        genome_selects.append("COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length")
         joins.append("LEFT JOIN max_blocks m ON g.genome = m.genome")
-    if need_identical_genes:
-        select_parts.extend(
-            [
-                "COALESCE(gs.shared_genes_count, 0)::BIGINT AS shared_genes_count",
-                "COALESCE(gs.identical_gene_count, 0)::BIGINT AS identical_gene_count",
-                "COALESCE(gs.perc_id_genes, 0.0)::DOUBLE AS perc_id_genes",
-            ]
-        )
-        joins.append("LEFT JOIN gene_stats gs ON g.genome = gs.genome")
+
+    sample_selects: list[str] = []
     if sample_1_name is not None and sample_2_name is not None:
         sample_1_sql = _duckdb_quote_sql_string(sample_1_name)
         sample_2_sql = _duckdb_quote_sql_string(sample_2_name)
-        select_parts.extend([f"'{sample_1_sql}' AS sample_1", f"'{sample_2_sql}' AS sample_2"])
+        sample_selects = [f"'{sample_1_sql}' AS sample_1", f"'{sample_2_sql}' AS sample_2"]
 
+    if need_gene:
+        select_parts = [
+            "g.genome AS genome",
+            "ga.gene AS gene",
+            "ga.total_positions::BIGINT AS total_positions",
+            "ga.share_allele_pos::BIGINT AS share_allele_pos",
+            "(ga.share_allele_pos * 100.0 / NULLIF(ga.total_positions, 0))::DOUBLE AS gene_ani",
+            *genome_selects,
+            *sample_selects,
+        ]
+        final_select = (
+            "SELECT\n  "
+            + ",\n  ".join(select_parts)
+            + "\nFROM genomes g\nJOIN gene_ani ga ON g.genome = ga.genome\n"
+        )
+        if joins:
+            final_select += "\n".join(joins) + "\n"
+        final_select += "ORDER BY g.genome, ga.gene"
+        return _duckdb_build_query_with_ctes(ctes, final_select)
+
+    select_parts = ["g.genome AS genome", *genome_selects, *sample_selects]
     final_select = "SELECT\n  " + ",\n  ".join(select_parts) + "\nFROM genomes g\n"
     if joins:
         final_select += "\n".join(joins) + "\n"
@@ -518,6 +596,97 @@ def _as_lazy_profile(source: Union[str, Path, pl.LazyFrame]) -> pl.LazyFrame:
     if isinstance(source, (str, Path)):
         return pl.scan_parquet(source)
     raise TypeError(f"Unsupported source type for profile input: {type(source)}")
+
+
+GENE_RANGE_TABLE_COLUMNS = ("gene", "scaffold", "start", "end")
+
+
+def _as_gene_range_frame(
+    gene_range: Union[str, Path, pl.LazyFrame, pl.DataFrame],
+) -> pl.LazyFrame:
+    """Normalize a gene range table into a lazy ``gene, scaffold, start, end`` frame.
+
+    On disk this is the headerless TSV emitted by ``zipstrain gene-range-table``;
+    in-memory frames are accepted as-is so callers can build ranges themselves.
+    """
+    if isinstance(gene_range, pl.DataFrame):
+        return gene_range.lazy()
+    if isinstance(gene_range, pl.LazyFrame):
+        return gene_range
+    if isinstance(gene_range, (str, Path)):
+        return pl.scan_csv(
+            gene_range,
+            has_header=False,
+            separator="\t",
+            new_columns=list(GENE_RANGE_TABLE_COLUMNS),
+        ).select(
+            pl.col("gene").cast(pl.Utf8),
+            pl.col("scaffold").cast(pl.Utf8),
+            pl.col("start").cast(pl.Int64),
+            pl.col("end").cast(pl.Int64),
+        )
+    raise TypeError(f"Unsupported source type for gene range table: {type(gene_range)}")
+
+
+def _stb_scaffold_genome_map(stb_file: Union[str, Path]) -> pl.LazyFrame:
+    """Scaffold-to-genome pairs from the headerless STB TSV (scaffold, genome)."""
+    return (
+        pl.scan_csv(stb_file, separator="\t", has_header=False)
+        .select(
+            pl.col("column_1").cast(pl.Utf8).str.strip_chars().alias("scaffold"),
+            pl.col("column_2").cast(pl.Utf8).str.strip_chars().alias("genome"),
+        )
+        .unique()
+    )
+
+
+def _scaffold_genome_map(
+    source: Union[str, Path, pl.LazyFrame],
+    stb_file: Optional[Union[str, Path]] = None,
+) -> pl.LazyFrame:
+    """Scaffold-to-genome pairs, used to attach a genome to each gene range.
+
+    The gene range table is a headerless ``gene, scaffold, start, end`` TSV with
+    no genome column. The STB file already holds that mapping and is tiny, so it
+    is preferred; falling back to the profile costs a full pass over its columns.
+    """
+    if stb_file is not None:
+        return _stb_scaffold_genome_map(stb_file)
+    return (
+        _as_lazy_profile(source)
+        .select(pl.col("chrom").alias("scaffold"), pl.col("genome"))
+        .unique()
+    )
+
+
+def _gene_range_axis_inputs(
+    gene_range: Union[str, Path, pl.LazyFrame, pl.DataFrame],
+    profile: Union[str, Path, pl.LazyFrame],
+    stb_file: Optional[Union[str, Path]] = None,
+    genome_scope: str = "all",
+    gene_scope: str = "all",
+) -> tuple[dict[str, int], pl.LazyFrame]:
+    """Build the axis map and the genome-labelled gene ranges for a comparison.
+
+    The axis map is keyed only on scaffolds that actually carry genes. Positions
+    on any other scaffold can be dropped before the cumulative pass without
+    changing a single gene's counts: a gene's value is the difference of two
+    boundaries on its own scaffold, so anything outside it shifts both ends
+    equally and cancels. That keeps this off the profile entirely -- the gene
+    range table and STB file are both small.
+    """
+    gene_ranges = _as_gene_range_frame(gene_range).join(
+        _scaffold_genome_map(profile, stb_file=stb_file), on="scaffold", how="inner"
+    )
+    if genome_scope != "all":
+        gene_ranges = gene_ranges.filter(pl.col("genome") == genome_scope)
+    if gene_scope != "all":
+        gene_ranges = gene_ranges.filter(pl.col("gene") == gene_scope)
+    gene_ranges = gene_ranges.collect().lazy()
+    axis_map = scaffold_axis_map(
+        gene_ranges.select("scaffold").unique().collect()["scaffold"].to_list()
+    )
+    return axis_map, gene_ranges
 
 
 def _profile_scope_predicate(genome_scope: str = "all", gene_scope: str = "all") -> pl.Expr:
@@ -582,7 +751,6 @@ def _shared_loci_polars(
             pl.col("con_surr"),
             scaffold=pl.col("chrom"),
             pos=pl.col("pos"),
-            gene=pl.col("gene"),
             genome=pl.col("genome"),
         )
     )
@@ -714,16 +882,27 @@ def duckdb_compare_genomes_to_parquet(
     min_cov: int = 5,
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
+    gene_scope: str = "all",
     ani_method: str = "popani",
     calculate: Optional[Union[str, Iterable[str]]] = None,
+    gene_range: Optional[Union[str, Path, pl.LazyFrame, pl.DataFrame]] = None,
     memory_limit: Optional[str] = None,
     temp_directory: Optional[Union[str, Path]] = None,
     threads: Optional[int] = None,
 ) -> None:
-    """Run genome comparison in DuckDB and write final output directly to parquet.
+    """Run comparison in DuckDB and write final output directly to parquet.
 
     This path avoids materializing large intermediate tables in Python memory.
+    Emits a gene-grained table when ``gene`` is among the calculations.
     """
+    calculations = parse_genome_calculations(
+        calculate, include_gene_from_all=gene_range is not None
+    )
+    if "gene" in calculations and gene_range is None:
+        raise ValueError(
+            "Gene comparison was requested but no gene range table was provided. "
+            "Pass gene_range=<gene range table> or drop 'gene' from --calculate."
+        )
     con = duckdb.connect()
     try:
         _duckdb_configure_connection(
@@ -741,11 +920,23 @@ def duckdb_compare_genomes_to_parquet(
             genome_scope=genome_scope,
             ani_method=ani_method,
         )
+        if "gene" in calculations:
+            _duckdb_register_gene_inputs(
+                con,
+                profile=mpile1,
+                gene_range=gene_range,
+                genome_scope=genome_scope,
+                gene_scope=gene_scope,
+                stb_file=stb_file,
+            )
         query = _duckdb_genome_compare_query(
             shared_query=shared_query,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
-            calculate=calculate,
+            # Pass the already-resolved tuple: re-parsing the raw token here
+            # would drop 'gene' from "all", since availability of gene ranges is
+            # only known at this level.
+            calculate=calculations,
             stb_file=stb_file,
             sample_1_name=sample_1_name,
             sample_2_name=sample_2_name,
@@ -755,20 +946,64 @@ def duckdb_compare_genomes_to_parquet(
         con.close()
 
 
+def _duckdb_register_gene_inputs(
+    con: duckdb.DuckDBPyConnection,
+    profile: Union[str, Path, pl.LazyFrame],
+    gene_range: Union[str, Path, pl.LazyFrame, pl.DataFrame],
+    genome_scope: str = "all",
+    gene_scope: str = "all",
+    stb_file: Optional[Union[str, Path]] = None,
+) -> None:
+    """Register the scaffold axis map and gene boundary rows for the SQL path.
+
+    Both tables are small (one row per scaffold, two per gene), so they are built
+    in Polars and handed to DuckDB. That keeps a single definition of the axis
+    encoding and boundary construction shared by both engines.
+    """
+    axis_map, gene_ranges = _gene_range_axis_inputs(
+        gene_range,
+        profile=profile,
+        stb_file=stb_file,
+        genome_scope=genome_scope,
+        gene_scope=gene_scope,
+    )
+    con.register(
+        "scaffold_axis",
+        pl.DataFrame(
+            {"scaffold": list(axis_map.keys()), "scaffold_id": list(axis_map.values())},
+            schema={"scaffold": pl.Utf8, "scaffold_id": pl.Int64},
+        ).to_arrow(),
+    )
+    con.register(
+        "gene_bounds",
+        gene_boundary_table(gene_ranges, axis_map).collect().to_arrow(),
+    )
+
+
 def duckdb_compare_genomes(
     mpile1: Union[str, Path, pl.LazyFrame],
     mpile2: Union[str, Path, pl.LazyFrame],
     min_cov: int = 5,
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
+    gene_scope: str = "all",
     ani_method: str = "popani",
     calculate: Optional[Union[str, Iterable[str]]] = None,
+    gene_range: Optional[Union[str, Path, pl.LazyFrame, pl.DataFrame]] = None,
     stb_file: Optional[Union[str, Path]] = None,
     memory_limit: Optional[str] = None,
     temp_directory: Optional[Union[str, Path]] = None,
     threads: Optional[int] = None,
 ) -> pl.LazyFrame:
-    """Run genome comparison in DuckDB and return selected metrics as a LazyFrame."""
+    """Run comparison in DuckDB and return selected metrics as a LazyFrame."""
+    calculations = parse_genome_calculations(
+        calculate, include_gene_from_all=gene_range is not None
+    )
+    if "gene" in calculations and gene_range is None:
+        raise ValueError(
+            "Gene comparison was requested but no gene range table was provided. "
+            "Pass gene_range=<gene range table> or drop 'gene' from --calculate."
+        )
     con = duckdb.connect()
     try:
         _duckdb_configure_connection(
@@ -786,11 +1021,20 @@ def duckdb_compare_genomes(
             genome_scope=genome_scope,
             ani_method=ani_method,
         )
+        if "gene" in calculations:
+            _duckdb_register_gene_inputs(
+                con,
+                profile=mpile1,
+                gene_range=gene_range,
+                genome_scope=genome_scope,
+                gene_scope=gene_scope,
+                stb_file=stb_file,
+            )
         query = _duckdb_genome_compare_query(
             shared_query=shared_query,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
-            calculate=calculate,
+            calculate=calculations,
             stb_file=stb_file,
         )
         table = con.execute(query).fetch_arrow_table()
@@ -799,62 +1043,6 @@ def duckdb_compare_genomes(
         con.close()
 
 
-def duckdb_compare_genes_to_parquet(
-    mpile1: Union[str, Path, pl.LazyFrame],
-    mpile2: Union[str, Path, pl.LazyFrame],
-    output_file: Union[str, Path],
-    sample_1_name: str,
-    sample_2_name: str,
-    min_cov: int = 5,
-    min_gene_compare_len: int = 100,
-    genome_scope: str = "all",
-    gene_scope: str = "all",
-    ani_method: str = "popani",
-    memory_limit: Optional[str] = None,
-    temp_directory: Optional[Union[str, Path]] = None,
-    threads: Optional[int] = None,
-) -> None:
-    """Run gene comparison in DuckDB and write final output directly to parquet."""
-    con = duckdb.connect()
-    try:
-        _duckdb_configure_connection(
-            con,
-            memory_limit=memory_limit,
-            temp_directory=temp_directory,
-            threads=threads,
-        )
-        p1_source = _duckdb_from_source(con, mpile1, "mpile1_source")
-        p2_source = _duckdb_from_source(con, mpile2, "mpile2_source")
-        shared_query = _duckdb_shared_query(
-            p1_source=p1_source,
-            p2_source=p2_source,
-            min_cov=min_cov,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-            ani_method=ani_method,
-        )
-        sample_1_sql = _duckdb_quote_sql_string(sample_1_name)
-        sample_2_sql = _duckdb_quote_sql_string(sample_2_name)
-        query = f"""
-        WITH shared AS (
-          {shared_query}
-        )
-        SELECT
-          genome,
-          gene,
-          COUNT(*)::BIGINT AS total_positions,
-          SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
-          SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS ani,
-          '{sample_1_sql}' AS sample_1,
-          '{sample_2_sql}' AS sample_2
-        FROM shared
-        GROUP BY genome, gene
-        HAVING COUNT(*) >= {min_gene_compare_len}
-        ORDER BY genome, gene
-        """
-        _duckdb_copy_query_to_parquet(con, query, output_file)
-    finally:
-        con.close()
 
 def add_contiguity_info(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     """ Adds group id information to the lazy frame. If on the same scaffold and not popANI, then they are in the same group.
@@ -917,7 +1105,8 @@ def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
             total_positions=pl.len(),
             share_allele_pos=(pl.col("surr") > 0 ).sum()
         ).with_columns(
-            genome_ani=pl.col("share_allele_pos")/pl.col("total_positions")*100,
+            # Same operand order as the SQL path so both engines agree bit for bit.
+            genome_ani=pl.col("share_allele_pos")*100.0/pl.col("total_positions"),
         )
 
 def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
@@ -936,28 +1125,132 @@ def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     ) 
     return block_lengths.group_by("genome").agg(pl.col("length").max().alias("max_consecutive_length"))
 
-def get_gene_ani(mpile_contig:pl.LazyFrame, min_gene_compare_len:int) -> pl.LazyFrame:
+def scaffold_axis_map(scaffolds: Iterable[str]) -> dict[str, int]:
+    """Map scaffold names to dense ids in lexicographic order.
+
+    The ids must be assigned in the same order the shared-loci frame is sorted
+    by (``chrom`` ascending), so that ``axis`` below is monotonically increasing
+    across the whole frame. That single monotone axis is what lets gene ANI use
+    a plain running total and a merge-style ``join_asof`` with no ``by=`` groups.
+
+    Ordering is done by Polars rather than Python's ``sorted`` so the ranking
+    matches the collation the frame was actually sorted with; the two can differ
+    on non-ASCII scaffold names, which would silently break axis monotonicity.
     """
-    Calculates gene ANI (Average Nucleotide Identity) for each gene in each genome.
-    
-    Args:
-        mpile_contig (pl.LazyFrame): The input LazyFrame containing mpileup data.
-        min_gene_compare_len (int): Minimum length of the gene to consider for comparison.
-    
-    Returns:
-        pl.LazyFrame: Updated LazyFrame with gene ANI information added.
+    names = pl.Series("scaffold", list(scaffolds), dtype=pl.Utf8).unique().sort().to_list()
+    return {name: idx for idx, name in enumerate(names)}
+
+
+def with_axis(
+    frame: pl.LazyFrame,
+    axis_map: dict[str, int],
+    *,
+    scaffold_col: str = "scaffold",
+    pos_col: str = "pos",
+    alias: str = "axis",
+) -> pl.LazyFrame:
+    """Fold (scaffold, pos) into one monotone int64 coordinate.
+
+    ``axis = scaffold_id * GENE_AXIS_OFFSET + pos``. Positions are 1-based and
+    always below the offset, so ordering by ``axis`` equals ordering by
+    (scaffold, pos), and no genomic range ever straddles two scaffolds.
     """
-    return mpile_contig.select(["genome", "gene", "surr"]).filter(
-        pl.col("gene") != "NA"
-    ).group_by(["genome", "gene"]).agg(
-        total_positions=pl.len(),
-        share_allele_pos=(pl.col("surr") > 0).sum()
-    ).filter(pl.col("total_positions") >= min_gene_compare_len).with_columns(
-        identical=(pl.col("share_allele_pos") == pl.col("total_positions")),
-    ).group_by("genome").agg(
-        shared_genes_count=pl.len(),
-        identical_gene_count=pl.col("identical").sum()
-    ).with_columns(perc_id_genes=pl.col("identical_gene_count") / pl.col("shared_genes_count") * 100)
+    return frame.with_columns(
+        (
+            pl.col(scaffold_col).replace_strict(axis_map, default=None, return_dtype=pl.Int64)
+            * GENE_AXIS_OFFSET
+            + pl.col(pos_col).cast(pl.Int64)
+        ).alias(alias)
+    )
+
+
+def gene_boundary_table(gene_range: pl.LazyFrame, axis_map: dict[str, int]) -> pl.LazyFrame:
+    """Turn each gene range into two signed boundary rows on the global axis.
+
+    A gene's counts are a range sum, and a range sum is the difference of two
+    cumulative values: ``count(start..end) = count(<= end) - count(< start)``.
+    Emitting a ``+1`` row at ``end`` and a ``-1`` row at ``start - 1`` turns that
+    subtraction into a single signed sum per gene, so overlapping and nested
+    genes simply read the same cumulative array at their own boundaries instead
+    of competing for ownership of a position.
+    """
+    ranges = gene_range.filter(
+        pl.col("scaffold").is_in(list(axis_map.keys())) & (pl.col("start") <= pl.col("end"))
+    )
+    low = ranges.select(
+        "gene",
+        "genome",
+        "scaffold",
+        pl.col("start").cast(pl.Int64) - 1,
+        sign=pl.lit(-1, pl.Int64),
+    ).rename({"start": "pos"})
+    high = ranges.select(
+        "gene",
+        "genome",
+        "scaffold",
+        pl.col("end").cast(pl.Int64).alias("pos"),
+        sign=pl.lit(1, pl.Int64),
+    )
+    return (
+        with_axis(pl.concat([low, high]), axis_map, alias="baxis")
+        .drop(["scaffold", "pos"])
+        .sort("baxis")
+    )
+
+
+def get_gene_ani(
+    shared: pl.LazyFrame,
+    gene_bounds: pl.LazyFrame,
+    min_gene_compare_len: int,
+) -> pl.LazyFrame:
+    """Per-gene ANI over shared positions, correct for overlapping genes.
+
+    ``shared`` must carry ``axis`` and be sorted by it. One running total over
+    the positions gives, at every row, how many shared positions (and how many
+    matching ones) lie at or before it; each gene then needs only its two
+    boundary values. Cost is one pass over the positions plus two lookups per
+    gene, and the merge join keeps it streaming.
+
+    Boundaries need not exist as rows: ``strategy="backward"`` resolves each to
+    the last covered position at or before it, which is exactly the cumulative
+    count wanted. A ``start - 1`` that precedes the scaffold's first position
+    lands on the previous scaffold's last row, and the shared global offset
+    means that value still cancels correctly in the subtraction.
+    """
+    # The running total is only meaningful in axis order, and the inner join that
+    # produced `shared` does not guarantee it preserves input ordering, so sort
+    # explicitly rather than assuming. Sorting one int64 key is cheap next to the
+    # join itself, and getting this wrong is silent: an unsorted prefix yields
+    # plausible but wrong counts.
+    prefix = (
+        shared.sort("axis")
+        .with_columns(
+            cum_total=pl.int_range(1, pl.len() + 1, dtype=pl.Int64),
+            cum_shared=(pl.col("surr") > 0).cast(pl.Int64).cum_sum(),
+        )
+        .select("axis", "cum_total", "cum_shared")
+        .set_sorted("axis")
+    )
+    return (
+        gene_bounds.join_asof(
+            prefix,
+            left_on="baxis",
+            right_on="axis",
+            strategy="backward",
+        )
+        .group_by(["genome", "gene"])
+        .agg(
+            total_positions=(pl.col("cum_total").fill_null(0) * pl.col("sign")).sum(),
+            share_allele_pos=(pl.col("cum_shared").fill_null(0) * pl.col("sign")).sum(),
+        )
+        .filter(pl.col("total_positions") >= min_gene_compare_len)
+        .with_columns(
+            # Multiply before dividing to match the SQL path exactly; the other
+            # order differs in the last ULP for some counts (52/61*100 !=
+            # 52*100/61), which would make the engines disagree bit for bit.
+            gene_ani=pl.col("share_allele_pos") * 100.0 / pl.col("total_positions")
+        )
+    )
 
 def get_unique_scaffolds(mpile_contig:pl.LazyFrame,batch_size:int=10000) -> set:
     """
@@ -989,9 +1282,23 @@ def compare_genomes_polars(
     ani_method: str = "popani",
     stb_file: Optional[Union[str, Path]] = None,
     calculate: Optional[Union[str, Iterable[str]]] = None,
+    gene_range: Optional[Union[str, Path, pl.LazyFrame, pl.DataFrame]] = None,
+    gene_scope: str = "all",
 ) -> pl.LazyFrame:
-    """Compare two profiles fully in Polars and return genome-level statistics."""
-    calculations = parse_genome_calculations(calculate)
+    """Compare two profiles fully in Polars.
+
+    Returns a genome-grained table, or a gene-grained one when ``gene`` is among
+    the calculations; in that case the requested genome-level metrics are
+    repeated on every gene row.
+    """
+    calculations = parse_genome_calculations(
+        calculate, include_gene_from_all=gene_range is not None
+    )
+    if "gene" in calculations and gene_range is None:
+        raise ValueError(
+            "Gene comparison was requested but no gene range table was provided. "
+            "Pass gene_range=<gene range table> or drop 'gene' from --calculate."
+        )
     shared = _shared_loci_polars(
         mpile1=mpile_contig_1,
         mpile2=mpile_contig_2,
@@ -1000,12 +1307,10 @@ def compare_genomes_polars(
         ani_method=ani_method,
     )
     genome_comp_parts: list[pl.LazyFrame] = []
-    if "ani" in calculations:
+    if "genome_ani" in calculations:
         genome_comp_parts.append(calculate_pop_ani(shared))
     if "ibs" in calculations:
         genome_comp_parts.append(get_longest_consecutive_blocks(add_contiguity_info(shared)))
-    if "identical_genes" in calculations:
-        genome_comp_parts.append(get_gene_ani(shared, min_gene_compare_len))
 
     if genome_comp_parts:
         genome_comp = genome_comp_parts[0]
@@ -1021,9 +1326,9 @@ def compare_genomes_polars(
             genome_scope=genome_scope,
         )
 
-    casts: list[pl.Expr] = []
-    if "ani" in calculations:
-        casts.extend(
+    genome_casts: list[pl.Expr] = []
+    if "genome_ani" in calculations:
+        genome_casts.extend(
             [
                 pl.col("total_positions").fill_null(0).cast(pl.Int64),
                 pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
@@ -1031,89 +1336,48 @@ def compare_genomes_polars(
             ]
         )
     if "ibs" in calculations:
-        casts.append(pl.col("max_consecutive_length").fill_null(0).cast(pl.Int64))
-    if "identical_genes" in calculations:
-        casts.extend(
-            [
-                pl.col("shared_genes_count").fill_null(0).cast(pl.Int64),
-                pl.col("identical_gene_count").fill_null(0).cast(pl.Int64),
-                pl.col("perc_id_genes").fill_null(0.0).cast(pl.Float64),
-            ]
-        )
-    if casts:
-        genome_comp = genome_comp.with_columns(casts)
+        genome_casts.append(pl.col("max_consecutive_length").fill_null(0).cast(pl.Int64))
+    if genome_casts:
+        genome_comp = genome_comp.with_columns(genome_casts)
 
-    return genome_comp.select(genome_metric_output_columns(calculations))
+    if "gene" not in calculations:
+        return genome_comp.select(genome_metric_output_columns(calculations))
 
-
-def compare_genes_polars(
-    mpile_contig_1: Union[str, Path, pl.LazyFrame],
-    mpile_contig_2: Union[str, Path, pl.LazyFrame],
-    min_cov: int = 5,
-    min_gene_compare_len: int = 100,
-    genome_scope: str = "all",
-    gene_scope: str = "all",
-    ani_method: str = "popani",
-) -> pl.LazyFrame:
-    """Compare two profiles fully in Polars and return gene-level ANI statistics."""
-    shared = _shared_loci_polars(
-        mpile1=mpile_contig_1,
-        mpile2=mpile_contig_2,
-        min_cov=min_cov,
+    axis_map, gene_ranges = _gene_range_axis_inputs(
+        gene_range,
+        profile=mpile_contig_1,
+        stb_file=stb_file,
         genome_scope=genome_scope,
         gene_scope=gene_scope,
-        ani_method=ani_method,
     )
-    return (
-        shared.select(["genome", "gene", "surr"])
-        .group_by(["genome", "gene"])
-        .agg(
-            total_positions=pl.len(),
-            share_allele_pos=(pl.col("surr") > 0).sum(),
-        )
-        .filter(pl.col("total_positions") >= min_gene_compare_len)
-        .with_columns(
-            ani=pl.col("share_allele_pos") / pl.col("total_positions") * 100,
-        )
+    gene_comp = get_gene_ani(
+        # Positions on scaffolds without genes carry no axis and are dropped;
+        # they cancel out of every gene's boundary difference anyway.
+        shared=with_axis(shared, axis_map).drop_nulls("axis"),
+        gene_bounds=gene_boundary_table(gene_ranges, axis_map),
+        min_gene_compare_len=min_gene_compare_len,
+    ).with_columns(
+        pl.col("total_positions").cast(pl.Int64),
+        pl.col("share_allele_pos").cast(pl.Int64),
+        pl.col("gene_ani").cast(pl.Float64),
     )
 
+    # Only the genome-level metrics ride along; the count columns on a gene row
+    # are the gene's own, so the genome-level ones are dropped before the join.
+    carried: list[str] = []
+    if "genome_ani" in calculations:
+        carried.append("genome_ani")
+    if "ibs" in calculations:
+        carried.append("max_consecutive_length")
+    if carried:
+        gene_comp = gene_comp.join(
+            genome_comp.select(["genome", *carried]), on="genome", how="left"
+        )
+    return gene_comp.select(gene_metric_output_columns(calculations))
 
-def _compare_genes_mixed(
-    mpile_contig_1: Union[str, Path, pl.LazyFrame],
-    mpile_contig_2: Union[str, Path, pl.LazyFrame],
-    min_cov: int = 5,
-    min_gene_compare_len: int = 100,
-    genome_scope: str = "all",
-    gene_scope: str = "all",
-    ani_method: str = "popani",
-    duckdb_memory_limit: Optional[str] = None,
-    duckdb_temp_directory: Optional[Union[str, Path]] = None,
-    duckdb_threads: Optional[int] = None,
-) -> pl.LazyFrame:
-    """DuckDB shared-loci + Polars gene aggregation path."""
-    lf = duckdb_filter_join(
-        mpile1=mpile_contig_1,
-        mpile2=mpile_contig_2,
-        min_cov=min_cov,
-        ani_method=ani_method,
-        genome_scope=genome_scope,
-        gene_scope=gene_scope,
-        memory_limit=duckdb_memory_limit,
-        temp_directory=duckdb_temp_directory,
-        threads=duckdb_threads,
-    )
-    return (
-        lf.select(["genome", "gene", "surr"])
-        .group_by(["genome", "gene"])
-        .agg(
-            total_positions=pl.len(),
-            share_allele_pos=(pl.col("surr") > 0).sum(),
-        )
-        .filter(pl.col("total_positions") >= min_gene_compare_len)
-        .with_columns(
-            ani=pl.col("share_allele_pos") / pl.col("total_positions") * 100,
-        )
-    )
+
+
+
 
 
 def compare_genomes(
@@ -1129,9 +1393,17 @@ def compare_genomes(
     engine: Literal["polars", "duckdb"] = "polars",
     stb_file: Optional[Union[str, Path]] = None,
     calculate: Optional[Union[str, Iterable[str]]] = None,
+    gene_range: Optional[Union[str, Path, pl.LazyFrame, pl.DataFrame]] = None,
+    gene_scope: str = "all",
 ) -> pl.LazyFrame:
-    """Compare two profiles with selectable execution engine."""
-    calculations = parse_genome_calculations(calculate)
+    """Compare two profiles with selectable execution engine.
+
+    Emits a gene-grained table when ``gene`` is among the calculations, which
+    requires ``gene_range``; otherwise the table is genome-grained.
+    """
+    calculations = parse_genome_calculations(
+        calculate, include_gene_from_all=gene_range is not None
+    )
     if engine == "polars":
         return compare_genomes_polars(
             mpile_contig_1=mpile_contig_1,
@@ -1142,6 +1414,8 @@ def compare_genomes(
             ani_method=ani_method,
             stb_file=stb_file,
             calculate=calculations,
+            gene_range=gene_range,
+            gene_scope=gene_scope,
         )
     if engine == "duckdb":
         return duckdb_compare_genomes(
@@ -1150,8 +1424,10 @@ def compare_genomes(
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
+            gene_scope=gene_scope,
             ani_method=ani_method,
             calculate=calculations,
+            gene_range=gene_range,
             stb_file=stb_file,
             memory_limit=duckdb_memory_limit,
             temp_directory=duckdb_temp_directory,
@@ -1304,41 +1580,3 @@ def matrix_surr_torch(
     return matches.cpu().to(torch.float64).numpy(), shared.cpu().to(torch.float64).numpy()
 
 
-def compare_genes(
-    mpile_contig_1: Union[str, Path, pl.LazyFrame],
-    mpile_contig_2: Union[str, Path, pl.LazyFrame],
-    min_cov: int = 5,
-    min_gene_compare_len: int = 100,
-    genome_scope: str = "all",
-    gene_scope: str = "all",
-    ani_method: str = "popani",
-    duckdb_memory_limit: Optional[str] = None,
-    duckdb_temp_directory: Optional[Union[str, Path]] = None,
-    duckdb_threads: Optional[int] = None,
-    engine: Literal["polars", "duckdb"] = "polars",
-) -> pl.LazyFrame:
-    """Compare two profiles at gene level with selectable execution engine."""
-    if engine == "polars":
-        return compare_genes_polars(
-            mpile_contig_1=mpile_contig_1,
-            mpile_contig_2=mpile_contig_2,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-            ani_method=ani_method,
-        )
-    if engine == "duckdb":
-        return _compare_genes_mixed(
-            mpile_contig_1=mpile_contig_1,
-            mpile_contig_2=mpile_contig_2,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-            ani_method=ani_method,
-            duckdb_memory_limit=duckdb_memory_limit,
-            duckdb_temp_directory=duckdb_temp_directory,
-            duckdb_threads=duckdb_threads,
-        )
-    raise ValueError(f"Unsupported engine: {engine}")
