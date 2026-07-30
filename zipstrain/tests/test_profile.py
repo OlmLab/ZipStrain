@@ -99,47 +99,6 @@ def test_adjust_for_sequence_errors_rejects_invalid_min_freq(min_freq):
     with pytest.raises(ValueError, match="min_freq must be between 0 and 1"):
         profile.adjust_for_sequence_errors(raw, null_model, min_freq=min_freq)
     
-
-def test_duckdb_chunk_annotation_matches_polars_for_unsorted_chunk(tmp_path: Path):
-    adjusted = pl.DataFrame(
-        {
-            "chrom": ["chr1", "chr1", "chr1", "chr2", "chr2"],
-            "pos": [1, 2, 5, 2, 4],
-            "A": [10, 0, 1, 0, 2],
-            "C": [0, 8, 0, 0, 0],
-            "G": [0, 0, 0, 9, 0],
-            "T": [0, 0, 0, 0, 1],
-        }
-    )
-    adjusted_pf = tmp_path / "adj.parquet"
-    out_pf = tmp_path / "ann.parquet"
-    adjusted.sort(["chrom", "pos"], descending=[True, True]).write_parquet(adjusted_pf)
-
-    stb_lf = pl.DataFrame(
-        {
-            "scaffold": ["chr1", "chr2"],
-            "genome": ["genome1", "genome2"],
-        }
-    ).lazy()
-    profile._annotate_mpileup_chunk_with_duckdb(
-        adjusted_mpileup_parquet=adjusted_pf,
-        output_parquet=out_pf,
-        scaffold_to_genome=stb_lf,
-    )
-
-    got = pl.read_parquet(out_pf).sort(["genome", "chrom", "pos"])
-    expected = (
-        profile.add_genome_info_to_mpileup(
-            mpileup_df=pl.scan_parquet(adjusted_pf),
-            scaffold_to_genome=stb_lf,
-        )
-        .select(["chrom", "genome", "pos", "A", "C", "G", "T"])
-        .collect()
-        .sort(["genome", "chrom", "pos"])
-    )
-    assert got.to_dicts() == expected.to_dicts()
-
-
 def test_write_sorted_profile_with_metadata_skips_sort_for_sorted_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

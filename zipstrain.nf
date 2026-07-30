@@ -9,6 +9,9 @@ params.batch_size=10
 params.compare_duckdb_memory_limit=""
 params.compare_engine="polars"
 params.compare_calculate="all"
+// Gene boundaries are resolved from ranges at compare time, so gene comparison
+// requires this table; it is no longer carried inside the profile.
+params.gene_range_table=null
 params.batch_compare_n_parallel=4
 params.publish_mode="symlink"
 params.compare_genome_scope="all"
@@ -348,6 +351,7 @@ process compare_gene_fast_profiles_single {
     path profile_location_1
     path profile_location_2
     path stb
+    path gene_range_table
     val pair_name
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
@@ -359,6 +363,7 @@ process compare_gene_fast_profiles_single {
                         --profile-location-1 ${profile_location_1} \
                         --profile-location-2 ${profile_location_2} \
                         -s ${stb} \
+                        --gene-range-table ${gene_range_table} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         ${add_compare_engine} \
@@ -430,6 +435,7 @@ process compare_gene_batched {
     path profile_locations
     val pairs
     path stb
+    path gene_range_table
     output:
     path "Batch_*_comparisons.parquet", emit: comparison_results
     script:
@@ -443,6 +449,7 @@ process compare_gene_batched {
     cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_gene \
                         --profile-location-1 {1} \
                         --profile-location-2 {2} \
+                        --gene-range-table ${gene_range_table} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
@@ -753,7 +760,10 @@ workflow
 
         }
         stb = file(params.stb)
-        compare_genes(pair_channel, stb)
+        if (!params.gene_range_table) {
+            error "--mode compare_genes requires --gene_range_table (headerless TSV of gene, scaffold, start, end). Gene boundaries are resolved from ranges at compare time."
+        }
+        compare_genes(pair_channel, stb, file(params.gene_range_table))
     }
     
     
@@ -855,6 +865,7 @@ workflow compare_genes{
     take:
     profile_pairs
     stb
+    gene_range_table
     main:
     if (params.parallel_mode=="single") {
 
@@ -863,7 +874,7 @@ workflow compare_genes{
         profile_2: v[2]
         pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_gene_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name)
+    compare_gene_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, gene_range_table, profile_pairs.pair_name)
     merge_comparison_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
@@ -874,7 +885,7 @@ workflow compare_genes{
         pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_gene_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb)
+    compare_gene_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, gene_range_table)
     merge_comparison_tables(compare_gene_batched.out.comparison_results.collect() )
     }
     else {

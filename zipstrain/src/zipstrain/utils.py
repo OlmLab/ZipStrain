@@ -1740,155 +1740,108 @@ def get_gene_stats(
 )->pl.LazyFrame:
     """Per-gene breadth, coverage and (optionally) reference ANI for one profile.
 
-    Every statistic here is a sum over the positions inside a gene's range, and a
-    range sum is the difference of two cumulative values. So the positions are
-    folded onto one monotone axis, summed cumulatively once, and each gene reads
-    its own two boundaries. Overlapping and nested genes therefore each see all
-    of their positions, which a per-position gene label could not express.
+    Every statistic is a sum over the positions inside a gene's range, and a
+    range sum is the difference of two cumulative values. Positions are folded
+    onto one monotone axis, summed cumulatively once, and each gene reads its own
+    two boundaries -- so overlapping and nested genes each see all of their
+    positions, which a per-position gene label could not express.
+
+    Runs entirely in Polars: ``join_asof`` is a two-pointer merge over sorted
+    input, which is the right shape for this. Profiles are already written in
+    ``(chrom, pos)`` order and the axis ranks scaffolds with the same collation,
+    so the cumulative pass needs no sort of its own.
     """
     from zipstrain import compare as cp
 
-    include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
-    profile_columns = [
-        pl.col("chrom").cast(pl.Utf8).alias("chrom"),
-        pl.col("pos").cast(pl.Int64).alias("pos"),
-        pl.col("A"),
-        pl.col("C"),
-        pl.col("G"),
-        pl.col("T"),
+    schema_names = set(profile.collect_schema().names())
+    include_reference_ani = REF_BASE_BITMASK_COLUMN in schema_names
+
+    gene_ranges = (
+        gene_bed.select("gene", "scaffold", "start", "end")
+        .join(stb.select("scaffold", "genome"), on="scaffold", how="left")
+        .with_columns(pl.col("genome").fill_null("NA"))
+        .collect()
+        .lazy()
+    )
+    axis_map = cp.scaffold_axis_map(
+        gene_ranges.select("scaffold").unique().collect()["scaffold"].to_list()
+    )
+    if not axis_map:
+        return empty_gene_stats_table(include_ref_ani=include_reference_ani)
+
+    coverage = pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")
+    columns = [pl.col("chrom").alias("scaffold"), pl.col("pos"), coverage.cast(pl.Int64).alias("bases")]
+    if include_reference_ani:
+        bitmask = pl.col(REF_BASE_BITMASK_COLUMN).cast(pl.Int64)
+        covered = (coverage >= ref_ani_min_cov) & (bitmask > 0)
+        matches = (
+            ((bitmask == 1) & (pl.col("A") > 0))
+            | ((bitmask == 2) & (pl.col("C") > 0))
+            | ((bitmask == 4) & (pl.col("G") > 0))
+            | ((bitmask == 8) & (pl.col("T") > 0))
+        )
+        columns += [
+            covered.cast(pl.Int64).alias("ref_site"),
+            (covered & matches).cast(pl.Int64).alias("ref_share"),
+        ]
+
+    cumulative = [
+        pl.int_range(1, pl.len() + 1, dtype=pl.Int64).alias("cum_sites"),
+        pl.col("bases").cum_sum().alias("cum_bases"),
     ]
     if include_reference_ani:
-        profile_columns.append(pl.col(REF_BASE_BITMASK_COLUMN).cast(pl.UInt8).alias(REF_BASE_BITMASK_COLUMN))
+        cumulative += [
+            pl.col("ref_site").cum_sum().alias("cum_ref_sites"),
+            pl.col("ref_share").cum_sum().alias("cum_ref_share"),
+        ]
+    cum_names = [expr.meta.output_name() for expr in cumulative]
 
-    with TemporaryDirectory(prefix="zipstrain_gene_stats_") as tmp_dir:
-        profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
-        profile.select(profile_columns).sink_parquet(profile_path, compression="zstd", engine="streaming")
+    prefix = (
+        cp.with_axis(profile.select(columns), axis_map)
+        .drop_nulls("axis")
+        .sort("axis")
+        .with_columns(cumulative)
+        .select(["axis", *cum_names])
+        .set_sorted("axis")
+    )
 
-        axis_map = cp.scaffold_axis_map(
-            pl.scan_parquet(profile_path)
-            .select("chrom")
-            .unique()
-            .collect(engine="streaming")["chrom"]
-            .to_list()
+    signed = [
+        (pl.col(name).fill_null(0) * pl.col("sign")).sum().alias(name.replace("cum_", "total_"))
+        for name in cum_names
+    ]
+    gene_cov = (
+        cp.gene_boundary_table(gene_ranges, axis_map)
+        .join_asof(prefix, left_on="baxis", right_on="axis", strategy="backward")
+        .group_by(["genome", "gene"])
+        .agg(signed)
+    )
+
+    lengths = gene_ranges.select(
+        "genome",
+        "gene",
+        length=pl.when(pl.col("end") >= pl.col("start"))
+        .then(pl.col("end") - pl.col("start") + 1)
+        .otherwise(0)
+        .cast(pl.Int64),
+    ).unique()
+
+    stats = lengths.join(gene_cov, on=["genome", "gene"], how="left").with_columns(
+        breadth=pl.when(pl.col("length") > 0)
+        .then(pl.col("total_sites").fill_null(0) / pl.col("length"))
+        .otherwise(0.0)
+        .cast(pl.Float64),
+        coverage=pl.when(pl.col("length") > 0)
+        .then(pl.col("total_bases").fill_null(0) / pl.col("length"))
+        .otherwise(0.0)
+        .cast(pl.Float64),
+    )
+    out_columns = ["genome", "gene", "length", "breadth", "coverage"]
+    if include_reference_ani:
+        stats = stats.with_columns(
+            ref_ani=pl.when(pl.col("total_ref_sites").fill_null(0) > 0)
+            .then(pl.col("total_ref_share").fill_null(0) * 100.0 / pl.col("total_ref_sites"))
+            .otherwise(None)
+            .cast(pl.Float64)
         )
-        gene_ranges = gene_bed.select("gene", "scaffold", "start", "end").join(
-            stb.select("scaffold", "genome"), on="scaffold", how="left"
-        ).with_columns(pl.col("genome").fill_null("NA"))
-
-        conn = _duckdb_connect_with_temp_dir(tmp_dir)
-        try:
-            conn.register(
-                "scaffold_axis",
-                pl.DataFrame(
-                    {"scaffold": list(axis_map.keys()), "scaffold_id": list(axis_map.values())},
-                    schema={"scaffold": pl.Utf8, "scaffold_id": pl.Int64},
-                ).to_arrow(),
-            )
-            conn.register(
-                "gene_bounds",
-                cp.gene_boundary_table(gene_ranges, axis_map).collect().to_arrow(),
-            )
-            conn.register("gene_bed_src", gene_bed.select("gene", "scaffold", "start", "end").collect().to_arrow())
-            conn.register("stb_src", stb.select("scaffold", "genome").collect().to_arrow())
-            profile_sql = _duckdb_quote_sql_string(str(profile_path))
-
-            ref_site_sql = "0"
-            ref_share_sql = "0"
-            ref_prefix_sql = ""
-            ref_gene_sql = ""
-            ref_select_sql = ""
-            if include_reference_ani:
-                covered = (
-                    f"(CAST(A AS DOUBLE) + CAST(C AS DOUBLE) + CAST(G AS DOUBLE) + CAST(T AS DOUBLE))"
-                    f" >= {int(ref_ani_min_cov)} AND CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) > 0"
-                )
-                matches = (
-                    f"((CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 1 AND CAST(A AS DOUBLE) > 0)"
-                    f" OR (CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 2 AND CAST(C AS DOUBLE) > 0)"
-                    f" OR (CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 4 AND CAST(G AS DOUBLE) > 0)"
-                    f" OR (CAST({REF_BASE_BITMASK_COLUMN} AS BIGINT) = 8 AND CAST(T AS DOUBLE) > 0))"
-                )
-                ref_site_sql = f"CASE WHEN {covered} THEN 1 ELSE 0 END"
-                ref_share_sql = f"CASE WHEN {covered} AND {matches} THEN 1 ELSE 0 END"
-                ref_prefix_sql = """,
-                    SUM(ref_site) OVER (ORDER BY axis) AS cum_ref_sites,
-                    SUM(ref_share) OVER (ORDER BY axis) AS cum_ref_share"""
-                ref_gene_sql = """,
-                    SUM(COALESCE(p.cum_ref_sites, 0) * b.sign)::BIGINT AS ref_total_positions,
-                    SUM(COALESCE(p.cum_ref_share, 0) * b.sign)::BIGINT AS ref_share_allele_pos"""
-                ref_select_sql = """
-                  ,
-                  CASE
-                    WHEN COALESCE(gc.ref_total_positions, 0) > 0
-                    THEN COALESCE(gc.ref_share_allele_pos, 0)::DOUBLE * 100.0 / gc.ref_total_positions
-                    ELSE NULL
-                  END AS ref_ani"""
-
-            table = conn.execute(
-                f"""
-                WITH pos_axis AS (
-                  SELECT
-                    sa.scaffold_id * {cp.GENE_AXIS_OFFSET} + p.pos AS axis,
-                    (CAST(A AS DOUBLE) + CAST(C AS DOUBLE) + CAST(G AS DOUBLE) + CAST(T AS DOUBLE)) AS bases,
-                    {ref_site_sql} AS ref_site,
-                    {ref_share_sql} AS ref_share
-                  FROM read_parquet('{profile_sql}') AS p
-                  JOIN scaffold_axis AS sa ON p.chrom = sa.scaffold
-                ),
-                prefix AS (
-                  SELECT
-                    axis,
-                    row_number() OVER (ORDER BY axis) AS cum_sites,
-                    SUM(bases) OVER (ORDER BY axis) AS cum_bases
-                    {ref_prefix_sql}
-                  FROM pos_axis
-                ),
-                gene_cov AS (
-                  SELECT
-                    b.genome,
-                    b.gene,
-                    SUM(COALESCE(p.cum_sites, 0) * b.sign)::BIGINT AS total_covered_sites,
-                    SUM(COALESCE(p.cum_bases, 0) * b.sign)::DOUBLE AS covered_bases
-                    {ref_gene_sql}
-                  FROM gene_bounds AS b
-                  ASOF LEFT JOIN prefix AS p ON b.baxis >= p.axis
-                  GROUP BY b.genome, b.gene
-                ),
-                gene_lengths AS (
-                  SELECT DISTINCT
-                    CAST(COALESCE(s.genome, 'NA') AS VARCHAR) AS genome,
-                    CAST(g.gene AS VARCHAR) AS gene,
-                    CASE
-                      WHEN CAST(g."end" AS BIGINT) >= CAST(g.start AS BIGINT)
-                      THEN CAST(g."end" AS BIGINT) - CAST(g.start AS BIGINT) + 1
-                      ELSE 0
-                    END AS length
-                  FROM gene_bed_src AS g
-                  LEFT JOIN stb_src AS s
-                    ON CAST(g.scaffold AS VARCHAR) = CAST(s.scaffold AS VARCHAR)
-                )
-                SELECT
-                  CAST(gl.genome AS VARCHAR) AS genome,
-                  CAST(gl.gene AS VARCHAR) AS gene,
-                  CAST(gl.length AS BIGINT) AS length,
-                  CASE
-                    WHEN gl.length > 0
-                    THEN COALESCE(gc.total_covered_sites, 0)::DOUBLE / gl.length
-                    ELSE 0.0
-                  END AS breadth,
-                  CASE
-                    WHEN gl.length > 0
-                    THEN COALESCE(gc.covered_bases, 0)::DOUBLE / gl.length
-                    ELSE 0.0
-                  END AS coverage
-                  {ref_select_sql}
-                FROM gene_lengths AS gl
-                LEFT JOIN gene_cov AS gc
-                  ON gl.genome = gc.genome
-                 AND gl.gene = gc.gene
-                """
-            ).fetch_arrow_table()
-        finally:
-            conn.close()
-
-    return pl.from_arrow(table).lazy()
+        out_columns.append("ref_ani")
+    return stats.select(out_columns)

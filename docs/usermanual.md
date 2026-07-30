@@ -1314,6 +1314,7 @@ Conventions used by every example below:
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
 - `--compare_engine` (`polars` | `duckdb`, default `polars`) and `--compare_duckdb_memory_limit` (DuckDB only).
 - `--compare_calculate`: metrics to compute (`genome_ani`, `ibs`, `gene`, `all`, or `+` combinations). `gene` requires a gene range table and yields a gene-grained table.
+- `--gene_range_table`: headerless TSV of `gene, scaffold, start, end`. **Required for `--mode compare_genes`** — gene boundaries are resolved from ranges at compare time rather than from a per-position label in the profile, which is what lets overlapping and nested genes each get their full range.
 
 Notes:
 
