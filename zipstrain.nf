@@ -14,8 +14,7 @@ params.compare_calculate="all"
 params.gene_range_table=null
 params.batch_compare_n_parallel=4
 params.publish_mode="symlink"
-params.compare_genome_scope="all"
-params.compare_gene_scope="all:all"
+params.compare_scope="all"
 params.compare_ani_method="popani"
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
@@ -74,6 +73,27 @@ def getProfileSampleNamesTableColumn(input_table) {
         return input_table['sample_name']
     }
     throw new IllegalArgumentException("Profile-table input must include a 'sample_name' column.")
+}
+
+def makeBatches(items, batchSize) {
+    def size = batchSize.toString().toInteger()
+    if (size < 1) {
+        throw new IllegalArgumentException("--batch_size must be at least 1.")
+    }
+
+    def batches = []
+    def current = []
+    items.each { item ->
+        if (current.size() == size) {
+            batches << current
+            current = []
+        }
+        current << item
+    }
+    if (current) {
+        batches << current
+    }
+    return batches
 }
 
 process download_sylph_db{
@@ -310,39 +330,7 @@ process profile_bam {
     """
 }
 
-process compare_genome_fast_profiles_single {
-    /*
-    * This process compares fast profiles.
-    * It takes in profile parquets and outputs the comparison results.
-    */
-    input:
-    path profile_location_1
-    path profile_location_2
-    path stb
-    val pair_name
-    output:
-    path "${pair_name}_comparison.parquet", emit: comparison_results
-    script:
-    def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
-    def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
-    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
-    """
-    zipstrain utilities single_compare_genome  \
-                        --profile-location-1 ${profile_location_1} \
-                        --profile-location-2 ${profile_location_2} \
-                        -s ${stb} \
-                        -c ${params.min_cov} \
-                        -l ${params.min_gene_compare_len} \
-                        ${add_compare_engine} \
-                        ${add_calculate} \
-                        ${add_duckdb_memory_limit} \
-                        ${add_genome_scope} \
-                        -o ${pair_name}_comparison.parquet
-
-    """
-}
-process compare_gene_fast_profiles_single {
+process compare_fast_profiles_single {
     /*
     * This process compares fast profiles.
     * It takes in profile parquets and outputs the comparison results.
@@ -356,75 +344,29 @@ process compare_gene_fast_profiles_single {
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
-    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
-    """
-    zipstrain utilities single_compare_gene  \
-                        --profile-location-1 ${profile_location_1} \
-                        --profile-location-2 ${profile_location_2} \
-                        -s ${stb} \
-                        --gene-range-table ${gene_range_table} \
-                        -c ${params.min_cov} \
-                        -l ${params.min_gene_compare_len} \
-                        ${add_compare_engine} \
-                        --ani-method ${params.compare_ani_method} \
-                        ${add_duckdb_memory_limit} \
-                        --scope ${params.compare_gene_scope} \
-                        -o ${pair_name}_comparison.parquet
-
-    """
-}
-
-
-process compare_genome_batched {
-    publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
-    afterScript """
-    rm -rf comps pairs.txt
-    rm -f ${profile_locations.collect{t->t.join(' ')}}
-    rm -f ${stb}
-    """
-    input:
-    path profile_locations
-    val pairs
-    path stb
-
-
-    output:
-    path "Batch_*_comparisons.parquet", emit: comparison_results
-
-    script:
-    pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
-    remove_profile_locations = profile_locations.join(' ')
-    def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
+    def add_scope = (params.compare_scope=="all") ? "" : "--scope ${params.compare_scope}"
     def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
+    def add_gene_range = gene_range_table ? "--gene-range-table ${gene_range_table}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
-    echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_genome \
-                        --profile-location-1 {1} \
-                        --profile-location-2 {2} \
+    zipstrain utilities single-compare  \
+                        --profile-location-1 ${profile_location_1} \
+                        --profile-location-2 ${profile_location_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         ${add_compare_engine} \
                         ${add_calculate} \
+                        ${add_gene_range} \
+                        --ani-method "${params.compare_ani_method}" \
                         ${add_duckdb_memory_limit} \
-                        -o {1}_{2}_comparison.parquet' ${add_genome_scope}
-    mkdir comps
-    hash=\$(sha1sum pairs.txt | awk '{print \$1}')
-    mv *_comparison.parquet comps/
-    zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
-    rm -rf comps
-    rm -f pairs.txt
-    rm -f ${remove_profile_locations}
+                        ${add_scope} \
+                        -o ${pair_name}_comparison.parquet
 
     """
-
-
 }
-
-process compare_gene_batched {
+process compare_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
@@ -436,27 +378,34 @@ process compare_gene_batched {
     val pairs
     path stb
     path gene_range_table
+
+
     output:
     path "Batch_*_comparisons.parquet", emit: comparison_results
+
     script:
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
     remove_profile_locations = profile_locations.join(' ')
-    def add_gene_scope= (params.compare_gene_scope=="all") ? "" : "--scope ${params.compare_gene_scope}"
+    def add_scope = (params.compare_scope=="all") ? "" : "--scope ${params.compare_scope}"
     def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
+    def add_gene_range = gene_range_table ? "--gene-range-table ${gene_range_table}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_gene \
+    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single-compare \
                         --profile-location-1 {1} \
                         --profile-location-2 {2} \
-                        --gene-range-table ${gene_range_table} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         ${add_compare_engine} \
-                        --ani-method ${params.compare_ani_method} \
+                        ${add_calculate} \
+                        ${add_gene_range} \
+                        --ani-method "${params.compare_ani_method}" \
                         ${add_duckdb_memory_limit} \
-                        -o {1}_{2}_comparison.parquet' ${add_gene_scope}
+                        ${add_scope} \
+                        -o {1}_{2}_comparison.parquet'
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
     mv *_comparison.parquet comps/
@@ -465,10 +414,10 @@ process compare_gene_batched {
     rm -f pairs.txt
     rm -f ${remove_profile_locations}
 
-    """ 
+    """
+
+
 }
-
-
 
 process merge_comparison_tables {
     /*
@@ -622,7 +571,7 @@ process fromSRAtoProfileBuildDb{
 workflow
 {
     if (!params.mode) {
-        error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+        error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare"
     }
 
     if (params.mode == 'map_reads') {
@@ -733,21 +682,20 @@ workflow
         profile(bamfiles, sample_names, gene_file, reference_genome)
     }
     
-    else if (params.mode =="compare_genes")
+    else if (params.mode == "compare")
     {
         input_table = tableToDict(file(params.input_table))
-        
+        def profile_pairs = []
+
         if (params.input_type=="profile_table"){
             profile_locations_list = getProfilesTableColumn(input_table).collect{t->file(t)}
             sample_names_list = getProfileSampleNamesTableColumn(input_table)
             profiles=[profile_locations_list,sample_names_list].transpose()
-            def profile_pairs = []
             (0..<profiles.size()).each { i ->
                 (i+1..<profiles.size()).each { j ->
                     profile_pairs << (profiles[i] + profiles[j])
                 }
             }
-            pair_channel=Channel.from(profile_pairs)
         }
         else if (params.input_type=="pair_table")
         {
@@ -756,48 +704,23 @@ workflow
             profile_1=input_table["profile_location_1"].collect{t->file(t)}
             profile_2=input_table["profile_location_2"].collect{t->file(t)}
             profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
-            pair_channel=Channel.from(profile_pairs)
-
         }
+        pair_channel = params.parallel_mode == "batched"
+            ? Channel.fromList(makeBatches(profile_pairs, params.batch_size))
+            : Channel.fromList(profile_pairs)
         stb = file(params.stb)
-        if (!params.gene_range_table) {
-            error "--mode compare_genes requires --gene_range_table (headerless TSV of gene, scaffold, start, end). Gene boundaries are resolved from ranges at compare time."
+        // One comparison path: --compare_calculate picks the grain. Gene metrics
+        // need ranges, since gene boundaries no longer live in the profile.
+        if (params.compare_calculate?.toString()?.contains("gene") && !params.gene_range_table) {
+            error "--compare_calculate '${params.compare_calculate}' asks for gene metrics, which require --gene_range_table (headerless TSV of gene, scaffold, start, end)."
         }
-        compare_genes(pair_channel, stb, file(params.gene_range_table))
-    }
-    
-    
-    else if (params.mode =='compare_genomes') {
-        input_table = tableToDict(file(params.input_table))
-        
-        if (params.input_type=="profile_table"){
-            profile_locations_list = getProfilesTableColumn(input_table).collect{t->file(t)}
-            sample_names_list = getProfileSampleNamesTableColumn(input_table)
-            profiles=[profile_locations_list,sample_names_list].transpose()
-            profile_pairs = []
-            (0..<profiles.size()).each { i ->
-                (i+1..<profiles.size()).each { j ->
-                    profile_pairs << (profiles[i] + profiles[j])
-                }
-            }
-            pair_channel=Channel.from(profile_pairs)
-        }
-        else if (params.input_type=="pair_table")
-        {
-            sample_1=input_table['sample_name_1']
-            sample_2=input_table['sample_name_2']
-            profile_1=input_table["profile_location_1"].collect{t->file(t)}
-            profile_2=input_table["profile_location_2"].collect{t->file(t)}
-            profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
-            pair_channel=Channel.from(profile_pairs)
-
-        }
-        stb = file(params.stb)
-        compare_genomes(pair_channel, stb)
-
-    }
-    else if (!(params.mode in ['map_reads', 'from_sra_to_profile'])) {
-        error "Unknown --mode '${params.mode}'. Choose one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+        // An empty collection is the standard optional-path pattern in Nextflow.
+        // A real table is staged into every comparison task and tracked as an
+        // input dependency; the empty collection keeps genome-only runs valid.
+        gene_range_table = params.gene_range_table
+            ? file(params.gene_range_table, checkIfExists: true)
+            : []
+        compare(pair_channel, stb, gene_range_table)
     }
 }
 
@@ -826,42 +749,8 @@ workflow profile{
 }
 
 
-workflow compare_genomes
+workflow compare
 {
-    take:
-    profile_pairs
-    stb
-    main:
-    if (params.parallel_mode=="single") {
-
-    profile_pairs.multiMap{ v ->
-        profile_1: v[0]
-        profile_2: v[2]
-        pair_name: v[1]+"_" + v[3]
-    }.set{profile_pairs}
-    compare_genome_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name)
-    merge_comparison_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
-    }
-    else if (params.parallel_mode=="batched") {
-    batch = profile_pairs.collate(params.batch_size)
-    batch.map{t->t.transpose()}.set{batch_t}
-    batch_t.multiMap{ v ->
-        unique_profiles: (v[0]+v[2]).unique().sort()
-        pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
-    }.set{batch_pairs}
-
-    compare_genome_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb)
-    merge_comparison_tables(compare_genome_batched.out.comparison_results.collect() )
-    }
-    else {
-        error "Set --parallel_mode to either single or batched"
-    }
-
-
-}
-
-
-workflow compare_genes{
     take:
     profile_pairs
     stb
@@ -874,22 +763,22 @@ workflow compare_genes{
         profile_2: v[2]
         pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_gene_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, gene_range_table, profile_pairs.pair_name)
-    merge_comparison_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
+    compare_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, gene_range_table, profile_pairs.pair_name)
+    merge_comparison_tables(compare_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
-    batch = profile_pairs.collate(params.batch_size)
-    batch.map{t->t.transpose()}.set{batch_t}
+    profile_pairs.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
         unique_profiles: (v[0]+v[2]).unique().sort()
         pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_gene_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, gene_range_table)
-    merge_comparison_tables(compare_gene_batched.out.comparison_results.collect() )
+    compare_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, gene_range_table)
+    merge_comparison_tables(compare_batched.out.comparison_results.collect() )
     }
     else {
         error "Set --parallel_mode to either single or batched"
     }
+
 
 }

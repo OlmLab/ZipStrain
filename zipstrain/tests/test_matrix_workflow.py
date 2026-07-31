@@ -121,6 +121,115 @@ def test_run_matrix_compare_builds_count_store_for_conani(tmp_path, monkeypatch)
     assert captured["compare"]["min_cov"] == 7
 
 
+def test_run_matrix_compare_combines_multiple_ani_methods(tmp_path):
+    stb = tmp_path / "ref.stb"
+    bed = tmp_path / "ref.bed"
+    run_dir = tmp_path / "run"
+    stb.write_text("chr1\tgenomeA\n")
+    bed.write_text("chr1\t0\t4\n")
+    common = {
+        "chrom": ["chr1"] * 4,
+        "genome": ["genomeA"] * 4,
+        "gene": ["NA"] * 4,
+        "pos": [0, 1, 2, 3],
+    }
+    p1 = tmp_path / "s1.parquet"
+    p2 = tmp_path / "s2.parquet"
+    pl.DataFrame(
+        {
+            **common,
+            "A": [10, 6, 5, 0],
+            "T": [0, 0, 0, 10],
+            "C": [0, 4, 5, 0],
+            "G": [0, 0, 0, 0],
+        }
+    ).write_parquet(p1)
+    pl.DataFrame(
+        {
+            **common,
+            "A": [10, 4, 0, 0],
+            "T": [0, 0, 0, 10],
+            "C": [0, 6, 0, 0],
+            "G": [0, 0, 10, 0],
+        }
+    ).write_parquet(p2)
+
+    output = matrix_workflow.run_matrix_compare(
+        profiles=[("s1", p1), ("s2", p2)],
+        run_dir=run_dir,
+        stb_file=stb,
+        bed_file=bed,
+        ani_method="popani,conani,cosani_0.95",
+        calculate="ani+ibs",
+        min_cov=1,
+        backend="numpy",
+    )
+
+    out = pl.read_parquet(output)
+    assert out.columns == [
+        "sample_1",
+        "sample_2",
+        "genome",
+        "total_positions",
+        "share_allele_pos_popani",
+        "genome_ani_popani",
+        "share_allele_pos_conani",
+        "genome_ani_conani",
+        "share_allele_pos_cosani_0_95",
+        "genome_ani_cosani_0_95",
+        "max_consecutive_length_popani",
+        "max_consecutive_length_conani",
+        "max_consecutive_length_cosani_0_95",
+    ]
+    assert out["share_allele_pos_popani"].to_list() == [3]
+    assert out["share_allele_pos_conani"].to_list() == [2]
+    assert out["share_allele_pos_cosani_0_95"].to_list() == [2]
+    metadata = pl.read_parquet_metadata(output)
+    assert metadata["zipstrain_compare_ani_method"] == "popani,conani,cosani_0.95"
+    intermediate = run_dir / matrix_workflow.INTERMEDIATE_DIRNAME
+    assert (intermediate / "matrix_compare_popani.duckdb").exists()
+    assert (intermediate / "matrix_compare_conani.duckdb").exists()
+    assert (intermediate / "matrix_compare_cosani_0_95.duckdb").exists()
+
+
+def test_combine_matrix_method_exports_suffixes_gene_ani(tmp_path):
+    exports = []
+    for method, value in (("popani", 100.0), ("conani", 75.0)):
+        path = tmp_path / f"{method}.parquet"
+        pl.DataFrame(
+            {
+                "sample_1": ["s1"],
+                "sample_2": ["s2"],
+                "genome": ["g1"],
+                "gene": ["gene1"],
+                "gene_pop_ani": [value],
+            }
+        ).write_parquet(
+            path,
+            metadata={"zipstrain_compare_ani_method": method},
+        )
+        exports.append((method, path))
+
+    output = matrix_workflow._combine_matrix_method_exports(
+        method_exports=exports,
+        output=tmp_path / "combined.parquet",
+        table="gene",
+        calculate="ani+gene",
+    )
+
+    out = pl.read_parquet(output)
+    assert out.columns == [
+        "sample_1",
+        "sample_2",
+        "genome",
+        "gene",
+        "gene_ani_popani",
+        "gene_ani_conani",
+    ]
+    assert out["gene_ani_popani"].to_list() == [100.0]
+    assert out["gene_ani_conani"].to_list() == [75.0]
+
+
 def test_run_matrix_compare_validates_existing_contract_before_append(tmp_path):
     stb = tmp_path / "ref.stb"
     bed = tmp_path / "ref.bed"

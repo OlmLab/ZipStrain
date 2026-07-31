@@ -125,7 +125,28 @@ Monomorphic reference matches are not emitted. The per-genome `SNS_count` and `S
 
 ## `zipstrain compare`
 
-Both methods (standard and matrix) write a single comparison table at the top of the run directory: `all_comparisons.parquet` (+ `.csv`), or `all_gene_comparisons.parquet` with `--compare-genes`.
+Both methods (standard and matrix) write one table at the top of the run directory: `all_comparisons.parquet` (+ `.csv`, unless disabled). `--calculate` determines its columns and row grain.
+
+The parquet metadata records the normalized metric set in
+`zipstrain_compare_calculate` (for example, `genome_ani+ibs` or
+`genome_ani+ibs+gene`). A run can resume only when this and the other
+comparison parameters match.
+
+`--ani-method` accepts either one method or a comma-separated list, for example
+`--ani-method popani,conani,cosani_0.95`. With one method, the columns below
+keep their unsuffixed names. With several methods, every method-dependent
+column receives a normalized suffix:
+
+- `share_allele_pos_popani`, `genome_ani_popani`,
+  `max_consecutive_length_popani`
+- `share_allele_pos_conani`, `genome_ani_conani`,
+  `max_consecutive_length_conani`
+- `share_allele_pos_cosani_0_95`, `genome_ani_cosani_0_95`,
+  `max_consecutive_length_cosani_0_95`
+
+`total_positions` is not duplicated because the shared coverage denominator is
+the same for every ANI method. The metadata key
+`zipstrain_compare_ani_method` stores the canonical comma-separated list.
 
 ### `all_comparisons.parquet`
 
@@ -136,11 +157,11 @@ One row per genome, per pair of samples.
 | `sample_1`, `sample_2` | The two samples being compared |
 | `genome` | Genome compared between them |
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
-| `share_allele_pos` | Of those, positions that match under the selected ANI method |
-| `genome_ani` | Genome-wide ANI (%) = `share_allele_pos` / `total_positions` × 100. The parquet metadata key `zipstrain_compare_ani_method` records whether this is `popani`, `conani`, or `cosani_<threshold>` |
-| `max_consecutive_length` | Longest run of consecutive shared positions (an identical-by-state / IBS measure) |
+| `share_allele_pos` or `share_allele_pos_<method>` | Of those, positions that match under the selected ANI method |
+| `genome_ani` or `genome_ani_<method>` | Genome-wide ANI (%) = matching positions / `total_positions` × 100 |
+| `max_consecutive_length` or `max_consecutive_length_<method>` | Longest run of consecutive positions matching under that method (an identical-by-state / IBS measure) |
 
-### `all_gene_comparisons.parquet`
+### Gene-grained `all_comparisons.parquet`
 
 When gene ranges are supplied (`--gene-range-table`) and `gene` is among the
 calculations, the table becomes **gene-grained**: one row per gene, per genome,
@@ -152,10 +173,10 @@ gene row so the table can be read on its own.
 | `sample_1`, `sample_2` | The two samples being compared |
 | `genome`, `gene` | Genome and gene compared between them |
 | `total_positions` | Positions inside this gene covered in **both** samples (≥ `--min-cov`) |
-| `share_allele_pos` | Of those, positions that match under the selected ANI method |
-| `gene_ani` | Gene-level ANI (%) = `share_allele_pos` / `total_positions` × 100 |
-| `genome_ani` | Genome-wide ANI, repeated on each gene row |
-| `max_consecutive_length` | Genome-wide IBS block length, repeated on each gene row |
+| `share_allele_pos` or `share_allele_pos_<method>` | Of those, positions that match under the selected ANI method |
+| `gene_ani` or `gene_ani_<method>` | Gene-level ANI (%) = matching positions / `total_positions` × 100 |
+| `genome_ani` or `genome_ani_<method>` | Genome-wide ANI, repeated on each gene row |
+| `max_consecutive_length` or `max_consecutive_length_<method>` | Genome-wide method-specific IBS block length, repeated on each gene row |
 
 Genes with fewer than `--min-gene-compare-len` shared positions are dropped.
 
@@ -182,8 +203,11 @@ Genes with fewer than `--min-gene-compare-len` shared positions are dropped.
         ))
     ```
 
-!!! note "ANI method is stored in the parquet header"
-    `--ani-method conani` or `--ani-method cosani_<threshold>` changes how the ANI match indicator is computed, but it does not add method-specific output columns. Check `zipstrain_compare_ani_method` in the parquet metadata to know what `genome_ani` represents. Both standard and matrix comparison support `popani`, `conani`, and `cosani_<threshold>`.
+!!! note "Single- and multi-method schemas"
+    A single method preserves the compact unsuffixed schema (`genome_ani`,
+    `share_allele_pos`, and `max_consecutive_length`). Multiple methods add the
+    method suffixes described above. Both standard and matrix comparison support
+    `popani`, `conani`, and `cosani_<threshold>`.
 
 Example (same-strain replicates → 100% popANI):
 

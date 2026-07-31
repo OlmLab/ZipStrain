@@ -56,6 +56,7 @@ CompareProgressCallback = Callable[[dict[str, object]], None]
 MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs", "gene")
 MATRIX_COMPARISON_CALCULATION_ALIASES = {
     "ani": "ani",
+    "genome_ani": "ani",
     "popani": "ani",
     "ibs": "ibs",
     "max_block": "ibs",
@@ -5954,6 +5955,7 @@ def export_matrix_compare_parquet(
         ut.COMPARE_ENGINE_METADATA_KEY: "matrix",
         ut.COMPARE_USES_STB_METADATA_KEY: "1",
         ut.COMPARE_ANI_METHOD_METADATA_KEY: compare_metadata.get("ani_method", "popani"),
+        ut.COMPARE_CALCULATE_METADATA_KEY: compare_metadata.get("calculate", "ani"),
         ut.COMPARE_REFERENCE_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
         ut.COMPARE_GENE_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
         ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,

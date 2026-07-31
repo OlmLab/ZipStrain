@@ -2,6 +2,12 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## Unreleased
+
+- Comparison accepts comma-separated ANI methods (for example, `popani,conani,cosani_0.95`). Standard comparison evaluates all methods after one coordinate join; matrix comparison reuses one count store and keeps a resumable database per method. Single-method output columns are unchanged, while multi-method outputs use normalized method suffixes and record the canonical list in parquet metadata. Nextflow forwards the same list.
+- The CLI and task manager now use one comparison path for genome ANI, IBS, and gene ANI. `zipstrain compare --calculate ...` selects metrics, `--gene-range-table` enables gene-grained output, and every run writes `all_comparisons.parquet`. The normalized metric set is stored in parquet metadata so incompatible resume attempts fail clearly.
+- Nextflow comparison now uses one `--mode compare` workflow controlled by `--compare_calculate`. The optional `--gene_range_table` is staged into both single and batched tasks, enables overlap-aware gene metrics, and remains optional for genome-only comparisons. Batched mode creates pair batches before channelization for compatibility with Nextflow 26.
+
 ## 1.0.2
 
 Compared with `1.0.1`:
@@ -25,9 +31,9 @@ First stable release. This version consolidates ZipStrain around three top-level
 ### Command-line interface
 
 - New streamlined top level: `zipstrain map | profile | compare | test`, with the previous lower-level helpers gathered under `zipstrain utilities`.
-- `compare` is now a single command: it defaults to genome-level comparison, takes `--compare-genes` for gene-level comparison, and selects the engine with `--method standard|matrix`. The old `zipstrain compare genomes` / `zipstrain compare genes` subcommands are gone.
+- `compare` is now a single command: it defaults to genome-level comparison, selects metrics with `--calculate`, and selects the engine with `--method standard|matrix`.
 - `compare --profile-db` accepts a CSV of `profile_name,profile_location` directly, so a separate `build-profile-db` step is no longer required.
-- `compare` runs are resumable and extendable: re-running with the same `--run-dir` and a profiles table that adds samples computes only the new pairs. Both methods write a single `all_comparisons.parquet` (or `all_gene_comparisons.parquet`) at the top of the run directory.
+- `compare` runs are resumable and extendable: re-running with the same `--run-dir` and a profiles table that adds samples computes only the new pairs. Both methods write `all_comparisons.parquet` at the top of the run directory.
 - `compare --calculate` now accepts fine-grained metric combos (for example `ani+ibs+identical_genes`) through the batched standard path, not just `all`/`ani`.
 - Utility cleanup: `generate-genome-pairs` is now `generate-sample-pair`; redundant coverage stats, BED, genome-length, and strain-heterogeneity helper commands were removed.
 - Grouped, sectioned `--help` output for the main commands.
@@ -61,7 +67,7 @@ First stable release. This version consolidates ZipStrain around three top-level
 ### Nextflow
 
 - Added a root `nextflow.config` so `nextflow run OlmLab/ZipStrain` works out of the box with Docker on a laptop; HPC Singularity/SLURM profiles live in `conf.config`.
-- Nextflow modes (`map_reads`, `from_sra_to_profile`, `profile`, `compare_genomes`, `compare_genes`) call the updated CLI and inherit run logging.
+- Nextflow modes (`map_reads`, `from_sra_to_profile`, `profile`, `compare`) call the updated CLI and inherit run logging.
 
 ### Documentation and packaging
 

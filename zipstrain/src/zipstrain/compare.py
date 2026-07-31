@@ -7,6 +7,8 @@ This module provides all comparison functions for zipstrain.
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Iterable, Literal, Optional, Union
+import math
+import re
 
 import polars as pl
 import duckdb
@@ -34,6 +36,73 @@ GENOME_COMPARISON_CALCULATION_ALIASES = {
     "genes": "gene",
     "gene_ani": "gene",
 }
+
+
+def parse_ani_methods(
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
+) -> tuple[str, ...]:
+    """Parse one or more ANI methods while preserving their requested order."""
+    if ani_method is None:
+        raw_methods = ["popani"]
+    elif isinstance(ani_method, str):
+        raw_methods = [part.strip().lower() for part in ani_method.split(",") if part.strip()]
+    else:
+        raw_methods = []
+        for value in ani_method:
+            raw_methods.extend(
+                part.strip().lower() for part in str(value).split(",") if part.strip()
+            )
+    if not raw_methods:
+        raise ValueError("At least one ANI method is required.")
+
+    methods: list[str] = []
+    for method in raw_methods:
+        if method not in {"popani", "conani"}:
+            if not method.startswith("cosani_"):
+                raise ValueError(
+                    f"Unsupported ANI method {method!r}. "
+                    "Supported values: popani, conani, cosani_<threshold>."
+                )
+            threshold_text = method.split("_", 1)[1]
+            try:
+                threshold = float(threshold_text)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid cosANI threshold {threshold_text!r}; "
+                    "expected a number between 0 and 1."
+                ) from exc
+            if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+                raise ValueError("cosANI threshold must be between 0 and 1.")
+        if method not in methods:
+            methods.append(method)
+    return tuple(methods)
+
+
+def canonical_ani_methods(
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
+) -> str:
+    """Return the canonical comma-separated ANI method string."""
+    return ",".join(parse_ani_methods(ani_method))
+
+
+def ani_method_suffix(ani_method: str) -> str:
+    """Return a stable method suffix suitable for a parquet column name."""
+    method = parse_ani_methods(ani_method)
+    if len(method) != 1:
+        raise ValueError("A column suffix requires exactly one ANI method.")
+    return re.sub(r"[^a-z0-9]+", "_", method[0]).strip("_")
+
+
+def ani_metric_column(base: str, ani_method: str, ani_methods: Iterable[str]) -> str:
+    """Name one method-dependent metric, preserving the single-method schema."""
+    methods = tuple(ani_methods)
+    return base if len(methods) == 1 else f"{base}_{ani_method_suffix(ani_method)}"
+
+
+def ani_match_column(ani_method: str, ani_methods: Iterable[str]) -> str:
+    """Internal per-locus match-signal column for one ANI method."""
+    return ani_metric_column("surr", ani_method, ani_methods)
+
 
 def parse_genome_calculations(
     calculate: Optional[Union[str, Iterable[str]]] = None,
@@ -89,18 +158,35 @@ def comparison_is_gene_grained(calculate: Optional[Union[str, Iterable[str]]] = 
     return "gene" in parse_genome_calculations(calculate)
 
 
-def genome_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
+def genome_metric_output_columns(
+    calculate: Optional[Union[str, Iterable[str]]] = None,
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
+) -> list[str]:
     """Return ordered output columns for a genome-grained comparison table."""
     calculations = parse_genome_calculations(calculate)
+    ani_methods = parse_ani_methods(ani_method)
     cols = ["genome"]
     if "genome_ani" in calculations:
-        cols.extend(["total_positions", "share_allele_pos", "genome_ani"])
+        cols.append("total_positions")
+        for method in ani_methods:
+            cols.extend(
+                [
+                    ani_metric_column("share_allele_pos", method, ani_methods),
+                    ani_metric_column("genome_ani", method, ani_methods),
+                ]
+            )
     if "ibs" in calculations:
-        cols.append("max_consecutive_length")
+        cols.extend(
+            ani_metric_column("max_consecutive_length", method, ani_methods)
+            for method in ani_methods
+        )
     return cols
 
 
-def gene_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
+def gene_metric_output_columns(
+    calculate: Optional[Union[str, Iterable[str]]] = None,
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
+) -> list[str]:
     """Return ordered output columns for a gene-grained comparison table.
 
     ``total_positions``/``share_allele_pos`` are the gene's own counts; the
@@ -108,19 +194,36 @@ def gene_metric_output_columns(calculate: Optional[Union[str, Iterable[str]]] = 
     so the table can be read without joining back to a genome table.
     """
     calculations = parse_genome_calculations(calculate)
-    cols = ["genome", "gene", "total_positions", "share_allele_pos", "gene_ani"]
+    ani_methods = parse_ani_methods(ani_method)
+    cols = ["genome", "gene", "total_positions"]
+    for method in ani_methods:
+        cols.extend(
+            [
+                ani_metric_column("share_allele_pos", method, ani_methods),
+                ani_metric_column("gene_ani", method, ani_methods),
+            ]
+        )
     if "genome_ani" in calculations:
-        cols.append("genome_ani")
+        cols.extend(
+            ani_metric_column("genome_ani", method, ani_methods)
+            for method in ani_methods
+        )
     if "ibs" in calculations:
-        cols.append("max_consecutive_length")
+        cols.extend(
+            ani_metric_column("max_consecutive_length", method, ani_methods)
+            for method in ani_methods
+        )
     return cols
 
 
-def comparison_output_columns(calculate: Optional[Union[str, Iterable[str]]] = None) -> list[str]:
+def comparison_output_columns(
+    calculate: Optional[Union[str, Iterable[str]]] = None,
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
+) -> list[str]:
     """Ordered output columns for whichever grain the selection implies."""
     if comparison_is_gene_grained(calculate):
-        return gene_metric_output_columns(calculate)
-    return genome_metric_output_columns(calculate)
+        return gene_metric_output_columns(calculate, ani_method)
+    return genome_metric_output_columns(calculate, ani_method)
 
 
 class PolarsANIExpressions:
@@ -293,11 +396,14 @@ def _duckdb_shared_query(
     p2_source: str,
     min_cov: int,
     genome_scope: str,
-    ani_method: str,
+    ani_method: Optional[Union[str, Iterable[str]]],
     gene_scope: str = "all",
 ) -> str:
-    ani_expr = _duckdb_ani_expression(ani_method)
-    con_expr = _duckdb_ani_expression("conani")
+    ani_methods = parse_ani_methods(ani_method)
+    ani_selects = ",\n      ".join(
+        f"{_duckdb_ani_expression(method)} AS {ani_match_column(method, ani_methods)}"
+        for method in ani_methods
+    )
     genome_scope_sql = _duckdb_quote_sql_string(genome_scope)
     _ = gene_scope  # gene scoping is applied to gene ranges, not to positions
     return f"""
@@ -328,8 +434,7 @@ def _duckdb_shared_query(
         AND ('{genome_scope_sql}' = 'all' OR genome = '{genome_scope_sql}')
     )
     SELECT
-      {ani_expr} AS surr,
-      {con_expr} AS con_surr,
+      {ani_selects},
       p1.chrom AS scaffold,
       p1.pos,
       p1.genome
@@ -390,56 +495,65 @@ def _duckdb_contig_pop_max_ctes(
     shared_source: str = "shared",
     include_pop: bool = True,
     include_max_blocks: bool = True,
+    ani_method: str = "popani",
+    ani_methods: Optional[Iterable[str]] = None,
 ) -> list[str]:
+    methods = parse_ani_methods(ani_methods or (ani_method,))
+    match_col = ani_match_column(ani_method, methods)
+    tag = "" if len(methods) == 1 else f"_{ani_method_suffix(ani_method)}"
+    contig_base = f"contig_base{tag}"
+    contig = f"contig{tag}"
+    pop = f"pop{tag}"
+    max_blocks = f"max_blocks{tag}"
     ctes: list[str] = []
     if not include_pop and not include_max_blocks:
         return ctes
     ctes.extend(
         [
             f"""
-contig_base AS (
+{contig_base} AS (
   SELECT
     s.*,
     LAG(scaffold) OVER (PARTITION BY genome ORDER BY scaffold, pos) AS prev_scaffold
   FROM {shared_source} s
 )""".strip(),
-            """
-contig AS (
+            f"""
+{contig} AS (
   SELECT
     *,
     SUM(
       CASE
-        WHEN prev_scaffold IS NULL OR scaffold != prev_scaffold OR surr = 0 THEN 1
+        WHEN prev_scaffold IS NULL OR scaffold != prev_scaffold OR {match_col} = 0 THEN 1
         ELSE 0
       END
     ) OVER (PARTITION BY genome ORDER BY scaffold, pos ROWS UNBOUNDED PRECEDING) AS group_id
-  FROM contig_base
+  FROM {contig_base}
 )""".strip(),
         ]
     )
     if include_pop:
         ctes.append(
-            """
-pop AS (
+            f"""
+{pop} AS (
   SELECT
     genome,
     COUNT(*)::BIGINT AS total_positions,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
-    SUM(CASE WHEN surr > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_ani
-  FROM contig
+    SUM(CASE WHEN {match_col} > 0 THEN 1 ELSE 0 END)::BIGINT AS share_allele_pos,
+    SUM(CASE WHEN {match_col} > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS genome_ani
+  FROM {contig}
   GROUP BY genome
 )""".strip()
         )
     if include_max_blocks:
         ctes.append(
-            """
-max_blocks AS (
+            f"""
+{max_blocks} AS (
   SELECT
     genome,
     MAX(length)::BIGINT AS max_consecutive_length
   FROM (
     SELECT genome, scaffold, group_id, COUNT(*)::BIGINT AS length
-    FROM contig
+    FROM {contig}
     GROUP BY genome, scaffold, group_id
   ) blocks
   GROUP BY genome
@@ -452,27 +566,39 @@ def _attach_genome_metrics(
     gene_frame: pl.LazyFrame,
     genome_frame: pl.LazyFrame,
     calculations: tuple[str, ...],
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
 ) -> pl.LazyFrame:
     """Repeat the requested genome-level metrics on every gene row.
 
     Only the genome-level metrics ride along; the count columns on a gene row are
     the gene's own, so the genome-level ones are dropped before the join.
     """
+    ani_methods = parse_ani_methods(ani_method)
     carried: list[str] = []
     if "genome_ani" in calculations:
-        carried.append("genome_ani")
+        carried.extend(
+            ani_metric_column("genome_ani", method, ani_methods)
+            for method in ani_methods
+        )
     if "ibs" in calculations:
-        carried.append("max_consecutive_length")
-    gene_frame = gene_frame.with_columns(
-        pl.col("total_positions").cast(pl.Int64),
-        pl.col("share_allele_pos").cast(pl.Int64),
-        pl.col("gene_ani").cast(pl.Float64),
-    )
+        carried.extend(
+            ani_metric_column("max_consecutive_length", method, ani_methods)
+            for method in ani_methods
+        )
+    gene_casts: list[pl.Expr] = [pl.col("total_positions").cast(pl.Int64)]
+    for method in ani_methods:
+        gene_casts.extend(
+            [
+                pl.col(ani_metric_column("share_allele_pos", method, ani_methods)).cast(pl.Int64),
+                pl.col(ani_metric_column("gene_ani", method, ani_methods)).cast(pl.Float64),
+            ]
+        )
+    gene_frame = gene_frame.with_columns(gene_casts)
     if carried:
         gene_frame = gene_frame.join(
             genome_frame.select(["genome", *carried]), on="genome", how="left"
         )
-    return gene_frame.select(gene_metric_output_columns(calculations))
+    return gene_frame.select(gene_metric_output_columns(calculations, ani_methods))
 
 
 def _duckdb_gene_frame(
@@ -485,6 +611,7 @@ def _duckdb_gene_frame(
     stb_file: Optional[Union[str, Path]] = None,
     genome_scope: str = "all",
     gene_scope: str = "all",
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
 ) -> pl.LazyFrame:
     """Gene-level results for the DuckDB engine.
 
@@ -508,11 +635,14 @@ def _duckdb_gene_frame(
         ).to_arrow(),
     )
     shared_axis_path = tmp_dir / "shared_axis.parquet"
-    _duckdb_export_sorted_shared_axis(con, shared_query, shared_axis_path)
+    _duckdb_export_sorted_shared_axis(
+        con, shared_query, shared_axis_path, ani_method=ani_method
+    )
     return get_gene_ani(
         shared=pl.scan_parquet(shared_axis_path).set_sorted("axis"),
         gene_bounds=gene_boundary_table(gene_ranges, axis_map),
         min_gene_compare_len=min_gene_compare_len,
+        ani_method=ani_method,
     )
 
 
@@ -521,6 +651,7 @@ def _duckdb_export_sorted_shared_axis(
     shared_query: str,
     output_path: Path,
     axis_map_source: str = "scaffold_axis",
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
 ) -> None:
     """Write shared positions to parquet on the global axis, sorted.
 
@@ -530,6 +661,10 @@ def _duckdb_export_sorted_shared_axis(
     of with an ASOF join in SQL.
     """
     out_sql = _duckdb_quote_sql_string(str(output_path))
+    ani_methods = parse_ani_methods(ani_method)
+    match_selects = ",\n            ".join(
+        f"s.{ani_match_column(method, ani_methods)}" for method in ani_methods
+    )
     con.execute(
         f"""
         COPY (
@@ -537,7 +672,7 @@ def _duckdb_export_sorted_shared_axis(
 {shared_query}
           )
           SELECT
-            s.surr,
+            {match_selects},
             sa.scaffold_id * {GENE_AXIS_OFFSET} + s.pos AS axis
           FROM shared s
           JOIN {axis_map_source} sa ON s.scaffold = sa.scaffold
@@ -564,8 +699,10 @@ def _duckdb_genome_compare_query(
     stb_file: Optional[Union[str, Path]] = None,
     sample_1_name: Optional[str] = None,
     sample_2_name: Optional[str] = None,
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
 ) -> str:
     calculations = parse_genome_calculations(calculate)
+    ani_methods = parse_ani_methods(ani_method)
     need_genome_ani = "genome_ani" in calculations
     need_ibs = "ibs" in calculations
 
@@ -578,30 +715,49 @@ def _duckdb_genome_compare_query(
         ctes.append(_duckdb_genomes_scope_cte(stb_sql=stb_sql, genome_scope_sql=genome_scope_sql))
 
     if need_genome_ani or need_ibs:
-        ctes.extend(
-            _duckdb_contig_pop_max_ctes(
-                shared_source="shared",
-                include_pop=need_genome_ani,
-                include_max_blocks=need_ibs,
+        for method in ani_methods:
+            ctes.extend(
+                _duckdb_contig_pop_max_ctes(
+                    shared_source="shared",
+                    include_pop=need_genome_ani,
+                    include_max_blocks=need_ibs,
+                    ani_method=method,
+                    ani_methods=ani_methods,
+                )
             )
-        )
     # Genome-level metrics are selected the same way in both grains; when genes
     # are requested the driving table becomes gene_ani, so each gene row carries
     # its own counts plus the repeated genome-level values.
     genome_selects: list[str] = []
     joins: list[str] = []
-    if need_genome_ani:
-        genome_selects.extend(
-            [
-                "COALESCE(p.total_positions, 0)::BIGINT AS total_positions",
-                "COALESCE(p.share_allele_pos, 0)::BIGINT AS share_allele_pos",
-            ]
-        )
-        genome_selects.append("COALESCE(p.genome_ani, 0.0)::DOUBLE AS genome_ani")
-        joins.append("LEFT JOIN pop p ON g.genome = p.genome")
-    if need_ibs:
-        genome_selects.append("COALESCE(m.max_consecutive_length, 0)::BIGINT AS max_consecutive_length")
-        joins.append("LEFT JOIN max_blocks m ON g.genome = m.genome")
+    for index, method in enumerate(ani_methods):
+        tag = "" if len(ani_methods) == 1 else f"_{ani_method_suffix(method)}"
+        alias = f"a{index}"
+        if need_genome_ani:
+            if index == 0:
+                genome_selects.append(
+                    f"COALESCE({alias}.total_positions, 0)::BIGINT AS total_positions"
+                )
+            shared_col = ani_metric_column("share_allele_pos", method, ani_methods)
+            genome_ani_col = ani_metric_column("genome_ani", method, ani_methods)
+            genome_selects.extend(
+                [
+                    f"COALESCE({alias}.share_allele_pos, 0)::BIGINT AS {shared_col}",
+                    f"COALESCE({alias}.genome_ani, 0.0)::DOUBLE AS {genome_ani_col}",
+                ]
+            )
+            joins.append(f"LEFT JOIN pop{tag} {alias} ON g.genome = {alias}.genome")
+    for index, method in enumerate(ani_methods):
+        tag = "" if len(ani_methods) == 1 else f"_{ani_method_suffix(method)}"
+        if need_ibs:
+            ibs_alias = f"b{index}"
+            ibs_col = ani_metric_column("max_consecutive_length", method, ani_methods)
+            genome_selects.append(
+                f"COALESCE({ibs_alias}.max_consecutive_length, 0)::BIGINT AS {ibs_col}"
+            )
+            joins.append(
+                f"LEFT JOIN max_blocks{tag} {ibs_alias} ON g.genome = {ibs_alias}.genome"
+            )
 
     sample_selects: list[str] = []
     if sample_1_name is not None and sample_2_name is not None:
@@ -753,10 +909,15 @@ def _shared_loci_polars(
     min_cov: int,
     genome_scope: str = "all",
     gene_scope: str = "all",
-    ani_method: str = "popani",
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
 ) -> pl.LazyFrame:
-    ani_expr = getattr(PolarsANIExpressions(), ani_method)()
-    con_expr = PolarsANIExpressions().conani()
+    ani_methods = parse_ani_methods(ani_method)
+    ani_expressions = [
+        getattr(PolarsANIExpressions(), method)().alias(
+            ani_match_column(method, ani_methods)
+        )
+        for method in ani_methods
+    ]
     p1, p2 = _filter_profiles_polars(
         mpile1=mpile1,
         mpile2=mpile2,
@@ -772,10 +933,9 @@ def _shared_loci_polars(
             how="inner",
             suffix="_2",
         )
-        .with_columns(ani_expr.alias("surr"), con_expr.alias("con_surr"))
+        .with_columns(ani_expressions)
         .select(
-            pl.col("surr"),
-            pl.col("con_surr"),
+            *[pl.col(ani_match_column(method, ani_methods)) for method in ani_methods],
             scaffold=pl.col("chrom"),
             pos=pl.col("pos"),
             genome=pl.col("genome"),
@@ -862,7 +1022,7 @@ def duckdb_filter_join(
     mpile2: Union[str, Path, pl.LazyFrame],
     min_cov: int,
     genome_scope: str = "all",   # or specific genome
-    ani_method: str = "popani",  # "popani" / "conani" / "cosani_0.4"
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
     gene_scope: str = "all",
     memory_limit: Optional[str] = None,
     temp_directory: Optional[Union[str, Path]] = None,
@@ -910,7 +1070,7 @@ def duckdb_compare_genomes_to_parquet(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     gene_scope: str = "all",
-    ani_method: str = "popani",
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
     calculate: Optional[Union[str, Iterable[str]]] = None,
     gene_range: Optional[Union[str, Path, pl.LazyFrame, pl.DataFrame]] = None,
     memory_limit: Optional[str] = None,
@@ -925,6 +1085,7 @@ def duckdb_compare_genomes_to_parquet(
     calculations = parse_genome_calculations(
         calculate, include_gene_from_all=gene_range is not None
     )
+    ani_methods = parse_ani_methods(ani_method)
     if "gene" in calculations and gene_range is None:
         raise ValueError(
             "Gene comparison was requested but no gene range table was provided. "
@@ -958,6 +1119,7 @@ def duckdb_compare_genomes_to_parquet(
             stb_file=stb_file,
             sample_1_name=sample_1_name,
             sample_2_name=sample_2_name,
+            ani_method=ani_methods,
         )
         if "gene" not in calculations:
             _duckdb_copy_query_to_parquet(con, query, output_file)
@@ -974,8 +1136,11 @@ def duckdb_compare_genomes_to_parquet(
                 stb_file=stb_file,
                 genome_scope=genome_scope,
                 gene_scope=gene_scope,
+                ani_method=ani_methods,
             )
-            out = _attach_genome_metrics(gene_frame, genome_frame, calculations)
+            out = _attach_genome_metrics(
+                gene_frame, genome_frame, calculations, ani_methods
+            )
             if sample_1_name is not None and sample_2_name is not None:
                 out = out.with_columns(
                     sample_1=pl.lit(sample_1_name), sample_2=pl.lit(sample_2_name)
@@ -992,7 +1157,7 @@ def duckdb_compare_genomes(
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
     gene_scope: str = "all",
-    ani_method: str = "popani",
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
     calculate: Optional[Union[str, Iterable[str]]] = None,
     gene_range: Optional[Union[str, Path, pl.LazyFrame, pl.DataFrame]] = None,
     stb_file: Optional[Union[str, Path]] = None,
@@ -1004,6 +1169,7 @@ def duckdb_compare_genomes(
     calculations = parse_genome_calculations(
         calculate, include_gene_from_all=gene_range is not None
     )
+    ani_methods = parse_ani_methods(ani_method)
     if "gene" in calculations and gene_range is None:
         raise ValueError(
             "Gene comparison was requested but no gene range table was provided. "
@@ -1024,7 +1190,7 @@ def duckdb_compare_genomes(
             p2_source=p2_source,
             min_cov=min_cov,
             genome_scope=genome_scope,
-            ani_method=ani_method,
+            ani_method=ani_methods,
         )
         query = _duckdb_genome_compare_query(
             shared_query=shared_query,
@@ -1032,6 +1198,7 @@ def duckdb_compare_genomes(
             genome_scope=genome_scope,
             calculate=calculations,
             stb_file=stb_file,
+            ani_method=ani_methods,
         )
         genome_frame = pl.from_arrow(con.execute(query).fetch_arrow_table()).lazy()
         if "gene" not in calculations:
@@ -1047,14 +1214,21 @@ def duckdb_compare_genomes(
                 stb_file=stb_file,
                 genome_scope=genome_scope,
                 gene_scope=gene_scope,
+                ani_method=ani_methods,
             )
-            return _attach_genome_metrics(gene_frame, genome_frame, calculations).collect().lazy()
+            return _attach_genome_metrics(
+                gene_frame, genome_frame, calculations, ani_methods
+            ).collect().lazy()
     finally:
         con.close()
 
 
 
-def add_contiguity_info(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
+def add_contiguity_info(
+    mpile_contig: pl.LazyFrame,
+    match_column: str = "surr",
+    group_column: str = "group_id",
+) -> pl.LazyFrame:
     """ Adds group id information to the lazy frame. If on the same scaffold and not popANI, then they are in the same group.
     
     Args:
@@ -1076,12 +1250,16 @@ def add_contiguity_info(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     # or at a position that is itself an SNV (surr == 0). Marking those break
     # points and taking a cumulative sum numbers the blocks, so `group_id` is
     # constant within each block and increments at every break.
-    break_expr = changed("scaffold") | (pl.col("surr") == 0)
+    break_expr = changed("scaffold") | (pl.col(match_column) == 0)
     if has_genome:
-        break_expr = changed("genome") | changed("scaffold") | (pl.col("surr") == 0)
+        break_expr = (
+            changed("genome")
+            | changed("scaffold")
+            | (pl.col(match_column) == 0)
+        )
 
     return mpile_contig.sort(sort_cols).with_columns(
-        break_expr.cast(pl.Int64).cum_sum().alias("group_id")
+        break_expr.cast(pl.Int64).cum_sum().alias(group_column)
     )
 
 def add_genome_info(mpile_contig:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame) -> pl.LazyFrame:
@@ -1099,6 +1277,29 @@ def add_genome_info(mpile_contig:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame) 
         scaffold_to_genome, on="scaffold", how="left"
     ).fill_null("NA")
 
+def calculate_ani(
+    mpile_contig: pl.LazyFrame,
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
+) -> pl.LazyFrame:
+    """Aggregate one or more per-position ANI match signals by genome."""
+    ani_methods = parse_ani_methods(ani_method)
+    aggregations: list[pl.Expr] = [pl.len().alias("total_positions")]
+    for method in ani_methods:
+        shared_col = ani_metric_column("share_allele_pos", method, ani_methods)
+        aggregations.append(
+            (pl.col(ani_match_column(method, ani_methods)) > 0).sum().alias(shared_col)
+        )
+    result = mpile_contig.group_by("genome").agg(aggregations)
+    return result.with_columns(
+        (
+            pl.col(ani_metric_column("share_allele_pos", method, ani_methods))
+            * 100.0
+            / pl.col("total_positions")
+        ).alias(ani_metric_column("genome_ani", method, ani_methods))
+        for method in ani_methods
+    )
+
+
 def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     """
     Calculates the population ANI (Average Nucleotide Identity) for the given mpileup LazyFrame.
@@ -1111,15 +1312,13 @@ def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: Updated LazyFrame with population ANI information added.
     """
-    return mpile_contig.group_by("genome").agg(
-            total_positions=pl.len(),
-            share_allele_pos=(pl.col("surr") > 0 ).sum()
-        ).with_columns(
-            # Same operand order as the SQL path so both engines agree bit for bit.
-            genome_ani=pl.col("share_allele_pos")*100.0/pl.col("total_positions"),
-        )
+    return calculate_ani(mpile_contig, "popani")
 
-def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
+def get_longest_consecutive_blocks(
+    mpile_contig: pl.LazyFrame,
+    group_column: str = "group_id",
+    output_column: str = "max_consecutive_length",
+) -> pl.LazyFrame:
     """
     Calculates the longest consecutive blocks for each genome in the mpileup LazyFrame for any genome.
     
@@ -1130,10 +1329,12 @@ def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
         pl.LazyFrame: Updated LazyFrame with longest consecutive blocks information added.
     """
     block_lengths = (
-        mpile_contig.group_by(["genome", "scaffold", "group_id"])
+        mpile_contig.group_by(["genome", "scaffold", group_column])
         .agg(pl.len().alias("length"))
     ) 
-    return block_lengths.group_by("genome").agg(pl.col("length").max().alias("max_consecutive_length"))
+    return block_lengths.group_by("genome").agg(
+        pl.col("length").max().alias(output_column)
+    )
 
 def scaffold_axis_map(scaffolds: Iterable[str]) -> dict[str, int]:
     """Map scaffold names to dense ids in lexicographic order.
@@ -1212,6 +1413,7 @@ def get_gene_ani(
     shared: pl.LazyFrame,
     gene_bounds: pl.LazyFrame,
     min_gene_compare_len: int,
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
 ) -> pl.LazyFrame:
     """Per-gene ANI over shared positions, correct for overlapping genes.
 
@@ -1232,16 +1434,42 @@ def get_gene_ani(
     # explicitly rather than assuming. Sorting one int64 key is cheap next to the
     # join itself, and getting this wrong is silent: an unsorted prefix yields
     # plausible but wrong counts.
+    ani_methods = parse_ani_methods(ani_method)
+    cumulative_shared = [
+        (pl.col(ani_match_column(method, ani_methods)) > 0)
+        .cast(pl.Int64)
+        .cum_sum()
+        .alias(f"cum_shared_{ani_method_suffix(method)}")
+        for method in ani_methods
+    ]
     prefix = (
         shared.sort("axis")
         .with_columns(
             cum_total=pl.int_range(1, pl.len() + 1, dtype=pl.Int64),
-            cum_shared=(pl.col("surr") > 0).cast(pl.Int64).cum_sum(),
+            *cumulative_shared,
         )
-        .select("axis", "cum_total", "cum_shared")
+        .select(
+            "axis",
+            "cum_total",
+            *[f"cum_shared_{ani_method_suffix(method)}" for method in ani_methods],
+        )
         .set_sorted("axis")
     )
-    return (
+    aggregations: list[pl.Expr] = [
+        (pl.col("cum_total").fill_null(0) * pl.col("sign"))
+        .sum()
+        .alias("total_positions")
+    ]
+    for method in ani_methods:
+        aggregations.append(
+            (
+                pl.col(f"cum_shared_{ani_method_suffix(method)}").fill_null(0)
+                * pl.col("sign")
+            )
+            .sum()
+            .alias(ani_metric_column("share_allele_pos", method, ani_methods))
+        )
+    result = (
         gene_bounds.join_asof(
             prefix,
             left_on="baxis",
@@ -1249,17 +1477,16 @@ def get_gene_ani(
             strategy="backward",
         )
         .group_by(["genome", "gene"])
-        .agg(
-            total_positions=(pl.col("cum_total").fill_null(0) * pl.col("sign")).sum(),
-            share_allele_pos=(pl.col("cum_shared").fill_null(0) * pl.col("sign")).sum(),
-        )
+        .agg(aggregations)
         .filter(pl.col("total_positions") >= min_gene_compare_len)
-        .with_columns(
-            # Multiply before dividing to match the SQL path exactly; the other
-            # order differs in the last ULP for some counts (52/61*100 !=
-            # 52*100/61), which would make the engines disagree bit for bit.
-            gene_ani=pl.col("share_allele_pos") * 100.0 / pl.col("total_positions")
-        )
+    )
+    return result.with_columns(
+        (
+            pl.col(ani_metric_column("share_allele_pos", method, ani_methods))
+            * 100.0
+            / pl.col("total_positions")
+        ).alias(ani_metric_column("gene_ani", method, ani_methods))
+        for method in ani_methods
     )
 
 def get_unique_scaffolds(mpile_contig:pl.LazyFrame,batch_size:int=10000) -> set:
@@ -1289,7 +1516,7 @@ def compare_genomes_polars(
     min_cov: int = 5,
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
-    ani_method: str = "popani",
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
     stb_file: Optional[Union[str, Path]] = None,
     calculate: Optional[Union[str, Iterable[str]]] = None,
     gene_range: Optional[Union[str, Path, pl.LazyFrame, pl.DataFrame]] = None,
@@ -1304,6 +1531,7 @@ def compare_genomes_polars(
     calculations = parse_genome_calculations(
         calculate, include_gene_from_all=gene_range is not None
     )
+    ani_methods = parse_ani_methods(ani_method)
     if "gene" in calculations and gene_range is None:
         raise ValueError(
             "Gene comparison was requested but no gene range table was provided. "
@@ -1314,13 +1542,29 @@ def compare_genomes_polars(
         mpile2=mpile_contig_2,
         min_cov=min_cov,
         genome_scope=genome_scope,
-        ani_method=ani_method,
+        ani_method=ani_methods,
     )
     genome_comp_parts: list[pl.LazyFrame] = []
     if "genome_ani" in calculations:
-        genome_comp_parts.append(calculate_pop_ani(shared))
+        genome_comp_parts.append(calculate_ani(shared, ani_methods))
     if "ibs" in calculations:
-        genome_comp_parts.append(get_longest_consecutive_blocks(add_contiguity_info(shared)))
+        for method in ani_methods:
+            match_col = ani_match_column(method, ani_methods)
+            group_col = f"group_id_{ani_method_suffix(method)}"
+            output_col = ani_metric_column(
+                "max_consecutive_length", method, ani_methods
+            )
+            genome_comp_parts.append(
+                get_longest_consecutive_blocks(
+                    add_contiguity_info(
+                        shared,
+                        match_column=match_col,
+                        group_column=group_col,
+                    ),
+                    group_column=group_col,
+                    output_column=output_col,
+                )
+            )
 
     if genome_comp_parts:
         genome_comp = genome_comp_parts[0]
@@ -1338,20 +1582,32 @@ def compare_genomes_polars(
 
     genome_casts: list[pl.Expr] = []
     if "genome_ani" in calculations:
-        genome_casts.extend(
-            [
-                pl.col("total_positions").fill_null(0).cast(pl.Int64),
-                pl.col("share_allele_pos").fill_null(0).cast(pl.Int64),
-                pl.col("genome_ani").fill_null(0.0).cast(pl.Float64),
-            ]
-        )
+        genome_casts.append(pl.col("total_positions").fill_null(0).cast(pl.Int64))
+        for method in ani_methods:
+            genome_casts.extend(
+                [
+                    pl.col(
+                        ani_metric_column("share_allele_pos", method, ani_methods)
+                    ).fill_null(0).cast(pl.Int64),
+                    pl.col(
+                        ani_metric_column("genome_ani", method, ani_methods)
+                    ).fill_null(0.0).cast(pl.Float64),
+                ]
+            )
     if "ibs" in calculations:
-        genome_casts.append(pl.col("max_consecutive_length").fill_null(0).cast(pl.Int64))
+        genome_casts.extend(
+            pl.col(
+                ani_metric_column("max_consecutive_length", method, ani_methods)
+            ).fill_null(0).cast(pl.Int64)
+            for method in ani_methods
+        )
     if genome_casts:
         genome_comp = genome_comp.with_columns(genome_casts)
 
     if "gene" not in calculations:
-        return genome_comp.select(genome_metric_output_columns(calculations))
+        return genome_comp.select(
+            genome_metric_output_columns(calculations, ani_methods)
+        )
 
     axis_map, gene_ranges = _gene_range_axis_inputs(
         gene_range,
@@ -1366,13 +1622,12 @@ def compare_genomes_polars(
         shared=with_axis(shared, axis_map).drop_nulls("axis"),
         gene_bounds=gene_boundary_table(gene_ranges, axis_map),
         min_gene_compare_len=min_gene_compare_len,
-    ).with_columns(
-        pl.col("total_positions").cast(pl.Int64),
-        pl.col("share_allele_pos").cast(pl.Int64),
-        pl.col("gene_ani").cast(pl.Float64),
+        ani_method=ani_methods,
     )
 
-    return _attach_genome_metrics(gene_comp, genome_comp, calculations)
+    return _attach_genome_metrics(
+        gene_comp, genome_comp, calculations, ani_methods
+    )
 
 
 
@@ -1385,7 +1640,7 @@ def compare_genomes(
     min_cov: int = 5,
     min_gene_compare_len: int = 100,
     genome_scope: str = "all",
-    ani_method: str = "popani",
+    ani_method: Optional[Union[str, Iterable[str]]] = "popani",
     duckdb_memory_limit: Optional[str] = None,
     duckdb_temp_directory: Optional[Union[str, Path]] = None,
     duckdb_threads: Optional[int] = None,
@@ -1577,5 +1832,3 @@ def matrix_surr_torch(
             raise ValueError(f"Unknown ani_method: {ani_method}")
 
     return matches.cpu().to(torch.float64).numpy(), shared.cpu().to(torch.float64).numpy()
-
-

@@ -12,9 +12,20 @@ Most comparison-driven functions expect a `pl.LazyFrame` with some or all of the
 - `genome_ani`
 - `total_positions`
 - `max_consecutive_length`
-- `shared_genes_count`
-- `identical_gene_count`
-- `perc_id_genes`
+
+These helpers use one ANI definition at a time. A single-method comparison
+already has the expected unsuffixed columns. For a multi-method comparison,
+select one method and rename it before calling the visualization functions:
+
+```python
+comps_lf = (
+    pl.scan_parquet("all_comparisons.parquet")
+    .rename({
+        "genome_ani_popani": "genome_ani",
+        "max_consecutive_length_popani": "max_consecutive_length",
+    })
+)
+```
 
 Population-aware functions also expect a `sample_to_population` lazy frame with:
 

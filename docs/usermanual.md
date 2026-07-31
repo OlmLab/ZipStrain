@@ -344,7 +344,7 @@ Other options:
 
 #### `zipstrain compare`
 
-Compare profiled samples to each other, one row per genome per sample pair, and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). By default it compares at the genome level; add `--compare-genes` for gene-level comparison. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
+Compare profiled samples through one command and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). `--calculate` selects `genome_ani`, `ibs`, `gene`, or a `+`-joined combination. Selecting `gene` makes the output gene-grained and requires `--gene-range-table`. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
 
 There are two engines. `--method standard` (default) does direct pairwise comparison and is simplest. `--method matrix` builds a reusable matrix store, which pays off for repeated all-vs-all comparison. Both are **resumable and extendable**: re-running with the same `--run-dir` and a profiles table that includes new samples computes only the new pairs. See the [Tutorial](./Tutorial.md) for a worked matrix walk-through and [Expected output](./expected_output.md) for the columns.
 
@@ -360,24 +360,33 @@ zipstrain compare \
   --run-dir out_compare \
   --method matrix \
   --stb-file reference_genomes.stb
+
+# Gene ANI plus the genome metrics in one gene-grained table
+zipstrain compare \
+  --profile-db profiles.csv \
+  --run-dir out_compare_gene_metrics \
+  --gene-range-table gene_range_table.tsv \
+  --calculate all
 ```
 
 Major options:
 
 - `--profile-db`, `-r, --run-dir` (required)
-- `--method` (`standard`/`matrix`) and `--compare-genes` — pick the engine and genome vs. gene level
-- `--scope` (`all` for genomes, `all:all` for genes), `--min-cov` (5), `--min-gene-compare-len` (100)
-- `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`genome_ani`/`ibs`/`gene`/`all`)
+- `--method` (`standard`/`matrix`) selects the implementation; `--calculate` selects metrics and output grain
+- `--scope` (`all`, `GENOME`, or `GENOME:GENE`), `--min-cov` (5), `--min-gene-compare-len` (100)
+- `-a, --ani-method` accepts one method or a comma-separated list (`popani,conani,cosani_0.95`); `--calculate` selects `genome_ani`/`ibs`/`gene`/`all`
 - `--stb-file` — required for `--method matrix`
 - Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16)
 - Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
 
-For matrix comparison, `popani` automatically uses the compact bitmask store;
-`conani` and `cosani_<threshold>` automatically use a count store. The selected
-ANI method and `--min-cov` become part of that run directory's persistent
-matrix/compare contract. To change either, use a new `--run-dir`.
+For matrix comparison, a single `popani` request automatically uses the compact
+bitmask store. Any list, `conani`, or `cosani_<threshold>` uses a count store.
+The HDF5 store is built once; each requested ANI method has its own resumable
+comparison database, and the compact result tables are joined for the final
+output. `--min-cov` remains fixed in the store contract. A bitmask store cannot
+later add conANI or cosANI; start a new run directory when that is required.
 
 <details>
 <summary><code>zipstrain compare --help</code></summary>
@@ -385,16 +394,15 @@ matrix/compare contract. To change either, use a new `--run-dir`.
 ```text
 Usage: zipstrain compare [OPTIONS]
 
-  Compare profiled samples at the genome level (default) or gene level
-  (--compare-genes).
+  Compare profiled samples through one genome/gene calculation path.
 
   ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
   there is no need to run ``zipstrain utilities build-profile-db`` first; a
   pre-built profile-database parquet is also accepted.
 
-  Both methods write ``<run-dir>/all_comparisons.parquet``. Re-running with
-  the same ``--run-dir`` and a profiles table that includes new samples
-  extends the existing comparison, computing only the new pairs.
+  ``--calculate`` determines the output grain. Selecting ``gene`` emits one
+  row per gene with requested genome metrics attached. All runs write
+  ``<run-dir>/all_comparisons.parquet``.
 
 Required inputs:
   --profile-db TEXT   Profiles to compare: either a CSV with
@@ -408,21 +416,26 @@ Comparison parameters:
                                   pairwise) or 'matrix' (reusable matrix
                                   store, good for repeated all-vs-all).
                                   [default: standard]
-  --compare-genes                 Compare genes instead of genomes.
-  --scope TEXT                    Comparison scope. Defaults to 'all' for
-                                  genomes and 'all:all' for genes.
+  --scope TEXT                    Restrict to a genome, or use GENOME:GENE
+                                  with the standard method when calculating
+                                  gene metrics. [default: all]
   --min-cov INTEGER               Minimum coverage to consider a position.
                                   [default: 5]
   --min-gene-compare-len INTEGER  Minimum gene length to consider for
                                   comparison.  [default: 100]
   --stb-file TEXT                 Scaffold-to-genome mapping file. Required
                                   for --method matrix.
-  -a, --ani-method TEXT           ANI calculation method (e.g., 'popani',
-                                  'conani', 'cosani_0.4').  [default: popani]
+  -a, --ani-method TEXT           One or more comma-separated ANI methods (for
+                                  example, popani,conani,cosani_0.4).
+                                  [default: popani]
   --calculate TEXT                Metrics to compute: genome_ani, ibs, gene.
                                   Combine with '+', or use all. 'gene' needs
                                   --gene-range-table and makes the output
                                   gene-grained.  [default: all]
+  --gene-range-table TEXT         Gene range table for gene ANI. Required by
+                                  the standard method; with --method matrix
+                                  and --calculate gene, it can be auto-
+                                  discovered from profiling_assets.
   --comp-db-file TEXT             Optional existing comparison parquet to
                                   resume/extend (standard method). Auto-
                                   detected from --run-dir if omitted.
@@ -431,9 +444,6 @@ Comparison parameters:
 
 Matrix method (--method matrix):
   --bed-file TEXT                 BED file for the matrix store (--method
-                                  matrix). Auto-discovered from
-                                  profiling_assets if omitted.
-  --gene-range-table TEXT         Gene range table for gene ANI (--method
                                   matrix). Auto-discovered from
                                   profiling_assets if omitted.
   --backend [numpy|torch|torch-cpu|torch-cuda|torch-mps]
@@ -541,8 +551,6 @@ Commands:
   process-read-locs       Process read locations and save them to a...
   process_mpileup         Process an mpileup stream and save the results in...
   profile-single          Profile a single BAM file using the provided...
-  single_compare_gene     Compare two profile parquets and calculate...
-  single_compare_genome   Compare two profile parquets and...
   sort-profile            Sort a classic profile parquet in place and...
   to-complete-table       Generate the not-yet-completed...
 ```
@@ -693,33 +701,6 @@ The output preserves the input profile-like columns and includes only positions 
 
 This uses the same reference-sharing logic used to populate `ref_ani` in the gene and genome stat tables.
 
-#### `zipstrain utilities single_compare_genome`
-
-```bash
-zipstrain utilities single_compare_genome \
-  --profile-location-1 sample_a.parquet \
-  --profile-location-2 sample_b.parquet \
-  --stb-file mapping.stb \
-  --output-file out.parquet
-```
-
-Options:
-
-- `--profile-location-1` / `--profile-1` (required)
-- `--profile-location-2` / `--profile-2` (required)
-- `-g, --gene-range-table` (required) — headerless TSV of `gene, scaffold, start, end`. Gene boundaries are resolved from this at compare time, so overlapping and nested genes each get their full range
-- `-s, --stb-file` (required)
-- `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `100`)
-- `-o, --output-file` (required)
-- `-g, --genome` (default: `all`)
-- `-a, --ani-method` (default: `popani`)
-- `--calculate` (default: `all`)
-- `--engine` (`polars|duckdb`, default: `polars`)
-- `--duckdb-memory-limit`
-- `--duckdb-temp-directory`
-- `--duckdb-threads`
-
 #### `zipstrain utilities generate-sample-pair`
 
 ```bash
@@ -788,33 +769,6 @@ The final console summary includes:
 - average wall time per pair
 - average compute time per pair
 - average time per genome-level output row
-
-#### `zipstrain utilities single_compare_gene`
-
-```bash
-zipstrain utilities single_compare_gene \
-  --profile-location-1 sample_a.parquet \
-  --profile-location-2 sample_b.parquet \
-  --gene-range-table gene_range_table.tsv \
-  --stb-file mapping.stb \
-  --scope all:all \
-  --output-file out.parquet
-```
-
-Options:
-
-- `--profile-location-1` / `--profile-1` (required)
-- `--profile-location-2` / `--profile-2` (required)
-- `-s, --stb-file` (required)
-- `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `100`)
-- `-o, --output-file` (required)
-- `-g, --scope` (default: `all:all`)
-- `-a, --ani-method` (default: `popani`)
-- `--engine` (`polars|duckdb`, default: `polars`)
-- `--duckdb-memory-limit`
-- `--duckdb-temp-directory`
-- `--duckdb-threads`
 
 #### `zipstrain utilities to-complete-table`
 
@@ -1296,8 +1250,7 @@ Conventions used by every example below:
 | `map_reads` | Reads → sorted BAMs with Bowtie2 | `local` or `sra` |
 | `profile` | BAMs → per-position profiles and stat tables | (bam table) |
 | `from_sra_to_profile` | SRA accessions → profiles, end to end | `sra` |
-| `compare_genomes` | Pairwise genome ANI/IBS across profiles | `profile_table` or `pair_table` |
-| `compare_genes` | Pairwise gene comparison across profiles | `profile_table` or `pair_table` |
+| `compare` | Pairwise genome and optional gene metrics across profiles | `profile_table` or `pair_table` |
 
 ### Key parameters
 
@@ -1310,11 +1263,13 @@ Conventions used by every example below:
 - `--error_rate` (default `0.001`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.05`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
 - `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0.01`.
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows.
-- `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
-- `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
+- `--compare_scope`: compare every genome (`all`) or one genome ID.
+- `--compare_ani_method`: one ANI method or a comma-separated list
+  (`popani,conani,cosani_0.95`). Nextflow forwards the list to each pair task;
+  multi-method outputs use method-suffixed columns.
 - `--compare_engine` (`polars` | `duckdb`, default `polars`) and `--compare_duckdb_memory_limit` (DuckDB only).
 - `--compare_calculate`: metrics to compute (`genome_ani`, `ibs`, `gene`, `all`, or `+` combinations). `gene` requires a gene range table and yields a gene-grained table.
-- `--gene_range_table`: headerless TSV of `gene, scaffold, start, end`. **Required for `--mode compare_genes`** — gene boundaries are resolved from ranges at compare time rather than from a per-position label in the profile, which is what lets overlapping and nested genes each get their full range.
+- `--gene_range_table`: optional headerless TSV of `gene, scaffold, start, end`. It is required when `gene` is explicitly requested and causes `all` to include gene metrics. Nextflow stages the table into every comparison task, including containerized and cluster tasks. Gene boundaries are resolved from ranges at compare time, allowing overlapping and nested genes to receive their full ranges.
 
 Notes:
 
@@ -1419,7 +1374,7 @@ nextflow run OlmLab/ZipStrain \
 
 Omit `--reference_genome` to auto-build a reference with Sylph (as in Command 1, Option B); in that case pass `--sylph_db /path/to/gtdb-r220-c200-dbv1.syldb` pointing at a database you [pre-downloaded](#command-1-map-reads-mode-map_reads), rather than letting the pipeline re-download it each run. Outputs land under `<output_dir>/profiles/`.
 
-### Command 4: Compare genomes (`--mode compare_genomes`)
+### Command 4: Compare profiles (`--mode compare`)
 
 Input is either an all-vs-all profile list (`--input_type profile_table`) or explicit pairs (`--input_type pair_table`):
 
@@ -1438,35 +1393,38 @@ S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
 
 ```bash
 nextflow run OlmLab/ZipStrain \
-  --mode compare_genomes \
+  --mode compare \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
-  --compare_genome_scope all \
+  --compare_scope all \
   --compare_calculate genome_ani+ibs \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --output_dir out_compare_genomes \
+  --output_dir out_compare \
   -resume
 ```
 
-### Command 5: Compare genes (`--mode compare_genes`)
+### Command 5: Include gene metrics
 
-Same input-table formats as genome compare.
+Use the same `compare` mode and input-table formats, provide the gene range
+table, and include `gene` in `--compare_calculate`. Requesting `gene` alone
+writes only gene-level metrics; `all` includes genome ANI, IBS, and gene ANI.
 
 ```bash
 nextflow run OlmLab/ZipStrain \
-  --mode compare_genes \
+  --mode compare \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
-  --compare_gene_scope all:all \
+  --gene_range_table gene_range_table.tsv \
+  --compare_calculate all \
   --compare_ani_method popani \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 4 \
-  --output_dir out_compare_genes \
+  --output_dir out_compare_gene_metrics \
   -resume
 ```
 

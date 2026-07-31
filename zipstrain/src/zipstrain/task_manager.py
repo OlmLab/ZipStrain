@@ -604,15 +604,14 @@ class ProfileTaskGenerator(TaskGenerator):
             yield tasks
 
 class CompareTaskGenerator(TaskGenerator):
-    """This TaskGenerator generates FastCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genomes functionality in
-    zipstrain.compare module.
+    """Generate unified pair-comparison tasks from a Polars table.
     
     Args:
         data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
         ani_method (str): ANI method passed to single genome compare tasks.
-        calculate (str): Genome metric set passed to single genome compare tasks ("all", "ani", or a '+'/','-joined combo of ani/ibs/identical_genes).
+        calculate (str): Metric set passed to pair compare tasks.
         duckdb_memory_limit (str | None): Optional DuckDB memory limit (for example "2GB").
         duckdb_threads (int | None): Optional DuckDB thread cap (for example 8).
         compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
@@ -632,7 +631,6 @@ class CompareTaskGenerator(TaskGenerator):
         super().__init__(data, yield_size)
         self.comp_config = comp_config
         self.engine = container_engine
-        self.ani_method = ani_method
         self.calculate = calculate
         self.duckdb_memory_limit = duckdb_memory_limit
         self.duckdb_threads = duckdb_threads
@@ -641,13 +639,12 @@ class CompareTaskGenerator(TaskGenerator):
             raise ValueError("data must be a polars LazyFrame.")
         if self.compare_engine not in {"polars", "duckdb"}:
             raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
-        # Accept any calculate spec that single_compare_genome understands
-        # ("all", "ani", or a '+'/','-joined combo of ani/ibs/
-        # identical_genes). The value is forwarded verbatim to the per-pair
-        # subprocess, so validate it here with the same parser rather than a
-        # hardcoded {"all", "ani"} allowlist.
         from . import compare as _compare
-        _compare.parse_genome_calculations(self.calculate)
+        self.ani_method = _compare.canonical_ani_methods(ani_method)
+        _compare.parse_genome_calculations(
+            self.calculate,
+            include_gene_from_all=self.comp_config.gene_range_table_loc is not None,
+        )
         
     def get_total_tasks(self) -> int:
         """Returns total number of pairwise comparisons to be made."""
@@ -674,15 +671,29 @@ class CompareTaskGenerator(TaskGenerator):
                 ani_method_arg = f"--ani-method {self.ani_method}"
                 calculate_arg = f"--calculate {self.calculate}"
                 compare_engine_arg = f"--engine {self.compare_engine}"
-                stb_file_arg = (
-                    f"--stb-file {pathlib.Path(self.comp_config.stb_file_loc).absolute()}"
+                stb_file_option = "--stb-file" if self.comp_config.stb_file_loc else ""
+                stb_file_input = (
+                    FileInput(self.comp_config.stb_file_loc)
                     if self.comp_config.stb_file_loc
+                    else StringInput("")
+                )
+                gene_range_table_option = (
+                    "--gene-range-table"
+                    if self.comp_config.gene_range_table_loc
                     else ""
+                )
+                gene_range_table_input = (
+                    FileInput(self.comp_config.gene_range_table_loc)
+                    if self.comp_config.gene_range_table_loc
+                    else StringInput("")
                 )
                 inputs = {
                 "profile_1_file": FileInput(row["profile_location_1"]),
                 "profile_2_file": FileInput(row["profile_location_2"]),
-                "stb-file-arg": StringInput(stb_file_arg),
+                "stb-file-option": StringInput(stb_file_option),
+                "stb-file": stb_file_input,
+                "gene-range-table-option": StringInput(gene_range_table_option),
+                "gene-range-table": gene_range_table_input,
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "ani-method-arg": StringInput(ani_method_arg),
@@ -690,8 +701,7 @@ class CompareTaskGenerator(TaskGenerator):
                 "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
                 "duckdb-threads-arg": StringInput(duckdb_threads_arg),
                 "compare-engine-arg": StringInput(compare_engine_arg),
-                "calculate-arg": StringInput(f"--calculate {self.calculate}"),
-                "genome-name": StringInput(self.comp_config.scope),
+                "scope": StringInput(self.comp_config.scope),
                 }
                 expected_outputs ={
                 "output-file":  FileOutput(row["sample_name_1"]+"_"+row["sample_name_2"]+"_comparison.parquet" ),
@@ -1742,7 +1752,7 @@ class ProfileBamTask(Task):
     """
     
 class FastCompareTask(Task):
-    """A Task that performs a genome comparison using `zipstrain utilities single_compare_genome`.
+    """A task that compares one profile pair through the unified compare command.
     
     Args:
         id (str): Unique identifier for the task.
@@ -1751,9 +1761,10 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    zipstrain utilities single_compare_genome --profile-location-1 <profile_1_file> \
+    zipstrain utilities single-compare --profile-location-1 <profile_1_file> \
     --profile-location-2 <profile_2_file> \
-    <stb-file-arg> \
+    <stb-file-option> <stb-file> \
+    <gene-range-table-option> <gene-range-table> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
     <ani-method-arg> \
@@ -1761,9 +1772,8 @@ class FastCompareTask(Task):
     <duckdb-memory-limit-arg> \
     <duckdb-threads-arg> \
     <compare-engine-arg> \
-    <calculate-arg> \
     --output-file <output-file> \
-    --genome <genome-name>
+    --scope <scope>
     """
 
 
@@ -1926,7 +1936,7 @@ def _reorganize_compare_run_output(run_dir: pathlib.Path) -> None:
     batch holding the merged parquet) into::
 
         run_dir/
-            all_comparisons.parquet        # (or all_gene_comparisons.parquet)
+            all_comparisons.parquet
             log/                           # batch_events.log, *.err, *.out, .status
             intermediate_files/
                 batch_0/...                # per-pair comparison parquets, etc.
@@ -1950,13 +1960,12 @@ def _reorganize_compare_run_output(run_dir: pathlib.Path) -> None:
         for parquet in sorted(final_batch_dir.glob("*.parquet")):
             _move_into(run_dir, parquet)
 
-    # Every batch-like directory (genome batches `batch_N`, gene batches
-    # `gene_batch_N`, plus the final Outputs batch): its loose files are
-    # logs/scaffolding, its subdirectories are intermediates.
+    # Every comparison batch plus the final Outputs batch: loose files are
+    # logs/scaffolding, while subdirectories are intermediates.
     batch_dirs = [
         entry
         for entry in sorted(run_dir.iterdir())
-        if entry.is_dir() and re.fullmatch(r"(gene_)?batch_\d+", entry.name)
+        if entry.is_dir() and re.fullmatch(r"batch_\d+", entry.name)
     ]
     if final_batch_dir.is_dir():
         batch_dirs.append(final_batch_dir)
@@ -2090,393 +2099,6 @@ def lazy_run_compares(
     else:
         raise ValueError(f"Unknown execution mode: {execution_mode}")
     runner = CompareRunner(
-        run_dir=pathlib.Path(run_dir),
-        task_generator=task_generator,
-        container_engine=container_engine,
-        max_concurrent_batches=max_concurrent_batches,
-        poll_interval=poll_interval,
-        tasks_per_batch=tasks_per_batch,
-        batch_type=batch_type,
-        slurm_config=slurm_config,
-    )
-    asyncio.run(runner.run())
-
-    # Only tidy the output layout when every batch succeeded, so a partial
-    # failure keeps the raw batch structure available for a resuming re-run.
-    if runner._failed_batches_count == 0:
-        _reorganize_compare_run_output(pathlib.Path(run_dir))
-
-
-class FastGeneCompareTask(Task):
-    """A Task that performs a gene comparison using `zipstrain utilities single_compare_gene`.
-    
-    Args:
-        id (str): Unique identifier for the task.
-        inputs (dict[str, Input]): Dictionary of input parameters for the task.
-        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
-        engine (Engine): Container engine to wrap the command.
-    """
-    TEMPLATE_CMD="""
-    zipstrain utilities single_compare_gene --profile-location-1 <profile_1_file> \
-    --profile-location-2 <profile_2_file> \
-    <stb-file-arg> \
-    --min-cov <min_cov> \
-    --gene-range-table <gene-range-table> \
-    --min-gene-compare-len <min-gene-compare-len> \
-    <duckdb-memory-limit-arg> \
-    <duckdb-threads-arg> \
-    <compare-engine-arg> \
-    --output-file <output-file> \
-    --ani-method <ani-method>
-    """
-
-class GeneCompareTaskGenerator(TaskGenerator):
-    """This TaskGenerator generates FastGeneCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genes functionality in
-    zipstrain.compare module.
-    
-    Args:
-        data (pl.LazyFrame): Polars LazyFrame containing the data for generating tasks.
-        yield_size (int): Number of tasks to yield at a time.
-        comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
-        ani_method (str): ANI calculation method to use. Default is "popani".
-        duckdb_threads (int | None): Optional DuckDB thread cap (for example 8).
-        compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
-    """
-    def __init__(
-        self,
-        data: pl.LazyFrame,
-        yield_size: int,
-        container_engine: Engine,
-        comp_config: database.GeneComparisonConfig,
-        ani_method: str = "popani",
-        duckdb_memory_limit: str | None = None,
-        duckdb_threads: int | None = None,
-        compare_engine: str = "polars",
-    ) -> None:
-        super().__init__(data, yield_size)
-        self.comp_config = comp_config
-        self.engine = container_engine
-        self.ani_method = ani_method
-        self.duckdb_memory_limit = duckdb_memory_limit
-        self.duckdb_threads = duckdb_threads
-        self.compare_engine = compare_engine
-        if type(self.data) is not pl.LazyFrame:
-            raise ValueError("data must be a polars LazyFrame.")
-        if self.compare_engine not in {"polars", "duckdb"}:
-            raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
-        
-    def get_total_tasks(self) -> int:
-        """Returns total number of pairwise comparisons to be made."""
-        return self.data.select(size=pl.len()).collect(engine="streaming")["size"][0]
-
-    async def generate_tasks(self) -> list[Task]:
-        """Yields lists of FastGeneCompareTask objects based on the data in batches of yield_size. This method yields the control back to the event loop
-        while polars is collecting data to avoid blocking.
-        """
-        for offset in range(0, self._total_tasks, self.yield_size):
-            batch_df = await self.data.slice(offset, self.yield_size).collect_async(engine="streaming")
-            tasks = []
-            for row in batch_df.iter_rows(named=True):
-                duckdb_memory_limit_arg = (
-                    f"--duckdb-memory-limit {self.duckdb_memory_limit}"
-                    if self.duckdb_memory_limit
-                    else ""
-                )
-                duckdb_threads_arg = (
-                    f"--duckdb-threads {self.duckdb_threads}"
-                    if self.duckdb_threads is not None
-                    else ""
-                )
-                compare_engine_arg = f"--engine {self.compare_engine}"
-                if not self.comp_config.gene_range_table_loc:
-                    raise ValueError(
-                        "Gene comparison requires a gene range table. Set "
-                        "GeneComparisonConfig.gene_range_table_loc (CLI: --gene-range-table); "
-                        "gene boundaries are no longer stored in the profile."
-                    )
-                gene_range_table_arg = str(pathlib.Path(self.comp_config.gene_range_table_loc).absolute())
-                stb_file_arg = (
-                    f"--stb-file {pathlib.Path(self.comp_config.stb_file_loc).absolute()}"
-                    if self.comp_config.stb_file_loc
-                    else ""
-                )
-                inputs = {
-                "profile_1_file": FileInput(row["profile_location_1"]),
-                "profile_2_file": FileInput(row["profile_location_2"]),
-                "stb-file-arg": StringInput(stb_file_arg),
-                "gene-range-table": StringInput(gene_range_table_arg),
-                "min_cov": IntInput(self.comp_config.min_cov),
-                "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
-                "duckdb-memory-limit-arg": StringInput(duckdb_memory_limit_arg),
-                "duckdb-threads-arg": StringInput(duckdb_threads_arg),
-                "compare-engine-arg": StringInput(compare_engine_arg),
-                "ani-method": StringInput(self.ani_method),
-                }
-                expected_outputs ={
-                "output-file":  FileOutput(row["sample_name_1"]+"_"+row["sample_name_2"]+"_gene_comparison.parquet" ),
-                }
-                task = FastGeneCompareTask(id=row["sample_name_1"]+"_"+row["sample_name_2"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
-                tasks.append(task)
-            yield tasks
-
-class GeneCompareRunner(Runner):
-    """
-    Creates and schedules batches of FastGeneCompareTask tasks using either local or Slurm batches.
-    
-    Args:
-        run_dir (str | pathlib.Path): Directory where the runner will operate.
-        task_generator (TaskGenerator): An instance of TaskGenerator to produce tasks.
-        container_engine (Engine): An instance of Engine to wrap task commands.
-        max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
-        poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 1.0.
-        tasks_per_batch (int): Number of tasks to include in each batch. Default is 10.
-        batch_type (str): Type of batch to use ("local" or "slurm"). Default is "local".
-        slurm_config (SlurmConfig | None): Configuration for Slurm batches if batch_type
-            is "slurm". Default is None.    
-    """
-
-    def __init__(
-        self,
-        run_dir: str | pathlib.Path,
-        task_generator: TaskGenerator,
-        container_engine: Engine,
-        max_concurrent_batches: int = 1,
-        poll_interval: float = 1.0,
-        tasks_per_batch: int = 10,
-        batch_type: str = "local",
-        slurm_config: SlurmConfig | None = None,
-    ) -> None:
-        if batch_type == "slurm":
-            if slurm_config is None:
-                raise ValueError("Slurm config must be provided for slurm batch type.")
-            batch_factory = FastGeneCompareSlurmBatch
-            final_batch_factory = PrepareGeneCompareRunOutputsSlurmBatch
-        else:
-            batch_factory = FastGeneCompareLocalBatch
-            final_batch_factory = PrepareGeneCompareRunOutputsLocalBatch
-        super().__init__(
-            run_dir=run_dir,
-            task_generator=task_generator,
-            container_engine=container_engine,
-            batch_factory=batch_factory,
-            final_batch_factory=final_batch_factory,
-            max_concurrent_batches=max_concurrent_batches,
-            poll_interval=poll_interval,
-            tasks_per_batch=tasks_per_batch,
-            batch_type=batch_type,
-            slurm_config=slurm_config,
-        )
-
-    def _log_location(self) -> pathlib.Path:
-        # A successful compare run relocates its logs into run_dir/log
-        # (see _reorganize_compare_run_output).
-        return pathlib.Path(self.run_dir) / LOG_DIRNAME
-
-    async def _batcher(self):
-        """
-        Defines the batcher coroutine that collects tasks from the tasks_queue, groups them into batches,
-        and puts the batches into the batches_queue. Each batch includes a CollectGeneComps task to merge the outputs of the tasks in the batch.
-        """
-        buffer: list[Task] = []
-        while True:
-            task = await self.tasks_queue.get()
-            if task is None:
-                if buffer:
-                    collect_task = CollectGeneComps(
-                        id="collect_gene_comps",
-                        inputs={},
-                        expected_outputs={"output-file": FileOutput(f"Merged_gene_batch_{self._batch_counter}.parquet")},
-                        engine=self.container_engine,
-                    )
-                    buffer.append(collect_task)
-                    if self.batch_type == "slurm":
-                        batch = self.batch_factory(
-                            tasks=buffer,
-                            id=f"gene_batch_{self._batch_counter}",
-                            run_dir=self.run_dir,
-                            expected_outputs=[],
-                            slurm_config=self.slurm_config,
-                        )
-                    else:
-                        batch = self.batch_factory(
-                        tasks=buffer,
-                        id=f"gene_batch_{self._batch_counter}",
-                        run_dir=self.run_dir,
-                        expected_outputs=[],
-                    )
-                    await self.batches_queue.put(batch)
-                    self._batch_counter += 1
-                self._batcher_done = True
-                break
-
-            buffer.append(task)
-            if len(buffer) == self.tasks_per_batch:
-                collect_task = CollectGeneComps(
-                    id="collect_gene_comps",
-                    inputs={},
-                    expected_outputs={"output-file": FileOutput(f"Merged_gene_batch_{self._batch_counter}.parquet")},
-                    engine=self.container_engine,
-                )
-                buffer.append(collect_task)
-                if self.batch_type == "slurm":
-                    batch = self.batch_factory(
-                        tasks=buffer,
-                        id=f"gene_batch_{self._batch_counter}",
-                        run_dir=self.run_dir,
-                        expected_outputs=[],
-                        slurm_config=self.slurm_config,
-                    )
-                else:
-                    
-                    batch = self.batch_factory(
-                    tasks=buffer,
-                    id=f"gene_batch_{self._batch_counter}",
-                    run_dir=self.run_dir,
-                    expected_outputs=[],
-                )
-                await self.batches_queue.put(batch)
-                self._batch_counter += 1
-                buffer = []
-
-    def _create_final_batch(self) -> Batch:
-        """Creates the final batch that prepares the overall outputs after all gene comparison batches are done."""
-        final_task = PrepareGeneCompareRunOutputs(
-            id="prepare_gene_outputs",
-            inputs={"output-dir": StringInput("Outputs")},
-            expected_outputs={},
-            engine=self.container_engine,
-        )
-        expected_outputs = [BatchFileOutput("all_gene_comparisons.parquet")]
-        if self.batch_type == "slurm":
-            final_batch=self.final_batch_factory(
-                tasks=[final_task],
-                id="Outputs",
-                run_dir=self.run_dir,
-                expected_outputs=expected_outputs,
-                slurm_config=self.slurm_config,
-            )
-            final_batch._runner_obj = self
-            return final_batch
-        else:
-            final_batch = self.final_batch_factory(
-                tasks=[final_task],
-                id="Outputs",
-                run_dir=self.run_dir,
-                expected_outputs=expected_outputs,
-            )
-            final_batch._runner_obj = self
-            return final_batch
-
-class CollectGeneComps(Task):
-    """A Task that collects and merges gene comparison parquet files from multiple FastGeneCompareTask tasks into a single parquet file.
-    
-    Args:
-        id (str): Unique identifier for the task.
-        inputs (dict[str, Input]): Dictionary of input parameters for the task.
-        expected_outputs (dict[str, Output]): Dictionary of expected outputs for the task.
-        engine (Engine): Container engine to wrap the command."""
-    TEMPLATE_CMD="""
-    rm -rf gene_comps
-    mkdir -p gene_comps
-    find . -maxdepth 2 -type f -name "*_gene_comparison.parquet" ! -path "./gene_comps/*" -exec cp {} gene_comps/ \\;
-    zipstrain utilities merge_parquet --input-dir gene_comps --output-file <output-file> --allow-mismatch
-    rm -rf gene_comps
-    """
-    
-    @property
-    def pre_run(self) -> str:
-        return f"echo {Status.RUNNING.value} > {self.task_dir.absolute()}/.status"
-
-class PrepareGeneCompareRunOutputs(Task):
-    """A Task that prepares the final output by merging all gene comparison parquet files after all gene comparisons are done."""
-    TEMPLATE_CMD="""
-    mkdir -p <output-dir>/gene_comps
-    find "$(pwd)" -type f -name "Merged_gene_batch_*.parquet" -print0 | xargs -0 -I {} ln -s {} <output-dir>/gene_comps/
-    zipstrain utilities merge_parquet --input-dir <output-dir>/gene_comps --output-file <output-dir>/all_gene_comparisons.parquet --allow-mismatch
-    rm -rf <output-dir>/gene_comps
-    """
-    
-    @property
-    def pre_run(self) -> str:
-        """Sets the task status to RUNNING and changes directory to the runner's run directory since this task may need to access multiple batch outputs."""
-        return f"echo {Status.RUNNING.value} > {self.task_dir.absolute()}/.status && cd {self._batch_obj._runner_obj.run_dir.absolute()}"
-
-class FastGeneCompareLocalBatch(LocalBatch):
-    """A LocalBatch that runs FastGeneCompareTask tasks locally."""
-    def cleanup(self) -> None:
-        if self._cleaned_up:
-            return
-        tasks_to_remove = [task for task in self.tasks if isinstance(task, FastGeneCompareTask)]
-        for task in tasks_to_remove:
-            self.tasks.remove(task)
-            if task.task_dir.exists():
-                shutil.rmtree(task.task_dir)
-        self._cleaned_up = True
-        
-
-class FastGeneCompareSlurmBatch(SlurmBatch):
-    """A SlurmBatch that runs FastGeneCompareTask tasks on a Slurm cluster."""
-    def cleanup(self) -> None:
-        if self._cleaned_up:
-            return
-        tasks_to_remove = [task for task in self.tasks if isinstance(task, FastGeneCompareTask)]
-        for task in tasks_to_remove:
-            self.tasks.remove(task)
-            if task.task_dir.exists():
-                shutil.rmtree(task.task_dir)
-        self._cleaned_up = True
-
-class PrepareGeneCompareRunOutputsLocalBatch(LocalBatch):
-    pass
-
-class PrepareGeneCompareRunOutputsSlurmBatch(SlurmBatch):
-    pass
-
-def lazy_run_gene_compares(
-    run_dir: str | pathlib.Path,
-    container_engine: Engine,
-    comps_db: database.GeneComparisonDatabase | None = None,
-    tasks_per_batch: int = 10,
-    max_concurrent_batches: int = 1,
-    poll_interval: float = 5.0,
-    execution_mode: str = "local",
-    slurm_config: SlurmConfig | None = None,
-    ani_method: str = "popani",
-    duckdb_memory_limit: str | None = None,
-    duckdb_threads: int | None = None,
-    compare_engine: str = "polars",
-) -> None:
-    """A helper function to quickly set up and run a GeneCompareRunner with given parameters.
-    
-    Args:
-        run_dir (str | pathlib.Path): Directory where the runner will operate.
-        container_engine (Engine): An instance of Engine to wrap task commands.
-        comps_db (GenomeComparisonDatabase | None): An instance of GenomeComparisonDatabase containing comparison data.
-        tasks_per_batch (int): Number of tasks to include in each batch. Default is 10.
-        max_concurrent_batches (int): Maximum number of batches to run concurrently. Default is 1.
-        poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
-        execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
-        ani_method (str): ANI calculation method to use. Default is "popani".
-        duckdb_threads (int | None): Optional DuckDB thread cap passed to compare tasks.
-        compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
-    """
-    task_generator = GeneCompareTaskGenerator(
-        data=comps_db.to_complete_input_table(),
-        yield_size=tasks_per_batch,
-        container_engine=container_engine,
-        comp_config=comps_db.config,
-        ani_method=ani_method,
-        duckdb_memory_limit=duckdb_memory_limit,
-        duckdb_threads=duckdb_threads,
-        compare_engine=compare_engine,
-    )
-    if execution_mode=="local":
-        batch_type="local"
-    elif execution_mode=="slurm":
-        batch_type="slurm"
-    else:
-        raise ValueError(f"Unknown execution mode: {execution_mode}")
-    runner = GeneCompareRunner(
         run_dir=pathlib.Path(run_dir),
         task_generator=task_generator,
         container_engine=container_engine,

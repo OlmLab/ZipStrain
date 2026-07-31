@@ -69,6 +69,7 @@ COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY = "zipstrain_compare_min_gene_compare_
 COMPARE_ENGINE_METADATA_KEY = "zipstrain_compare_engine"
 COMPARE_USES_STB_METADATA_KEY = "zipstrain_compare_uses_stb"
 COMPARE_ANI_METHOD_METADATA_KEY = "zipstrain_compare_ani_method"
+COMPARE_CALCULATE_METADATA_KEY = "zipstrain_compare_calculate"
 COMPARE_REFERENCE_HASH_METADATA_KEY = "zipstrain_compare_reference_hash"
 COMPARE_GENE_HASH_METADATA_KEY = "zipstrain_compare_gene_hash"
 COMPARE_NULL_MODEL_HASH_METADATA_KEY = "zipstrain_compare_null_model_hash"
@@ -257,8 +258,12 @@ def build_single_compare_metadata(
     engine: str,
     uses_stb: bool,
     ani_method: str,
+    calculate: str,
 ) -> dict[str, str]:
     """Build mismatch-tolerant metadata for a single compare parquet."""
+    from zipstrain import compare as cp
+
+    ani_method = cp.canonical_ani_methods(ani_method)
     left_metadata = read_profile_contract_metadata(profile_1)
     right_metadata = read_profile_contract_metadata(profile_2)
     return {
@@ -269,6 +274,7 @@ def build_single_compare_metadata(
         COMPARE_ENGINE_METADATA_KEY: engine,
         COMPARE_USES_STB_METADATA_KEY: "1" if uses_stb else "0",
         COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
+        COMPARE_CALCULATE_METADATA_KEY: calculate,
         COMPARE_REFERENCE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "reference_hash"),
         COMPARE_GENE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "gene_hash"),
         COMPARE_NULL_MODEL_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "null_model_hash"),
@@ -909,13 +915,33 @@ def _iter_pair_table_batches(table_path: pathlib.Path, batch_size: int):
         yield pair_df.slice(start, batch_size)
 
 
-def _empty_genome_compare_frame(calculate: str | tuple[str, ...]) -> pl.DataFrame:
+def _genome_compare_output_dtype(column: str) -> pl.DataType:
+    if column in GENOME_COMPARE_OUTPUT_DTYPES:
+        return GENOME_COMPARE_OUTPUT_DTYPES[column]
+    if column.startswith(("share_allele_pos_", "max_consecutive_length_")):
+        return pl.Int64
+    if column.startswith("genome_ani_"):
+        return pl.Float64
+    raise KeyError(f"No comparison output dtype is defined for {column!r}.")
+
+
+def _empty_genome_compare_frame(
+    calculate: str | tuple[str, ...],
+    ani_method: str = "popani",
+) -> pl.DataFrame:
     from zipstrain import compare as cp
 
-    columns = cp.genome_metric_output_columns(calculate) + ["sample_1", "sample_2"]
+    columns = cp.genome_metric_output_columns(calculate, ani_method) + [
+        "sample_1",
+        "sample_2",
+    ]
     return pl.DataFrame(
         {
-            column: pl.Series(name=column, values=[], dtype=GENOME_COMPARE_OUTPUT_DTYPES[column])
+            column: pl.Series(
+                name=column,
+                values=[],
+                dtype=_genome_compare_output_dtype(column),
+            )
             for column in columns
         }
     )
@@ -1123,7 +1149,10 @@ def _run_genome_compare_pair(
     profile_2 = row["profile_location_2"]
     sample_1 = row["sample_name_1"]
     sample_2 = row["sample_name_2"]
-    output_columns = cp.genome_metric_output_columns(calculate) + ["sample_1", "sample_2"]
+    output_columns = cp.genome_metric_output_columns(calculate, ani_method) + [
+        "sample_1",
+        "sample_2",
+    ]
 
     profile_1_for_compare = profile_1
     profile_2_for_compare = profile_2
@@ -1184,6 +1213,7 @@ def chunk_genome_compare(
         raise ValueError("engine must be one of: polars, duckdb")
 
     calculations = cp.parse_genome_calculations(calculate)
+    canonical_ani_method = cp.canonical_ani_methods(ani_method)
     pair_table_path = pathlib.Path(pair_table)
     output_path = pathlib.Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1194,7 +1224,8 @@ def chunk_genome_compare(
         COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
         COMPARE_ENGINE_METADATA_KEY: engine,
         COMPARE_USES_STB_METADATA_KEY: "1" if stb_file is not None else "0",
-        COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
+        COMPARE_ANI_METHOD_METADATA_KEY: canonical_ani_method,
+        COMPARE_CALCULATE_METADATA_KEY: "+".join(calculations),
         COMPARE_REFERENCE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
         COMPARE_GENE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
         COMPARE_NULL_MODEL_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
@@ -1221,7 +1252,7 @@ def chunk_genome_compare(
     )
 
     if total_pairs == 0:
-        _empty_genome_compare_frame(calculations).write_parquet(
+        _empty_genome_compare_frame(calculations, canonical_ani_method).write_parquet(
             output_path,
             compression="zstd",
             metadata=compare_metadata,
@@ -1247,7 +1278,7 @@ def chunk_genome_compare(
     total_rows = 0
     cumulative_pair_compute_seconds = 0.0
     emit("chunk_genome_compare: dispatching pair comparisons")
-    empty_frame = _empty_genome_compare_frame(calculations)
+    empty_frame = _empty_genome_compare_frame(calculations, canonical_ani_method)
     next_pair_index = 0
     next_write_index = 0
     pending_results: dict[int, tuple[pl.DataFrame, float]] = {}

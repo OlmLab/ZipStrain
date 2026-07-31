@@ -459,7 +459,7 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         cli_module.cli,
         [
             "utilities",
-            "single_compare_gene",
+            "single-compare",
             "--gene-range-table",
             str(paths["prep_dir"] / "gene_range_table.tsv"),
             "--profile-location-1",

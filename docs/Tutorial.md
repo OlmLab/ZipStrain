@@ -203,10 +203,10 @@ zipstrain compare \
     --run-dir out_compare
 ```
 
-That's the whole command. By default it compares **genomes**; every profile in the table is compared against every other (all-vs-all).
+That's the whole command. Every profile in the table is compared against every other (all-vs-all). The default `--calculate all` produces genome ANI and IBS rows.
 
-!!! tip "Comparing genes instead"
-    Add `--compare-genes` to the same command to compare at the gene level instead of the genome level. Other useful flags: `--min-cov` (minimum coverage to consider a position), `--ani-method` (`popani`, `conani`, `cosani_<t>`), and `--calculate` (trim to just `ani` for a smaller table). Run `zipstrain compare -h` for the full, grouped list.
+!!! tip "Adding gene ANI"
+    Use the same command with `--gene-range-table gene_range_table.tsv --calculate all` to produce one row per gene with `gene_ani`, `genome_ani`, and IBS. Use `--calculate gene` when only gene ANI is needed. Other useful flags are `--min-cov`, `--min-gene-compare-len`, and `--ani-method`. The latter accepts one method or a comma-separated list such as `popani,conani,cosani_0.95`. Run `zipstrain compare -h` for the full grouped list.
 
 #### Two comparison methods
 
@@ -247,7 +247,7 @@ Both are invoked the same way — just add `--method matrix` to switch:
 
     The matrix store and its resumable compare database are kept in `out_compare/intermediate_files/` and reused on later runs. The bed file the store needs is auto-discovered from the `profiling_assets/` folder created during profiling; pass `--bed-file` if it can't be found.
 
-    `--ani-method popani` builds the compact bitmask store. `--ani-method conani` or `--ani-method cosani_0.95` builds a count store instead. `--min-cov` is applied while the matrix is built: positions below it become zero. A run directory therefore has a fixed ANI method and minimum coverage; use a different `--run-dir` to change either contract.
+    `--ani-method popani` builds the compact bitmask store. `--ani-method conani`, `--ani-method cosani_0.95`, or any comma-separated method list builds a count store instead. The matrix is built once, while each method gets a separate resumable comparison database before the result tables are joined. `--min-cov` is applied while the matrix is built: positions below it become zero. A bitmask run cannot later add conANI or cosANI; start a new `--run-dir` for that change.
 
 #### Adding more samples later
 
@@ -305,10 +305,29 @@ Key columns:
 | `genome_ani` | Genome-wide ANI (%) between the two samples for this genome. The parquet metadata key `zipstrain_compare_ani_method` records the method (`popani`, `conani`, or `cosani_<threshold>`) |
 | `sample_1`, `sample_2` | The pair being compared |
 
+To calculate several ANI definitions from the same coordinate join, pass them
+as one comma-separated argument:
+
+```bash
+zipstrain compare \
+    --profile-db profiles.csv \
+    --run-dir out_compare_multi \
+    --ani-method popani,conani,cosani_0.95
+```
+
+The shared denominator remains `total_positions`; method-dependent columns are
+named `share_allele_pos_popani`, `genome_ani_popani`,
+`max_consecutive_length_popani`, and equivalently for `conani` and
+`cosani_0_95`. A single method keeps the unsuffixed columns shown above. The
+parquet metadata key `zipstrain_compare_ani_method` stores the canonical list.
+
 !!! info "Interpreting popANI"
     `genome_ani` near **100.0** means the same strain is present in both samples (they share essentially all alleles). Lower values indicate diverging strains. A genome with `total_positions = 0` (like `maxbin2.maxbin.001.fasta` above) simply wasn't covered deeply enough in both samples to compare, so its `0.0` ANI is "not enough data," not "totally different." A common threshold for calling two samples the *same strain* is popANI ≥ 99.999%.
 
-    This interpretation assumes the default `--ani-method popani`; if you run `--ani-method conani`, the same column is still called `genome_ani`, but the parquet header records `zipstrain_compare_ani_method=conani`.
+    This interpretation assumes the default `--ani-method popani`. A single
+    conANI run still calls the column `genome_ani` and records
+    `zipstrain_compare_ani_method=conani`; in a multi-method run, use the
+    explicit `genome_ani_popani` or `genome_ani_conani` column.
 
 ---
 
@@ -373,12 +392,12 @@ Then run genome comparison:
 
 ```bash
 nextflow run zipstrain.nf \
-  --mode compare_genomes \
+  --mode compare \
   --input_type profile_table \
   --input_table profiles.csv \
-  --compare_genome_scope all \
-  --compare_calculate ani \
-  --compare_ani_method popani \
+  --compare_scope all \
+  --compare_calculate genome_ani \
+  --compare_ani_method popani,conani \
   --compare_engine duckdb \
   --output_dir out_sra_compare \
   -c conf.config \

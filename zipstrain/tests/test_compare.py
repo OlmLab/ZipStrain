@@ -242,6 +242,119 @@ def test_cos_ani_expression(threshold1,threshold2):
     assert compare._shared_loci_polars(profile_1, profile_2, min_cov=1, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare._shared_loci_polars(profile_3, profile_2, min_cov=1, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
 
 
+def test_parse_multiple_ani_methods_normalizes_and_deduplicates():
+    assert compare.parse_ani_methods(" popani,conani,popani,cosani_0.4 ") == (
+        "popani",
+        "conani",
+        "cosani_0.4",
+    )
+    assert compare.canonical_ani_methods("conani, popani") == "conani,popani"
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        compare.parse_ani_methods("popani,cosani_1.1")
+
+
+@pytest.fixture
+def multi_ani_profiles(tmp_path):
+    common = {
+        "chrom": ["s1"] * 4,
+        "genome": ["genome1"] * 4,
+        "pos": [1, 2, 3, 4],
+    }
+    p1 = pl.DataFrame(
+        {
+            **common,
+            "A": [10, 6, 5, 0],
+            "C": [0, 4, 5, 0],
+            "G": [0, 0, 0, 0],
+            "T": [0, 0, 0, 10],
+        }
+    )
+    p2 = pl.DataFrame(
+        {
+            **common,
+            "A": [10, 4, 0, 0],
+            "C": [0, 6, 0, 0],
+            "G": [0, 0, 10, 0],
+            "T": [0, 0, 0, 10],
+        }
+    )
+    p1_path = tmp_path / "multi_1.parquet"
+    p2_path = tmp_path / "multi_2.parquet"
+    p1.write_parquet(p1_path)
+    p2.write_parquet(p2_path)
+    return p1_path, p2_path
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_multiple_ani_methods_match_independent_runs(multi_ani_profiles, engine):
+    p1, p2 = multi_ani_profiles
+    methods = ("popani", "conani", "cosani_0.95")
+    combined = compare.compare_genomes(
+        p1,
+        p2,
+        min_cov=1,
+        calculate="all",
+        ani_method=",".join(methods),
+        engine=engine,
+    ).collect()
+
+    assert combined.columns == compare.genome_metric_output_columns("all", methods)
+    for method in methods:
+        single = compare.compare_genomes(
+            p1,
+            p2,
+            min_cov=1,
+            calculate="all",
+            ani_method=method,
+            engine=engine,
+        ).collect()
+        suffix = compare.ani_method_suffix(method)
+        assert combined[f"share_allele_pos_{suffix}"].to_list() == single[
+            "share_allele_pos"
+        ].to_list()
+        assert combined[f"genome_ani_{suffix}"].to_list() == single[
+            "genome_ani"
+        ].to_list()
+        assert combined[f"max_consecutive_length_{suffix}"].to_list() == single[
+            "max_consecutive_length"
+        ].to_list()
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_multiple_ani_methods_support_gene_output(
+    multi_ani_profiles, engine, tmp_path
+):
+    p1, p2 = multi_ani_profiles
+    ranges = tmp_path / "multi_genes.tsv"
+    pl.DataFrame(
+        {
+            "gene": ["gene1"],
+            "scaffold": ["s1"],
+            "start": [1],
+            "end": [4],
+        }
+    ).write_csv(ranges, separator="\t", include_header=False)
+
+    out = compare.compare_genomes(
+        p1,
+        p2,
+        min_cov=1,
+        min_gene_compare_len=1,
+        calculate="all",
+        gene_range=ranges,
+        ani_method="popani,conani",
+        engine=engine,
+    ).collect()
+
+    assert out.columns == compare.gene_metric_output_columns(
+        "all", "popani,conani"
+    )
+    assert out["share_allele_pos_popani"].to_list() == [3]
+    assert out["share_allele_pos_conani"].to_list() == [2]
+    assert out["gene_ani_popani"].to_list() == [75.0]
+    assert out["gene_ani_conani"].to_list() == [50.0]
+
+
 def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
     p1 = tmp_path / "p1.parquet"
     p2 = tmp_path / "p2.parquet"

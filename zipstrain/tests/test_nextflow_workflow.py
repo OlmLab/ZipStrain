@@ -104,8 +104,7 @@ def test_from_sra_to_profile_build_db_process_emits_gene_stats_and_sylph_output(
 
 def test_nextflow_calls_utilities_single_compare_commands():
     text = NEXTFLOW_FILE.read_text()
-    assert "zipstrain utilities single_compare_genome" in text
-    assert "zipstrain utilities single_compare_gene" in text
+    assert "zipstrain utilities single-compare" in text
 
 
 def test_nextflow_calls_updated_profile_commands():
@@ -124,12 +123,37 @@ def test_nextflow_compare_profile_tables_use_profiles_column_and_engine_param():
     assert "--profile-location-1" in text
     assert "--profile-location-2" in text
     assert "--engine ${params.compare_engine}" in text
+    assert '--ani-method "${params.compare_ani_method}"' in text
+
+
+def test_nextflow_stages_optional_gene_range_table_for_all_compare_processes():
+    text = NEXTFLOW_FILE.read_text()
+    assert text.count("path gene_range_table") >= 2
+    assert "file(params.gene_range_table, checkIfExists: true)" in text
+    assert ": []" in text
+    assert "compare(pair_channel, stb, gene_range_table)" in text
+    assert (
+        "compare_fast_profiles_single(profile_pairs.profile_1, "
+        "profile_pairs.profile_2, stb, gene_range_table, profile_pairs.pair_name)"
+        in text
+    )
+    assert (
+        "compare_batched(batch_pairs.unique_profiles, batch_pairs.pairs, "
+        "stb, gene_range_table)"
+        in text
+    )
+    assert "--gene-range-table ${gene_range_table}" in text
+    assert "--gene-range-table ${params.gene_range_table}" not in text
 
 
 def test_nextflow_requires_mode_and_defaults_to_batched_compare():
     text = NEXTFLOW_FILE.read_text()
     assert "params.mode = null" in text
     assert 'params.parallel_mode="batched"' in text
+    assert "Channel.fromList(makeBatches(profile_pairs, params.batch_size))" in text
+    assert "profile_pairs.map{t->t.transpose()}.set{batch_t}" in text
+    assert ".buffer(" not in text
+    assert ".collate(" not in text
     assert "Set --mode to one of" in text
     assert "Set --parallel_mode to either single or batched" in text
 
@@ -203,13 +227,13 @@ def test_nextflow_processes_match_conf_config():
     assert _nextflow_process_names() == _conf_process_names()
 
 
-def _write_compare_genomes_fixtures(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+def _write_compare_fixtures(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
     """Writes two tiny, identical profile parquets + an stb file and returns
-    (profiles_csv, stb_path) for a `mode=compare_genomes input_type=profile_table` run."""
+    (profiles_csv, stb_path) for a `mode=compare input_type=profile_table` run."""
     profile_schema = {
         "chrom": ["chr1", "chr1", "chr1"],
         "genome": ["genome1", "genome1", "genome1"],
-        "pos": [0, 1, 2],
+        "pos": [1, 2, 3],
         "gene": ["NA", "NA", "NA"],
         "A": [5, 0, 5],
         "T": [0, 5, 0],
@@ -235,7 +259,11 @@ def _write_compare_genomes_fixtures(tmp_path: pathlib.Path) -> tuple[pathlib.Pat
     return profiles_csv, stb_path
 
 
-def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log: str) -> None:
+def _assert_merged_comparison_is_correct(
+    output_dir: pathlib.Path,
+    nextflow_log: str,
+    ani_method: str = "popani",
+) -> None:
     merged_path = output_dir / "merged_comparisons.parquet"
     assert merged_path.exists(), f"missing output; nextflow log:\n{nextflow_log}"
 
@@ -243,8 +271,18 @@ def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log:
     assert merged.height == 1
     row = merged.row(0, named=True)
     assert row["genome"] == "genome1"
-    assert row["genome_ani"] == 100.0
+    if "," in ani_method:
+        assert row["genome_ani_popani"] == 100.0
+        assert row["genome_ani_conani"] == 100.0
+    else:
+        assert row["genome_ani"] == 100.0
     assert {row["sample_1"], row["sample_2"]} == {"sample1", "sample2"}
+
+
+def _write_gene_range_table(tmp_path: pathlib.Path) -> pathlib.Path:
+    gene_range_table = tmp_path / "gene_range_table.tsv"
+    gene_range_table.write_text("gene1\tchr1\t1\t3\n")
+    return gene_range_table
 
 
 @pytest.mark.skipif(
@@ -252,16 +290,20 @@ def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log:
     reason="nextflow + a JVM must be installed in the current Python environment "
     "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
 )
-def test_compare_genomes_mode_runs_end_to_end(tmp_path):
+@pytest.mark.parametrize(
+    ("parallel_mode", "ani_method"),
+    [("single", "popani,conani"), ("batched", "popani")],
+)
+def test_compare_mode_runs_end_to_end(tmp_path, parallel_mode, ani_method):
     """
     Actually compiles and executes zipstrain.nf, rather than grepping its text.
 
-    This uses `mode=compare_genomes` with `input_type=profile_table` because it is
+    This uses `mode=compare` with `input_type=profile_table` because it is
     the only mode that needs no containers, no samtools/bowtie2/sylph, and no
     network access: it just calls the `zipstrain` CLI (already on PATH in this
     environment) on two tiny profile parquets and merges the result.
     """
-    profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
+    profiles_csv, stb_path = _write_compare_fixtures(tmp_path)
     output_dir = tmp_path / "out"
 
     # The repo's nextflow.config enables Docker by default and includes conf.config,
@@ -272,7 +314,8 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
     override.write_text(
         "docker { enabled = false }\n"
         "process {\n"
-        "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'compare_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'compare_batched' { cpus = 1; memory = '512 MB' }\n"
         "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
         "}\n"
     )
@@ -283,11 +326,12 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
             "run",
             str(NEXTFLOW_FILE),
             "-c", str(override),
-            "--mode", "compare_genomes",
+            "--mode", "compare",
             "--input_type", "profile_table",
             "--input_table", str(profiles_csv),
             "--stb", str(stb_path),
-            "--parallel_mode", "single",
+            "--parallel_mode", parallel_mode,
+            "--compare_ani_method", ani_method,
             "--output_dir", str(output_dir),
         ],
         cwd=tmp_path,
@@ -299,7 +343,71 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
     assert result.returncode == 0, (
         f"nextflow run failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
-    _assert_merged_comparison_is_correct(output_dir, result.stdout)
+    _assert_merged_comparison_is_correct(output_dir, result.stdout, ani_method)
+
+
+@pytest.mark.skipif(
+    not _NEXTFLOW_AVAILABLE,
+    reason="nextflow + a JVM must be installed in the current Python environment "
+    "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
+)
+def test_compare_mode_stages_gene_range_table_and_emits_gene_rows(tmp_path):
+    profiles_csv, stb_path = _write_compare_fixtures(tmp_path)
+    gene_range_table = _write_gene_range_table(tmp_path)
+    output_dir = tmp_path / "out"
+    override = tmp_path / "test_local_resources.config"
+    override.write_text(
+        "docker { enabled = false }\n"
+        "process {\n"
+        "    withName: 'compare_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
+        "}\n"
+    )
+
+    result = subprocess.run(
+        [
+            str(_NEXTFLOW_BIN),
+            "run",
+            str(NEXTFLOW_FILE),
+            "-c",
+            str(override),
+            "--mode",
+            "compare",
+            "--input_type",
+            "profile_table",
+            "--input_table",
+            str(profiles_csv),
+            "--stb",
+            str(stb_path),
+            "--gene_range_table",
+            str(gene_range_table),
+            "--compare_calculate",
+            "gene",
+            "--min_gene_compare_len",
+            "1",
+            "--parallel_mode",
+            "single",
+            "--output_dir",
+            str(output_dir),
+        ],
+        cwd=tmp_path,
+        env=_nextflow_subprocess_env(),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, (
+        f"nextflow run failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
+
+    merged_path = output_dir / "merged_comparisons.parquet"
+    assert merged_path.exists(), f"missing output; nextflow log:\n{result.stdout}"
+    row = pl.read_parquet(merged_path).row(0, named=True)
+    assert row["genome"] == "genome1"
+    assert row["gene"] == "gene1"
+    assert row["total_positions"] == 3
+    assert row["share_allele_pos"] == 3
+    assert row["gene_ani"] == 100.0
 
 
 @pytest.mark.skipif(
@@ -318,26 +426,26 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
         "lag branch CLI changes. Set ZIPSTRAIN_RUN_DOCKER_E2E=1 to run it explicitly."
     ),
 )
-def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
+def test_compare_mode_runs_end_to_end_via_docker(tmp_path):
     """
-    Same scenario as test_compare_genomes_mode_runs_end_to_end, but run under
-    `-profile docker` so every process (including compare_genome_fast_profiles_single)
+    Same scenario as test_compare_mode_runs_end_to_end, but run under
+    `-profile docker` so every process (including compare_fast_profiles_single)
     executes inside the published parsaghadermazi/zipstrain image. This is the
     cheapest way to catch a broken/stale published image (missing tools, wrong
     zipstrain version, wrong CPU architecture) without the slow/flaky SRA + Sylph
     download path.
     """
-    profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
+    profiles_csv, stb_path = _write_compare_fixtures(tmp_path)
     output_dir = tmp_path / "out"
 
-    # conf.config requests 8 cpus / 40 GB for compare_genome_fast_profiles_single,
+    # conf.config requests 8 cpus / 40 GB for compare_fast_profiles_single,
     # sized for cluster nodes. Override to something any laptop's Docker Desktop
     # allocation can satisfy, since this test only cares whether the container
     # itself works, not real-world throughput.
     resource_override = tmp_path / "test_docker_resources.config"
     resource_override.write_text(
         "process {\n"
-        "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'compare_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
         "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
         "}\n"
     )
@@ -350,7 +458,7 @@ def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
             "-c", str(CONF_FILE),
             "-c", str(resource_override),
             "-profile", "docker",
-            "--mode", "compare_genomes",
+            "--mode", "compare",
             "--input_type", "profile_table",
             "--input_table", str(profiles_csv),
             "--stb", str(stb_path),

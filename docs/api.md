@@ -51,6 +51,9 @@ These power the CLI commands:
 `min_cov` is applied at build time and persisted in the store contract.
 `matrix_compare(..., ani_method=...)` accepts `popani`, `conani`, and
 `cosani_<threshold>`; the latter two require count storage.
+The high-level `zipstrain compare --method matrix --ani-method ...` command also
+accepts a comma-separated list. It reuses one count store, keeps one resumable
+compare database per method, and joins the method result columns for export.
 
 For usage patterns and examples, see the [Tutorial](./Tutorial.md) and the [CLI reference](./usermanual.md#zipstrain-command-line-interface).
 

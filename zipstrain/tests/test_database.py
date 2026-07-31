@@ -80,13 +80,28 @@ def test_genome_compare_config_scope_compatibility():
     assert not config_subset.is_compatible(config_other)
 
 
-def test_gene_compare_config_scope_compatibility():
-    config_all = database.GeneComparisonConfig(scope="all:all", min_cov=5, min_gene_compare_len=100)
-    config_subset = database.GeneComparisonConfig(scope="genome1:gene1", min_cov=5, min_gene_compare_len=100)
-    config_other = database.GeneComparisonConfig(scope="genome2:gene1", min_cov=5, min_gene_compare_len=100)
+def test_unified_compare_config_tracks_gene_range_contract():
+    config_a = database.GenomeComparisonConfig(
+        scope="all",
+        min_cov=5,
+        min_gene_compare_len=100,
+        gene_range_table_loc="genes.tsv",
+    )
+    config_b = database.GenomeComparisonConfig(
+        scope="genome1:gene1",
+        min_cov=5,
+        min_gene_compare_len=100,
+        gene_range_table_loc="genes.tsv",
+    )
+    config_other_ranges = database.GenomeComparisonConfig(
+        scope="genome1:gene1",
+        min_cov=5,
+        min_gene_compare_len=100,
+        gene_range_table_loc="other_genes.tsv",
+    )
 
-    assert config_all.is_compatible(config_subset)
-    assert not config_subset.is_compatible(config_other)
+    assert config_a.is_compatible(config_b)
+    assert not config_a.is_compatible(config_other_ranges)
 
 
 def test_genome_comparison_database_remaining_pairs(tmp_path):
@@ -127,7 +142,7 @@ def test_genome_comparison_database_remaining_pairs(tmp_path):
     assert remaining.select(["sample_name_1", "sample_name_2"]).rows() == [("a", "c"), ("b", "c")]
 
 
-def test_gene_comparison_database_remaining_pairs(tmp_path):
+def test_unified_comparison_database_accepts_gene_grained_existing_table(tmp_path):
     profile_a = tmp_path / "a.parquet"
     profile_b = tmp_path / "b.parquet"
     profile_c = tmp_path / "c.parquet"
@@ -150,15 +165,20 @@ def test_gene_comparison_database_remaining_pairs(tmp_path):
             "gene": ["gene1"],
             "total_positions": [10],
             "share_allele_pos": [9],
-            "ani": [90.0],
+            "gene_ani": [90.0],
             "sample_1": ["a"],
             "sample_2": ["b"],
         }
     ).write_parquet(compare_path)
 
-    comp_db = database.GeneComparisonDatabase(
+    comp_db = database.GenomeComparisonDatabase(
         profile_db=database.ProfileDatabase(str(profile_db_path)),
-        config=database.GeneComparisonConfig(scope="all:all", min_cov=5, min_gene_compare_len=100),
+        config=database.GenomeComparisonConfig(
+            scope="all",
+            min_cov=5,
+            min_gene_compare_len=100,
+            gene_range_table_loc="genes.tsv",
+        ),
         comp_db_loc=str(compare_path),
     )
     remaining = comp_db.to_complete_input_table().collect().sort(["sample_name_1", "sample_name_2"])
