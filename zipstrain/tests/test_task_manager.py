@@ -281,7 +281,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
     null_model_file.write_text("dummy")
     bed_file = tmp_path / "genomes.bed"
     bed_file.write_text("chr1\t0\t10\n")
-    gene_range_file = tmp_path / "gene_ranges.tsv"
+    gene_range_file = tmp_path / "gene_info.parquet"
     gene_range_file.write_text("chr1\t0\t10\tgene1\n")
     genome_length_file = tmp_path / "genome_lengths.parquet"
     genome_length_file.write_text("dummy")
@@ -314,6 +314,45 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
     assert expected_outputs["genome-stats"]._expected_file_name == "sample_1_genome_stats.parquet"
     assert expected_outputs["gene-stats"]._expected_file_name == "sample_1_gene_stats.parquet"
     assert tasks[0].inputs["min-freq"].get_value() == "0.01"
+
+
+def test_profile_task_generator_adds_codon_output_when_dnds_is_prepared(tmp_path):
+    files = {
+        "bam": tmp_path / "sample.bam",
+        "reference": tmp_path / "reference.fna",
+        "stb": tmp_path / "reference.stb",
+        "null": tmp_path / "null.parquet",
+        "bed": tmp_path / "reference.bed",
+        "genes": tmp_path / "gene_info.parquet",
+        "lengths": tmp_path / "lengths.parquet",
+    }
+    for path in files.values():
+        path.write_text("dummy")
+    data = pl.DataFrame(
+        {"sample_name": ["sample"], "bamfile": [str(files["bam"])]}
+    ).lazy()
+    generator = task_manager.ProfileTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        reference_fasta_file=str(files["reference"]),
+        stb_file=str(files["stb"]),
+        null_model_file=str(files["null"]),
+        profile_bed_file=str(files["bed"]),
+        gene_range_file=str(files["genes"]),
+        profiling_contract_file=None,
+        genome_length_file=str(files["lengths"]),
+        prepare_dnds=True,
+        dnds_memory_limit="512MB",
+    )
+
+    async def _collect():
+        return [task async for tasks in generator.generate_tasks() for task in tasks]
+
+    task = asyncio.run(_collect())[0]
+    assert task.inputs["prepare-dnds-arg"].get_value() == "--prepare-dnds"
+    assert task.inputs["dnds-memory-limit"].get_value() == "512MB"
+    assert task.expected_outputs["codon-profile"]._expected_file_name == "sample_codon_profile.parquet"
 
 
 def test_profile_bam_task_template_moves_gene_stats():
@@ -370,8 +409,8 @@ def test_profile_task_generator_handles_missing_gene_range(tmp_path):
     assert len(tasks) == 1
     assert tasks[0].inputs["reference-fasta-link-cmd"].get_value() == f"ln -s {reference_fasta.absolute()} reference.fasta"
     assert tasks[0].inputs["reference-fasta-arg"].get_value() == "--reference-fasta reference.fasta"
-    assert tasks[0].inputs["gene-range-table-link-cmd"].get_value() == ""
-    assert tasks[0].inputs["gene-range-table-arg"].get_value() == ""
+    assert tasks[0].inputs["gene-info-table-link-cmd"].get_value() == ""
+    assert tasks[0].inputs["gene-info-table-arg"].get_value() == ""
     assert tasks[0].inputs["profiling-contract-link-cmd"].get_value() == ""
     assert tasks[0].inputs["profiling-contract-arg"].get_value() == ""
 
@@ -666,8 +705,8 @@ def test_fast_compare_batch_cleanup_is_idempotent(tmp_path):
             "profile_2_file": task_manager.FileInput(profile_2),
             "stb-file-option": task_manager.StringInput(""),
             "stb-file": task_manager.StringInput(""),
-            "gene-range-table-option": task_manager.StringInput(""),
-            "gene-range-table": task_manager.StringInput(""),
+            "gene-info-table-option": task_manager.StringInput(""),
+            "gene-info-table": task_manager.StringInput(""),
             "min_cov": task_manager.IntInput(5),
             "min-gene-compare-len": task_manager.IntInput(100),
             "ani-method-arg": task_manager.StringInput("--ani-method popani"),
@@ -694,7 +733,7 @@ def test_unified_compare_task_generator_adds_gene_and_duckdb_args(tmp_path):
 
     stb_file = tmp_path / "stb.tsv"
     stb_file.write_text("chr1\tgenome1\n")
-    gene_range_table = tmp_path / "genes.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     gene_range_table.write_text("gene1\tchr1\t1\t10\n")
 
     data = pl.DataFrame(
@@ -736,9 +775,51 @@ def test_unified_compare_task_generator_adds_gene_and_duckdb_args(tmp_path):
     assert tasks[0].inputs["duckdb-memory-limit-arg"].get_value() == "--duckdb-memory-limit 3GB"
     assert tasks[0].inputs["duckdb-threads-arg"].get_value() == "--duckdb-threads 4"
     assert tasks[0].inputs["compare-engine-arg"].get_value() == "--engine duckdb"
-    assert tasks[0].inputs["gene-range-table-option"].get_value() == "--gene-range-table"
-    assert tasks[0].inputs["gene-range-table"].get_value() == str(gene_range_table.absolute())
+    assert tasks[0].inputs["gene-info-table-option"].get_value() == "--gene-info-table"
+    assert tasks[0].inputs["gene-info-table"].get_value() == str(gene_range_table.absolute())
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate gene"
+
+
+def test_compare_task_generator_stages_codon_sidecars_for_dnds(tmp_path):
+    profile_1 = tmp_path / "sample_1_profile.parquet"
+    profile_2 = tmp_path / "sample_2_profile.parquet"
+    codon_1 = tmp_path / "sample_1_codon_profile.parquet"
+    codon_2 = tmp_path / "sample_2_codon_profile.parquet"
+    gene_info = tmp_path / "gene_info.parquet"
+    for path in (profile_1, profile_2, codon_1, codon_2, gene_info):
+        path.write_text("dummy")
+    data = pl.DataFrame(
+        {
+            "sample_name_1": ["s1"],
+            "sample_name_2": ["s2"],
+            "profile_location_1": [str(profile_1)],
+            "profile_location_2": [str(profile_2)],
+        }
+    ).lazy()
+    generator = task_manager.CompareTaskGenerator(
+        data=data,
+        yield_size=1,
+        container_engine=task_manager.LocalEngine(""),
+        comp_config=database.GenomeComparisonConfig(
+            gene_range_table_loc=str(gene_info),
+            scope="all",
+            min_cov=5,
+            min_gene_compare_len=1,
+            stb_file_loc=None,
+        ),
+        calculate="gene",
+        dnds=True,
+        dnds_min_major_freq=0.8,
+    )
+
+    async def _collect():
+        return [task async for tasks in generator.generate_tasks() for task in tasks]
+
+    task = asyncio.run(_collect())[0]
+    assert task.inputs["dnds-arg"].get_value() == "--dnds --dnds-min-major-freq 0.8"
+    assert task.inputs["codon-profile-1-option"].get_value() == "--codon-profile-1"
+    assert task.inputs["codon-profile-1"].get_value() == str(codon_1.absolute())
+    assert task.inputs["codon-profile-2"].get_value() == str(codon_2.absolute())
 
 
 def test_unified_gene_task_generator_omits_stb_arg_when_not_configured(tmp_path):
@@ -746,7 +827,7 @@ def test_unified_gene_task_generator_omits_stb_arg_when_not_configured(tmp_path)
     profile_2 = tmp_path / "sample_2.parquet"
     profile_1.write_text("dummy")
     profile_2.write_text("dummy")
-    gene_range_table = tmp_path / "genes.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     gene_range_table.write_text("gene1\tchr1\t1\t10\n")
 
     data = pl.DataFrame(
@@ -788,7 +869,7 @@ def test_unified_compare_container_mounts_stb_and_gene_ranges(tmp_path):
     profile_1 = tmp_path / "sample_1.parquet"
     profile_2 = tmp_path / "sample_2.parquet"
     stb_file = tmp_path / "stb.tsv"
-    gene_range_table = tmp_path / "genes.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     for path in (profile_1, profile_2, stb_file, gene_range_table):
         path.write_text("dummy")
 
@@ -836,7 +917,7 @@ def test_fast_compare_templates_call_utilities_single_compare():
     assert "zipstrain utilities single-compare" in task_manager.FastCompareTask.TEMPLATE_CMD
     assert "<stb-file-option> <stb-file>" in task_manager.FastCompareTask.TEMPLATE_CMD
     assert (
-        "<gene-range-table-option> <gene-range-table>"
+        "<gene-info-table-option> <gene-info-table>"
         in task_manager.FastCompareTask.TEMPLATE_CMD
     )
 
@@ -1036,10 +1117,10 @@ def test_reorganize_compare_run_output_flattens_and_tidies(tmp_path):
 
 def test_unified_compare_config_carries_gene_range_table(tmp_path):
     """The single task path carries the table needed by gene calculations."""
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     pl.DataFrame(
         {"gene": ["g1"], "scaffold": ["chr1"], "start": [1], "end": [10]}
-    ).write_csv(gene_range_table, separator="\t", include_header=False)
+    ).write_parquet(gene_range_table)
 
     config = database.GenomeComparisonConfig(
         scope="all",
@@ -1049,6 +1130,6 @@ def test_unified_compare_config_carries_gene_range_table(tmp_path):
     )
     assert config.gene_range_table_loc == str(gene_range_table)
     assert (
-        "<gene-range-table-option> <gene-range-table>"
+        "<gene-info-table-option> <gene-info-table>"
         in task_manager.FastCompareTask.TEMPLATE_CMD
     )

@@ -11,7 +11,11 @@ params.compare_engine="polars"
 params.compare_calculate="all"
 // Gene boundaries are resolved from ranges at compare time, so gene comparison
 // requires this table; it is no longer carried inside the profile.
-params.gene_range_table=null
+params.gene_info_table=null
+params.prepare_dnds=false
+params.dnds_memory_limit="1GB"
+params.dnds=false
+params.dnds_min_major_freq=0.0
 params.batch_compare_n_parallel=4
 params.publish_mode="symlink"
 params.compare_scope="all"
@@ -73,6 +77,11 @@ def getProfileSampleNamesTableColumn(input_table) {
         return input_table['sample_name']
     }
     throw new IllegalArgumentException("Profile-table input must include a 'sample_name' column.")
+}
+
+def codonProfileFor(profile) {
+    def path = profile.toString().replaceFirst(/_profile\.parquet$/, "_codon_profile.parquet")
+    return file(path, checkIfExists: true)
 }
 
 def makeBatches(items, batchSize) {
@@ -272,7 +281,7 @@ process prepare_profile{
     path stb_file
     output:
     path "genomes_bed_file.bed", emit: genome_bed
-    path "gene_range_table.tsv", emit: gene_range_table
+    path "gene_info_table.parquet", emit: gene_info_table
     path "null_model.parquet", emit: null_model
     path "profiling_contract.json", emit: profiling_contract
     script:
@@ -302,21 +311,23 @@ process profile_bam {
     path reference_fasta
     path bed_file
     path stb_file
-    path gene_range_table
+    path gene_info_table
     path null_model
     path profiling_contract
     output:
     path "${bamfile.baseName}_profile.parquet", emit: profile
     path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
     path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats
+    path "${bamfile.baseName}_codon_profile.parquet", emit: codon_profile, optional: true
     val sample_name, emit: sample_name
     script:
+    def add_prepare_dnds = params.prepare_dnds ? "--prepare-dnds --dnds-memory-limit ${params.dnds_memory_limit}" : ""
     """
     zipstrain utilities profile-single \\
                         --bam-file ${bamfile} \\
                         --reference-fasta ${reference_fasta} \\
                         --bed-file ${bed_file} \\
-                        --gene-range-table ${gene_range_table} \\
+                        --gene-info-table ${gene_info_table} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
                         --profiling-contract ${profiling_contract} \\
@@ -326,6 +337,7 @@ process profile_bam {
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
+                        ${add_prepare_dnds} \\
                         --output-dir .
     """
 }
@@ -338,8 +350,10 @@ process compare_fast_profiles_single {
     input:
     path profile_location_1
     path profile_location_2
+    path codon_profile_1
+    path codon_profile_2
     path stb
-    path gene_range_table
+    path gene_info_table
     val pair_name
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
@@ -347,7 +361,8 @@ process compare_fast_profiles_single {
     def add_scope = (params.compare_scope=="all") ? "" : "--scope ${params.compare_scope}"
     def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
-    def add_gene_range = gene_range_table ? "--gene-range-table ${gene_range_table}" : ""
+    def add_gene_range = gene_info_table ? "--gene-info-table ${gene_info_table}" : ""
+    def add_dnds = params.dnds ? "--dnds --dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 ${codon_profile_1} --codon-profile-2 ${codon_profile_2}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     zipstrain utilities single-compare  \
@@ -359,6 +374,7 @@ process compare_fast_profiles_single {
                         ${add_compare_engine} \
                         ${add_calculate} \
                         ${add_gene_range} \
+                        ${add_dnds} \
                         --ani-method "${params.compare_ani_method}" \
                         ${add_duckdb_memory_limit} \
                         ${add_scope} \
@@ -370,14 +386,16 @@ process compare_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
-    rm -f ${profile_locations.collect{t->t.join(' ')}}
+    rm -f ${profile_locations.join(' ')}
+    rm -f ${codon_locations.join(' ')}
     rm -f ${stb}
     """
     input:
     path profile_locations
+    path codon_locations
     val pairs
     path stb
-    path gene_range_table
+    path gene_info_table
 
 
     output:
@@ -389,7 +407,8 @@ process compare_batched {
     def add_scope = (params.compare_scope=="all") ? "" : "--scope ${params.compare_scope}"
     def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
-    def add_gene_range = gene_range_table ? "--gene-range-table ${gene_range_table}" : ""
+    def add_gene_range = gene_info_table ? "--gene-info-table ${gene_info_table}" : ""
+    def add_dnds = params.dnds ? "--dnds --dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 {3} --codon-profile-2 {4}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     echo -e "${pairs_text}" > pairs.txt
@@ -402,6 +421,7 @@ process compare_batched {
                         ${add_compare_engine} \
                         ${add_calculate} \
                         ${add_gene_range} \
+                        ${add_dnds} \
                         --ani-method "${params.compare_ani_method}" \
                         ${add_duckdb_memory_limit} \
                         ${add_scope} \
@@ -441,7 +461,7 @@ process fromSRAtoProfile{
     path reference_genome
     path index_files
     path bed_file
-    path gene_range_file
+    path gene_info_file
     path stb_file
     path null_model
     path profiling_contract
@@ -449,8 +469,10 @@ process fromSRAtoProfile{
     path "${sra_id}_profile.parquet", emit: profiles
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
     path "${sra_id}_gene_stats.parquet", emit: gene_stats
+    path "${sra_id}_codon_profile.parquet", emit: codon_profile, optional: true
     val sra_id, emit: sample_name
     script:
+    def add_prepare_dnds = params.prepare_dnds ? "--prepare-dnds --dnds-memory-limit ${params.dnds_memory_limit}" : ""
     """
     prefetch --max-size ${params.prefetch_max_size} ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -465,7 +487,7 @@ process fromSRAtoProfile{
                         --bam-file ${sra_id}.bam \\
                         --reference-fasta ${reference_genome} \\
                         --bed-file ${bed_file} \\
-                        --gene-range-table ${gene_range_file} \\
+                        --gene-info-table ${gene_info_file} \\
                         --stb-file ${stb_file} \\
                         --null-model ${null_model} \\
                         --profiling-contract ${profiling_contract} \\
@@ -475,6 +497,7 @@ process fromSRAtoProfile{
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
+                        ${add_prepare_dnds} \\
                         --output-dir .
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
@@ -489,7 +512,7 @@ process prepare_profile_no_genes{
     path stb_file
     output:
     path "genomes_bed_file.bed", emit: genome_bed
-    path "gene_range_table.tsv", emit: gene_range_table
+    path "gene_info_table.parquet", emit: gene_info_table
     path "null_model.parquet", emit: null_model
     path "profiling_contract.json", emit: profiling_contract
     script:
@@ -634,6 +657,9 @@ workflow
         map_reads(sample_reads,reference_genome,index_files)
     }
     if (params.mode == "from_sra_to_profile") {
+        if (params.prepare_dnds && (!params.reference_genome || !params.gene_file)) {
+            error "--prepare_dnds in from_sra_to_profile mode requires --reference_genome and --gene_file."
+        }
         table=tableToDict(file("${params.input_table}"))
         sra_ids = Channel.fromList(table["Run"])
         if (!params.reference_genome) {
@@ -659,21 +685,24 @@ workflow
                 gene_file = file(params.gene_file)
                 prepare_profile(reference_genome, gene_file, file(params.stb))
                 genome_bed = prepare_profile.out.genome_bed
-                gene_range_table = prepare_profile.out.gene_range_table
+                gene_info_table = prepare_profile.out.gene_info_table
                 null_model = prepare_profile.out.null_model
                 profiling_contract = prepare_profile.out.profiling_contract
             }
             else {
                 prepare_profile_no_genes(reference_genome, file(params.stb))
                 genome_bed = prepare_profile_no_genes.out.genome_bed
-                gene_range_table = prepare_profile_no_genes.out.gene_range_table
+                gene_info_table = prepare_profile_no_genes.out.gene_info_table
                 null_model = prepare_profile_no_genes.out.null_model
                 profiling_contract = prepare_profile_no_genes.out.profiling_contract
             }
-            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_range_table, file(params.stb), null_model, profiling_contract)
+            fromSRAtoProfile(sra_ids, reference_genome, index_files, genome_bed, gene_info_table, file(params.stb), null_model, profiling_contract)
         }
     }
     if (params.mode =='profile') {
+        if (params.prepare_dnds && !params.gene_file) {
+            error "--prepare_dnds in profile mode requires --gene_file."
+        }
         input_table = tableToDict(file(params.input_table))
         bamfiles = Channel.fromPath(input_table['bamfile'].collect{t->file(t)})
         sample_names = Channel.fromList(input_table['sample_name'])
@@ -693,7 +722,11 @@ workflow
             profiles=[profile_locations_list,sample_names_list].transpose()
             (0..<profiles.size()).each { i ->
                 (i+1..<profiles.size()).each { j ->
-                    profile_pairs << (profiles[i] + profiles[j])
+                    def pair = profiles[i] + profiles[j]
+                    if (params.dnds) {
+                        pair += [codonProfileFor(profiles[i][0]), codonProfileFor(profiles[j][0])]
+                    }
+                    profile_pairs << pair
                 }
             }
         }
@@ -704,6 +737,11 @@ workflow
             profile_1=input_table["profile_location_1"].collect{t->file(t)}
             profile_2=input_table["profile_location_2"].collect{t->file(t)}
             profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
+            if (params.dnds) {
+                profile_pairs = profile_pairs.collect { pair ->
+                    pair + [codonProfileFor(pair[0]), codonProfileFor(pair[2])]
+                }
+            }
         }
         pair_channel = params.parallel_mode == "batched"
             ? Channel.fromList(makeBatches(profile_pairs, params.batch_size))
@@ -711,16 +749,16 @@ workflow
         stb = file(params.stb)
         // One comparison path: --compare_calculate picks the grain. Gene metrics
         // need ranges, since gene boundaries no longer live in the profile.
-        if (params.compare_calculate?.toString()?.contains("gene") && !params.gene_range_table) {
-            error "--compare_calculate '${params.compare_calculate}' asks for gene metrics, which require --gene_range_table (headerless TSV of gene, scaffold, start, end)."
+        if ((params.compare_calculate?.toString()?.contains("gene") || params.dnds) && !params.gene_info_table) {
+            error "Gene comparison and --dnds require --gene_info_table (the Parquet generated during profiling preparation)."
         }
         // An empty collection is the standard optional-path pattern in Nextflow.
         // A real table is staged into every comparison task and tracked as an
         // input dependency; the empty collection keeps genome-only runs valid.
-        gene_range_table = params.gene_range_table
-            ? file(params.gene_range_table, checkIfExists: true)
+        gene_info_table = params.gene_info_table
+            ? file(params.gene_info_table, checkIfExists: true)
             : []
-        compare(pair_channel, stb, gene_range_table)
+        compare(pair_channel, stb, gene_info_table)
     }
 }
 
@@ -734,18 +772,18 @@ workflow profile{
     if (gene_file) {
         prepare_profile(reference_genome, gene_file, file(params.stb))
         genome_bed = prepare_profile.out.genome_bed
-        gene_range_table = prepare_profile.out.gene_range_table
+        gene_info_table = prepare_profile.out.gene_info_table
         null_model = prepare_profile.out.null_model
         profiling_contract = prepare_profile.out.profiling_contract
     }
     else {
         prepare_profile_no_genes(reference_genome, file(params.stb))
         genome_bed = prepare_profile_no_genes.out.genome_bed
-        gene_range_table = prepare_profile_no_genes.out.gene_range_table
+        gene_info_table = prepare_profile_no_genes.out.gene_info_table
         null_model = prepare_profile_no_genes.out.null_model
         profiling_contract = prepare_profile_no_genes.out.profiling_contract
     }
-    profile_bam(sample_names, bamfiles, reference_genome, genome_bed, file(params.stb), gene_range_table, null_model, profiling_contract)
+    profile_bam(sample_names, bamfiles, reference_genome, genome_bed, file(params.stb), gene_info_table, null_model, profiling_contract)
 }
 
 
@@ -754,26 +792,31 @@ workflow compare
     take:
     profile_pairs
     stb
-    gene_range_table
+    gene_info_table
     main:
     if (params.parallel_mode=="single") {
 
     profile_pairs.multiMap{ v ->
         profile_1: v[0]
         profile_2: v[2]
+        codon_1: params.dnds ? v[4] : []
+        codon_2: params.dnds ? v[5] : []
         pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
-    compare_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, gene_range_table, profile_pairs.pair_name)
+    compare_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, profile_pairs.codon_1, profile_pairs.codon_2, stb, gene_info_table, profile_pairs.pair_name)
     merge_comparison_tables(compare_fast_profiles_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     profile_pairs.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
         unique_profiles: (v[0]+v[2]).unique().sort()
-        pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
+        unique_codons: params.dnds ? (v[4]+v[5]).unique().sort() : []
+        pairs: params.dnds
+            ? [v[0].collect{t->t.name}, v[2].collect{t->t.name}, v[4].collect{t->t.name}, v[5].collect{t->t.name}].transpose()
+            : [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}
 
-    compare_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, gene_range_table)
+    compare_batched(batch_pairs.unique_profiles, batch_pairs.unique_codons, batch_pairs.pairs, stb, gene_info_table)
     merge_comparison_tables(compare_batched.out.comparison_results.collect() )
     }
     else {

@@ -218,14 +218,14 @@ class GenomeComparisonConfig(BaseModel):
         min_cov (int): Minimum coverage a base on the reference fasta that must have in order to be compared.
         min_gene_compare_len (int): Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations
         stb_file_loc (str | None): Optional location of the scaffold to bin file.
-        gene_range_table_loc (str | None): Optional gene range table used when gene metrics are requested.
+        gene_range_table_loc (str | None): Optional gene information table used when gene metrics are requested.
     """
     model_config = ConfigDict(extra="forbid")
     scope: str =Field(description="Genome scope for comparison. Use 'all' to compare all available genomes.")
     min_cov: int =Field(description="Minimum coverage a base on the reference fasta that must have in order to be compared.")
     min_gene_compare_len: int=Field(description="Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
     stb_file_loc:str | None = Field(default=None, description="Optional location of the scaffold to bin file.")
-    gene_range_table_loc: str | None = Field(default=None, description="Optional gene range table used for gene metrics.")
+    gene_range_table_loc: str | None = Field(default=None, description="Optional gene information table used for gene metrics.")
 
     def is_compatible(self, other: GenomeComparisonConfig) -> bool:
         """

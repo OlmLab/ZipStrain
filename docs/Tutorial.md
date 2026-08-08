@@ -156,6 +156,7 @@ out_profile/
 │   ├── N5_271_010G1_profile.parquet       # per-position base counts (the core output)
 │   ├── N5_271_010G1_genome_stats.parquet  # per-genome coverage, breadth, ANI to reference
 │   ├── N5_271_010G1_gene_stats.parquet    # per-gene coverage and breadth
+│   ├── N5_271_010G1_codon_profile.parquet # optional sparse codons for dN/dS
 │   └── intermediate_files/                # symlinks, logs, scratch — safe to ignore
 ├── N5_271_010G2/
 │   └── ...
@@ -163,7 +164,7 @@ out_profile/
     └── log/
 ```
 
-The three `*.parquet` files at the top of each sample folder are the real outputs; everything else is bookkeeping. Have a quick look at the genome stats:
+The profile and two statistics `*.parquet` files at the top of each sample folder are the core outputs. The codon sidecar is an additional output only when `--prepare-dnds` is used; everything under `intermediate_files` is bookkeeping. Have a quick look at the genome stats:
 
 ```bash
 python -c "import polars as pl; print(pl.read_parquet('out_profile/N5_271_010G1/N5_271_010G1_genome_stats.parquet'))"
@@ -171,6 +172,9 @@ python -c "import polars as pl; print(pl.read_parquet('out_profile/N5_271_010G1/
 
 !!! tip "Gene profiling and tuning"
     Pass `--gene-fasta` to enable gene-level profiling, use the null-model options (`--error-rate`, `--max-total-reads`, `--p-threshold`) to tune sequencing-error filtering, or change `--min-freq` from its 1% default. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use `--force-prepare` to rebuild cached assets after changing null-model parameters. Run `zipstrain profile -h` to see all options grouped by category.
+
+!!! tip "Optional dN/dS preparation"
+    Add `--gene-fasta genes.fna --prepare-dnds` to write a sparse `<sample>_codon_profile.parquet`. The same run adds reference-relative `ref_dN`, `ref_dS`, and `ref_dN_dS` fields to `<sample>_gene_stats.parquet`. This path requires the reference FASTA and gene annotations, uses DuckDB with a `1GB` memory limit by default, and is skipped entirely unless requested.
 
 ??? note "Preparing assets separately (advanced / cluster use)"
     You can still build the intermediate files ahead of time with `zipstrain utilities prepare_profiling` and pass them in explicitly via `--null-model`, `--bed-file`, `--genome-length-file`, etc. This is useful on clusters where you prepare once and profile many BAMs across nodes, and it is the path the Nextflow pipeline uses internally.
@@ -206,7 +210,10 @@ zipstrain compare \
 That's the whole command. Every profile in the table is compared against every other (all-vs-all). The default `--calculate all` produces genome ANI and IBS rows.
 
 !!! tip "Adding gene ANI"
-    Use the same command with `--gene-range-table gene_range_table.tsv --calculate all` to produce one row per gene with `gene_ani`, `genome_ani`, and IBS. Use `--calculate gene` when only gene ANI is needed. Other useful flags are `--min-cov`, `--min-gene-compare-len`, and `--ani-method`. The latter accepts one method or a comma-separated list such as `popani,conani,cosani_0.95`. Run `zipstrain compare -h` for the full grouped list.
+    Use the same command with `--gene-info-table gene_info_table.parquet --calculate all` to produce one row per gene with `gene_ani`, `genome_ani`, and IBS. Use `--calculate gene` when only gene ANI is needed. Other useful flags are `--min-cov`, `--min-gene-compare-len`, and `--ani-method`. The latter accepts one method or a comma-separated list such as `popani,conani,cosani_0.95`. Run `zipstrain compare -h` for the full grouped list.
+
+!!! tip "Pairwise dN/dS"
+    If both samples were profiled with `--prepare-dnds`, add `--dnds --gene-info-table gene_info_table.parquet` to the standard comparison command. ZipStrain infers each codon sidecar from its profile filename and adds codon-level substitution and dN/dS columns to the gene-grained comparison table. The matrix method does not calculate dN/dS.
 
 #### Two comparison methods
 

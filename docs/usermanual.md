@@ -202,7 +202,9 @@ zipstrain profile \
 Major options:
 
 - `-i, --input-table`, `-f, --reference-fasta`, `-s, --stb-file`, `-r, --run-dir` (required)
-- `--gene-fasta` — enables gene-level profiling (auto-generates a gene range table)
+- `--gene-fasta` — enables gene-level profiling (auto-generates a gene information table)
+- `--prepare-dnds` — additionally writes sparse codon sidecars and reference-relative dN/dS columns in gene stats; requires a reference FASTA and gene information
+- `--dnds-memory-limit` (default `1GB`) — per-profile DuckDB memory cap for the optional codon preparation
 - `-u/-b/-l/-g/--profiling-contract` — supply pre-built assets to override auto-generation; `--force-prepare` regenerates them all
 - Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain).
 - Allele filters: the Poisson null model assumes a 0.1% total error rate by default and removes counts at or below its error ceiling. `--min-freq` defaults to `0.01`, requiring at least 1% within-position frequency; set it to `0` to disable frequency filtering. The denominator is the original A+C+G+T depth before allele filtering.
@@ -218,8 +220,8 @@ Usage: zipstrain profile [OPTIONS]
   Run BAM file profiling in batches using the specified execution mode and
   container engine.
 
-  Any profiling assets (null model, bed file, genome length table, gene range
-  table, profiling contract) that are not supplied explicitly are generated
+  Any profiling assets (null model, bed file, genome length table, gene
+  information table, profiling contract) that are not supplied explicitly are generated
   automatically into a ``profiling_assets`` directory inside ``run-dir`` and
   reused on subsequent runs when the inputs are unchanged. This means a
   minimal run needs only ``--input-table``, ``--reference-fasta``, and
@@ -238,14 +240,14 @@ Required inputs:
                               profiling_assets, and logs).  [required]
 
 Optional inputs:
-  --gene-fasta TEXT  Gene FASTA. When provided, a gene range table is auto-
+  --gene-fasta TEXT  Gene FASTA. When provided, a gene information table is auto-
                      generated from it for gene-level profiling.
 
 Optional pre-built assets (auto-generated if omitted):
   -u, --null-model TEXT          Pre-built null model parquet file. Auto-
                                  generated into <run-dir>/profiling_assets if
                                  not provided.
-  -g, --gene-range-table TEXT    Pre-built gene range table file. Overrides
+  -g, --gene-info-table TEXT    Pre-built gene information table file. Overrides
                                  --gene-fasta auto-generation.
   --profiling-contract TEXT      Pre-built profiling_contract.json. When
                                  provided, its hashes are written into each
@@ -260,7 +262,7 @@ Optional pre-built assets (auto-generated if omitted):
 
 Profiling parameters:
   --error-rate FLOAT              Error rate used when auto-generating the
-                                  null model.  [default: 0.01]
+                                  null model.  [default: 0.001]
   --max-total-reads INTEGER       Maximum coverage considered when auto-
                                   generating the null model.  [default: 50000]
   --p-threshold FLOAT             Significance threshold used when auto-
@@ -344,7 +346,7 @@ Other options:
 
 #### `zipstrain compare`
 
-Compare profiled samples through one command and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). `--calculate` selects `genome_ani`, `ibs`, `gene`, or a `+`-joined combination. Selecting `gene` makes the output gene-grained and requires `--gene-range-table`. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
+Compare profiled samples through one command and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). `--calculate` selects `genome_ani`, `ibs`, `gene`, or a `+`-joined combination. Selecting `gene` makes the output gene-grained and requires `--gene-info-table`. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
 
 There are two engines. `--method standard` (default) does direct pairwise comparison and is simplest. `--method matrix` builds a reusable matrix store, which pays off for repeated all-vs-all comparison. Both are **resumable and extendable**: re-running with the same `--run-dir` and a profiles table that includes new samples computes only the new pairs. See the [Tutorial](./Tutorial.md) for a worked matrix walk-through and [Expected output](./expected_output.md) for the columns.
 
@@ -365,7 +367,7 @@ zipstrain compare \
 zipstrain compare \
   --profile-db profiles.csv \
   --run-dir out_compare_gene_metrics \
-  --gene-range-table gene_range_table.tsv \
+  --gene-info-table gene_info_table.parquet \
   --calculate all
 ```
 
@@ -375,8 +377,10 @@ Major options:
 - `--method` (`standard`/`matrix`) selects the implementation; `--calculate` selects metrics and output grain
 - `--scope` (`all`, `GENOME`, or `GENOME:GENE`), `--min-cov` (5), `--min-gene-compare-len` (100)
 - `-a, --ani-method` accepts one method or a comma-separated list (`popani,conani,cosani_0.95`); `--calculate` selects `genome_ani`/`ibs`/`gene`/`all`
+- `--dnds` adds pairwise gene dN/dS from codon sidecars produced by `profile --prepare-dnds`; supported by the standard method
+- `--dnds-min-major-freq` filters callable codons by the weakest consensus-base frequency across their three positions
 - `--stb-file` — required for `--method matrix`
-- Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16)
+- Matrix method: `--bed-file`, `--gene-info-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16)
 - Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
@@ -430,9 +434,9 @@ Comparison parameters:
                                   [default: popani]
   --calculate TEXT                Metrics to compute: genome_ani, ibs, gene.
                                   Combine with '+', or use all. 'gene' needs
-                                  --gene-range-table and makes the output
+                                  --gene-info-table and makes the output
                                   gene-grained.  [default: all]
-  --gene-range-table TEXT         Gene range table for gene ANI. Required by
+  --gene-info-table TEXT         Gene information table for gene ANI. Required by
                                   the standard method; with --method matrix
                                   and --calculate gene, it can be auto-
                                   discovered from profiling_assets.
@@ -536,7 +540,7 @@ Commands:
   build-null-model        Build a null model for sequencing errors based...
   build-profile-db        Build a profile database from the given CSV file.
   chunk-genome-compare    Run classic genome compare over one pair-table...
-  gene-range-table        Main function to build and save the gene...
+  gene-info-table         Build and save the gene information Parquet.
   generate-sample-pair    Generate a sample-pair table ready for...
   generate_stb            Generate a scaffold-to-genome mapping file from...
   get-snp-reference       Emit profile-like rows that are SNPs relative...
@@ -578,7 +582,7 @@ Commands:
 | `zipstrain utilities presence-profile` | Presence profile from coverage + read locations |
 | `zipstrain utilities process-read-locs` | Process read-location stream |
 | `zipstrain utilities generate_stb` | Create scaffold-to-genome map from genome files |
-| `zipstrain utilities gene-range-table` | Create gene range table |
+| `zipstrain utilities gene-info-table` | Create gene information table |
 | `zipstrain test` | Validate local installation/dependencies |
 
 The commands below run individual profiling and comparison steps by hand (the `map`, `profile`, and `compare` commands orchestrate them for you).
@@ -608,10 +612,16 @@ Options:
 Outputs:
 
 - `genomes_bed_file.bed`
-- `gene_range_table.tsv`
+- `gene_info_table.parquet`
 - `genome_lengths.parquet`
 - `null_model.parquet`
 - `profiling_contract.json`
+
+`gene_info_table.parquet` is one row per gene with `gene_id`, `gene`, `genome`,
+`scaffold`, inclusive 1-based `start`/`end`, `strand`, `phase`, `genetic_code`,
+partial-gene flags, and compact codon ranges. Its production writer parses the
+FASTA in bounded batches and uses spillable DuckDB sorting with a 512 MB memory
+cap rather than loading the full database into Python memory.
 
 #### `zipstrain utilities profile-single`
 
@@ -636,7 +646,7 @@ Options:
 - `-a, --bam-file` (required)
 - `-s, --stb-file` (required)
 - `-m, --null-model` (required)
-- `-g, --gene-range-table` (optional)
+- `-g, --gene-info-table` (optional)
 - `--profiling-contract` (optional)
 - `-n, --num-chunks` (default: `24`) — number of BED chunks to create
 - `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
@@ -645,6 +655,8 @@ Options:
 - `--min-freq` (default: `0.01`) — after the null-model test, retain an allele only when `count / original A+C+G+T coverage >= min_freq`
 - `--min-read-ani` (default: `0.95`) — filters low-identity / mis-mapped reads before pileup using the BAM `NM` tag and aligned query span; reads without an `NM` tag are kept; pass `0` to disable
 - `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `paired`)
+- `--prepare-dnds` (optional) — write `<sample>_codon_profile.parquet` and add reference-relative dN/dS to gene stats
+- `--dnds-memory-limit` (default: `1GB`) — DuckDB memory limit for that optional preparation
 - `-o, --output-dir` (required)
 
 Read-inclusion modes:
@@ -658,11 +670,14 @@ Outputs include:
 - `<sample>_profile.parquet`
 - `<sample>_genome_stats.parquet`
 - `<sample>_gene_stats.parquet`
+- `<sample>_codon_profile.parquet` (only with `--prepare-dnds`)
 
 `zipstrain utilities adjust-sequence-errors` applies the same strict null-model boundary to an existing profile parquet. It also accepts `--min-freq` with the same definition and default (`0.01`) as profiling. If the profile contains coverage above the supplied model, the command fails and reports the minimum `--max-total-reads` needed to rebuild that model.
 
 When `--reference-fasta` is provided during profiling, the profile parquet includes `ref_base_bitmask`.
-In the same case, the generated genome and gene stat tables also include a `ref_ani` column.
+In the same case, the generated genome and gene stat tables also include a `ref_ani` column. With
+`--prepare-dnds`, gene stats additionally contain `ref_callable_codons`, synonymous/nonsynonymous
+change and site counts, `ref_dS`, `ref_dN`, `ref_dN_dS`, and `ref_stop_changes`.
 
 `ref_ani` is the percentage of covered sites whose observed allele set still contains the reference allele after ZipStrain's sequence-error adjustment.
 
@@ -917,7 +932,7 @@ zipstrain utilities build-matrix-db \
   --output-file matrix_db.h5 \
   --bed-file genomes_bed_file.bed \
   --stb-file reference.stb \
-  --gene-range-table gene_range_table.tsv \
+  --gene-info-table gene_info_table.parquet \
   --storage-mode bitmask \
   --min-cov 5 \
   --memory-limit-gb 16
@@ -940,7 +955,7 @@ Important options:
 - `-g, --genome` optional genome scope (default: `all`)
 - `-b, --bed-file` (required) BED file defining scaffold coordinate extents for the matrix contract
 - `-s, --stb-file` (required) STB file defining scaffold-to-genome membership for the matrix contract
-- `--gene-range-table` optional headerless TSV of `gene, scaffold, start, end` for gene ANI support
+- `--gene-info-table` optional `gene_info_table.parquet` produced by profiling preparation for gene ANI support
 - `--storage-mode` (`bitmask|counts`, default: `bitmask`); for compatibility, supplying `--count-dtype` without this option selects `counts`
 - `--count-dtype` (`auto|uint16|uint32`) applies only to `--storage-mode counts`; omitted means `auto`
 - `--min-cov` build-time minimum coverage (default: `5`)
@@ -956,7 +971,7 @@ Notes:
 - install matrix support with `pip install "zipstrain[matrix]"`
 - the CLI shows a progress bar in an interactive terminal
 - in non-interactive runs, the CLI emits throttled structured progress lines to stderr for log files
-- if `--gene-range-table` is omitted, matrix compare can still compute genome ANI and IBS, but not gene ANI
+- if `--gene-info-table` is omitted, matrix compare can still compute genome ANI and IBS, but not gene ANI
 - `--sparse` reduces on-disk HDF5 size, but matrix compare currently materializes sparse storage back into dense arrays when loading for comparison
 
 Storage modes:
@@ -1197,7 +1212,7 @@ zipstrain utilities matrix-compare --help
 zipstrain utilities presence-profile --help
 zipstrain utilities process-read-locs --help
 zipstrain utilities generate_stb --help
-zipstrain utilities gene-range-table --help
+zipstrain utilities gene-info-table --help
 zipstrain test --help
 ```
 
@@ -1262,14 +1277,16 @@ Conventions used by every example below:
 - `--prefetch_max_size` (default `200g`): SRA Toolkit prefetch size limit for SRA modes.
 - `--error_rate` (default `0.001`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.05`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
 - `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0.01`.
+- `--prepare_dnds` / `--dnds_memory_limit`: optionally prepare sparse codon sidecars and reference-relative gene dN/dS during profiling.
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows.
 - `--compare_scope`: compare every genome (`all`) or one genome ID.
 - `--compare_ani_method`: one ANI method or a comma-separated list
   (`popani,conani,cosani_0.95`). Nextflow forwards the list to each pair task;
   multi-method outputs use method-suffixed columns.
 - `--compare_engine` (`polars` | `duckdb`, default `polars`) and `--compare_duckdb_memory_limit` (DuckDB only).
-- `--compare_calculate`: metrics to compute (`genome_ani`, `ibs`, `gene`, `all`, or `+` combinations). `gene` requires a gene range table and yields a gene-grained table.
-- `--gene_range_table`: optional headerless TSV of `gene, scaffold, start, end`. It is required when `gene` is explicitly requested and causes `all` to include gene metrics. Nextflow stages the table into every comparison task, including containerized and cluster tasks. Gene boundaries are resolved from ranges at compare time, allowing overlapping and nested genes to receive their full ranges.
+- `--compare_calculate`: metrics to compute (`genome_ani`, `ibs`, `gene`, `all`, or `+` combinations). `gene` requires a gene information table and yields a gene-grained table.
+- `--gene_info_table`: optional gene-information Parquet generated by `prepare_profile`. It is required when `gene` or `--dnds` is requested and causes `all` to include gene metrics. Nextflow stages it into every comparison task; overlapping and nested genes each receive their full ranges.
+- `--dnds` / `--dnds_min_major_freq`: add pairwise dN/dS in standard comparison. Nextflow infers and stages `<sample>_codon_profile.parquet` beside every input profile.
 
 Notes:
 
@@ -1408,8 +1425,8 @@ nextflow run OlmLab/ZipStrain \
 
 ### Command 5: Include gene metrics
 
-Use the same `compare` mode and input-table formats, provide the gene range
-table, and include `gene` in `--compare_calculate`. Requesting `gene` alone
+Use the same `compare` mode and input-table formats, provide the gene
+information table, and include `gene` in `--compare_calculate`. Requesting `gene` alone
 writes only gene-level metrics; `all` includes genome ANI, IBS, and gene ANI.
 
 ```bash
@@ -1418,7 +1435,7 @@ nextflow run OlmLab/ZipStrain \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
-  --gene_range_table gene_range_table.tsv \
+  --gene_info_table gene_info_table.parquet \
   --compare_calculate all \
   --compare_ani_method popani \
   --parallel_mode batched \
@@ -1429,3 +1446,8 @@ nextflow run OlmLab/ZipStrain \
 ```
 
 Comparison outputs: the final merged table at `<output_dir>/merged_comparisons.parquet`, and (with `--parallel_mode batched`) intermediate per-batch outputs under `<output_dir>/batch_comparisons/`.
+
+To add pairwise dN/dS, first profile with `--prepare_dnds true`, then add
+`--dnds true` to this comparison command. The codon sidecars are inferred from
+the profile paths and must have been built from the supplied
+`--gene_info_table`.

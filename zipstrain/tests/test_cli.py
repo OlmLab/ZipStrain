@@ -121,12 +121,12 @@ def gene_range_table(tmp_path) -> Path:
             continue
         low, high = spans.get((gene, chrom), (pos, pos))
         spans[(gene, chrom)] = (min(low, pos), max(high, pos))
-    path = tmp_path / "gene_ranges.tsv"
+    path = tmp_path / "gene_info.parquet"
     pl.DataFrame(
         [(gene, chrom, low, high) for (gene, chrom), (low, high) in spans.items()],
         schema=["gene", "scaffold", "start", "end"],
         orient="row",
-    ).write_csv(path, separator="\t", include_header=False)
+    ).write_parquet(path)
     return path
 
 
@@ -379,7 +379,7 @@ def test_single_compare_gene_metric_duckdb_scope_skips_prefilter(profile_1: pl.L
         [
             "utilities",
             "single-compare",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--profile-location-1",
             str(profile_1_dir),
@@ -413,7 +413,7 @@ def test_single_compare_gene_metric_without_stb_succeeds(profile_1: pl.LazyFrame
         [
             "utilities",
             "single-compare",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--profile-location-1",
             str(profile_1_dir),
@@ -481,7 +481,7 @@ def test_single_compare_gene_metric_scope_restricts_to_one_gene(profile_1: pl.La
     """Gene scoping now filters gene ranges, not per-position labels.
 
     The profile no longer stores a gene column, so a GENOME:GENE scope narrows
-    the gene range table rather than pre-filtering profile rows.
+    the gene information table rather than pre-filtering profile rows.
     """
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
@@ -497,7 +497,7 @@ def test_single_compare_gene_metric_scope_restricts_to_one_gene(profile_1: pl.La
         [
             "utilities",
             "single-compare",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--profile-location-1",
             str(profile_1_dir),
@@ -583,7 +583,7 @@ def test_single_compare_calculate_gene_uses_gene_range_table(
             str(profile_2_path),
             "--stb-file",
             str(stb_path),
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--calculate",
             "gene",
@@ -1083,7 +1083,7 @@ def test_single_compare_gene_metric_writes_scope_metadata(profile_1: pl.LazyFram
         [
             "utilities",
             "single-compare",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--profile-location-1",
             str(profile_1_path),
@@ -1410,7 +1410,7 @@ def test_compare_gene_calculation_passes_duckdb_threads(
         cli.cli,
         [
             "compare",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--calculate",
             "gene",
@@ -1448,7 +1448,7 @@ def test_compare_gene_calculation_honors_apptainer_container_address_override(
         cli.cli,
         [
             "compare",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--calculate",
             "gene",
@@ -1514,7 +1514,7 @@ def test_compare_validates_gene_inputs_before_starting_tasks(tmp_path, monkeypat
         ],
     )
     assert missing_ranges.exit_code != 0
-    assert "requires --gene-range-table" in missing_ranges.output
+    assert "requires --gene-info-table" in missing_ranges.output
 
     gene_scope_without_gene_metric = runner.invoke(
         cli.cli,
@@ -1548,7 +1548,7 @@ def test_compare_gene_calculation_uses_unified_compare_path(
             "compare",
             "--calculate",
             "gene",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--profile-db",
             str(csv_path),
@@ -1687,7 +1687,7 @@ def test_compare_default_scope_is_shared_by_all_calculations(
             "compare",
             "--calculate",
             "gene",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--profile-db",
             str(csv_path),
@@ -1727,8 +1727,8 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
             str(tmp_path / "stb.tsv"),
             "--null-model",
             str(null_model),
-            "--gene-range-table",
-            str(tmp_path / "gene_range.tsv"),
+            "--gene-info-table",
+                str(tmp_path / "gene_info.parquet"),
             "--bed-file",
             str(tmp_path / "bed.bed"),
             "--genome-length-file",
@@ -2052,7 +2052,7 @@ def test_prepare_profiling_creates_null_model_and_contract(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert (output_dir / "genomes_bed_file.bed").exists()
-    assert (output_dir / "gene_range_table.tsv").exists()
+    assert (output_dir / "gene_info_table.parquet").exists()
     assert (output_dir / "genome_lengths.parquet").exists()
     assert (output_dir / "null_model.parquet").exists()
     assert (output_dir / "profiling_contract.json").exists()
@@ -2121,13 +2121,15 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
     bam_file = tmp_path / "sample.bam"
     stb_file = tmp_path / "mapping.stb"
     null_model = tmp_path / "null_model.parquet"
-    gene_range = tmp_path / "gene_range.tsv"
+    gene_range = tmp_path / "gene_info.parquet"
     profiling_contract = tmp_path / "profiling_contract.json"
     reference_fasta.write_text(">chr1\nACGTACGTAA\n")
     bed_file.write_text("chr1\t0\t10\n")
     bam_file.write_text("")
     stb_file.write_text("chr1\tgenome1\n")
-    gene_range.write_text("gene1\tchr1\t1\t10\n")
+    pl.DataFrame(
+        {"gene": ["gene1"], "scaffold": ["chr1"], "start": [1], "end": [10]}
+    ).write_parquet(gene_range)
     pl.DataFrame({"cov": [0, 1], "max_error_count": [0, 0]}).write_parquet(null_model)
     cli.ut.write_profile_contract_file(
         {
@@ -2161,7 +2163,7 @@ def test_profile_single_passes_profiling_contract_to_profile_bam(tmp_path, monke
             str(stb_file),
             "--null-model",
             str(null_model),
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range),
             "--profiling-contract",
             str(profiling_contract),
@@ -2301,7 +2303,7 @@ def test_gene_tools_commands_exist_under_utilities():
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["utilities", "--help"])
     assert result.exit_code == 0
-    assert "gene-range-table" in result.output
+    assert "gene-info-table" in result.output
 
 
 def test_gene_tools_group_removed():

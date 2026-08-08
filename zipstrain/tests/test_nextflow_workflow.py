@@ -126,24 +126,26 @@ def test_nextflow_compare_profile_tables_use_profiles_column_and_engine_param():
     assert '--ani-method "${params.compare_ani_method}"' in text
 
 
-def test_nextflow_stages_optional_gene_range_table_for_all_compare_processes():
+def test_nextflow_stages_optional_gene_info_table_for_all_compare_processes():
     text = NEXTFLOW_FILE.read_text()
-    assert text.count("path gene_range_table") >= 2
-    assert "file(params.gene_range_table, checkIfExists: true)" in text
+    assert text.count("path gene_info_table") >= 2
+    assert "file(params.gene_info_table, checkIfExists: true)" in text
     assert ": []" in text
-    assert "compare(pair_channel, stb, gene_range_table)" in text
+    assert "compare(pair_channel, stb, gene_info_table)" in text
     assert (
         "compare_fast_profiles_single(profile_pairs.profile_1, "
-        "profile_pairs.profile_2, stb, gene_range_table, profile_pairs.pair_name)"
+        "profile_pairs.profile_2, profile_pairs.codon_1, profile_pairs.codon_2, "
+        "stb, gene_info_table, profile_pairs.pair_name)"
         in text
     )
     assert (
-        "compare_batched(batch_pairs.unique_profiles, batch_pairs.pairs, "
-        "stb, gene_range_table)"
+        "compare_batched(batch_pairs.unique_profiles, batch_pairs.unique_codons, "
+        "batch_pairs.pairs, "
+        "stb, gene_info_table)"
         in text
     )
-    assert "--gene-range-table ${gene_range_table}" in text
-    assert "--gene-range-table ${params.gene_range_table}" not in text
+    assert "--gene-info-table ${gene_info_table}" in text
+    assert "--gene-info-table ${params.gene_info_table}" not in text
 
 
 def test_nextflow_requires_mode_and_defaults_to_batched_compare():
@@ -223,6 +225,18 @@ def test_nextflow_profile_processes_pass_read_filters_and_null_model_params():
     assert "--p-threshold ${params.p_threshold}" in text
 
 
+def test_nextflow_wires_optional_dnds_preparation_and_comparison():
+    text = NEXTFLOW_FILE.read_text()
+    assert "params.prepare_dnds=false" in text
+    assert 'params.dnds_memory_limit="1GB"' in text
+    assert "params.dnds=false" in text
+    assert "params.dnds_min_major_freq=0.0" in text
+    assert 'path "${bamfile.baseName}_codon_profile.parquet"' in text
+    assert "--prepare-dnds --dnds-memory-limit ${params.dnds_memory_limit}" in text
+    assert "--dnds --dnds-min-major-freq ${params.dnds_min_major_freq}" in text
+    assert "codonProfileFor" in text
+
+
 def test_nextflow_processes_match_conf_config():
     assert _nextflow_process_names() == _conf_process_names()
 
@@ -279,10 +293,18 @@ def _assert_merged_comparison_is_correct(
     assert {row["sample_1"], row["sample_2"]} == {"sample1", "sample2"}
 
 
-def _write_gene_range_table(tmp_path: pathlib.Path) -> pathlib.Path:
-    gene_range_table = tmp_path / "gene_range_table.tsv"
-    gene_range_table.write_text("gene1\tchr1\t1\t3\n")
-    return gene_range_table
+def _write_gene_info_table(tmp_path: pathlib.Path) -> pathlib.Path:
+    gene_info_table = tmp_path / "gene_info_table.parquet"
+    pl.DataFrame(
+        {
+            "gene": ["gene1"],
+            "genome": ["genome1"],
+            "scaffold": ["chr1"],
+            "start": [1],
+            "end": [3],
+        }
+    ).write_parquet(gene_info_table)
+    return gene_info_table
 
 
 @pytest.mark.skipif(
@@ -351,9 +373,9 @@ def test_compare_mode_runs_end_to_end(tmp_path, parallel_mode, ani_method):
     reason="nextflow + a JVM must be installed in the current Python environment "
     "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
 )
-def test_compare_mode_stages_gene_range_table_and_emits_gene_rows(tmp_path):
+def test_compare_mode_stages_gene_info_table_and_emits_gene_rows(tmp_path):
     profiles_csv, stb_path = _write_compare_fixtures(tmp_path)
-    gene_range_table = _write_gene_range_table(tmp_path)
+    gene_info_table = _write_gene_info_table(tmp_path)
     output_dir = tmp_path / "out"
     override = tmp_path / "test_local_resources.config"
     override.write_text(
@@ -379,8 +401,8 @@ def test_compare_mode_stages_gene_range_table_and_emits_gene_rows(tmp_path):
             str(profiles_csv),
             "--stb",
             str(stb_path),
-            "--gene_range_table",
-            str(gene_range_table),
+            "--gene_info_table",
+            str(gene_info_table),
             "--compare_calculate",
             "gene",
             "--min_gene_compare_len",

@@ -61,7 +61,7 @@ zipstrain map -i reads.csv -o mapped \
 
 ### 2. `profile` — BAMs → nucleotide profiles
 
-Counts A/C/G/T at every reference position and writes per-genome stats (coverage, breadth, a present/absent call) and SNVs. Missing assets are auto-generated and cached.
+Counts A/C/G/T at every reference position and writes per-genome stats (coverage, breadth, a present/absent call) and SNVs. Missing assets are auto-generated and cached. Optional `--prepare-dnds` writes sparse codons and reference-relative gene dN/dS.
 
 ```bash
 zipstrain profile -i mapped/samples.txt -f ref.fna -s ref.stb -r profiled
@@ -71,7 +71,7 @@ zipstrain profile -i mapped/samples.txt -f ref.fna -s ref.stb -r profiled
 
 ### 3. `compare` — profiles → ANI
 
-Compares every pair of samples by popANI (near 100% ⇒ same strain). Point `--profile-db` at a CSV of `profile_name,profile_location`.
+Compares every pair of samples by popANI (near 100% ⇒ same strain). Point `--profile-db` at a CSV of `profile_name,profile_location`; optional standard `--dnds` adds pairwise gene dN/dS for prepared profiles.
 
 ```bash
 zipstrain compare --profile-db profiles.csv -r compared

@@ -160,8 +160,17 @@ def discover_bed_file(profile_locations: list[str | pathlib.Path]) -> pathlib.Pa
 
 
 def discover_gene_range_table(profile_locations: list[str | pathlib.Path]) -> pathlib.Path | None:
-    """Find a non-empty ``profiling_assets/gene_range_table.tsv`` near any profile."""
-    return _discover_asset(profile_locations, "gene_range_table.tsv", require_nonempty=True)
+    """Find a non-empty ``profiling_assets/gene_info_table.parquet`` near a profile."""
+    candidate = _discover_asset(profile_locations, "gene_info_table.parquet")
+    if candidate is None:
+        return None
+    row_count = (
+        pl.scan_parquet(candidate)
+        .select(pl.len())
+        .collect(engine="streaming")
+        .item()
+    )
+    return candidate if row_count > 0 else None
 
 
 def _discover_asset(
@@ -330,7 +339,7 @@ def run_matrix_compare(
         include_gene_from_all=gene_range_table is not None,
     )
     if "gene" in calculations and gene_range_table is None:
-        raise ValueError("Gene comparison requires --gene-range-table.")
+        raise ValueError("Gene comparison requires --gene-info-table.")
 
     cleaned_stb = _clean_stb(pathlib.Path(stb_file), intermediate / "reference_cleaned.stb")
 

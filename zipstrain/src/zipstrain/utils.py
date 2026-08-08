@@ -651,8 +651,6 @@ def process_mpileup_function(batch_size, output_file):
     Process mpileup files and save the results in a Parquet file.
 
     Parameters:
-    gene_range_table_loc (str): Path to the gene range table in TSV format.
-    batch_bed (str): Path to the batch BED file.
     batch_size (int): Buffer size for processing stdin from samtools.
     output_file (str): Path to save the output Parquet file.
     """
@@ -1768,6 +1766,7 @@ def get_gene_stats(
     gene_bed: pl.LazyFrame,
     stb: pl.LazyFrame,
     ref_ani_min_cov: int = 5,
+    reference_dnds: pl.LazyFrame | None = None,
 )->pl.LazyFrame:
     """Per-gene breadth, coverage and (optionally) reference ANI for one profile.
 
@@ -1783,22 +1782,33 @@ def get_gene_stats(
     so the cumulative pass needs no sort of its own.
     """
     from zipstrain import compare as cp
+    from zipstrain import dnds as dnds_module
 
     schema_names = set(profile.collect_schema().names())
     include_reference_ani = REF_BASE_BITMASK_COLUMN in schema_names
 
-    gene_ranges = (
-        gene_bed.select("gene", "scaffold", "start", "end")
-        .join(stb.select("scaffold", "genome"), on="scaffold", how="left")
-        .with_columns(pl.col("genome").fill_null("NA"))
-        .collect()
-        .lazy()
-    )
+    gene_columns = set(gene_bed.collect_schema().names())
+    if "genome" in gene_columns:
+        gene_ranges = gene_bed.select(
+            "gene", "genome", "scaffold", "start", "end"
+        )
+    else:
+        gene_ranges = (
+            gene_bed.select("gene", "scaffold", "start", "end")
+            .join(stb.select("scaffold", "genome"), on="scaffold", how="left")
+            .with_columns(pl.col("genome").fill_null("NA"))
+        )
+    gene_ranges = gene_ranges.collect().lazy()
     axis_map = cp.scaffold_axis_map(
         gene_ranges.select("scaffold").unique().collect()["scaffold"].to_list()
     )
     if not axis_map:
-        return empty_gene_stats_table(include_ref_ani=include_reference_ani)
+        from zipstrain.profile import empty_gene_stats_table
+
+        return empty_gene_stats_table(
+            include_ref_ani=include_reference_ani,
+            include_reference_dnds=reference_dnds is not None,
+        )
 
     coverage = pl.col("A") + pl.col("C") + pl.col("G") + pl.col("T")
     columns = [pl.col("chrom").alias("scaffold"), pl.col("pos"), coverage.cast(pl.Int64).alias("bases")]
@@ -1875,4 +1885,15 @@ def get_gene_stats(
             .cast(pl.Float64)
         )
         out_columns.append("ref_ani")
+    if reference_dnds is not None:
+        stats = stats.join(reference_dnds, on=["genome", "gene"], how="left")
+        stats = stats.with_columns(
+            pl.col("ref_callable_codons").fill_null(0).cast(pl.Int64),
+            pl.col("ref_stop_changes").fill_null(0).cast(pl.Int64),
+            pl.col("ref_synonymous_changes").fill_null(0.0).cast(pl.Float64),
+            pl.col("ref_nonsynonymous_changes").fill_null(0.0).cast(pl.Float64),
+            pl.col("ref_synonymous_sites").fill_null(0.0).cast(pl.Float64),
+            pl.col("ref_nonsynonymous_sites").fill_null(0.0).cast(pl.Float64),
+        )
+        out_columns.extend(dnds_module.REFERENCE_DNDS_RESULT_COLUMNS)
     return stats.select(out_columns)

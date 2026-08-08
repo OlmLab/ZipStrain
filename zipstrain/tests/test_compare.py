@@ -166,7 +166,7 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_ge
     assert res_dict["genome2"]["max_consecutive_length"]==max([len([i for i in zip(a_chr3,t_chr3,c_chr3,g_chr3) if sum(i)>=min_cov])])
 
 
-    # Without a gene range table "all" resolves to genome-level metrics only, so
+    # Without a gene information table "all" resolves to genome-level metrics only, so
     # the table stays genome-grained and carries no gene columns.
     assert "gene" not in res_dict["genome1"]
     assert "gene_ani" not in res_dict["genome1"]
@@ -325,7 +325,7 @@ def test_multiple_ani_methods_support_gene_output(
     multi_ani_profiles, engine, tmp_path
 ):
     p1, p2 = multi_ani_profiles
-    ranges = tmp_path / "multi_genes.tsv"
+    ranges = tmp_path / "multi_genes.parquet"
     pl.DataFrame(
         {
             "gene": ["gene1"],
@@ -333,7 +333,7 @@ def test_multiple_ani_methods_support_gene_output(
             "start": [1],
             "end": [4],
         }
-    ).write_csv(ranges, separator="\t", include_header=False)
+    ).write_parquet(ranges)
 
     out = compare.compare_genomes(
         p1,
@@ -653,7 +653,7 @@ def test_compare_genomes_calculate_all_matches_between_engines(profile_1, profil
 
 # --- gene-grained comparison over gene ranges -------------------------------
 #
-# Gene ANI is computed from a gene range table rather than a per-position gene
+# Gene ANI is computed from a gene information table rather than a per-position gene
 # label, so a position covered by several genes counts toward every one of them.
 # The label-based approach could only ever attribute a position to one gene.
 
@@ -679,7 +679,7 @@ def overlap_profiles(tmp_path):
 @pytest.fixture
 def overlap_gene_range(tmp_path):
     """gene_b and gene_c sit strictly inside gene_a."""
-    path = tmp_path / "genes.tsv"
+    path = tmp_path / "genes.parquet"
     pl.DataFrame(
         {
             "gene": ["gene_a", "gene_b", "gene_c"],
@@ -687,7 +687,7 @@ def overlap_gene_range(tmp_path):
             "start": [10, 50, 200],
             "end": [280, 90, 260],
         }
-    ).write_csv(path, separator="\t", include_header=False)
+    ).write_parquet(path)
     return path
 
 
@@ -764,7 +764,7 @@ def test_gene_grained_output_matches_between_engines(
 
 def test_gene_calculation_without_ranges_is_rejected(overlap_profiles):
     profile_1, profile_2 = overlap_profiles
-    with pytest.raises(ValueError, match="gene range table"):
+    with pytest.raises(ValueError, match="gene information table"):
         compare.compare_genomes(
             mpile_contig_1=profile_1,
             mpile_contig_2=profile_2,

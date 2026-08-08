@@ -1186,9 +1186,9 @@ def _collect_gene_range_specs(
 ) -> list[GeneRangeSpec]:
     gene_range_path = Path(gene_range_table)
     if not gene_range_path.exists():
-        raise FileNotFoundError(f"Gene range table does not exist: {gene_range_path}")
+        raise FileNotFoundError(f"Gene information table does not exist: {gene_range_path}")
     if not gene_range_path.is_file():
-        raise FileNotFoundError(f"Gene range table path is not a file: {gene_range_path}")
+        raise FileNotFoundError(f"Gene information table path is not a file: {gene_range_path}")
 
     scaffold_offsets_by_chrom: dict[str, GenomeScaffoldOffset] = {}
     duplicate_scaffolds: set[str] = set()
@@ -1199,24 +1199,12 @@ def _collect_gene_range_specs(
         scaffold_offsets_by_chrom[offset.chrom] = offset
     if duplicate_scaffolds:
         raise ValueError(
-            "Gene range table requires unique scaffold names across the selected matrix scope. "
+            "Gene information table requires unique scaffold names across the selected matrix scope. "
             "Duplicate scaffold names found: " + ", ".join(sorted(duplicate_scaffolds))
         )
 
     gene_ranges = (
-        pl.scan_csv(
-            gene_range_path,
-            has_header=False,
-            separator="\t",
-        )
-        .rename(
-            {
-                "column_1": "gene",
-                "column_2": "scaffold",
-                "column_3": "start",
-                "column_4": "end",
-            }
-        )
+        pl.scan_parquet(gene_range_path)
         .select(
             pl.col("gene").cast(pl.Utf8),
             pl.col("scaffold").cast(pl.Utf8),
@@ -1281,9 +1269,9 @@ def _expand_scaffold_specs_with_gene_ranges(
 ) -> list[ScaffoldSpec]:
     gene_range_path = Path(gene_range_table)
     if not gene_range_path.exists():
-        raise FileNotFoundError(f"Gene range table does not exist: {gene_range_path}")
+        raise FileNotFoundError(f"Gene information table does not exist: {gene_range_path}")
     if not gene_range_path.is_file():
-        raise FileNotFoundError(f"Gene range table path is not a file: {gene_range_path}")
+        raise FileNotFoundError(f"Gene information table path is not a file: {gene_range_path}")
 
     scaffolds_by_chrom: dict[str, ScaffoldSpec] = {}
     duplicate_scaffolds: set[str] = set()
@@ -1294,24 +1282,12 @@ def _expand_scaffold_specs_with_gene_ranges(
         scaffolds_by_chrom[spec.chrom] = spec
     if duplicate_scaffolds:
         raise ValueError(
-            "Gene range table requires unique scaffold names across the selected matrix scope. "
+            "Gene information table requires unique scaffold names across the selected matrix scope. "
             "Duplicate scaffold names found: " + ", ".join(sorted(duplicate_scaffolds))
         )
 
     gene_bounds = (
-        pl.scan_csv(
-            gene_range_path,
-            has_header=False,
-            separator="\t",
-        )
-        .rename(
-            {
-                "column_1": "gene",
-                "column_2": "scaffold",
-                "column_3": "start",
-                "column_4": "end",
-            }
-        )
+        pl.scan_parquet(gene_range_path)
         .select(
             pl.col("scaffold").cast(pl.Utf8),
             pl.col("start").cast(pl.Int64),
@@ -1335,7 +1311,7 @@ def _expand_scaffold_specs_with_gene_ranges(
         max_end = int(row["max_end"])
         if max_end < min_start:
             raise ValueError(
-                f"Gene range table has end < start on scaffold {chrom} ({max_end} < {min_start})."
+                f"Gene information table has end < start on scaffold {chrom} ({max_end} < {min_start})."
             )
         new_min = min(spec.min_pos, min_start)
         new_max = max(spec.max_pos, max_end)
@@ -5585,7 +5561,7 @@ def matrix_compare(
         if "gene" in calculations and not gene_ranges:
             raise ValueError(
                 "Gene ANI was requested, but this matrix store does not contain gene annotations. "
-                "Rebuild it with --gene-range-table."
+                "Rebuild it with --gene-info-table."
             )
         compare_conn = _prepare_matrix_compare_db(
             output_file=output_file,

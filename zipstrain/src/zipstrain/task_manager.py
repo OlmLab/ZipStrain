@@ -52,7 +52,7 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.align import Align
-from zipstrain import database
+from zipstrain import database, dnds as dnds_module
 from rich.columns import Columns
 import polars as pl
 import psutil
@@ -510,6 +510,8 @@ class ProfileTaskGenerator(TaskGenerator):
         min_freq: float = 0.01,
         min_read_ani: float | None = None,
         read_inclusion: str = "all-mapped",
+        prepare_dnds: bool = False,
+        dnds_memory_limit: str = "1GB",
     ) -> None:
         super().__init__(data, yield_size)
         self.reference_fasta_file = pathlib.Path(reference_fasta_file) if reference_fasta_file is not None else None
@@ -525,6 +527,8 @@ class ProfileTaskGenerator(TaskGenerator):
         self.min_freq = min_freq
         self.min_read_ani = min_read_ani
         self.read_inclusion = read_inclusion
+        self.prepare_dnds = prepare_dnds
+        self.dnds_memory_limit = dnds_memory_limit
         self.engine = container_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
@@ -542,6 +546,10 @@ class ProfileTaskGenerator(TaskGenerator):
             raise FileNotFoundError(f"File {self.gene_range_file} does not exist.")
         if self.profiling_contract_file is not None and not self.profiling_contract_file.exists():
             raise FileNotFoundError(f"File {self.profiling_contract_file} does not exist.")
+        if self.prepare_dnds and self.reference_fasta_file is None:
+            raise ValueError("prepare_dnds requires a reference FASTA.")
+        if self.prepare_dnds and self.gene_range_file is None:
+            raise ValueError("prepare_dnds requires a gene information table.")
 
     def get_total_tasks(self) -> int:
         """Returns total number of profiles to be generated."""
@@ -566,8 +574,8 @@ class ProfileTaskGenerator(TaskGenerator):
                     reference_fasta_link_cmd = f"ln -s {self.reference_fasta_file.absolute()} reference.fasta"
                     reference_fasta_arg = "--reference-fasta reference.fasta"
                 if self.gene_range_file is not None:
-                    gene_range_link_cmd = f"ln -s {self.gene_range_file.absolute()} gene-range-table.bed"
-                    gene_range_arg = "--gene-range-table gene-range-table.bed"
+                    gene_range_link_cmd = f"ln -s {self.gene_range_file.absolute()} gene-info-table.parquet"
+                    gene_range_arg = "--gene-info-table gene-info-table.parquet"
                 if self.profiling_contract_file is not None:
                     profiling_contract_link_cmd = f"ln -s {self.profiling_contract_file.absolute()} profiling_contract.json"
                     profiling_contract_arg = "--profiling-contract profiling_contract.json"
@@ -581,8 +589,8 @@ class ProfileTaskGenerator(TaskGenerator):
                 "stb-file": FileInput(self.stb_file),
                 "null-model": FileInput(self.null_model_file),
                 "bed-file": FileInput(self.profile_bed_file),
-                "gene-range-table-link-cmd": StringInput(gene_range_link_cmd),
-                "gene-range-table-arg": StringInput(gene_range_arg),
+                "gene-info-table-link-cmd": StringInput(gene_range_link_cmd),
+                "gene-info-table-arg": StringInput(gene_range_arg),
                 "profiling-contract-link-cmd": StringInput(profiling_contract_link_cmd),
                 "profiling-contract-arg": StringInput(profiling_contract_arg),
                 "genome-length-file": FileInput(self.genome_length_file),
@@ -593,12 +601,22 @@ class ProfileTaskGenerator(TaskGenerator):
                 "min-freq": StringInput(str(self.min_freq)),
                 "min-read-ani-arg": StringInput(min_read_ani_arg),
                 "read-inclusion": StringInput(self.read_inclusion),
+                "prepare-dnds-arg": StringInput("--prepare-dnds" if self.prepare_dnds else ""),
+                "dnds-memory-limit": StringInput(self.dnds_memory_limit),
+                "codon-profile-move-cmd": StringInput(
+                    f"mv input_codon_profile.parquet {row['sample_name']}_codon_profile.parquet"
+                    if self.prepare_dnds else ""
+                ),
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+"_profile.parquet" ),
                 "genome-stats": FileOutput(row["sample_name"]+"_genome_stats.parquet" ),
                 "gene-stats": FileOutput(row["sample_name"]+"_gene_stats.parquet" ),
                 }
+                if self.prepare_dnds:
+                    expected_outputs["codon-profile"] = FileOutput(
+                        row["sample_name"] + "_codon_profile.parquet"
+                    )
                 task = ProfileBamTask(id=row["sample_name"], inputs=inputs, expected_outputs=expected_outputs, engine=self.engine)
                 tasks.append(task)
             yield tasks
@@ -627,6 +645,8 @@ class CompareTaskGenerator(TaskGenerator):
         duckdb_memory_limit: str | None = None,
         duckdb_threads: int | None = None,
         compare_engine: str = "polars",
+        dnds: bool = False,
+        dnds_min_major_freq: float = 0.0,
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
@@ -635,10 +655,16 @@ class CompareTaskGenerator(TaskGenerator):
         self.duckdb_memory_limit = duckdb_memory_limit
         self.duckdb_threads = duckdb_threads
         self.compare_engine = compare_engine
+        self.dnds = dnds
+        self.dnds_min_major_freq = dnds_min_major_freq
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         if self.compare_engine not in {"polars", "duckdb"}:
             raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
+        if self.dnds and self.comp_config.gene_range_table_loc is None:
+            raise ValueError("dN/dS comparison requires a gene information table.")
+        if not 0.0 <= self.dnds_min_major_freq <= 1.0:
+            raise ValueError("dnds_min_major_freq must be between 0 and 1.")
         from . import compare as _compare
         self.ani_method = _compare.canonical_ani_methods(ani_method)
         _compare.parse_genome_calculations(
@@ -678,7 +704,7 @@ class CompareTaskGenerator(TaskGenerator):
                     else StringInput("")
                 )
                 gene_range_table_option = (
-                    "--gene-range-table"
+                    "--gene-info-table"
                     if self.comp_config.gene_range_table_loc
                     else ""
                 )
@@ -687,13 +713,38 @@ class CompareTaskGenerator(TaskGenerator):
                     if self.comp_config.gene_range_table_loc
                     else StringInput("")
                 )
+                if self.dnds:
+                    codon_profile_1 = dnds_module.codon_profile_path(row["profile_location_1"])
+                    codon_profile_2 = dnds_module.codon_profile_path(row["profile_location_2"])
+                    for codon_path in (codon_profile_1, codon_profile_2):
+                        if not codon_path.exists():
+                            raise FileNotFoundError(
+                                f"dN/dS codon profile does not exist: {codon_path}. "
+                                "Re-run profiling with --prepare-dnds."
+                            )
+                    dnds_arg = f"--dnds --dnds-min-major-freq {self.dnds_min_major_freq}"
+                    codon_profile_1_option = "--codon-profile-1"
+                    codon_profile_2_option = "--codon-profile-2"
+                    codon_profile_1_input = FileInput(codon_profile_1)
+                    codon_profile_2_input = FileInput(codon_profile_2)
+                else:
+                    dnds_arg = ""
+                    codon_profile_1_option = ""
+                    codon_profile_2_option = ""
+                    codon_profile_1_input = StringInput("")
+                    codon_profile_2_input = StringInput("")
                 inputs = {
                 "profile_1_file": FileInput(row["profile_location_1"]),
                 "profile_2_file": FileInput(row["profile_location_2"]),
                 "stb-file-option": StringInput(stb_file_option),
                 "stb-file": stb_file_input,
-                "gene-range-table-option": StringInput(gene_range_table_option),
-                "gene-range-table": gene_range_table_input,
+                "gene-info-table-option": StringInput(gene_range_table_option),
+                "gene-info-table": gene_range_table_input,
+                "dnds-arg": StringInput(dnds_arg),
+                "codon-profile-1-option": StringInput(codon_profile_1_option),
+                "codon-profile-1": codon_profile_1_input,
+                "codon-profile-2-option": StringInput(codon_profile_2_option),
+                "codon-profile-2": codon_profile_2_input,
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "ani-method-arg": StringInput(ani_method_arg),
@@ -1708,7 +1759,7 @@ class ProfileBamTask(Task):
 
         - null-model: The null-model parquet file used for sequencing-error adjustment.
 
-        - gene-range-table: A BED file specifying the gene ranges for the sample.
+        - gene-info-table: A BED file specifying the gene ranges for the sample.
 
         - num-chunks: The number of BED chunks to create for processing.
 
@@ -1728,13 +1779,13 @@ class ProfileBamTask(Task):
     ln -s <bam-file> input.bam
     <reference-fasta-link-cmd>
     ln -s <bed-file> bed_file.bed
-    <gene-range-table-link-cmd>
+    <gene-info-table-link-cmd>
     <profiling-contract-link-cmd>
     ln -s <null-model> null_model.parquet
     samtools index <bam-file>
     zipstrain utilities profile-single --bam-file input.bam <reference-fasta-arg> \
     --bed-file bed_file.bed \
-    <gene-range-table-arg> \
+    <gene-info-table-arg> \
     <profiling-contract-arg> \
     --stb-file <stb-file> \
     --null-model null_model.parquet \
@@ -1745,10 +1796,13 @@ class ProfileBamTask(Task):
     --min-freq <min-freq> \
     <min-read-ani-arg> \
     --read-inclusion <read-inclusion> \
+    <prepare-dnds-arg> \
+    --dnds-memory-limit <dnds-memory-limit> \
     --output-dir .
     mv input_profile.parquet <sample-name>_profile.parquet
     mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
     mv input_gene_stats.parquet <sample-name>_gene_stats.parquet
+    <codon-profile-move-cmd>
     """
     
 class FastCompareTask(Task):
@@ -1764,7 +1818,10 @@ class FastCompareTask(Task):
     zipstrain utilities single-compare --profile-location-1 <profile_1_file> \
     --profile-location-2 <profile_2_file> \
     <stb-file-option> <stb-file> \
-    <gene-range-table-option> <gene-range-table> \
+    <gene-info-table-option> <gene-info-table> \
+    <dnds-arg> \
+    <codon-profile-1-option> <codon-profile-1> \
+    <codon-profile-2-option> <codon-profile-2> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
     <ani-method-arg> \
@@ -1854,6 +1911,7 @@ class PrepareCompareGenomeRunOutputsSlurmBatch(SlurmBatch):
 # considered an intermediate.
 PROFILE_OUTPUT_SUFFIXES = (
     "_profile.parquet",
+    "_codon_profile.parquet",
     "_genome_stats.parquet",
     "_gene_stats.parquet",
 )
@@ -2002,6 +2060,8 @@ def lazy_run_profile(
     min_freq: float = 0.01,
     min_read_ani: float | None = None,
     read_inclusion: str = "all-mapped",
+    prepare_dnds: bool = False,
+    dnds_memory_limit: str = "1GB",
     tasks_per_batch: int = 10,
     max_concurrent_batches: int = 1,
     poll_interval: float = 5.0,
@@ -2025,6 +2085,8 @@ def lazy_run_profile(
         min_freq=min_freq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
+        prepare_dnds=prepare_dnds,
+        dnds_memory_limit=dnds_memory_limit,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -2065,6 +2127,8 @@ def lazy_run_compares(
     duckdb_memory_limit: str | None = None,
     duckdb_threads: int | None = None,
     compare_engine: str = "polars",
+    dnds: bool = False,
+    dnds_min_major_freq: float = 0.0,
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -2091,6 +2155,8 @@ def lazy_run_compares(
         duckdb_memory_limit=duckdb_memory_limit,
         duckdb_threads=duckdb_threads,
         compare_engine=compare_engine,
+        dnds=dnds,
+        dnds_min_major_freq=dnds_min_major_freq,
     )
     if execution_mode=="local":
         batch_type="local"

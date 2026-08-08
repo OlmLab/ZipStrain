@@ -287,8 +287,15 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
     reference_fasta.write_text(">chr1\nACG\n>chr2\nTAC\n")
     bed_file = tmp_path / "genomes.bed"
     bed_file.write_text("chr1\t0\t3\nchr2\t0\t3\n")
-    gene_range_table = tmp_path / "gene_ranges.tsv"
-    gene_range_table.write_text("geneA\tchr1\t1\t3\ngeneB\tchr2\t1\t3\n")
+    gene_range_table = tmp_path / "gene_info.parquet"
+    pl.DataFrame(
+        {
+            "gene": ["geneA", "geneB"],
+            "scaffold": ["chr1", "chr2"],
+            "start": [1, 1],
+            "end": [3, 3],
+        }
+    ).write_parquet(gene_range_table)
     stb_file = tmp_path / "stb.tsv"
     stb_file.write_text("chr1\tgenome1\nchr2\tgenome2\n")
     null_model_file = tmp_path / "null_model.parquet"
@@ -615,7 +622,7 @@ def test_cli_profile_single_bam_outputs(tmp_path: Path, monkeypatch: pytest.Monk
             str(stb_file),
             "--null-model",
             str(null_model_file),
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--num-chunks",
             "2",
@@ -685,7 +692,7 @@ def test_cli_profile_single_bam_without_reference_base_column(tmp_path: Path, mo
             str(stb_file),
             "--null-model",
             str(null_model_file),
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
             "--num-chunks",
             "2",
@@ -745,7 +752,7 @@ def test_prepare_profiling_assets_writes_all_files(tmp_path):
     ):
         assert path.exists(), path
 
-    # No gene fasta -> empty gene range table, contract records gene hash as missing.
+    # No gene fasta -> empty gene information table, contract records gene hash as missing.
     contract = json.loads(assets.profiling_contract_file.read_text())
     assert contract["gene_hash"] == "NA"
     assert contract["reference_hash"] != "NA"

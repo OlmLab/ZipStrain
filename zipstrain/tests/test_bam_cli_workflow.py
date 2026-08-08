@@ -200,12 +200,13 @@ def _profile_dir_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dic
                 str(paths["null_model"]),
                 "--profiling-contract",
                 str(paths["profiling_contract"]),
-                "--gene-range-table",
-                str(paths["prep_dir"] / "gene_range_table.tsv"),
+                "--gene-info-table",
+                str(paths["prep_dir"] / "gene_info_table.parquet"),
                 "--num-chunks",
                 "2",
                 "--max-concurrency",
                 "2",
+                "--prepare-dnds",
                 "--output-dir",
                 str(paths["profiles_dir"]),
             ],
@@ -220,12 +221,9 @@ def _profile_dir_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dic
 def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths = _profile_dir_fixture(tmp_path, monkeypatch)
 
-    gene_ranges = pl.read_csv(
-        paths["prep_dir"] / "gene_range_table.tsv",
-        separator="\t",
-        has_header=False,
-        new_columns=["gene", "scaffold", "start", "end"],
-    ).sort("gene")
+    gene_ranges = pl.read_parquet(
+        paths["prep_dir"] / "gene_info_table.parquet"
+    ).select("gene", "scaffold", "start", "end").sort("gene")
     assert gene_ranges.to_dicts() == [
         {"gene": "contigA_1", "scaffold": "contigA", "start": 1, "end": 10},
         {"gene": "contigB_1", "scaffold": "contigB", "start": 1, "end": 10},
@@ -263,6 +261,15 @@ def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monk
         assert gene_stats["breadth"].to_list() == pytest.approx([1.0, 1.0])
         assert gene_stats["coverage"].to_list() == pytest.approx([float(READ_DEPTH), float(READ_DEPTH)])
         assert "ref_ani" in gene_stats.columns
+        assert "ref_callable_codons" in gene_stats.columns
+        assert "ref_dN" in gene_stats.columns
+        assert "ref_dS" in gene_stats.columns
+        assert "ref_dN_dS" in gene_stats.columns
+
+    for sample_name in SAMPLE_SEQUENCES:
+        codon_path = paths["profiles_dir"] / f"{sample_name}_codon_profile.parquet"
+        assert codon_path.exists()
+        assert pl.read_parquet(codon_path).columns == list(cli_module.dn.CODON_PROFILE_COLUMNS)
 
     alpha_genome_stats = pl.read_parquet(paths["profiles_dir"] / "sample_alpha_genome_stats.parquet").sort("genome")
     alpha_by_genome = alpha_genome_stats.rows_by_key("genome", unique=True, named=True)
@@ -300,8 +307,8 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
                 str(paths["stb_file"]),
             "--null-model",
             str(paths["null_model"]),
-            "--gene-range-table",
-            str(paths["prep_dir"] / "gene_range_table.tsv"),
+            "--gene-info-table",
+            str(paths["prep_dir"] / "gene_info_table.parquet"),
             "--bed-file",
             str(paths["prep_dir"] / "genomes_bed_file.bed"),
             "--genome-length-file",
@@ -460,8 +467,8 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         [
             "utilities",
             "single-compare",
-            "--gene-range-table",
-            str(paths["prep_dir"] / "gene_range_table.tsv"),
+            "--gene-info-table",
+            str(paths["prep_dir"] / "gene_info_table.parquet"),
             "--profile-location-1",
             str(paths["sample_alpha_profile"]),
             "--profile-location-2",

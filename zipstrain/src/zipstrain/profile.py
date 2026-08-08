@@ -8,7 +8,7 @@ import pathlib
 import polars as pl
 from typing import Generator, Optional
 from dataclasses import dataclass
-from zipstrain import utils
+from zipstrain import dnds, utils
 import asyncio
 import json
 import os
@@ -32,6 +32,8 @@ PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 PROFILE_SCHEMA_METADATA_KEY = "zipstrain_profile_schema"
 PROFILE_SCHEMA_VERSION = "2"
 PROFILE_WRITE_BATCH_SIZE = 10_000
+GENE_INFO_WRITE_BATCH_SIZE = 50_000
+GENE_INFO_MEMORY_LIMIT = "512MB"
 MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 PROFILE_MIN_MAPQ_DEFAULT = 0
@@ -303,7 +305,7 @@ def profile_parquet_schema(include_reference_base: bool = True) -> pa.Schema:
 
 def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
     """
-    Extract gene locations from a FASTA assuming it is from prodigal yield gene info.
+    Extract coding annotations from a Prodigal nucleotide FASTA.
 
     Parameters:
     fasta_file (pathlib.Path): Path to the FASTA file.
@@ -313,17 +315,44 @@ def parse_gene_loc_table(fasta_file:pathlib.Path) -> Generator[tuple,None,None]:
         - gene_ID
         - scaffold
         - start
-        - end
+        - end, strand, phase, genetic code and partial-gene flags
     """
     with open(fasta_file, 'r') as f:
         for line in f:
             if line.startswith('>'):
-                parts = line[1:].strip().split()
-                gene_id = parts[0]
-                scaffold = "_".join(gene_id.split('_')[:-1])
-                start = parts[2]
-                end=parts[4]      
-                yield gene_id, scaffold,start,end
+                header_parts = [part.strip() for part in line[1:].strip().split("#")]
+                if len(header_parts) < 4:
+                    raise ValueError(
+                        "Gene FASTA headers must use Prodigal coordinates: "
+                        "<gene> # <start> # <end> # <strand> # <attributes>."
+                    )
+                gene = header_parts[0].split()[0]
+                scaffold = gene.rsplit("_", 1)[0]
+                start = int(header_parts[1])
+                end = int(header_parts[2])
+                strand = int(header_parts[3].split()[0])
+                if strand not in {-1, 1}:
+                    raise ValueError(f"Gene {gene!r} has invalid strand {strand!r}.")
+                attributes: dict[str, str] = {}
+                if len(header_parts) > 4:
+                    for field in header_parts[4].strip().split(";"):
+                        if "=" in field:
+                            key, value = field.strip().split("=", 1)
+                            attributes[key] = value
+                partial = attributes.get("partial", "00")
+                if len(partial) != 2 or any(value not in "01" for value in partial):
+                    partial = "00"
+                yield (
+                    gene,
+                    scaffold,
+                    min(start, end),
+                    max(start, end),
+                    strand,
+                    0,
+                    int(attributes.get("transl_table", "11")),
+                    partial[0] == "1",
+                    partial[1] == "1",
+                )
 
 
 def adjust_for_sequence_errors(
@@ -412,34 +441,217 @@ def adjust_profile_parquet_for_sequence_errors(
         engine="streaming",
     )
     
-def build_gene_range_table(fasta_file:pathlib.Path)->pl.DataFrame:
+def build_gene_info_table(
+    fasta_file: pathlib.Path,
+    stb: pl.LazyFrame | pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """
-    Build a gene location table in the form of <gene scaffold start end> from a FASTA file.
+    Build the compact one-row-per-gene information table used by profiling.
     Parameters:
     fasta_file (pathlib.Path): Path to the FASTA file.
 
     Returns:
     pl.DataFrame: A Polars DataFrame containing gene locations.
     """
-    out=[]
-    for parsed_annot in parse_gene_loc_table(fasta_file):
-        out.append(parsed_annot)
-    return pl.DataFrame(out, schema=["gene", "scaffold", "start", "end"],orient='row')
-
-
-def empty_gene_range_table() -> pl.LazyFrame:
-    """Return an empty gene-range LazyFrame with the expected schema."""
-    return pl.DataFrame(
+    rows = list(parse_gene_loc_table(fasta_file))
+    frame = pl.DataFrame(
+        rows,
         schema={
             "gene": pl.Utf8,
             "scaffold": pl.Utf8,
             "start": pl.Int64,
             "end": pl.Int64,
+            "strand": pl.Int8,
+            "phase": pl.UInt8,
+            "genetic_code": pl.UInt8,
+            "partial_5p": pl.Boolean,
+            "partial_3p": pl.Boolean,
+        },
+        orient="row",
+    ).sort(["scaffold", "start", "end", "gene"])
+    if stb is None:
+        frame = frame.with_columns(pl.lit("NA").alias("genome"))
+    else:
+        stb_lf = stb.lazy() if isinstance(stb, pl.DataFrame) else stb
+        frame = (
+            frame.lazy()
+            .join(
+                stb_lf.select("scaffold", "genome").unique(),
+                on="scaffold",
+                how="left",
+            )
+            .with_columns(pl.col("genome").fill_null("NA"))
+            .collect()
+        )
+    return (
+        frame.with_row_index("gene_id")
+        .with_columns(
+            pl.col("gene_id").cast(pl.UInt32),
+            (((pl.col("end") - pl.col("start") + 1) - pl.col("phase")) // 3)
+            .clip(lower_bound=0)
+            .cast(pl.UInt32)
+            .alias("n_codons"),
+        )
+        .with_columns(
+            pl.col("n_codons")
+            .cast(pl.UInt64)
+            .cum_sum()
+            .shift(1)
+            .fill_null(0)
+            .alias("first_codon_id")
+        )
+        .select(
+            "gene_id", "gene", "genome", "scaffold", "start", "end",
+            "strand", "phase", "genetic_code", "partial_5p", "partial_3p",
+            "first_codon_id", "n_codons",
+        )
+    )
+
+
+def write_gene_info_table(
+    fasta_file: pathlib.Path,
+    output_file: pathlib.Path,
+    *,
+    stb_file: pathlib.Path | None = None,
+    memory_limit: str = GENE_INFO_MEMORY_LIMIT,
+) -> pathlib.Path:
+    """Write sorted gene information without retaining all genes in memory."""
+    fasta_file = pathlib.Path(fasta_file)
+    output_file = pathlib.Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    raw_schema = pa.schema(
+        [
+            ("gene", pa.string()),
+            ("scaffold", pa.string()),
+            ("start", pa.int64()),
+            ("end", pa.int64()),
+            ("strand", pa.int8()),
+            ("phase", pa.uint8()),
+            ("genetic_code", pa.uint8()),
+            ("partial_5p", pa.bool_()),
+            ("partial_3p", pa.bool_()),
+        ]
+    )
+    column_names = raw_schema.names
+
+    with tempfile.TemporaryDirectory(
+        prefix="zipstrain_gene_info_", dir=output_file.parent
+    ) as temp_dir_str:
+        temp_dir = pathlib.Path(temp_dir_str)
+        raw_path = temp_dir / "raw_genes.parquet"
+        with pq.ParquetWriter(raw_path, raw_schema, compression="zstd") as writer:
+            rows: list[tuple] = []
+            for row in parse_gene_loc_table(fasta_file):
+                rows.append(row)
+                if len(rows) >= GENE_INFO_WRITE_BATCH_SIZE:
+                    writer.write_table(
+                        pa.Table.from_pylist(
+                            [dict(zip(column_names, value)) for value in rows],
+                            schema=raw_schema,
+                        )
+                    )
+                    rows.clear()
+            if rows:
+                writer.write_table(
+                    pa.Table.from_pylist(
+                        [dict(zip(column_names, value)) for value in rows],
+                        schema=raw_schema,
+                    )
+                )
+
+        raw_sql = _duckdb_quote_sql_string(str(raw_path))
+        output_sql = _duckdb_quote_sql_string(str(output_file))
+        temp_sql = _duckdb_quote_sql_string(str(temp_dir / "duckdb"))
+        if stb_file is None:
+            stb_cte = (
+                "stb_map AS (SELECT NULL::VARCHAR AS scaffold, "
+                "NULL::VARCHAR AS genome WHERE FALSE)"
+            )
+        else:
+            stb_sql = _duckdb_quote_sql_string(str(pathlib.Path(stb_file)))
+            stb_cte = f"""
+              stb_map AS (
+                SELECT DISTINCT TRIM(scaffold) AS scaffold, TRIM(genome) AS genome
+                FROM read_csv(
+                  '{stb_sql}', delim='\\t', header=false,
+                  columns={{'scaffold': 'VARCHAR', 'genome': 'VARCHAR'}}
+                )
+              )
+            """
+
+        con = duckdb.connect()
+        try:
+            con.execute(f"SET memory_limit='{_duckdb_quote_sql_string(memory_limit)}'")
+            con.execute(f"SET temp_directory='{temp_sql}'")
+            con.execute(
+                f"""
+                COPY (
+                  WITH
+                  {stb_cte},
+                  genes AS (
+                    SELECT *,
+                      GREATEST(FLOOR((("end" - start + 1) - phase) / 3), 0)::UINTEGER AS n_codons
+                    FROM read_parquet('{raw_sql}')
+                  ),
+                  annotated AS (
+                    SELECT
+                      (ROW_NUMBER() OVER gene_order - 1)::UINTEGER AS gene_id,
+                      g.gene,
+                      COALESCE(s.genome, 'NA')::VARCHAR AS genome,
+                      g.scaffold,
+                      g.start,
+                      g."end" AS "end",
+                      g.strand,
+                      g.phase,
+                      g.genetic_code,
+                      g.partial_5p,
+                      g.partial_3p,
+                      COALESCE(
+                        SUM(g.n_codons) OVER (
+                          ORDER BY g.scaffold, g.start, g."end", g.gene
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                        ), 0
+                      )::UBIGINT AS first_codon_id,
+                      g.n_codons
+                    FROM genes g
+                    LEFT JOIN stb_map s USING (scaffold)
+                    WINDOW gene_order AS (ORDER BY g.scaffold, g.start, g."end", g.gene)
+                  )
+                  SELECT * FROM annotated
+                  ORDER BY gene_id
+                ) TO '{output_sql}' (FORMAT PARQUET, COMPRESSION ZSTD)
+                """
+            )
+        finally:
+            con.close()
+    return output_file
+
+
+def empty_gene_info_table() -> pl.LazyFrame:
+    """Return an empty gene-information LazyFrame with the expected schema."""
+    return pl.DataFrame(
+        schema={
+            "gene_id": pl.UInt32,
+            "gene": pl.Utf8,
+            "genome": pl.Utf8,
+            "scaffold": pl.Utf8,
+            "start": pl.Int64,
+            "end": pl.Int64,
+            "strand": pl.Int8,
+            "phase": pl.UInt8,
+            "genetic_code": pl.UInt8,
+            "partial_5p": pl.Boolean,
+            "partial_3p": pl.Boolean,
+            "first_codon_id": pl.UInt64,
+            "n_codons": pl.UInt32,
         }
     ).lazy()
 
 
-def empty_gene_stats_table(include_ref_ani: bool = False) -> pl.LazyFrame:
+def empty_gene_stats_table(
+    include_ref_ani: bool = False,
+    include_reference_dnds: bool = False,
+) -> pl.LazyFrame:
     """Return an empty gene-stats LazyFrame with the expected schema."""
     schema = {
         "genome": pl.Utf8,
@@ -450,18 +662,26 @@ def empty_gene_stats_table(include_ref_ani: bool = False) -> pl.LazyFrame:
     }
     if include_ref_ani:
         schema["ref_ani"] = pl.Float64
+    if include_reference_dnds:
+        for column in dnds.REFERENCE_DNDS_RESULT_COLUMNS:
+            schema[column] = pl.Int64 if column in {
+                "ref_callable_codons", "ref_stop_changes"
+            } else pl.Float64
     return pl.DataFrame(schema=schema).lazy()
 
 
-def normalize_gene_range_table_path(
+def normalize_gene_info_table_path(
     gene_range_table: Optional[str | pathlib.Path],
 ) -> Optional[pathlib.Path]:
-    """Treat missing or empty gene-range files as absent annotations."""
+    """Treat a missing gene-information parquet as absent annotations."""
     if gene_range_table in (None, ""):
         return None
     path = pathlib.Path(gene_range_table)
-    if path.exists() and path.stat().st_size == 0:
-        return None
+    if path.exists():
+        if path.suffix.lower() != ".parquet":
+            raise ValueError("The gene information table must be a Parquet file.")
+        if pl.scan_parquet(path).select(pl.len()).collect(engine="streaming").item() == 0:
+            return None
     return path
 
 def add_genome_info_to_mpileup(mpileup_df:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame)->pl.LazyFrame:
@@ -1169,6 +1389,8 @@ def profile_bam_in_chunks(
     min_read_ani: float | None = None,
     read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
+    prepare_dnds: bool = False,
+    dnds_memory_limit: str = dnds.DEFAULT_MEMORY_LIMIT,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1176,7 +1398,7 @@ def profile_bam_in_chunks(
     Parameters:
     bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
     bam_file (pathlib.Path): Path to the BAM file.
-    gene_range_table (pathlib.Path | None): Optional path to the gene range table.
+    gene_range_table (pathlib.Path | None): Optional path to the gene information table.
     stb (pl.LazyFrame): The scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
@@ -1191,7 +1413,11 @@ def profile_bam_in_chunks(
     bed_file=pathlib.Path(bed_file)
     reference_fasta = pathlib.Path(reference_fasta) if reference_fasta is not None else None
     include_reference_base = reference_fasta is not None
-    gene_range_table_path = normalize_gene_range_table_path(gene_range_table)
+    gene_range_table_path = normalize_gene_info_table_path(gene_range_table)
+    if prepare_dnds and reference_fasta is None:
+        raise ValueError("--prepare-dnds requires --reference-fasta.")
+    if prepare_dnds and gene_range_table_path is None:
+        raise ValueError("--prepare-dnds requires a non-empty gene information table.")
     _validate_profile_filter_settings(
         min_mapq=min_mapq,
         min_baseq=min_baseq,
@@ -1220,18 +1446,9 @@ def profile_bam_in_chunks(
         effective_bam_file = filtered_bam_file
     bed_lf=pl.scan_csv(bed_file,has_header=False,separator="\t")
     if gene_range_table_path is None:
-        gene_range_lf = empty_gene_range_table()
+        gene_range_lf = empty_gene_info_table()
     else:
-        gene_range_lf = pl.scan_csv(
-            gene_range_table_path,
-            has_header=False,
-            separator="\t",
-        ).rename({
-            "column_1": "gene",
-            "column_2": "scaffold",
-            "column_3": "start",
-            "column_4": "end",
-        })
+        gene_range_lf = pl.scan_parquet(gene_range_table_path)
         gene_range_lf = gene_range_lf.sort(["scaffold", "start"]).set_sorted(["scaffold", "start"])
     bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
@@ -1288,8 +1505,27 @@ def profile_bam_in_chunks(
             tmp_dir=output_dir / "tmp",
             metadata=utils.profile_contract_metadata_from_values(profile_contract),
         )
+        reference_dnds = None
+        if prepare_dnds:
+            codon_output = output_dir / f"{bam_file.stem}_codon_profile.parquet"
+            dnds.write_codon_profile(
+                profile_path=output_dir / f"{bam_file.stem}_profile.parquet",
+                gene_info_path=gene_range_table_path,
+                output_path=codon_output,
+                temp_directory=output_dir / "tmp" / "dnds",
+                memory_limit=dnds_memory_limit,
+                metadata=utils.profile_contract_metadata_from_values(profile_contract),
+            )
+            reference_dnds = dnds.reference_dnds(
+                codon_output,
+                gene_range_table_path,
+                min_cov=5,
+            )
         if gene_range_table_path is None:
-            empty_gene_stats_table(include_ref_ani=include_reference_base).sink_parquet(
+            empty_gene_stats_table(
+                include_ref_ani=include_reference_base,
+                include_reference_dnds=prepare_dnds,
+            ).sink_parquet(
                 output_dir/f"{bam_file.stem}_gene_stats.parquet",
                 compression='zstd',
                 engine='streaming',
@@ -1299,6 +1535,7 @@ def profile_bam_in_chunks(
                 profile=mpileup_df,
                 gene_bed=gene_range_lf,
                 stb=stb,
+                reference_dnds=reference_dnds,
             ).sink_parquet(
                 output_dir/f"{bam_file.stem}_gene_stats.parquet",
                 compression='zstd',
@@ -1340,6 +1577,8 @@ def profile_bam(
     min_read_ani: float | None = None,
     read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
+    prepare_dnds: bool = False,
+    dnds_memory_limit: str = dnds.DEFAULT_MEMORY_LIMIT,
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1347,7 +1586,7 @@ def profile_bam(
     Parameters:
     bed_file (list[pathlib.Path]): A bed file describing all regions to be profiled.
     bam_file (pathlib.Path): Path to the BAM file.
-    gene_range_table (pathlib.Path | None): Optional path to the gene range table.
+    gene_range_table (pathlib.Path | None): Optional path to the gene information table.
     stb (pl.LazyFrame): Scaffold-to-genome mapping table.
     null_model (pl.LazyFrame): The null model to be used for adjusting for sequence errors.
     output_dir (pathlib.Path): Directory to save output files.
@@ -1372,6 +1611,8 @@ def profile_bam(
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
         min_freq=min_freq,
+        prepare_dnds=prepare_dnds,
+        dnds_memory_limit=dnds_memory_limit,
     )
 
 
@@ -1379,14 +1620,14 @@ def profile_bam(
 # Profiling-asset preparation and caching
 #
 # These helpers let `zipstrain profile` build the intermediate files it needs
-# (bed, gene range table, genome lengths, null model, profiling contract)
+# (bed, gene information table, genome lengths, null model, profiling contract)
 # on the fly, instead of forcing the user to run `prepare_profiling` first.
 # ---------------------------------------------------------------------------
 
 # File names used inside the profiling-assets directory. These match the names
 # produced by the `prepare_profiling` utility so the two paths are compatible.
 ASSET_BED_FILENAME = "genomes_bed_file.bed"
-ASSET_GENE_RANGE_FILENAME = "gene_range_table.tsv"
+ASSET_GENE_INFO_FILENAME = "gene_info_table.parquet"
 ASSET_GENOME_LENGTH_FILENAME = "genome_lengths.parquet"
 ASSET_NULL_MODEL_FILENAME = "null_model.parquet"
 ASSET_CONTRACT_FILENAME = "profiling_contract.json"
@@ -1437,7 +1678,7 @@ def prepare_profiling_assets(
 
     This is the shared implementation behind the ``prepare_profiling`` utility
     and the auto-preparation performed by ``zipstrain profile``. It writes the
-    bed file, gene range table, genome length table, null model, and profiling
+    bed file, gene information table, genome length table, null model, and profiling
     contract, and returns their paths.
     """
     output_dir = pathlib.Path(output_dir)
@@ -1447,17 +1688,19 @@ def prepare_profiling_assets(
     bed_df = utils.make_the_bed(reference_fasta)
     bed_df.write_csv(bed_path, separator="\t", include_header=False)
 
-    gene_range_path = output_dir / ASSET_GENE_RANGE_FILENAME
+    gene_range_path = output_dir / ASSET_GENE_INFO_FILENAME
+    stb = read_stb(stb_file)
     if gene_fasta is None:
-        empty_gene_range_table().sink_csv(
-            gene_range_path, separator="\t", include_header=False
+        empty_gene_info_table().sink_parquet(
+            gene_range_path, compression="zstd", engine="streaming"
         )
     else:
-        build_gene_range_table(pathlib.Path(gene_fasta)).write_csv(
-            gene_range_path, separator="\t", include_header=False
+        write_gene_info_table(
+            pathlib.Path(gene_fasta),
+            gene_range_path,
+            stb_file=pathlib.Path(stb_file),
         )
 
-    stb = read_stb(stb_file)
     genome_length_path = output_dir / ASSET_GENOME_LENGTH_FILENAME
     utils.extract_genome_length(stb, bed_df.lazy()).sink_parquet(
         genome_length_path, compression="zstd"
@@ -1525,7 +1768,7 @@ def _build_cache_manifest(
 def _assets_from_dir(assets_dir: pathlib.Path) -> ProfilingAssets:
     return ProfilingAssets(
         bed_file=assets_dir / ASSET_BED_FILENAME,
-        gene_range_table=assets_dir / ASSET_GENE_RANGE_FILENAME,
+        gene_range_table=assets_dir / ASSET_GENE_INFO_FILENAME,
         genome_length_file=assets_dir / ASSET_GENOME_LENGTH_FILENAME,
         null_model_file=assets_dir / ASSET_NULL_MODEL_FILENAME,
         profiling_contract_file=assets_dir / ASSET_CONTRACT_FILENAME,

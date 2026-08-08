@@ -116,7 +116,7 @@ def parse_genome_calculations(
       - "all"
       - iterable of token strings
 
-    ``gene`` needs a gene range table, so ``"all"`` only pulls it in when
+    ``gene`` needs a gene information table, so ``"all"`` only pulls it in when
     ``include_gene_from_all`` says one is available; asking for it explicitly
     without ranges is an error raised by the caller rather than a silent drop.
     """
@@ -781,34 +781,21 @@ def _as_lazy_profile(source: Union[str, Path, pl.LazyFrame]) -> pl.LazyFrame:
     raise TypeError(f"Unsupported source type for profile input: {type(source)}")
 
 
-GENE_RANGE_TABLE_COLUMNS = ("gene", "scaffold", "start", "end")
-
-
 def _as_gene_range_frame(
     gene_range: Union[str, Path, pl.LazyFrame, pl.DataFrame],
 ) -> pl.LazyFrame:
-    """Normalize a gene range table into a lazy ``gene, scaffold, start, end`` frame.
+    """Normalize gene information into a lazy range frame.
 
-    On disk this is the headerless TSV emitted by ``zipstrain gene-range-table``;
-    in-memory frames are accepted as-is so callers can build ranges themselves.
+    On-disk annotations are Parquet and may contain coding columns used by
+    dN/dS. Ordinary gene ANI reads only the columns it needs.
     """
     if isinstance(gene_range, pl.DataFrame):
         return gene_range.lazy()
     if isinstance(gene_range, pl.LazyFrame):
         return gene_range
     if isinstance(gene_range, (str, Path)):
-        return pl.scan_csv(
-            gene_range,
-            has_header=False,
-            separator="\t",
-            new_columns=list(GENE_RANGE_TABLE_COLUMNS),
-        ).select(
-            pl.col("gene").cast(pl.Utf8),
-            pl.col("scaffold").cast(pl.Utf8),
-            pl.col("start").cast(pl.Int64),
-            pl.col("end").cast(pl.Int64),
-        )
-    raise TypeError(f"Unsupported source type for gene range table: {type(gene_range)}")
+        return pl.scan_parquet(gene_range)
+    raise TypeError(f"Unsupported source type for gene information table: {type(gene_range)}")
 
 
 def _stb_scaffold_genome_map(stb_file: Union[str, Path]) -> pl.LazyFrame:
@@ -827,11 +814,10 @@ def _scaffold_genome_map(
     source: Union[str, Path, pl.LazyFrame],
     stb_file: Optional[Union[str, Path]] = None,
 ) -> pl.LazyFrame:
-    """Scaffold-to-genome pairs, used to attach a genome to each gene range.
+    """Scaffold-to-genome pairs for in-memory annotations without ``genome``.
 
-    The gene range table is a headerless ``gene, scaffold, start, end`` TSV with
-    no genome column. The STB file already holds that mapping and is tiny, so it
-    is preferred; falling back to the profile costs a full pass over its columns.
+    Current on-disk gene information is Parquet and already carries ``genome``.
+    This fallback keeps the internal DataFrame API useful in focused tests.
     """
     if stb_file is not None:
         return _stb_scaffold_genome_map(stb_file)
@@ -858,9 +844,11 @@ def _gene_range_axis_inputs(
     equally and cancels. That keeps this off the profile entirely -- the gene
     range table and STB file are both small.
     """
-    gene_ranges = _as_gene_range_frame(gene_range).join(
-        _scaffold_genome_map(profile, stb_file=stb_file), on="scaffold", how="inner"
-    )
+    gene_ranges = _as_gene_range_frame(gene_range)
+    if "genome" not in gene_ranges.collect_schema().names():
+        gene_ranges = gene_ranges.join(
+            _scaffold_genome_map(profile, stb_file=stb_file), on="scaffold", how="inner"
+        )
     if genome_scope != "all":
         gene_ranges = gene_ranges.filter(pl.col("genome") == genome_scope)
     if gene_scope != "all":
@@ -1088,8 +1076,8 @@ def duckdb_compare_genomes_to_parquet(
     ani_methods = parse_ani_methods(ani_method)
     if "gene" in calculations and gene_range is None:
         raise ValueError(
-            "Gene comparison was requested but no gene range table was provided. "
-            "Pass gene_range=<gene range table> or drop 'gene' from --calculate."
+            "Gene comparison was requested but no gene information table was provided. "
+            "Pass gene_range=<gene information table> or drop 'gene' from --calculate."
         )
     con = duckdb.connect()
     try:
@@ -1172,8 +1160,8 @@ def duckdb_compare_genomes(
     ani_methods = parse_ani_methods(ani_method)
     if "gene" in calculations and gene_range is None:
         raise ValueError(
-            "Gene comparison was requested but no gene range table was provided. "
-            "Pass gene_range=<gene range table> or drop 'gene' from --calculate."
+            "Gene comparison was requested but no gene information table was provided. "
+            "Pass gene_range=<gene information table> or drop 'gene' from --calculate."
         )
     con = duckdb.connect()
     try:
@@ -1534,8 +1522,8 @@ def compare_genomes_polars(
     ani_methods = parse_ani_methods(ani_method)
     if "gene" in calculations and gene_range is None:
         raise ValueError(
-            "Gene comparison was requested but no gene range table was provided. "
-            "Pass gene_range=<gene range table> or drop 'gene' from --calculate."
+            "Gene comparison was requested but no gene information table was provided. "
+            "Pass gene_range=<gene information table> or drop 'gene' from --calculate."
         )
     shared = _shared_loci_polars(
         mpile1=mpile_contig_1,

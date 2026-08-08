@@ -10,6 +10,7 @@ import pytest
 from zipstrain import cli
 from zipstrain import compare as cp
 from zipstrain import matrix_pairs as mp
+from zipstrain import matrix_workflow
 
 
 def _write_profiles(profile_dir: Path) -> None:
@@ -268,7 +269,28 @@ def _write_gene_range_table(gene_range_table: Path) -> None:
             "start": [1, 6, 8],
             "end": [3, 6, 8],
         }
-    ).write_csv(gene_range_table, separator="\t", include_header=False)
+    ).write_parquet(gene_range_table)
+
+
+def test_matrix_gene_info_discovery_ignores_empty_parquet(tmp_path):
+    sample_dir = tmp_path / "sample"
+    assets_dir = tmp_path / "profiling_assets"
+    sample_dir.mkdir()
+    assets_dir.mkdir()
+    profile_path = sample_dir / "sample_profile.parquet"
+    profile_path.write_text("placeholder")
+    pl.DataFrame(
+        schema={
+            "gene_id": pl.UInt32,
+            "gene": pl.Utf8,
+            "genome": pl.Utf8,
+            "scaffold": pl.Utf8,
+            "start": pl.Int64,
+            "end": pl.Int64,
+        }
+    ).write_parquet(assets_dir / "gene_info_table.parquet")
+
+    assert matrix_workflow.discover_gene_range_table([profile_path]) is None
 
 
 def _write_contract_from_profiles(
@@ -728,7 +750,7 @@ def test_build_matrix_hdf5_with_gene_ranges(tmp_path):
     pytest.importorskip("h5py")
     profile_dir = tmp_path / "profiles"
     matrix_hdf5 = tmp_path / "matrix.h5"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
 
@@ -754,7 +776,7 @@ def test_build_matrix_hdf5_expands_scaffold_span_for_scaffold_relative_gene_rang
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir(parents=True, exist_ok=True)
     matrix_hdf5 = tmp_path / "matrix.h5"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
 
     pl.DataFrame(
         {
@@ -775,7 +797,7 @@ def test_build_matrix_hdf5_expands_scaffold_span_for_scaffold_relative_gene_rang
             "start": [10, 100],
             "end": [20, 101],
         }
-    ).write_csv(gene_range_table, separator="\t", include_header=False)
+    ).write_parquet(gene_range_table)
 
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
@@ -803,7 +825,7 @@ def test_build_matrix_hdf5_gene_ranges_follow_multiscaffold_axis_offsets(tmp_pat
     pytest.importorskip("h5py")
     profile_dir = tmp_path / "profiles"
     matrix_hdf5 = tmp_path / "matrix.h5"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     _write_profiles_multiscaffold_same_genome(profile_dir)
     pl.DataFrame(
         {
@@ -812,7 +834,7 @@ def test_build_matrix_hdf5_gene_ranges_follow_multiscaffold_axis_offsets(tmp_pat
             "start": [1, 1],
             "end": [2, 2],
         }
-    ).write_csv(gene_range_table, separator="\t", include_header=False)
+    ).write_parquet(gene_range_table)
 
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
@@ -876,7 +898,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_hdf5 = tmp_path / "matrix.h5"
     compare_db = tmp_path / "compare_hdf5.duckdb"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
 
@@ -914,7 +936,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare_multiscaffold(tm
     profile_dir = tmp_path / "profiles"
     matrix_hdf5 = tmp_path / "matrix.h5"
     compare_db = tmp_path / "compare_hdf5.duckdb"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     _write_profiles_multiscaffold_same_genome(profile_dir)
     pl.DataFrame(
         {
@@ -923,7 +945,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare_multiscaffold(tm
             "start": [0, 0],
             "end": [1, 1],
         }
-    ).write_csv(gene_range_table, separator="\t", include_header=False)
+    ).write_parquet(gene_range_table)
 
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
@@ -1054,7 +1076,7 @@ def test_matrix_compare_hdf5_explicit_gene_results_match_classic_compare(tmp_pat
     profile_dir = tmp_path / "profiles"
     matrix_hdf5 = tmp_path / "matrix.h5"
     compare_db = tmp_path / "compare_hdf5_gene.duckdb"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     _write_profiles(profile_dir)
     _write_gene_range_table(gene_range_table)
 
@@ -2021,7 +2043,7 @@ def test_cli_matrix_compare_export_gene_table(tmp_path):
     pytest.importorskip("h5py")
     pytest.importorskip("torch")
     profile_dir = tmp_path / "profiles"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     matrix_db = tmp_path / "matrix.h5"
     output_file = tmp_path / "matrix_compare.duckdb"
     export_file = tmp_path / "matrix_compare_gene.parquet"
@@ -2047,7 +2069,7 @@ def test_cli_matrix_compare_export_gene_table(tmp_path):
             str(stb_file),
             "--memory-limit-gb",
             "1",
-            "--gene-range-table",
+            "--gene-info-table",
             str(gene_range_table),
         ],
     )
@@ -2107,7 +2129,7 @@ def test_export_matrix_compare_parquet_supports_genome_and_gene_tables(tmp_path)
     pytest.importorskip("h5py")
     pytest.importorskip("torch")
     profile_dir = tmp_path / "profiles"
-    gene_range_table = tmp_path / "gene_ranges.tsv"
+    gene_range_table = tmp_path / "gene_info.parquet"
     matrix_db = tmp_path / "matrix.h5"
     compare_db = tmp_path / "matrix_compare.duckdb"
     genome_export = tmp_path / "matrix_compare.parquet"
@@ -3539,9 +3561,16 @@ def test_count_matrix_numpy_gene_results_use_selected_ani_method(tmp_path):
     profile_dir = tmp_path / "profiles"
     matrix_file = tmp_path / "counts.h5"
     output_file = tmp_path / "conani.duckdb"
-    gene_ranges = tmp_path / "gene_ranges.tsv"
+    gene_ranges = tmp_path / "gene_info.parquet"
     _write_count_metric_profiles(profile_dir)
-    gene_ranges.write_text("gene1\tchr1\t1\t4\n")
+    pl.DataFrame(
+        {
+            "gene": ["gene1"],
+            "scaffold": ["chr1"],
+            "start": [1],
+            "end": [4],
+        }
+    ).write_parquet(gene_ranges)
     _build_matrix_hdf5_with_contract(
         profile_dir=profile_dir,
         output_file=matrix_file,

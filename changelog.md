@@ -4,9 +4,10 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+- Gene annotations are now stored as `gene_info_table.parquet` with strand, phase, genetic code, partial-gene flags, and stable codon ranges. Optional `profile --prepare-dnds` writes sparse codon sidecars and reference-relative dN/dS in gene stats; optional standard `compare --dnds` adds pairwise gene dN/dS. Nextflow exposes both paths, while ordinary profiling/comparison remains unchanged.
 - Comparison accepts comma-separated ANI methods (for example, `popani,conani,cosani_0.95`). Standard comparison evaluates all methods after one coordinate join; matrix comparison reuses one count store and keeps a resumable database per method. Single-method output columns are unchanged, while multi-method outputs use normalized method suffixes and record the canonical list in parquet metadata. Nextflow forwards the same list.
-- The CLI and task manager now use one comparison path for genome ANI, IBS, and gene ANI. `zipstrain compare --calculate ...` selects metrics, `--gene-range-table` enables gene-grained output, and every run writes `all_comparisons.parquet`. The normalized metric set is stored in parquet metadata so incompatible resume attempts fail clearly.
-- Nextflow comparison now uses one `--mode compare` workflow controlled by `--compare_calculate`. The optional `--gene_range_table` is staged into both single and batched tasks, enables overlap-aware gene metrics, and remains optional for genome-only comparisons. Batched mode creates pair batches before channelization for compatibility with Nextflow 26.
+- The CLI and task manager now use one comparison path for genome ANI, IBS, and gene ANI. `zipstrain compare --calculate ...` selects metrics, `--gene-info-table` enables gene-grained output, and every run writes `all_comparisons.parquet`. The normalized metric set is stored in parquet metadata so incompatible resume attempts fail clearly.
+- Nextflow comparison now uses one `--mode compare` workflow controlled by `--compare_calculate`. The optional `--gene_info_table` is staged into both single and batched tasks, enables overlap-aware gene metrics, and remains optional for genome-only comparisons. Batched mode creates pair batches before channelization for compatibility with Nextflow 26.
 
 ## 1.0.2
 
@@ -46,7 +47,7 @@ First stable release. This version consolidates ZipStrain around three top-level
 
 ### Profiling (`zipstrain profile`)
 
-- Profiling assets (null model, BED, genome lengths, gene range table, profiling contract) are auto-generated into `<run-dir>/profiling_assets` and cached, so a minimal run needs only `--input-table`, `--reference-fasta`, and `--stb-file`.
+- Profiling assets (null model, BED, genome lengths, gene information table, profiling contract) are auto-generated into `<run-dir>/profiling_assets` and cached, so a minimal run needs only `--input-table`, `--reference-fasta`, and `--stb-file`.
 - Reference-aware profiling: `--reference-fasta` adds `ref_base_bitmask` to profiles and `ref_ani` to gene/genome stats.
 - Per-sample SNV/SNP calling (`<sample>_SNVs.parquet`), with inStrain-style stats in genome/gene stats: `SNS_count`, `SNV_count`, `conANI_reference`, `ber`, `fug`, coverage summaries, and an automated `present`/`absent` `presence` call (BER/FUG thresholds).
 - Read/base filters aligned with inStrain and samtools: `--min-mapq`, `--min-baseq`, `--min-read-ani` (NM-tag based), and `--read-inclusion proper-pairs|paired|all-mapped` (default `paired`).
