@@ -88,7 +88,8 @@ One row per gene, populated only when gene annotations are supplied (`profile --
 | `ref_callable_codons` | Complete codons passing the dN/dS coverage and consensus filters |
 | `ref_synonymous_changes`, `ref_nonsynonymous_changes` | Synonymous and nonsynonymous differences from the reference; multi-base codon changes are averaged across valid shortest paths |
 | `ref_synonymous_sites`, `ref_nonsynonymous_sites` | Callable synonymous and nonsynonymous site opportunities |
-| `ref_dS`, `ref_dN`, `ref_dN_dS` | Reference-relative rates and ratio; the ratio is null when `ref_dS` is zero |
+| `ref_pS`, `ref_pN`, `ref_pN_pS` | Reference-relative observed proportions and their ratio; the ratio is null when `ref_pS` is zero |
+| `ref_dS`, `ref_dN`, `ref_dN_dS` | The same quantities with the Jukes-Cantor correction applied; null when the observed proportion reaches 3/4 |
 | `ref_stop_changes` | Codons where exactly one of sample/reference is a stop codon; excluded from dN/dS rates |
 
 The `ref_*` dN/dS columns are present only with `profile --prepare-dnds` (or
@@ -228,13 +229,15 @@ gene row so the table can be read on its own.
 
 Genes with fewer than `--min-gene-compare-len` shared positions are dropped.
 
-With `--dnds`, the standard method also adds `callable_codons`,
+With `dnds` in `--calculate`, the standard method also adds `callable_codons`,
 `synonymous_changes`, `nonsynonymous_changes`, `synonymous_sites`,
-`nonsynonymous_sites`, `dS`, `dN`, `dN_dS`, and `stop_changes`. Only codons
+`nonsynonymous_sites`, `pS`, `pN`, `pN_pS`, `dS`, `dN`, `dN_dS`, and `stop_changes`. Only codons
 present in both sparse sidecars and passing `--min-cov` plus
 `--dnds-min-major-freq` are callable. The two sidecars must have the same gene
 information hash. Stop endpoints are counted separately and excluded from the
-rate denominator; `dN_dS` is null when `dS` is zero.
+rate denominator; `pN_pS` is null when `pS` is zero.
+
+Two ratios are reported from the same counts: `pS`/`pN`/`pN_pS` are the observed proportions of differing sites, while `dS`/`dN`/`dN_dS` add the Jukes-Cantor correction for substitutions that left no trace (a site mutated back, was hit twice, or both lineages converged). At strain-level divergence the two agree to ~0.1%; they separate as divergence grows, and the corrected ratio is the lower of the two because the larger proportion inflates more. `dS`/`dN` are null once the observed proportion reaches 3/4, where the correction is undefined.
 
 !!! note "Overlapping genes"
     Gene boundaries come from the gene information table at comparison time, not from a

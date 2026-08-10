@@ -1425,7 +1425,6 @@ def get_gene_range_table(gene_file, stb_file, output_file):
 @click.option('--ani-method', '-a', default="popani", help="One or more comma-separated ANI methods (for example, popani,conani,cosani_0.4).")
 @click.option('--calculate', default="all", show_default=True, help="Metrics to compute: genome_ani, ibs, gene. Combine with '+', or use all. 'gene' needs --gene-info-table and makes the output gene-grained.")
 @click.option('--gene-info-table', 'gene_range_table', default=None, help="Gene information Parquet. Required for gene metrics.")
-@click.option('--dnds', is_flag=True, default=False, help="Add pairwise gene dN/dS from prepared codon profiles.")
 @click.option('--codon-profile-1', default=None, help="Codon sidecar for profile 1; inferred from its filename when omitted.")
 @click.option('--codon-profile-2', default=None, help="Codon sidecar for profile 2; inferred from its filename when omitted.")
 @click.option('--dnds-min-major-freq', default=0.0, show_default=True, type=float, help="Minimum consensus-allele frequency at every base of a callable codon.")
@@ -1433,7 +1432,7 @@ def get_gene_range_table(gene_file, stb_file, output_file):
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, calculate, gene_range_table, dnds, codon_profile_1, codon_profile_2, dnds_min_major_freq, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, calculate, gene_range_table, codon_profile_1, codon_profile_2, dnds_min_major_freq, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """Compare one profile pair using the same genome/gene calculation path."""
     profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
     profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
@@ -1448,11 +1447,22 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
     else:
         genome_scope, gene_scope = scope, "all"
 
-    calculations = cp.parse_genome_calculations(
-        calculate, include_gene_from_all=gene_range_table is not None
+    # `all` grows with the inputs supplied, so resolve the codon sidecars first:
+    # their presence is what makes dN/dS computable.
+    if codon_profile_1 is None and dn.codon_profile_exists(profile_location_1):
+        codon_profile_1 = dn.codon_profile_path(profile_location_1)
+    if codon_profile_2 is None and dn.codon_profile_exists(profile_location_2):
+        codon_profile_2 = dn.codon_profile_path(profile_location_2)
+    codon_profiles_exist = all(
+        sidecar is not None and pathlib.Path(sidecar).exists()
+        for sidecar in (codon_profile_1, codon_profile_2)
     )
-    if dnds and "gene" not in calculations:
-        calculations = (*calculations, "gene")
+    calculations = cp.parse_genome_calculations(
+        calculate,
+        include_gene_from_all=gene_range_table is not None,
+        include_dnds_from_all=gene_range_table is not None and codon_profiles_exist,
+    )
+    dnds = "dnds" in calculations
     try:
         ani_method = cp.canonical_ani_methods(ani_method)
     except ValueError as exc:
@@ -1467,13 +1477,15 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
     if dnds:
         if not 0.0 <= dnds_min_major_freq <= 1.0:
             raise click.UsageError("--dnds-min-major-freq must be between 0 and 1.")
-        codon_profile_1 = codon_profile_1 or dn.codon_profile_path(profile_location_1)
-        codon_profile_2 = codon_profile_2 or dn.codon_profile_path(profile_location_2)
-        for path in (codon_profile_1, codon_profile_2):
-            if not pathlib.Path(path).exists():
+        for profile, path in (
+            (profile_location_1, codon_profile_1),
+            (profile_location_2, codon_profile_2),
+        ):
+            if path is None or not pathlib.Path(path).exists():
+                path = path or f"{profile} (no codon sidecar)"
                 raise click.UsageError(
                     f"dN/dS codon profile does not exist: {path}. "
-                    "Re-run profiling with --prepare-dnds."
+                    "Re-run profiling with --prepare-dnds, or drop dnds from --calculate."
                 )
         output_cols.extend(dn.DNDS_RESULT_COLUMNS)
     compare_metadata = ut.build_single_compare_metadata(
@@ -1486,7 +1498,7 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
         engine=engine,
         uses_stb=stb_file is not None,
         ani_method=ani_method,
-        calculate="+".join(calculations) + ("+dnds" if dnds else ""),
+        calculate="+".join(calculations),
     )
 
     profile_1_for_compare = profile_location_1
@@ -2013,7 +2025,6 @@ def _run_matrix_compare_method(
 @click.option("--calculate", default="all", show_default=True, help="Metrics to compute: genome_ani (or ani), ibs, gene. Combine with '+'. With --gene-info-table, 'all' includes gene.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-info-table", 'gene_range_table', default=None, help="Gene information Parquet for gene ANI and dN/dS. Matrix gene ANI can auto-discover it from profiling_assets.")
-@click.option("--dnds", is_flag=True, default=False, help="Add pairwise gene dN/dS. Standard method only; profiles must have codon sidecars.")
 @click.option("--dnds-min-major-freq", default=0.0, show_default=True, type=float, help="Minimum consensus-allele frequency at every base of a callable codon.")
 @click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
 @click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for --method matrix.")
@@ -2028,7 +2039,7 @@ def _run_matrix_compare_method(
 @click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Write the companion .csv even when the estimated size exceeds 100 MB.")
-def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, dnds, dnds_min_major_freq, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
+def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, dnds_min_major_freq, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
     """
     Compare profiled samples through one genome/gene calculation path.
 
@@ -2045,19 +2056,30 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
     with RunLogger(run_dir, command="compare", argv=sys.argv) as run_log:
         run_log.step("Loading profile database")
         profile_database = _load_profile_database(profile_db, allow_mismatch=allow_mismatch)
+        # `all` grows with the inputs supplied. dN/dS additionally needs a codon
+        # sidecar beside every profile, so check them before resolving tokens.
+        codon_profiles_exist = all(
+            dn.codon_profile_exists(row["profile_location"])
+            for row in profile_database.db.collect().iter_rows(named=True)
+        )
         calculations = cp.parse_genome_calculations(
             calculate,
             include_gene_from_all=gene_range_table is not None,
+            include_dnds_from_all=gene_range_table is not None and codon_profiles_exist,
         )
-        if dnds and "gene" not in calculations:
-            calculations = (*calculations, "gene")
+        dnds = "dnds" in calculations
+        if dnds and not codon_profiles_exist:
+            raise click.UsageError(
+                "dnds was requested but some profiles have no codon sidecar. "
+                "Re-run profiling with --prepare-dnds, or drop dnds from --calculate."
+            )
         try:
             ani_method = cp.canonical_ani_methods(ani_method)
         except ValueError as exc:
             raise click.UsageError(str(exc)) from exc
         include_gene = "gene" in calculations
         if dnds and method == "matrix":
-            raise click.UsageError("--dnds is currently supported only by --method standard.")
+            raise click.UsageError("dnds in --calculate is currently supported only by --method standard.")
         if not 0.0 <= dnds_min_major_freq <= 1.0:
             raise click.UsageError("--dnds-min-major-freq must be between 0 and 1.")
         if scope.count(":") > 1:
@@ -2080,7 +2102,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
                 "Gene comparison requires --gene-info-table."
             )
         resolved_calculate = "+".join(calculations)
-        contract_calculate = resolved_calculate + ("+dnds" if dnds else "")
+        contract_calculate = resolved_calculate
 
         if method == "matrix":
             _run_matrix_compare_method(

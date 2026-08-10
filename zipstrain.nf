@@ -14,7 +14,6 @@ params.compare_calculate="all"
 params.gene_info_table=null
 params.prepare_dnds=false
 params.dnds_memory_limit="1GB"
-params.dnds=false
 params.dnds_min_major_freq=0.0
 params.batch_compare_n_parallel=4
 params.publish_mode="symlink"
@@ -77,6 +76,12 @@ def getProfileSampleNamesTableColumn(input_table) {
         return input_table['sample_name']
     }
     throw new IllegalArgumentException("Profile-table input must include a 'sample_name' column.")
+}
+
+// dN/dS is selected through --compare_calculate, so both the staged sidecars and
+// the generated command line derive from the same single source of truth.
+def wantsDnds() {
+    return params.compare_calculate?.toString()?.contains("dnds")
 }
 
 def codonProfileFor(profile) {
@@ -362,7 +367,10 @@ process compare_fast_profiles_single {
     def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
     def add_gene_range = gene_info_table ? "--gene-info-table ${gene_info_table}" : ""
-    def add_dnds = params.dnds ? "--dnds --dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 ${codon_profile_1} --codon-profile-2 ${codon_profile_2}" : ""
+    // dN/dS is requested through --compare_calculate; the sidecars only need to be
+    // named when it is, and the CLI errors if they are missing.
+    def wants_dnds = wantsDnds()
+    def add_dnds = wants_dnds ? "--dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 ${codon_profile_1} --codon-profile-2 ${codon_profile_2}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     zipstrain utilities single-compare  \
@@ -408,7 +416,8 @@ process compare_batched {
     def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
     def add_gene_range = gene_info_table ? "--gene-info-table ${gene_info_table}" : ""
-    def add_dnds = params.dnds ? "--dnds --dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 {3} --codon-profile-2 {4}" : ""
+    def wants_dnds = wantsDnds()
+    def add_dnds = wants_dnds ? "--dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 {3} --codon-profile-2 {4}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     echo -e "${pairs_text}" > pairs.txt
@@ -723,7 +732,7 @@ workflow
             (0..<profiles.size()).each { i ->
                 (i+1..<profiles.size()).each { j ->
                     def pair = profiles[i] + profiles[j]
-                    if (params.dnds) {
+                    if (wantsDnds()) {
                         pair += [codonProfileFor(profiles[i][0]), codonProfileFor(profiles[j][0])]
                     }
                     profile_pairs << pair
@@ -737,7 +746,7 @@ workflow
             profile_1=input_table["profile_location_1"].collect{t->file(t)}
             profile_2=input_table["profile_location_2"].collect{t->file(t)}
             profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
-            if (params.dnds) {
+            if (wantsDnds()) {
                 profile_pairs = profile_pairs.collect { pair ->
                     pair + [codonProfileFor(pair[0]), codonProfileFor(pair[2])]
                 }
@@ -749,8 +758,8 @@ workflow
         stb = file(params.stb)
         // One comparison path: --compare_calculate picks the grain. Gene metrics
         // need ranges, since gene boundaries no longer live in the profile.
-        if ((params.compare_calculate?.toString()?.contains("gene") || params.dnds) && !params.gene_info_table) {
-            error "Gene comparison and --dnds require --gene_info_table (the Parquet generated during profiling preparation)."
+        if (params.compare_calculate?.toString()?.contains("gene") && !params.gene_info_table) {
+            error "Gene metrics in --compare_calculate (gene, dnds) require --gene_info_table (the Parquet generated during profiling preparation)."
         }
         // An empty collection is the standard optional-path pattern in Nextflow.
         // A real table is staged into every comparison task and tracked as an
@@ -799,8 +808,8 @@ workflow compare
     profile_pairs.multiMap{ v ->
         profile_1: v[0]
         profile_2: v[2]
-        codon_1: params.dnds ? v[4] : []
-        codon_2: params.dnds ? v[5] : []
+        codon_1: wantsDnds() ? v[4] : []
+        codon_2: wantsDnds() ? v[5] : []
         pair_name: v[1]+"_" + v[3]
     }.set{profile_pairs}
     compare_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, profile_pairs.codon_1, profile_pairs.codon_2, stb, gene_info_table, profile_pairs.pair_name)
@@ -810,8 +819,8 @@ workflow compare
     profile_pairs.map{t->t.transpose()}.set{batch_t}
     batch_t.multiMap{ v ->
         unique_profiles: (v[0]+v[2]).unique().sort()
-        unique_codons: params.dnds ? (v[4]+v[5]).unique().sort() : []
-        pairs: params.dnds
+        unique_codons: wantsDnds() ? (v[4]+v[5]).unique().sort() : []
+        pairs: wantsDnds()
             ? [v[0].collect{t->t.name}, v[2].collect{t->t.name}, v[4].collect{t->t.name}, v[5].collect{t->t.name}].transpose()
             : [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
     }.set{batch_pairs}

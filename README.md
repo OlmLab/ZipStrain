@@ -71,7 +71,7 @@ zipstrain profile -i mapped/samples.txt -f ref.fna -s ref.stb -r profiled
 
 ### 3. `compare` — profiles → ANI
 
-Compares every pair of samples by popANI (near 100% ⇒ same strain). Point `--profile-db` at a CSV of `profile_name,profile_location`; optional standard `--dnds` adds pairwise gene dN/dS for prepared profiles.
+Compares every pair of samples by popANI (near 100% ⇒ same strain). Point `--profile-db` at a CSV of `profile_name,profile_location`; adding `dnds` to `--calculate` gives pairwise gene dN/dS for profiles prepared with `--prepare-dnds`.
 
 ```bash
 zipstrain compare --profile-db profiles.csv -r compared

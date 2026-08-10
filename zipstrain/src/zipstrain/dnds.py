@@ -37,6 +37,9 @@ DNDS_RESULT_COLUMNS = (
     "nonsynonymous_changes",
     "synonymous_sites",
     "nonsynonymous_sites",
+    "pS",
+    "pN",
+    "pN_pS",
     "dS",
     "dN",
     "dN_dS",
@@ -190,6 +193,21 @@ def codon_pair_lookup() -> pl.DataFrame:
         },
         orient="row",
     )
+
+
+def codon_profile_exists(profile_path: Union[str, Path]) -> bool:
+    """True when a profile has a usable codon sidecar beside it.
+
+    Used to decide whether ``--calculate all`` can include dN/dS, so a profile
+    whose name does not follow the sidecar convention is reported as simply not
+    having one rather than raising.
+    """
+    if profile_path is None:
+        return False
+    try:
+        return codon_profile_path(profile_path).exists()
+    except (ValueError, TypeError):
+        return False
 
 
 def _quote(value: Union[str, Path]) -> str:
@@ -363,23 +381,56 @@ def _summarize_pairs(
     stops = annotated.group_by(group_column).agg(
         pl.col("stop_change").sum().cast(pl.Int64).alias(f"{prefix}stop_changes")
     )
-    return totals.join(stops, on=group_column, how="full", coalesce=True).with_columns(
-        pl.when(pl.col(f"{prefix}synonymous_sites") > 0)
-        .then(pl.col(f"{prefix}synonymous_changes") / pl.col(f"{prefix}synonymous_sites"))
-        .otherwise(None)
-        .cast(pl.Float64)
-        .alias(f"{prefix}dS"),
-        pl.when(pl.col(f"{prefix}nonsynonymous_sites") > 0)
-        .then(pl.col(f"{prefix}nonsynonymous_changes") / pl.col(f"{prefix}nonsynonymous_sites"))
-        .otherwise(None)
-        .cast(pl.Float64)
-        .alias(f"{prefix}dN"),
-    ).with_columns(
-        pl.when(pl.col(f"{prefix}dS") > 0)
-        .then(pl.col(f"{prefix}dN") / pl.col(f"{prefix}dS"))
-        .otherwise(None)
-        .cast(pl.Float64)
-        .alias(f"{prefix}dN_dS")
+    # Two ratios from the same counts. p is what was observed: the fraction of
+    # sites that differ. d additionally estimates substitutions that left no
+    # trace -- a site that mutated and reverted, or was hit twice, or converged
+    # on both lineages -- via the Jukes-Cantor correction d = -3/4 ln(1 - 4p/3).
+    #
+    # Both are reported because they answer different questions and diverge in a
+    # useful way. At strain-level divergence they agree to ~0.1% and p is the
+    # honest primary; when they separate, the comparison is deep enough that the
+    # correction matters and omega needs careful reading. Correcting also shifts
+    # the ratio rather than cancelling, since the larger of pN/pS inflates more.
+    def _proportion(changes: str, sites: str) -> pl.Expr:
+        return (
+            pl.when(pl.col(f"{prefix}{sites}") > 0)
+            .then(pl.col(f"{prefix}{changes}") / pl.col(f"{prefix}{sites}"))
+            .otherwise(None)
+            .cast(pl.Float64)
+        )
+
+    def _jukes_cantor(proportion: str) -> pl.Expr:
+        # Undefined once observed divergence reaches 3/4, where even unrelated
+        # sequences match by chance; emit null there rather than a NaN.
+        argument = 1.0 - (4.0 / 3.0) * pl.col(f"{prefix}{proportion}")
+        return (
+            pl.when(argument > 0)
+            # + 0.0 normalises the -0.0 that log(1) produces when p is zero.
+            .then(-0.75 * argument.log() + 0.0)
+            .otherwise(None)
+            .cast(pl.Float64)
+        )
+
+    def _ratio(numerator: str, denominator: str) -> pl.Expr:
+        return (
+            pl.when(pl.col(f"{prefix}{denominator}") > 0)
+            .then(pl.col(f"{prefix}{numerator}") / pl.col(f"{prefix}{denominator}"))
+            .otherwise(None)
+            .cast(pl.Float64)
+        )
+
+    return (
+        totals.join(stops, on=group_column, how="full", coalesce=True)
+        .with_columns(
+            _proportion("synonymous_changes", "synonymous_sites").alias(f"{prefix}pS"),
+            _proportion("nonsynonymous_changes", "nonsynonymous_sites").alias(f"{prefix}pN"),
+        )
+        .with_columns(
+            _ratio("pN", "pS").alias(f"{prefix}pN_pS"),
+            _jukes_cantor("pS").alias(f"{prefix}dS"),
+            _jukes_cantor("pN").alias(f"{prefix}dN"),
+        )
+        .with_columns(_ratio("dN", "dS").alias(f"{prefix}dN_dS"))
     )
 
 

@@ -1,6 +1,8 @@
 from pathlib import Path
 
 import polars as pl
+import math
+
 import pytest
 from click.testing import CliRunner
 
@@ -163,7 +165,67 @@ def test_pairwise_dnds_uses_sample_codons_and_is_symmetric(tmp_path):
     plus = forward.filter(pl.col("gene") == "plus").row(0, named=True)
     assert plus["synonymous_changes"] == 1.0
     assert plus["nonsynonymous_changes"] == 1.0
-    assert plus["dN_dS"] == pytest.approx(0.125)
+
+    # pN/pS is the ratio of the observed proportions.
+    assert plus["pS"] == pytest.approx(plus["synonymous_changes"] / plus["synonymous_sites"])
+    assert plus["pN"] == pytest.approx(plus["nonsynonymous_changes"] / plus["nonsynonymous_sites"])
+    assert plus["pN_pS"] == pytest.approx(0.125)
+
+    # dN/dS applies the Jukes-Cantor correction for substitutions that left no
+    # trace, so it is reported alongside rather than instead of pN/pS. The
+    # correction is undefined at p >= 3/4, where even unrelated sequences match
+    # by chance; this tiny gene saturates, so dN is deliberately null there.
+    def jukes_cantor(proportion: float) -> float | None:
+        argument = 1.0 - (4.0 / 3.0) * proportion
+        return -0.75 * math.log(argument) if argument > 0 else None
+
+    for proportion, corrected in (("pS", "dS"), ("pN", "dN")):
+        expected = jukes_cantor(plus[proportion])
+        if expected is None:
+            assert plus[proportion] >= 0.75
+            assert plus[corrected] is None
+        else:
+            assert plus[corrected] == pytest.approx(expected)
+
+    if plus["dS"] is None or plus["dN"] is None or plus["dS"] == 0:
+        assert plus["dN_dS"] is None
+    else:
+        assert plus["dN_dS"] == pytest.approx(plus["dN"] / plus["dS"])
+
+
+def test_jukes_cantor_correction_shifts_the_ratio():
+    """The correction is non-linear, so it does not cancel out of pN/pS.
+
+    The larger proportion inflates more, and synonymous sites diverge faster,
+    so dN/dS sits below pN/pS. Omitting the correction therefore biases omega
+    upward -- the direction that would falsely suggest positive selection.
+    """
+    lookup = dnds.codon_pair_lookup().to_dicts()
+    codes = (
+        [row["pair_code"] for row in lookup if row["valid_dnds"] and row["synonymous_changes"] > 0][:40]
+        + [row["pair_code"] for row in lookup if row["valid_dnds"] and row["nonsynonymous_changes"] > 0][:30]
+        + [
+            row["pair_code"]
+            for row in lookup
+            if row["valid_dnds"] and row["synonymous_changes"] == 0 and row["nonsynonymous_changes"] == 0
+        ][:120]
+    )
+    frame = pl.DataFrame({"gene_id": [1] * len(codes), "pair_code": codes}).lazy()
+    result = dnds._summarize_pairs(frame).collect().row(0, named=True)
+
+    assert result["pS"] == pytest.approx(result["synonymous_changes"] / result["synonymous_sites"])
+    assert result["dS"] > result["pS"]
+    assert result["dN"] > result["pN"]
+    assert result["dN_dS"] < result["pN_pS"]
+
+
+def test_zero_divergence_reports_zero_not_negative_zero():
+    """log(1) yields -0.0; the emitted distance should be a plain zero."""
+    identical = pl.DataFrame({"gene_id": [1], "pair_code": [0]}).lazy()
+    result = dnds._summarize_pairs(identical).collect().row(0, named=True)
+    assert result["pS"] == 0.0
+    assert result["dS"] == 0.0
+    assert math.copysign(1.0, result["dS"]) > 0
 
 
 def test_pairwise_dnds_rejects_different_gene_contracts(tmp_path):
@@ -231,8 +293,7 @@ def test_single_compare_cli_adds_pairwise_dnds_columns(tmp_path):
             "--profile-location-2", str(sample_2),
             "--stb-file", str(stb),
             "--gene-info-table", str(genes),
-            "--calculate", "gene",
-            "--dnds",
+            "--calculate", "gene+dnds",
             "--min-cov", "5",
             "--min-gene-compare-len", "1",
             "--output-file", str(output),

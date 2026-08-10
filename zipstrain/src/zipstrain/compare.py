@@ -23,7 +23,7 @@ PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 GENE_AXIS_OFFSET = 1 << 32
 
 
-GENOME_COMPARISON_CALCULATIONS = ("genome_ani", "ibs", "gene")
+GENOME_COMPARISON_CALCULATIONS = ("genome_ani", "ibs", "gene", "dnds")
 GENOME_COMPARISON_DEFAULT_CALCULATIONS = ("genome_ani", "ibs")
 GENOME_COMPARISON_CALCULATION_ALIASES = {
     "genome_ani": "genome_ani",
@@ -35,6 +35,9 @@ GENOME_COMPARISON_CALCULATION_ALIASES = {
     "gene": "gene",
     "genes": "gene",
     "gene_ani": "gene",
+    "dnds": "dnds",
+    "dn_ds": "dnds",
+    "pnps": "dnds",
 }
 
 
@@ -107,18 +110,21 @@ def ani_match_column(ani_method: str, ani_methods: Iterable[str]) -> str:
 def parse_genome_calculations(
     calculate: Optional[Union[str, Iterable[str]]] = None,
     include_gene_from_all: bool = False,
+    include_dnds_from_all: bool = False,
 ) -> tuple[str, ...]:
     """Parse and normalize comparison metric selection tokens.
 
     Accepted input formats:
       - None -> default ("genome_ani", "ibs")
-      - "genome_ani+ibs+gene"
+      - "genome_ani+ibs+gene+dnds"
       - "all"
       - iterable of token strings
 
-    ``gene`` needs a gene information table, so ``"all"`` only pulls it in when
-    ``include_gene_from_all`` says one is available; asking for it explicitly
-    without ranges is an error raised by the caller rather than a silent drop.
+    ``all`` means every metric the supplied inputs can support, so it grows as
+    the caller provides more: gene metrics need a gene range table, and dN/dS
+    additionally needs codon sidecars from ``profile --prepare-dnds``. Naming a
+    token explicitly without its prerequisite is an error raised by the caller
+    rather than a silent drop, so a typo never costs a run.
     """
     if calculate is None:
         return GENOME_COMPARISON_DEFAULT_CALCULATIONS
@@ -141,6 +147,8 @@ def parse_genome_calculations(
         normalized.update(("genome_ani", "ibs"))
         if include_gene_from_all:
             normalized.add("gene")
+        if include_dnds_from_all:
+            normalized.update(("gene", "dnds"))
 
     for token in raw_tokens:
         if token == "all":
@@ -150,6 +158,10 @@ def parse_genome_calculations(
             supported = "all," + ",".join(GENOME_COMPARISON_CALCULATIONS)
             raise ValueError(f"Unsupported calculation '{token}'. Supported values: {supported}")
         normalized.add(mapped)
+
+    # dN/dS is reported per gene, so it always implies the gene grain.
+    if "dnds" in normalized:
+        normalized.add("gene")
     return tuple(metric for metric in GENOME_COMPARISON_CALCULATIONS if metric in normalized)
 
 

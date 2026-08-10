@@ -229,11 +229,15 @@ def test_nextflow_wires_optional_dnds_preparation_and_comparison():
     text = NEXTFLOW_FILE.read_text()
     assert "params.prepare_dnds=false" in text
     assert 'params.dnds_memory_limit="1GB"' in text
-    assert "params.dnds=false" in text
     assert "params.dnds_min_major_freq=0.0" in text
     assert 'path "${bamfile.baseName}_codon_profile.parquet"' in text
     assert "--prepare-dnds --dnds-memory-limit ${params.dnds_memory_limit}" in text
-    assert "--dnds --dnds-min-major-freq ${params.dnds_min_major_freq}" in text
+    # dN/dS is selected through --compare_calculate rather than its own flag, and
+    # one helper decides both the staged sidecars and the generated command line.
+    assert "params.dnds=false" not in text
+    assert "def wantsDnds()" in text
+    assert '--dnds-min-major-freq ${params.dnds_min_major_freq}' in text
+    assert "--dnds " not in text
     assert "codonProfileFor" in text
 
 
