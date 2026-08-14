@@ -359,7 +359,8 @@ def _duckdb_contig_pop_max_ctes(
 contig_base AS (
   SELECT
     s.*,
-    LAG(scaffold) OVER (PARTITION BY genome ORDER BY scaffold, pos) AS prev_scaffold
+    LAG(scaffold) OVER (PARTITION BY genome ORDER BY scaffold, pos) AS prev_scaffold,
+    LAG(pos) OVER (PARTITION BY genome ORDER BY scaffold, pos) AS prev_pos
   FROM {shared_source} s
 )""".strip(),
             """
@@ -368,7 +369,11 @@ contig AS (
     *,
     SUM(
       CASE
-        WHEN prev_scaffold IS NULL OR scaffold != prev_scaffold OR surr = 0 THEN 1
+        WHEN prev_scaffold IS NULL
+          OR scaffold != prev_scaffold
+          OR pos != prev_pos + 1
+          OR surr = 0
+        THEN 1
         ELSE 0
       END
     ) OVER (PARTITION BY genome ORDER BY scaffold, pos ROWS UNBOUNDED PRECEDING) AS group_id
@@ -875,12 +880,19 @@ def add_contiguity_info(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
 
     # A contiguous block is a run of consecutive shared positions. It breaks at
     # the first row of a new scaffold (or new genome, when that column exists),
-    # or at a position that is itself an SNV (surr == 0). Marking those break
-    # points and taking a cumulative sum numbers the blocks, so `group_id` is
-    # constant within each block and increments at every break.
-    break_expr = changed("scaffold") | (pl.col("surr") == 0)
+    # at a gap in genomic coordinates, or at a position that is itself an SNV
+    # (surr == 0). Marking those break points and taking a cumulative sum
+    # numbers the blocks, so `group_id` is constant within each block and
+    # increments at every break.
+    position_gap = (pl.col("pos") - pl.col("pos").shift(1) != 1).fill_null(True)
+    break_expr = changed("scaffold") | position_gap | (pl.col("surr") == 0)
     if has_genome:
-        break_expr = changed("genome") | changed("scaffold") | (pl.col("surr") == 0)
+        break_expr = (
+            changed("genome")
+            | changed("scaffold")
+            | position_gap
+            | (pl.col("surr") == 0)
+        )
 
     return mpile_contig.sort(sort_cols).with_columns(
         break_expr.cast(pl.Int64).cum_sum().alias("group_id")

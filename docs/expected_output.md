@@ -132,7 +132,7 @@ One row per genome, per pair of samples.
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
 | `share_allele_pos` | Of those, positions that match under the selected ANI method |
 | `genome_ani` | Genome-wide ANI (%) = `share_allele_pos` / `total_positions` × 100. The parquet metadata key `zipstrain_compare_ani_method` records whether this is `popani`, `conani`, or `cosani_<threshold>` |
-| `max_consecutive_length` | Longest run of consecutive shared positions (an identical-by-state / IBS measure) |
+| `max_consecutive_length` | Longest run of shared alleles at adjacent coordinates on one scaffold (an identical-by-state / IBS measure); a missing or uncovered coordinate breaks the run |
 
 With gene ranges available, genome-level gene identity summary columns are also added by the default `--calculate all`: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
 

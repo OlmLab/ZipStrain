@@ -24,6 +24,15 @@ gene_locs = (["NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA","NA"])+ \
               "NA","gene2","gene2","gene2","gene2","gene2","NA","NA","NA","NA",
               "NA","NA","gene3","gene3","gene3","gene3","gene3","NA","NA","NA"])
 
+
+def _longest_covered_run(a, t, c, g, min_cov):
+    longest = 0
+    current = 0
+    for counts in zip(a, t, c, g):
+        current = current + 1 if sum(counts) >= min_cov else 0
+        longest = max(longest, current)
+    return longest
+
 @pytest.fixture
 def profile_1()->pl.LazyFrame:
     return pl.DataFrame({
@@ -161,9 +170,14 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_ge
     
     assert res_dict["genome2"]["genome_ani"]==100.0
 
-    assert res_dict["genome1"]["max_consecutive_length"]==max([len([i for i in zip(a_chr1,t_chr1,c_chr1,g_chr1) if sum(i)>=min_cov]),len([i for i in zip(a_chr2,t_chr2,c_chr2,g_chr2) if sum(i)>=min_cov])])
+    assert res_dict["genome1"]["max_consecutive_length"] == max(
+        _longest_covered_run(a_chr1, t_chr1, c_chr1, g_chr1, min_cov),
+        _longest_covered_run(a_chr2, t_chr2, c_chr2, g_chr2, min_cov),
+    )
 
-    assert res_dict["genome2"]["max_consecutive_length"]==max([len([i for i in zip(a_chr3,t_chr3,c_chr3,g_chr3) if sum(i)>=min_cov])])
+    assert res_dict["genome2"]["max_consecutive_length"] == _longest_covered_run(
+        a_chr3, t_chr3, c_chr3, g_chr3, min_cov
+    )
 
 
     covered_gene_counts=profile_1.filter((pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")>=min_cov) & (pl.col("gene")!="NA")).group_by(["gene","genome"]).agg(pl.len()).filter(pl.col("len")>=min_gene_compare_len).group_by("genome").agg(pl.len()).collect().rows_by_key(key="genome",unique=True,named=True)
@@ -558,3 +572,33 @@ def test_compare_genomes_calculate_all_matches_between_engines(profile_1, profil
         stb_file=stb_path,
     ).collect().sort("genome")
     assert out_polars.equals(out_duckdb)
+
+
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+def test_max_consecutive_length_breaks_at_coordinate_gap(engine):
+    positions = list(range(1, 101)) + list(range(201, 251))
+    profile = pl.DataFrame(
+        {
+            "chrom": ["scaffold"] * len(positions),
+            "genome": ["genome"] * len(positions),
+            "pos": positions,
+            "gene": ["NA"] * len(positions),
+            "A": [10] * len(positions),
+            "T": [0] * len(positions),
+            "C": [0] * len(positions),
+            "G": [0] * len(positions),
+        }
+    ).lazy()
+
+    result = compare.compare_genomes(
+        mpile_contig_1=profile,
+        mpile_contig_2=profile,
+        min_cov=1,
+        engine=engine,
+        calculate="ani+ibs",
+    ).collect().row(0, named=True)
+
+    assert result["total_positions"] == 150
+    assert result["share_allele_pos"] == 150
+    assert result["genome_ani"] == 100.0
+    assert result["max_consecutive_length"] == 100

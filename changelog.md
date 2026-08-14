@@ -2,6 +2,13 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 1.0.3
+
+Compared with `1.0.2`:
+
+- Standard comparison now breaks `max_consecutive_length` runs at gaps in genomic coordinates, matching matrix comparison semantics.
+- Tutorial #1 comparison output was regenerated with current defaults and now documents coverage-intersection and cross-method output semantics accurately.
+
 ## 1.0.2
 
 Compared with `1.0.1`:

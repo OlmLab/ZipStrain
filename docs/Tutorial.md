@@ -210,7 +210,7 @@ That's the whole command. By default it compares **genomes**; every profile in t
 
 #### Two comparison methods
 
-`zipstrain compare` has two engines, chosen with `--method`. They compute the **same numbers** and write the **same `all_comparisons.parquet`** — they differ only in *how* they get there, which changes how well each scales to repeated, growing analyses. Here's what each does under the hood.
+`zipstrain compare` has two engines, chosen with `--method`. They compute the **same values for the genome metrics supported by both** and write the result to the same `all_comparisons.parquet` filename. The standard table can include additional requested summary columns that are not emitted by the matrix method. The methods differ mainly in *how* they calculate the shared metrics, which changes how well each scales to repeated, growing analyses.
 
 **Standard (`--method standard`, the default)** compares profiles **directly and pairwise**. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.
 
@@ -290,8 +290,8 @@ shape: (2, 10)
 │ genome                   ┆ total_positions ┆ share_allele_pos ┆ genome_ani ┆ … ┆ sample_1     ┆ sample_2     │
 │ ---                      ┆ ---             ┆ ---              ┆ ---            ┆   ┆ ---          ┆ ---          │
 ╞══════════════════════════╪═════════════════╪══════════════════╪════════════════╪═══╪══════════════╪══════════════╡
-│ fobin.fasta              ┆ 1183            ┆ 1183             ┆ 100.0          ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
-│ maxbin2.maxbin.001.fasta ┆ 0               ┆ 0                ┆ 0.0            ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
+│ fobin.fasta              ┆ 1072            ┆ 1072             ┆ 100.0          ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
+│ maxbin2.maxbin.001.fasta ┆ 32663           ┆ 32663            ┆ 100.0          ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
 └──────────────────────────┴─────────────────┴──────────────────┴────────────────┴───┴──────────────┴──────────────┘
 ```
 
@@ -303,10 +303,13 @@ Key columns:
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
 | `share_allele_pos` | Of those, how many matched under the selected ANI method |
 | `genome_ani` | Genome-wide ANI (%) between the two samples for this genome. The parquet metadata key `zipstrain_compare_ani_method` records the method (`popani`, `conani`, or `cosani_<threshold>`) |
+| `max_consecutive_length` | Longest run of shared alleles at adjacent coordinates on one scaffold; a mismatch or uncovered coordinate breaks the run |
 | `sample_1`, `sample_2` | The pair being compared |
 
 !!! info "Interpreting popANI"
-    `genome_ani` near **100.0** means the same strain is present in both samples (they share essentially all alleles). Lower values indicate diverging strains. A genome with `total_positions = 0` (like `maxbin2.maxbin.001.fasta` above) simply wasn't covered deeply enough in both samples to compare, so its `0.0` ANI is "not enough data," not "totally different." A common threshold for calling two samples the *same strain* is popANI ≥ 99.999%.
+    `genome_ani` near **100.0** means the same strain is present in both samples (they share essentially all alleles). Lower values indicate diverging strains. Here, both genomes have substantial coverage overlap and every comparable position shares an allele. In general, `total_positions = 0` means no positions passed the coverage requirement in both samples; ANI is then not interpretable and must not be read as "totally different." A common threshold for calling two samples the *same strain* is popANI ≥ 99.999%.
+
+    These values use the default `--min-cov 5`. `total_positions` is the intersection of passing coordinates, not either sample's individual count. For example, `fobin.fasta` has 1,183 covered positions in N5_271_010G2 at `--min-cov 1`, but only 1,181 coordinates pass in both samples at that threshold and 1,072 pass in both at the default threshold.
 
     This interpretation assumes the default `--ani-method popani`; if you run `--ani-method conani`, the same column is still called `genome_ani`, but the parquet header records `zipstrain_compare_ani_method=conani`.
 

@@ -1263,7 +1263,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:1.0.2`;
+- sets the default container to `parsaghadermazi/zipstrain:1.0.3`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 
