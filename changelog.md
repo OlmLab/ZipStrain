@@ -8,6 +8,7 @@ Compared with `1.0.2`:
 
 - Standard comparison now breaks `max_consecutive_length` runs at gaps in genomic coordinates, matching matrix comparison semantics.
 - Tutorial #1 comparison output was regenerated with current defaults and now documents coverage-intersection and cross-method output semantics accurately.
+- Container builds pin each Torch variant and can resolve CUDA dependencies missing from PyTorch's version-specific indexes through PyPI.
 
 ## 1.0.2
 

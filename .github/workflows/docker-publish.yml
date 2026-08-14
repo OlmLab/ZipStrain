@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,10 +21,13 @@ jobs:
         include:
           - tag_suffix: ""
             torch_index_url: https://download.pytorch.org/whl/cpu
+            torch_version: 2.6.0+cpu
           - tag_suffix: "-cuda11.8"
             torch_index_url: https://download.pytorch.org/whl/cu118
+            torch_version: 2.6.0+cu118
           - tag_suffix: "-cuda12.4"
             torch_index_url: https://download.pytorch.org/whl/cu124
+            torch_version: 2.6.0+cu124
 
     steps:
       - name: Check out repository
@@ -45,10 +49,14 @@ jobs:
           print(match.group(1))
           PY
           )
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [[ "${PYPROJECT_VERSION}" != "${TAG_VERSION}" ]]; then
-            echo "Git tag ${TAG_VERSION} does not match pyproject version ${PYPROJECT_VERSION}" >&2
-            exit 1
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "${PYPROJECT_VERSION}" != "${TAG_VERSION}" ]]; then
+              echo "Git tag ${TAG_VERSION} does not match pyproject version ${PYPROJECT_VERSION}" >&2
+              exit 1
+            fi
+          else
+            TAG_VERSION="${PYPROJECT_VERSION}"
           fi
           echo "version=${TAG_VERSION}" >> "${GITHUB_OUTPUT}"
 
@@ -70,6 +78,7 @@ jobs:
           platforms: linux/amd64
           build-args: |
             TORCH_INDEX_URL=${{ matrix.torch_index_url }}
+            TORCH_VERSION=${{ matrix.torch_version }}
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}${{ matrix.tag_suffix }}
           labels: |

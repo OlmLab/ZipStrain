@@ -1,10 +1,13 @@
 FROM continuumio/miniconda3
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG TORCH_VERSION=2.6.0+cpu
 ARG SRA_TOOLKIT_VERSION=3.2.0
 ARG ZIPSTRAIN_PROJECT_DIR=/opt/zipstrain
 
 ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10 \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /opt
@@ -30,12 +33,22 @@ RUN conda install -y \
 
 COPY zipstrain ${ZIPSTRAIN_PROJECT_DIR}
 
-RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install "torch>=2.6,<3.0.0" --index-url ${TORCH_INDEX_URL} \
-    && python -m pip install "polars[rtcompat]" \
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# PyTorch CUDA indexes may omit auxiliary NVIDIA wheels required by older
+# releases. Pin the requested Torch build while allowing dependencies from PyPI.
+RUN python -m pip install \
+        "torch==${TORCH_VERSION}" \
+        --index-url https://pypi.org/simple \
+        --extra-index-url "${TORCH_INDEX_URL}"
+
+RUN python -m pip install "polars[rtcompat]" \
     && python -m pip install "${ZIPSTRAIN_PROJECT_DIR}[matrix]" \
-    && python -m pip install loguru \
-    && wget --output-document sratoolkit.tar.gz "https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/${SRA_TOOLKIT_VERSION}/sratoolkit.${SRA_TOOLKIT_VERSION}-ubuntu64.tar.gz" \
+    && python -m pip install loguru
+
+RUN wget --tries=5 --timeout=60 --retry-connrefused \
+        --output-document sratoolkit.tar.gz \
+        "https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/${SRA_TOOLKIT_VERSION}/sratoolkit.${SRA_TOOLKIT_VERSION}-ubuntu64.tar.gz" \
     && tar -xzf sratoolkit.tar.gz \
     && rm -f sratoolkit.tar.gz
 
