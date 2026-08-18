@@ -201,28 +201,18 @@ def test_pairwise_dnds_uses_sample_codons_and_is_symmetric(tmp_path):
     assert plus["pN"] == 0.0
     assert plus["pN_pS"] is None
 
-    # dN/dS applies only to fixed SNS substitutions. Tiny genes can saturate
-    # under the Jukes-Cantor correction at an observed proportion >= 3/4.
-    def jukes_cantor(proportion: float) -> float | None:
-        argument = 1.0 - (4.0 / 3.0) * proportion
-        return -0.75 * math.log(argument) if argument > 0 else None
+    # dN/dS uses the raw fixed-SNS proportions, matching inStrain's definition.
+    assert plus["dS"] == pytest.approx(
+        plus["sns_synonymous_changes"] / plus["synonymous_sites"]
+    )
+    assert plus["dN"] == pytest.approx(
+        plus["sns_nonsynonymous_changes"] / plus["nonsynonymous_sites"]
+    )
+    assert plus["dN_dS"] == pytest.approx(plus["dN"] / plus["dS"])
 
-    sns_proportions = {
-        "dS": plus["sns_synonymous_changes"] / plus["synonymous_sites"],
-        "dN": plus["sns_nonsynonymous_changes"] / plus["nonsynonymous_sites"],
-    }
-    for corrected, proportion in sns_proportions.items():
-        expected = jukes_cantor(proportion)
-        if expected is None:
-            assert proportion >= 0.75
-            assert plus[corrected] is None
-        else:
-            assert plus[corrected] == pytest.approx(expected)
 
-    if plus["dS"] is None or plus["dN"] is None or plus["dS"] == 0:
-        assert plus["dN_dS"] is None
-    else:
-        assert plus["dN_dS"] == pytest.approx(plus["dN"] / plus["dS"])
+def test_dnds_disables_polars_common_subplan_elimination():
+    assert dnds.DNDS_QUERY_OPTIMIZATIONS.comm_subplan_elim is False
 
 
 def test_reference_consensus_averages_only_exact_top_ties(tmp_path):
@@ -321,7 +311,7 @@ def test_pairwise_consensus_tie_is_symmetric(tmp_path):
 
 
 def test_zero_divergence_reports_zero_not_negative_zero(tmp_path):
-    """log(1) yields -0.0; the emitted distance should be a plain zero."""
+    """Zero SNS divergence should be emitted as an ordinary positive zero."""
     genes = _gene_info(tmp_path / "gene_info.parquet")
     sample = _profile(tmp_path / "sample_profile.parquet")
     codons = dnds.codon_profile_path(sample)

@@ -91,7 +91,7 @@ One row per gene, populated only when gene annotations are supplied (`profile --
 | `ref_snv_synonymous_changes`, `ref_snv_nonsynonymous_changes` | Synonymous and nonsynonymous SNV contributions used for pN/pS; these can be fractional |
 | `ref_synonymous_sites`, `ref_nonsynonymous_sites` | Callable synonymous and nonsynonymous site opportunities |
 | `ref_pS`, `ref_pN`, `ref_pN_pS` | Reference-relative SNV proportions and pN/pS; the ratio is null when `ref_pS` is zero |
-| `ref_dS`, `ref_dN`, `ref_dN_dS` | SNS substitution rates after Jukes-Cantor correction and dN/dS; null when an observed proportion reaches 3/4 |
+| `ref_dS`, `ref_dN`, `ref_dN_dS` | Raw synonymous and nonsynonymous SNS proportions and their dN/dS ratio; no multiple-hit correction is applied |
 | `ref_sns_stop_changes`, `ref_snv_stop_changes` | SNS/SNV contributions that enter or leave a stop codon; excluded from N/S rates |
 | `ref_allele_tie_sites` | Polymorphic positions with multiple equally supported top differing allele choices |
 
@@ -250,6 +250,11 @@ pairs have exactly the same maximum support. `weighted` includes every differing
 pair at its observed joint frequency. Consequently SNV N/S counts may be
 fractional. Stop changes are reported separately and excluded from the N/S
 rates; either ratio is null when its synonymous denominator is zero.
+
+Both ratios use synonymous and nonsynonymous opportunities from the codons that
+are callable in the compared sample or sample pair. Uncovered codons are not
+included in the denominator. `dS` and `dN` are raw SNS proportions; ZipStrain
+does not apply a Jukes-Cantor or other multiple-hit correction.
 
 Comparison parquet metadata records the selected mode as
 `zipstrain_compare_allele_integration`; metadata-aware merges therefore reject

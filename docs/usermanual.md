@@ -681,7 +681,7 @@ Outputs include:
 
 When `--reference-fasta` is provided during profiling, the profile parquet includes `ref_base_bitmask`.
 In the same case, the generated genome and gene stat tables also include a `ref_ani` column. With
-`--prepare-dnds`, gene stats additionally contain `ref_callable_codons`, SNS/SNV counts, separate synonymous/nonsynonymous contributions, site opportunities, `ref_pS`, `ref_pN`, `ref_pN_pS`, `ref_dS`, `ref_dN`, `ref_dN_dS`, separate stop-change counts, and `ref_allele_tie_sites`. Fixed SNSs feed dN/dS; polymorphic SNVs feed pN/pS. Weighted SNV contributions can be fractional. `dS`/`dN` use the Jukes-Cantor correction and are null once the corresponding observed SNS proportion reaches 3/4.
+`--prepare-dnds`, gene stats additionally contain `ref_callable_codons`, SNS/SNV counts, separate synonymous/nonsynonymous contributions, site opportunities, `ref_pS`, `ref_pN`, `ref_pN_pS`, `ref_dS`, `ref_dN`, `ref_dN_dS`, separate stop-change counts, and `ref_allele_tie_sites`. Fixed SNSs feed dN/dS; polymorphic SNVs feed pN/pS. Weighted SNV contributions can be fractional. `dS` and `dN` are raw SNS proportions with no Jukes-Cantor correction. Their opportunities are calculated only from callable codons, so uncovered sequence is excluded from the denominator.
 
 `ref_ani` is the percentage of covered sites whose observed allele set still contains the reference allele after ZipStrain's sequence-error adjustment.
 

@@ -23,6 +23,10 @@ GENE_INFO_HASH_METADATA_KEY = "zipstrain_gene_info_hash"
 ALLELE_INTEGRATION_METADATA_KEY = "zipstrain_dnds_allele_integration"
 DEFAULT_MEMORY_LIMIT = "1GB"
 ALLELE_INTEGRATION_MODES = ("consensus", "weighted")
+# Polars common-subplan elimination can corrupt the repeated lazy branches used
+# for SNS/SNV summaries. Only the compact per-gene result is materialized with
+# this optimization disabled; the multi-million-row codon input stays lazy.
+DNDS_QUERY_OPTIMIZATIONS = pl.QueryOptFlags(comm_subplan_elim=False)
 
 CODON_PROFILE_COLUMNS = (
     "gene_id",
@@ -728,30 +732,17 @@ def _summarize_events(
             pl.col(numerator) / pl.col(denominator)
         ).otherwise(None)
 
-    def jukes_cantor(column: str) -> pl.Expr:
-        argument = 1.0 - (4.0 / 3.0) * pl.col(column)
-        return (
-            pl.when(pl.col(column) == 0)
-            .then(0.0)
-            .when(argument > 0)
-            .then(-0.75 * argument.log())
-            .otherwise(None)
-        )
-
     result = (
         result.with_columns(
             proportion("snv_synonymous_changes", "synonymous_sites").alias("pS"),
             proportion("snv_nonsynonymous_changes", "nonsynonymous_sites").alias("pN"),
-            proportion("sns_synonymous_changes", "synonymous_sites").alias("sns_pS"),
-            proportion("sns_nonsynonymous_changes", "nonsynonymous_sites").alias("sns_pN"),
+            proportion("sns_synonymous_changes", "synonymous_sites").alias("dS"),
+            proportion("sns_nonsynonymous_changes", "nonsynonymous_sites").alias("dN"),
         )
         .with_columns(
             ratio("pN", "pS").alias("pN_pS"),
-            jukes_cantor("sns_pS").alias("dS"),
-            jukes_cantor("sns_pN").alias("dN"),
         )
         .with_columns(ratio("dN", "dS").alias("dN_dS"))
-        .drop("sns_pS", "sns_pN")
     )
     if prefix:
         result = result.rename(
@@ -771,9 +762,9 @@ def reference_dnds(
     allele_integration = validate_allele_integration(allele_integration)
     codons = pl.scan_parquet(codon_profile).filter(pl.col("min_coverage") >= min_cov)
     event_frames = _reference_event_frames(codons, allele_integration)
-    summary = _summarize_events(
-        codons, *event_frames, prefix="ref_"
-    )
+    summary = _summarize_events(codons, *event_frames, prefix="ref_").collect(
+        optimizations=DNDS_QUERY_OPTIMIZATIONS
+    ).lazy()
     return (
         pl.scan_parquet(gene_info)
         .select("gene_id", "genome", "gene")
@@ -843,7 +834,9 @@ def pairwise_dnds(
     # use a merge join rather than building a large hash table.
     codons = c1.join(c2, on="codon_id", how="inner", maintain_order="left")
     event_frames = _pairwise_event_frames(codons, allele_integration)
-    summary = _summarize_events(codons, *event_frames)
+    summary = _summarize_events(codons, *event_frames).collect(
+        optimizations=DNDS_QUERY_OPTIMIZATIONS
+    ).lazy()
     genes = pl.scan_parquet(gene_info).select("gene_id", "genome", "gene")
     if genome_scope != "all":
         genes = genes.filter(pl.col("genome") == genome_scope)
