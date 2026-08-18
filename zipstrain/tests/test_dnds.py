@@ -56,6 +56,36 @@ def _profile(path: Path, *, sample_2: bool = False) -> Path:
     return path
 
 
+def _set_counts(
+    path: Path,
+    *,
+    scaffold: str,
+    pos: int,
+    A: int = 0,
+    C: int = 0,
+    G: int = 0,
+    T: int = 0,
+) -> Path:
+    at_site = (pl.col("chrom") == scaffold) & (pl.col("pos") == pos)
+    pl.read_parquet(path).with_columns(
+        *(
+            pl.when(at_site).then(value).otherwise(pl.col(base)).alias(base)
+            for base, value in {"A": A, "C": C, "G": G, "T": T}.items()
+        )
+    ).write_parquet(path)
+    return path
+
+
+def _sidecar_consensus_codon(row: dict) -> str:
+    return "".join(
+        max(BASES, key=lambda base: row[f"{base}_{offset}"])
+        for offset in range(3)
+    )
+
+
+BASES = "ACGT"
+
+
 def test_codon_lookup_classifies_synonymous_and_nonsynonymous_changes():
     lookup = dnds.codon_pair_lookup()
 
@@ -122,10 +152,8 @@ def test_sparse_codon_profile_and_reference_dnds_handle_both_strands(tmp_path):
         temp_directory=tmp_path / "tmp",
     )
     codon_frame = pl.read_parquet(codons).sort("codon_id")
-    assert codon_frame["codon_code"].to_list() == [
-        dnds._encode_codon("ATA"),
-        dnds._encode_codon("GAG"),
-        dnds._encode_codon("TTG"),
+    assert [_sidecar_consensus_codon(row) for row in codon_frame.to_dicts()] == [
+        "ATA", "GAG", "TTG",
     ]
     assert codon_frame["reference_codon_code"].to_list() == [
         dnds._encode_codon("ATG"),
@@ -137,10 +165,12 @@ def test_sparse_codon_profile_and_reference_dnds_handle_both_strands(tmp_path):
     plus = stats.filter(pl.col("gene") == "plus").row(0, named=True)
     minus = stats.filter(pl.col("gene") == "minus").row(0, named=True)
     assert plus["ref_callable_codons"] == 2
-    assert plus["ref_synonymous_changes"] == 1.0
-    assert plus["ref_nonsynonymous_changes"] == 1.0
+    assert plus["ref_sns_count"] == 2
+    assert plus["ref_snv_count"] == 0
+    assert plus["ref_sns_synonymous_changes"] == 1.0
+    assert plus["ref_sns_nonsynonymous_changes"] == 1.0
     assert minus["ref_callable_codons"] == 1
-    assert minus["ref_nonsynonymous_changes"] == 1.0
+    assert minus["ref_sns_nonsynonymous_changes"] == 1.0
 
 
 def test_pairwise_dnds_uses_sample_codons_and_is_symmetric(tmp_path):
@@ -163,26 +193,28 @@ def test_pairwise_dnds_uses_sample_codons_and_is_symmetric(tmp_path):
         dnds.DNDS_RESULT_COLUMNS
     ).to_dicts()
     plus = forward.filter(pl.col("gene") == "plus").row(0, named=True)
-    assert plus["synonymous_changes"] == 1.0
-    assert plus["nonsynonymous_changes"] == 1.0
+    assert plus["sns_count"] == 2
+    assert plus["snv_count"] == 0
+    assert plus["sns_synonymous_changes"] == 1.0
+    assert plus["sns_nonsynonymous_changes"] == 1.0
+    assert plus["pS"] == 0.0
+    assert plus["pN"] == 0.0
+    assert plus["pN_pS"] is None
 
-    # pN/pS is the ratio of the observed proportions.
-    assert plus["pS"] == pytest.approx(plus["synonymous_changes"] / plus["synonymous_sites"])
-    assert plus["pN"] == pytest.approx(plus["nonsynonymous_changes"] / plus["nonsynonymous_sites"])
-    assert plus["pN_pS"] == pytest.approx(0.125)
-
-    # dN/dS applies the Jukes-Cantor correction for substitutions that left no
-    # trace, so it is reported alongside rather than instead of pN/pS. The
-    # correction is undefined at p >= 3/4, where even unrelated sequences match
-    # by chance; this tiny gene saturates, so dN is deliberately null there.
+    # dN/dS applies only to fixed SNS substitutions. Tiny genes can saturate
+    # under the Jukes-Cantor correction at an observed proportion >= 3/4.
     def jukes_cantor(proportion: float) -> float | None:
         argument = 1.0 - (4.0 / 3.0) * proportion
         return -0.75 * math.log(argument) if argument > 0 else None
 
-    for proportion, corrected in (("pS", "dS"), ("pN", "dN")):
-        expected = jukes_cantor(plus[proportion])
+    sns_proportions = {
+        "dS": plus["sns_synonymous_changes"] / plus["synonymous_sites"],
+        "dN": plus["sns_nonsynonymous_changes"] / plus["nonsynonymous_sites"],
+    }
+    for corrected, proportion in sns_proportions.items():
+        expected = jukes_cantor(proportion)
         if expected is None:
-            assert plus[proportion] >= 0.75
+            assert proportion >= 0.75
             assert plus[corrected] is None
         else:
             assert plus[corrected] == pytest.approx(expected)
@@ -193,36 +225,118 @@ def test_pairwise_dnds_uses_sample_codons_and_is_symmetric(tmp_path):
         assert plus["dN_dS"] == pytest.approx(plus["dN"] / plus["dS"])
 
 
-def test_jukes_cantor_correction_shifts_the_ratio():
-    """The correction is non-linear, so it does not cancel out of pN/pS.
-
-    The larger proportion inflates more, and synonymous sites diverge faster,
-    so dN/dS sits below pN/pS. Omitting the correction therefore biases omega
-    upward -- the direction that would falsely suggest positive selection.
-    """
-    lookup = dnds.codon_pair_lookup().to_dicts()
-    codes = (
-        [row["pair_code"] for row in lookup if row["valid_dnds"] and row["synonymous_changes"] > 0][:40]
-        + [row["pair_code"] for row in lookup if row["valid_dnds"] and row["nonsynonymous_changes"] > 0][:30]
-        + [
-            row["pair_code"]
-            for row in lookup
-            if row["valid_dnds"] and row["synonymous_changes"] == 0 and row["nonsynonymous_changes"] == 0
-        ][:120]
+def test_reference_consensus_averages_only_exact_top_ties(tmp_path):
+    genes = _gene_info(tmp_path / "gene_info.parquet")
+    sample = _set_counts(
+        _profile(tmp_path / "sample_profile.parquet"),
+        scaffold="plus_scaffold",
+        pos=6,
+        G=5,
+        T=5,
     )
-    frame = pl.DataFrame({"gene_id": [1] * len(codes), "pair_code": codes}).lazy()
-    result = dnds._summarize_pairs(frame).collect().row(0, named=True)
+    codons = dnds.codon_profile_path(sample)
+    dnds.write_codon_profile(
+        profile_path=sample,
+        gene_info_path=genes,
+        output_path=codons,
+        temp_directory=tmp_path / "tmp",
+    )
 
-    assert result["pS"] == pytest.approx(result["synonymous_changes"] / result["synonymous_sites"])
-    assert result["dS"] > result["pS"]
-    assert result["dN"] > result["pN"]
-    assert result["dN_dS"] < result["pN_pS"]
+    result = dnds.reference_dnds(
+        codons, genes, min_cov=5, allele_integration="consensus"
+    ).collect().filter(pl.col("gene") == "plus").row(0, named=True)
+
+    assert result["ref_sns_count"] == 0
+    assert result["ref_snv_count"] == 1
+    assert result["ref_snv_synonymous_changes"] == pytest.approx(0.5)
+    assert result["ref_snv_nonsynonymous_changes"] == pytest.approx(0.5)
+    assert result["ref_allele_tie_sites"] == 1
 
 
-def test_zero_divergence_reports_zero_not_negative_zero():
+def test_reference_weighted_uses_observed_allele_frequencies(tmp_path):
+    genes = _gene_info(tmp_path / "gene_info.parquet")
+    sample = _set_counts(
+        _profile(tmp_path / "sample_profile.parquet"),
+        scaffold="plus_scaffold",
+        pos=6,
+        G=8,
+        T=2,
+    )
+    codons = dnds.codon_profile_path(sample)
+    dnds.write_codon_profile(
+        profile_path=sample,
+        gene_info_path=genes,
+        output_path=codons,
+        temp_directory=tmp_path / "tmp",
+    )
+
+    consensus = dnds.reference_dnds(
+        codons, genes, min_cov=5, allele_integration="consensus"
+    ).collect().filter(pl.col("gene") == "plus").row(0, named=True)
+    weighted = dnds.reference_dnds(
+        codons, genes, min_cov=5, allele_integration="weighted"
+    ).collect().filter(pl.col("gene") == "plus").row(0, named=True)
+
+    assert consensus["ref_snv_synonymous_changes"] == 1.0
+    assert consensus["ref_snv_nonsynonymous_changes"] == 0.0
+    assert weighted["ref_snv_synonymous_changes"] == pytest.approx(0.8)
+    assert weighted["ref_snv_nonsynonymous_changes"] == pytest.approx(0.2)
+
+
+def test_pairwise_consensus_tie_is_symmetric(tmp_path):
+    genes = _gene_info(tmp_path / "gene_info.parquet")
+    sample_1 = _profile(tmp_path / "one_profile.parquet")
+    sample_2 = _set_counts(
+        _profile(tmp_path / "two_profile.parquet"),
+        scaffold="plus_scaffold",
+        pos=6,
+        G=5,
+        T=5,
+    )
+    codons = []
+    for sample in (sample_1, sample_2):
+        output = dnds.codon_profile_path(sample)
+        dnds.write_codon_profile(
+            profile_path=sample,
+            gene_info_path=genes,
+            output_path=output,
+            temp_directory=tmp_path / output.stem,
+        )
+        codons.append(output)
+
+    forward = dnds.pairwise_dnds(
+        codons[0], codons[1], genes, allele_integration="consensus"
+    ).collect().sort("gene")
+    reverse = dnds.pairwise_dnds(
+        codons[1], codons[0], genes, allele_integration="consensus"
+    ).collect().sort("gene")
+    assert forward.select(dnds.DNDS_RESULT_COLUMNS).to_dicts() == reverse.select(
+        dnds.DNDS_RESULT_COLUMNS
+    ).to_dicts()
+    plus = forward.filter(pl.col("gene") == "plus").row(0, named=True)
+    assert plus["snv_count"] == 1
+    assert plus["snv_synonymous_changes"] == pytest.approx(0.5)
+    assert plus["snv_nonsynonymous_changes"] == pytest.approx(0.5)
+    assert plus["allele_tie_sites"] == 1
+
+
+def test_zero_divergence_reports_zero_not_negative_zero(tmp_path):
     """log(1) yields -0.0; the emitted distance should be a plain zero."""
-    identical = pl.DataFrame({"gene_id": [1], "pair_code": [0]}).lazy()
-    result = dnds._summarize_pairs(identical).collect().row(0, named=True)
+    genes = _gene_info(tmp_path / "gene_info.parquet")
+    sample = _profile(tmp_path / "sample_profile.parquet")
+    codons = dnds.codon_profile_path(sample)
+    dnds.write_codon_profile(
+        profile_path=sample,
+        gene_info_path=genes,
+        output_path=codons,
+        temp_directory=tmp_path / "tmp",
+    )
+    result = (
+        dnds.pairwise_dnds(codons, codons, genes)
+        .collect()
+        .filter(pl.col("gene") == "plus")
+        .row(0, named=True)
+    )
     assert result["pS"] == 0.0
     assert result["dS"] == 0.0
     assert math.copysign(1.0, result["dS"]) > 0
@@ -294,6 +408,7 @@ def test_single_compare_cli_adds_pairwise_dnds_columns(tmp_path):
             "--stb-file", str(stb),
             "--gene-info-table", str(genes),
             "--calculate", "gene+dnds",
+            "--allele-integration", "weighted",
             "--min-cov", "5",
             "--min-gene-compare-len", "1",
             "--output-file", str(output),
@@ -304,5 +419,8 @@ def test_single_compare_cli_adds_pairwise_dnds_columns(tmp_path):
     result_frame = pl.read_parquet(output)
     assert set(dnds.DNDS_RESULT_COLUMNS).issubset(result_frame.columns)
     plus = result_frame.filter(pl.col("gene") == "plus").row(0, named=True)
-    assert plus["synonymous_changes"] == 1.0
-    assert plus["nonsynonymous_changes"] == 1.0
+    assert plus["sns_synonymous_changes"] == 1.0
+    assert plus["sns_nonsynonymous_changes"] == 1.0
+    assert pl.read_parquet_metadata(output)[
+        "zipstrain_compare_allele_integration"
+    ] == "weighted"

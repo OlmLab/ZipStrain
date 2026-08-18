@@ -70,6 +70,7 @@ COMPARE_ENGINE_METADATA_KEY = "zipstrain_compare_engine"
 COMPARE_USES_STB_METADATA_KEY = "zipstrain_compare_uses_stb"
 COMPARE_ANI_METHOD_METADATA_KEY = "zipstrain_compare_ani_method"
 COMPARE_CALCULATE_METADATA_KEY = "zipstrain_compare_calculate"
+COMPARE_ALLELE_INTEGRATION_METADATA_KEY = "zipstrain_compare_allele_integration"
 COMPARE_REFERENCE_HASH_METADATA_KEY = "zipstrain_compare_reference_hash"
 COMPARE_GENE_HASH_METADATA_KEY = "zipstrain_compare_gene_hash"
 COMPARE_NULL_MODEL_HASH_METADATA_KEY = "zipstrain_compare_null_model_hash"
@@ -259,6 +260,7 @@ def build_single_compare_metadata(
     uses_stb: bool,
     ani_method: str,
     calculate: str,
+    allele_integration: str = "consensus",
 ) -> dict[str, str]:
     """Build mismatch-tolerant metadata for a single compare parquet."""
     from zipstrain import compare as cp
@@ -275,6 +277,7 @@ def build_single_compare_metadata(
         COMPARE_USES_STB_METADATA_KEY: "1" if uses_stb else "0",
         COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
         COMPARE_CALCULATE_METADATA_KEY: calculate,
+        COMPARE_ALLELE_INTEGRATION_METADATA_KEY: allele_integration,
         COMPARE_REFERENCE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "reference_hash"),
         COMPARE_GENE_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "gene_hash"),
         COMPARE_NULL_MODEL_HASH_METADATA_KEY: _shared_metadata_value(left_metadata, right_metadata, "null_model_hash"),
@@ -1888,12 +1891,16 @@ def get_gene_stats(
     if reference_dnds is not None:
         stats = stats.join(reference_dnds, on=["genome", "gene"], how="left")
         stats = stats.with_columns(
-            pl.col("ref_callable_codons").fill_null(0).cast(pl.Int64),
-            pl.col("ref_stop_changes").fill_null(0).cast(pl.Int64),
-            pl.col("ref_synonymous_changes").fill_null(0.0).cast(pl.Float64),
-            pl.col("ref_nonsynonymous_changes").fill_null(0.0).cast(pl.Float64),
-            pl.col("ref_synonymous_sites").fill_null(0.0).cast(pl.Float64),
-            pl.col("ref_nonsynonymous_sites").fill_null(0.0).cast(pl.Float64),
+            pl.col(
+                "ref_callable_codons", "ref_sns_count", "ref_snv_count",
+                "ref_allele_tie_sites",
+            ).fill_null(0).cast(pl.Int64),
+            pl.col(
+                "ref_sns_synonymous_changes", "ref_sns_nonsynonymous_changes",
+                "ref_snv_synonymous_changes", "ref_snv_nonsynonymous_changes",
+                "ref_synonymous_sites", "ref_nonsynonymous_sites",
+                "ref_sns_stop_changes", "ref_snv_stop_changes",
+            ).fill_null(0.0).cast(pl.Float64),
         )
         out_columns.extend(dnds_module.REFERENCE_DNDS_RESULT_COLUMNS)
     return stats.select(out_columns)

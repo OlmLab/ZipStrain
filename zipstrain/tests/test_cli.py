@@ -1206,6 +1206,7 @@ def test_compare_resume_rejects_a_different_metric_contract(tmp_path):
             cli.ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: "100",
             cli.ut.COMPARE_ANI_METHOD_METADATA_KEY: "popani",
             cli.ut.COMPARE_CALCULATE_METADATA_KEY: "genome_ani+ibs",
+            cli.ut.COMPARE_ALLELE_INTEGRATION_METADATA_KEY: "consensus",
         },
     )
 
@@ -1217,6 +1218,7 @@ def test_compare_resume_rejects_a_different_metric_contract(tmp_path):
         min_gene_compare_len=100,
         ani_method="popani",
         calculate="genome_ani+ibs",
+        allele_integration="consensus",
     )
     with pytest.raises(cli.click.UsageError, match="incompatible"):
         cli._validate_compare_resume_contract(
@@ -1227,6 +1229,7 @@ def test_compare_resume_rejects_a_different_metric_contract(tmp_path):
             min_gene_compare_len=100,
             ani_method="popani",
             calculate="gene",
+            allele_integration="weighted",
         )
 
 

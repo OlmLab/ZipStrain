@@ -344,6 +344,7 @@ def test_profile_task_generator_adds_codon_output_when_dnds_is_prepared(tmp_path
         genome_length_file=str(files["lengths"]),
         prepare_dnds=True,
         dnds_memory_limit="512MB",
+        allele_integration="weighted",
     )
 
     async def _collect():
@@ -351,6 +352,7 @@ def test_profile_task_generator_adds_codon_output_when_dnds_is_prepared(tmp_path
 
     task = asyncio.run(_collect())[0]
     assert task.inputs["prepare-dnds-arg"].get_value() == "--prepare-dnds"
+    assert task.inputs["allele-integration"].get_value() == "weighted"
     assert task.inputs["dnds-memory-limit"].get_value() == "512MB"
     assert task.expected_outputs["codon-profile"]._expected_file_name == "sample_codon_profile.parquet"
 
@@ -366,6 +368,7 @@ def test_profile_bam_task_template_moves_gene_stats():
     assert "--min-freq <min-freq>" in cmd
     assert "<min-read-ani-arg>" in cmd
     assert "--read-inclusion <read-inclusion>" in cmd
+    assert "--allele-integration <allele-integration>" in cmd
     assert "--null-model null_model.parquet" in cmd
     assert "mv input_profile.parquet <sample-name>_profile.parquet" in cmd
     assert "mv input_gene_stats.parquet <sample-name>_gene_stats.parquet" in cmd
@@ -809,14 +812,14 @@ def test_compare_task_generator_stages_codon_sidecars_for_dnds(tmp_path):
         ),
         calculate="gene",
         dnds=True,
-        dnds_min_major_freq=0.8,
+        allele_integration="weighted",
     )
 
     async def _collect():
         return [task async for tasks in generator.generate_tasks() for task in tasks]
 
     task = asyncio.run(_collect())[0]
-    assert task.inputs["dnds-arg"].get_value() == "--dnds --dnds-min-major-freq 0.8"
+    assert task.inputs["dnds-arg"].get_value() == "--allele-integration weighted"
     assert task.inputs["codon-profile-1-option"].get_value() == "--codon-profile-1"
     assert task.inputs["codon-profile-1"].get_value() == str(codon_1.absolute())
     assert task.inputs["codon-profile-2"].get_value() == str(codon_2.absolute())

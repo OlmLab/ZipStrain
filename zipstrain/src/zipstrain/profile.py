@@ -665,7 +665,8 @@ def empty_gene_stats_table(
     if include_reference_dnds:
         for column in dnds.REFERENCE_DNDS_RESULT_COLUMNS:
             schema[column] = pl.Int64 if column in {
-                "ref_callable_codons", "ref_stop_changes"
+                "ref_callable_codons", "ref_sns_count", "ref_snv_count",
+                "ref_allele_tie_sites",
             } else pl.Float64
     return pl.DataFrame(schema=schema).lazy()
 
@@ -1391,6 +1392,7 @@ def profile_bam_in_chunks(
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
     prepare_dnds: bool = False,
     dnds_memory_limit: str = dnds.DEFAULT_MEMORY_LIMIT,
+    allele_integration: str = "consensus",
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1418,6 +1420,7 @@ def profile_bam_in_chunks(
         raise ValueError("--prepare-dnds requires --reference-fasta.")
     if prepare_dnds and gene_range_table_path is None:
         raise ValueError("--prepare-dnds requires a non-empty gene information table.")
+    allele_integration = dnds.validate_allele_integration(allele_integration)
     _validate_profile_filter_settings(
         min_mapq=min_mapq,
         min_baseq=min_baseq,
@@ -1520,6 +1523,7 @@ def profile_bam_in_chunks(
                 codon_output,
                 gene_range_table_path,
                 min_cov=5,
+                allele_integration=allele_integration,
             )
         if gene_range_table_path is None:
             empty_gene_stats_table(
@@ -1529,6 +1533,10 @@ def profile_bam_in_chunks(
                 output_dir/f"{bam_file.stem}_gene_stats.parquet",
                 compression='zstd',
                 engine='streaming',
+                metadata=(
+                    {dnds.ALLELE_INTEGRATION_METADATA_KEY: allele_integration}
+                    if prepare_dnds else None
+                ),
             )
         else:
             utils.get_gene_stats(
@@ -1540,6 +1548,10 @@ def profile_bam_in_chunks(
                 output_dir/f"{bam_file.stem}_gene_stats.parquet",
                 compression='zstd',
                 engine='streaming',
+                metadata=(
+                    {dnds.ALLELE_INTEGRATION_METADATA_KEY: allele_integration}
+                    if prepare_dnds else None
+                ),
             )
     
     if read_loc_pfs:
@@ -1579,6 +1591,7 @@ def profile_bam(
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
     prepare_dnds: bool = False,
     dnds_memory_limit: str = dnds.DEFAULT_MEMORY_LIMIT,
+    allele_integration: str = "consensus",
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1613,6 +1626,7 @@ def profile_bam(
         min_freq=min_freq,
         prepare_dnds=prepare_dnds,
         dnds_memory_limit=dnds_memory_limit,
+        allele_integration=allele_integration,
     )
 
 

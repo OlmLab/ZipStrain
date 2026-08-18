@@ -512,6 +512,7 @@ class ProfileTaskGenerator(TaskGenerator):
         read_inclusion: str = "all-mapped",
         prepare_dnds: bool = False,
         dnds_memory_limit: str = "1GB",
+        allele_integration: str = "consensus",
     ) -> None:
         super().__init__(data, yield_size)
         self.reference_fasta_file = pathlib.Path(reference_fasta_file) if reference_fasta_file is not None else None
@@ -529,6 +530,9 @@ class ProfileTaskGenerator(TaskGenerator):
         self.read_inclusion = read_inclusion
         self.prepare_dnds = prepare_dnds
         self.dnds_memory_limit = dnds_memory_limit
+        self.allele_integration = dnds_module.validate_allele_integration(
+            allele_integration
+        )
         self.engine = container_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
@@ -602,6 +606,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 "min-read-ani-arg": StringInput(min_read_ani_arg),
                 "read-inclusion": StringInput(self.read_inclusion),
                 "prepare-dnds-arg": StringInput("--prepare-dnds" if self.prepare_dnds else ""),
+                "allele-integration": StringInput(self.allele_integration),
                 "dnds-memory-limit": StringInput(self.dnds_memory_limit),
                 "codon-profile-move-cmd": StringInput(
                     f"mv input_codon_profile.parquet {row['sample_name']}_codon_profile.parquet"
@@ -646,7 +651,7 @@ class CompareTaskGenerator(TaskGenerator):
         duckdb_threads: int | None = None,
         compare_engine: str = "polars",
         dnds: bool = False,
-        dnds_min_major_freq: float = 0.0,
+        allele_integration: str = "consensus",
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
@@ -656,15 +661,15 @@ class CompareTaskGenerator(TaskGenerator):
         self.duckdb_threads = duckdb_threads
         self.compare_engine = compare_engine
         self.dnds = dnds
-        self.dnds_min_major_freq = dnds_min_major_freq
+        self.allele_integration = dnds_module.validate_allele_integration(
+            allele_integration
+        )
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         if self.compare_engine not in {"polars", "duckdb"}:
             raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
         if self.dnds and self.comp_config.gene_range_table_loc is None:
             raise ValueError("dN/dS comparison requires a gene information table.")
-        if not 0.0 <= self.dnds_min_major_freq <= 1.0:
-            raise ValueError("dnds_min_major_freq must be between 0 and 1.")
         from . import compare as _compare
         self.ani_method = _compare.canonical_ani_methods(ani_method)
         _compare.parse_genome_calculations(
@@ -722,7 +727,7 @@ class CompareTaskGenerator(TaskGenerator):
                                 f"dN/dS codon profile does not exist: {codon_path}. "
                                 "Re-run profiling with --prepare-dnds."
                             )
-                    dnds_arg = f"--dnds --dnds-min-major-freq {self.dnds_min_major_freq}"
+                    dnds_arg = f"--allele-integration {self.allele_integration}"
                     codon_profile_1_option = "--codon-profile-1"
                     codon_profile_2_option = "--codon-profile-2"
                     codon_profile_1_input = FileInput(codon_profile_1)
@@ -1797,6 +1802,7 @@ class ProfileBamTask(Task):
     <min-read-ani-arg> \
     --read-inclusion <read-inclusion> \
     <prepare-dnds-arg> \
+    --allele-integration <allele-integration> \
     --dnds-memory-limit <dnds-memory-limit> \
     --output-dir .
     mv input_profile.parquet <sample-name>_profile.parquet
@@ -2062,6 +2068,7 @@ def lazy_run_profile(
     read_inclusion: str = "all-mapped",
     prepare_dnds: bool = False,
     dnds_memory_limit: str = "1GB",
+    allele_integration: str = "consensus",
     tasks_per_batch: int = 10,
     max_concurrent_batches: int = 1,
     poll_interval: float = 5.0,
@@ -2087,6 +2094,7 @@ def lazy_run_profile(
         read_inclusion=read_inclusion,
         prepare_dnds=prepare_dnds,
         dnds_memory_limit=dnds_memory_limit,
+        allele_integration=allele_integration,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -2128,7 +2136,7 @@ def lazy_run_compares(
     duckdb_threads: int | None = None,
     compare_engine: str = "polars",
     dnds: bool = False,
-    dnds_min_major_freq: float = 0.0,
+    allele_integration: str = "consensus",
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -2156,7 +2164,7 @@ def lazy_run_compares(
         duckdb_threads=duckdb_threads,
         compare_engine=compare_engine,
         dnds=dnds,
-        dnds_min_major_freq=dnds_min_major_freq,
+        allele_integration=allele_integration,
     )
     if execution_mode=="local":
         batch_type="local"

@@ -14,7 +14,7 @@ out_profile/
 │   ├── SRR12324251_profile.parquet        # per-position base counts
 │   ├── SRR12324251_genome_stats.parquet   # per-genome summary
 │   ├── SRR12324251_gene_stats.parquet     # per-gene summary
-│   ├── SRR12324251_codon_profile.parquet  # optional sparse codons for dN/dS
+│   ├── SRR12324251_codon_profile.parquet  # optional codon alleles for dN/dS and pN/pS
 │   ├── SRR12324251_SNVs.parquet           # SNPs vs. reference
 │   └── intermediate_files/                # scratch — safe to ignore
 ├── SRR12324252/ …
@@ -85,16 +85,22 @@ One row per gene, populated only when gene annotations are supplied (`profile --
 | `breadth` | Fraction of the gene covered by ≥ 1 read |
 | `coverage` | Mean read depth across the gene |
 | `ref_ani` | ANI of the sample to the reference for this gene (%) |
-| `ref_callable_codons` | Complete codons passing the dN/dS coverage and consensus filters |
-| `ref_synonymous_changes`, `ref_nonsynonymous_changes` | Synonymous and nonsynonymous differences from the reference; multi-base codon changes are averaged across valid shortest paths |
+| `ref_callable_codons` | Complete codons whose three positions pass the coverage requirement |
+| `ref_sns_count`, `ref_snv_count` | Fixed single-nucleotide substitutions (SNSs) and polymorphic variant positions (SNVs) |
+| `ref_sns_synonymous_changes`, `ref_sns_nonsynonymous_changes` | Synonymous and nonsynonymous SNS contributions used for dN/dS |
+| `ref_snv_synonymous_changes`, `ref_snv_nonsynonymous_changes` | Synonymous and nonsynonymous SNV contributions used for pN/pS; these can be fractional |
 | `ref_synonymous_sites`, `ref_nonsynonymous_sites` | Callable synonymous and nonsynonymous site opportunities |
-| `ref_pS`, `ref_pN`, `ref_pN_pS` | Reference-relative observed proportions and their ratio; the ratio is null when `ref_pS` is zero |
-| `ref_dS`, `ref_dN`, `ref_dN_dS` | The same quantities with the Jukes-Cantor correction applied; null when the observed proportion reaches 3/4 |
-| `ref_stop_changes` | Codons where exactly one of sample/reference is a stop codon; excluded from dN/dS rates |
+| `ref_pS`, `ref_pN`, `ref_pN_pS` | Reference-relative SNV proportions and pN/pS; the ratio is null when `ref_pS` is zero |
+| `ref_dS`, `ref_dN`, `ref_dN_dS` | SNS substitution rates after Jukes-Cantor correction and dN/dS; null when an observed proportion reaches 3/4 |
+| `ref_sns_stop_changes`, `ref_snv_stop_changes` | SNS/SNV contributions that enter or leave a stop codon; excluded from N/S rates |
+| `ref_allele_tie_sites` | Polymorphic positions with multiple equally supported top differing allele choices |
 
 The `ref_*` dN/dS columns are present only with `profile --prepare-dnds` (or
 `utilities profile-single --prepare-dnds`). This requires a reference FASTA and
 gene information. Ordinary profiling does not build codons or pay this cost.
+
+The gene-stats parquet metadata records the selected mode as
+`zipstrain_dnds_allele_integration`.
 
 ### `<sample>_profile.parquet`
 
@@ -126,21 +132,20 @@ The null model stores the largest count still compatible with sequencing error, 
 
 ### `<sample>_codon_profile.parquet`
 
-Optional sparse sidecar written by `--prepare-dnds`. It contains only complete,
-unambiguously called codons observed in that sample, so its size follows covered
-coding sequence rather than the full reference database.
+Optional sparse sidecar written by `--prepare-dnds`. It contains complete
+covered codons and their oriented allele counts, so exact ties and weighted
+allele integration can be resolved later without rereading the BAM.
 
 | Column | Meaning |
 |--------|---------|
 | `gene_id` | Stable numeric gene identifier from `gene_info_table.parquet` |
 | `codon_id` | Stable database-wide codon identifier |
-| `codon_code` | Sample consensus codon encoded from 0 to 63 |
 | `reference_codon_code` | Reference codon encoded from 0 to 63 |
 | `min_coverage` | Minimum A+C+G+T coverage across the codon's three bases |
-| `min_major_freq` | Minimum consensus-base frequency across the three bases |
+| `A_0` ... `T_2` | A/C/G/T counts for codon offsets 0, 1, and 2, already oriented to the coding strand |
 
-Codons with a missing position, ambiguous reference base, or tied sample
-consensus are omitted. Strand orientation is resolved from the gene information
+Codons with a missing position or ambiguous reference base are omitted. Tied
+alleles are retained. Strand orientation is resolved from the gene information
 table. Genetic codes 1 and 11 are supported.
 
 ### `<sample>_SNVs.parquet`
@@ -229,15 +234,27 @@ gene row so the table can be read on its own.
 
 Genes with fewer than `--min-gene-compare-len` shared positions are dropped.
 
-With `dnds` in `--calculate`, the standard method also adds `callable_codons`,
-`synonymous_changes`, `nonsynonymous_changes`, `synonymous_sites`,
-`nonsynonymous_sites`, `pS`, `pN`, `pN_pS`, `dS`, `dN`, `dN_dS`, and `stop_changes`. Only codons
-present in both sparse sidecars and passing `--min-cov` plus
-`--dnds-min-major-freq` are callable. The two sidecars must have the same gene
-information hash. Stop endpoints are counted separately and excluded from the
-rate denominator; `pN_pS` is null when `pS` is zero.
+With `dnds` in `--calculate`, the standard method adds `callable_codons`,
+`sns_count`, `snv_count`, separate SNS/SNV synonymous and nonsynonymous change
+columns, site opportunities, `pS`, `pN`, `pN_pS`, `dS`, `dN`, `dN_dS`, separate
+stop-change columns, and `allele_tie_sites`. Codons must be present in both
+sidecars and pass `--min-cov`; the sidecars must share the same gene-information
+hash.
 
-Two ratios are reported from the same counts: `pS`/`pN`/`pN_pS` are the observed proportions of differing sites, while `dS`/`dN`/`dN_dS` add the Jukes-Cantor correction for substitutions that left no trace (a site mutated back, was hit twice, or both lineages converged). At strain-level divergence the two agree to ~0.1%; they separate as divergence grows, and the corrected ratio is the lower of the two because the larger proportion inflates more. `dS`/`dN` are null once the observed proportion reaches 3/4, where the correction is undefined.
+dN/dS and pN/pS intentionally use different observations. Fixed
+singleton-versus-singleton differences are SNSs and feed `dS`/`dN`/`dN_dS`.
+Any position where either side is polymorphic is an SNV and feeds
+`pS`/`pN`/`pN_pS`. `--allele-integration consensus` selects the most-supported
+differing allele pair and splits the contribution equally only when several
+pairs have exactly the same maximum support. `weighted` includes every differing
+pair at its observed joint frequency. Consequently SNV N/S counts may be
+fractional. Stop changes are reported separately and excluded from the N/S
+rates; either ratio is null when its synonymous denominator is zero.
+
+Comparison parquet metadata records the selected mode as
+`zipstrain_compare_allele_integration`; metadata-aware merges therefore reject
+tables produced with different integration modes unless mismatch checking is
+explicitly disabled.
 
 !!! note "Overlapping genes"
     Gene boundaries come from the gene information table at comparison time, not from a

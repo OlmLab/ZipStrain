@@ -17,24 +17,29 @@ import polars as pl
 
 
 BASES = "ACGT"
-CODON_PROFILE_SCHEMA_VERSION = "1"
+CODON_PROFILE_SCHEMA_VERSION = "2"
 CODON_SCHEMA_METADATA_KEY = "zipstrain_codon_profile_schema"
 GENE_INFO_HASH_METADATA_KEY = "zipstrain_gene_info_hash"
+ALLELE_INTEGRATION_METADATA_KEY = "zipstrain_dnds_allele_integration"
 DEFAULT_MEMORY_LIMIT = "1GB"
+ALLELE_INTEGRATION_MODES = ("consensus", "weighted")
 
 CODON_PROFILE_COLUMNS = (
     "gene_id",
     "codon_id",
-    "codon_code",
     "reference_codon_code",
     "min_coverage",
-    "min_major_freq",
+    *(f"{base}_{offset}" for offset in range(3) for base in BASES),
 )
 
 DNDS_RESULT_COLUMNS = (
     "callable_codons",
-    "synonymous_changes",
-    "nonsynonymous_changes",
+    "sns_count",
+    "snv_count",
+    "sns_synonymous_changes",
+    "sns_nonsynonymous_changes",
+    "snv_synonymous_changes",
+    "snv_nonsynonymous_changes",
     "synonymous_sites",
     "nonsynonymous_sites",
     "pS",
@@ -43,7 +48,9 @@ DNDS_RESULT_COLUMNS = (
     "dS",
     "dN",
     "dN_dS",
-    "stop_changes",
+    "sns_stop_changes",
+    "snv_stop_changes",
+    "allele_tie_sites",
 )
 
 REFERENCE_DNDS_RESULT_COLUMNS = tuple(f"ref_{name}" for name in DNDS_RESULT_COLUMNS)
@@ -214,6 +221,15 @@ def _quote(value: Union[str, Path]) -> str:
     return str(value).replace("'", "''")
 
 
+def validate_allele_integration(value: str) -> str:
+    """Return a canonical allele-integration mode or raise a useful error."""
+    mode = str(value).strip().lower()
+    if mode not in ALLELE_INTEGRATION_MODES:
+        supported = ", ".join(ALLELE_INTEGRATION_MODES)
+        raise ValueError(f"allele_integration must be one of: {supported}")
+    return mode
+
+
 def write_codon_profile(
     *,
     profile_path: Union[str, Path],
@@ -223,7 +239,7 @@ def write_codon_profile(
     memory_limit: str = DEFAULT_MEMORY_LIMIT,
     metadata: Optional[dict[str, str]] = None,
 ) -> None:
-    """Build a sparse, coordinate-independent codon summary out of core."""
+    """Build a covered-codon, coordinate-independent allele summary out of core."""
     from zipstrain import utils
 
     profile_path = Path(profile_path)
@@ -286,21 +302,14 @@ def write_codon_profile(
                   g.start::BIGINT AS gene_start,
                   g.end::BIGINT AS gene_end,
                   (p.A::BIGINT + p.C::BIGINT + p.G::BIGINT + p.T::BIGINT) AS coverage,
-                  GREATEST(p.A, p.C, p.G, p.T)::BIGINT AS major_count,
-                  CASE
-                    WHEN p.A = GREATEST(p.A, p.C, p.G, p.T) THEN 0
-                    WHEN p.C = GREATEST(p.A, p.C, p.G, p.T) THEN 1
-                    WHEN p.G = GREATEST(p.A, p.C, p.G, p.T) THEN 2
-                    ELSE 3
-                  END::INTEGER AS genomic_base,
+                  p.A::UINTEGER AS genomic_A,
+                  p.C::UINTEGER AS genomic_C,
+                  p.G::UINTEGER AS genomic_G,
+                  p.T::UINTEGER AS genomic_T,
                   CASE p.ref_base_bitmask
                     WHEN 1 THEN 0 WHEN 2 THEN 1 WHEN 4 THEN 2 WHEN 8 THEN 3
                     ELSE NULL
-                  END::INTEGER AS genomic_reference_base,
-                  ((p.A = GREATEST(p.A, p.C, p.G, p.T))::INTEGER
-                   + (p.C = GREATEST(p.A, p.C, p.G, p.T))::INTEGER
-                   + (p.G = GREATEST(p.A, p.C, p.G, p.T))::INTEGER
-                   + (p.T = GREATEST(p.A, p.C, p.G, p.T))::INTEGER) AS major_ties
+                  END::INTEGER AS genomic_reference_base
                 FROM read_parquet('{_quote(profile_path)}') p
                 JOIN read_parquet('{_quote(gene_info_path)}') g
                   ON p.chrom = g.scaffold
@@ -311,24 +320,28 @@ def write_codon_profile(
                     THEN pos - gene_start - phase
                     ELSE gene_end - pos - phase
                   END AS coding_index,
-                  CASE WHEN strand = 1 THEN genomic_base ELSE 3 - genomic_base END AS coding_base,
                   CASE WHEN strand = 1
                     THEN genomic_reference_base
                     ELSE 3 - genomic_reference_base
-                  END AS coding_reference_base
+                  END AS coding_reference_base,
+                  CASE WHEN strand = 1 THEN genomic_A ELSE genomic_T END AS coding_A,
+                  CASE WHEN strand = 1 THEN genomic_C ELSE genomic_G END AS coding_C,
+                  CASE WHEN strand = 1 THEN genomic_G ELSE genomic_C END AS coding_G,
+                  CASE WHEN strand = 1 THEN genomic_T ELSE genomic_A END AS coding_T
                 FROM mapped
                 WHERE coverage > 0
                   AND genomic_reference_base IS NOT NULL
-                  AND major_ties = 1
               ), coded AS (
                 SELECT
                   gene_id,
                   first_codon_id + FLOOR(coding_index / 3)::UBIGINT AS codon_id,
                   (coding_index % 3)::INTEGER AS codon_offset,
-                  coding_base,
                   coding_reference_base,
                   coverage,
-                  major_count::DOUBLE / coverage AS major_freq
+                  coding_A,
+                  coding_C,
+                  coding_G,
+                  coding_T
                 FROM oriented
                 WHERE coding_index >= 0
                   AND coding_index < n_codons * 3
@@ -336,10 +349,20 @@ def write_codon_profile(
               SELECT
                 gene_id,
                 codon_id,
-                SUM(coding_base * CASE codon_offset WHEN 0 THEN 16 WHEN 1 THEN 4 ELSE 1 END)::UTINYINT AS codon_code,
                 SUM(coding_reference_base * CASE codon_offset WHEN 0 THEN 16 WHEN 1 THEN 4 ELSE 1 END)::UTINYINT AS reference_codon_code,
                 MIN(coverage)::UINTEGER AS min_coverage,
-                MIN(major_freq)::FLOAT AS min_major_freq
+                MAX(CASE WHEN codon_offset = 0 THEN coding_A END)::UINTEGER AS A_0,
+                MAX(CASE WHEN codon_offset = 0 THEN coding_C END)::UINTEGER AS C_0,
+                MAX(CASE WHEN codon_offset = 0 THEN coding_G END)::UINTEGER AS G_0,
+                MAX(CASE WHEN codon_offset = 0 THEN coding_T END)::UINTEGER AS T_0,
+                MAX(CASE WHEN codon_offset = 1 THEN coding_A END)::UINTEGER AS A_1,
+                MAX(CASE WHEN codon_offset = 1 THEN coding_C END)::UINTEGER AS C_1,
+                MAX(CASE WHEN codon_offset = 1 THEN coding_G END)::UINTEGER AS G_1,
+                MAX(CASE WHEN codon_offset = 1 THEN coding_T END)::UINTEGER AS T_1,
+                MAX(CASE WHEN codon_offset = 2 THEN coding_A END)::UINTEGER AS A_2,
+                MAX(CASE WHEN codon_offset = 2 THEN coding_C END)::UINTEGER AS C_2,
+                MAX(CASE WHEN codon_offset = 2 THEN coding_G END)::UINTEGER AS G_2,
+                MAX(CASE WHEN codon_offset = 2 THEN coding_T END)::UINTEGER AS T_2
               FROM coded
               GROUP BY gene_id, codon_id
               HAVING COUNT(*) = 3 AND COUNT(DISTINCT codon_offset) = 3
@@ -362,76 +385,379 @@ def write_codon_profile(
     raw_output.unlink(missing_ok=True)
 
 
-def _summarize_pairs(
-    frame: pl.LazyFrame,
+@lru_cache(maxsize=1)
+def codon_site_lookup() -> pl.DataFrame:
+    """Reference-codon synonymous and nonsynonymous opportunities."""
+    rows = []
+    for code in range(64):
+        codon = _decode_codon(code)
+        valid = STANDARD_GENETIC_CODE[codon] != "*"
+        synonymous = _synonymous_sites(codon) if valid else 0.0
+        rows.append((code, synonymous, 3.0 - synonymous if valid else 0.0, valid))
+    return pl.DataFrame(
+        rows,
+        schema={
+            "reference_codon_code": pl.UInt8,
+            "synonymous_sites": pl.Float64,
+            "nonsynonymous_sites": pl.Float64,
+            "valid_reference": pl.Boolean,
+        },
+        orient="row",
+    )
+
+
+def _reference_base_expr() -> pl.Expr:
+    multiplier = pl.when(pl.col("codon_offset") == 0).then(16).when(
+        pl.col("codon_offset") == 1
+    ).then(4).otherwise(1)
+    return (
+        (pl.col("reference_codon_code").cast(pl.UInt16) // multiplier) % 4
+    ).cast(pl.UInt8)
+
+
+def _replace_codon_base(code: pl.Expr, offset: pl.Expr, base: pl.Expr) -> pl.Expr:
+    multiplier = pl.when(offset == 0).then(16).when(offset == 1).then(4).otherwise(1)
+    old_base = (code.cast(pl.Int32) // multiplier) % 4
+    return (code.cast(pl.Int32) + (base.cast(pl.Int32) - old_base) * multiplier).cast(
+        pl.UInt8
+    )
+
+
+def _codon_positions(codons: pl.LazyFrame) -> pl.LazyFrame:
+    """Expand one codon row into three rows without expanding allele choices."""
+    frames = []
+    for offset in range(3):
+        frames.append(
+            codons.select(
+                "gene_id",
+                "codon_id",
+                "reference_codon_code",
+                pl.lit(offset, dtype=pl.UInt8).alias("codon_offset"),
+                *(pl.col(f"{base}_{offset}").alias(base) for base in BASES),
+            )
+        )
+    return (
+        pl.concat(frames)
+        .with_columns(
+            coverage=pl.sum_horizontal(*(pl.col(base) for base in BASES)).cast(pl.UInt64),
+            allele_count=pl.sum_horizontal(
+                *((pl.col(base) > 0).cast(pl.UInt8) for base in BASES)
+            ),
+            reference_base=_reference_base_expr(),
+        )
+    )
+
+
+def _singleton_base_expr(columns: tuple[str, ...] = tuple(BASES)) -> pl.Expr:
+    expr = pl.when(pl.col(columns[0]) > 0).then(pl.lit(0, dtype=pl.UInt8))
+    for index, column in enumerate(columns[1:], start=1):
+        expr = expr.when(pl.col(column) > 0).then(pl.lit(index, dtype=pl.UInt8))
+    return expr.otherwise(None)
+
+
+def _event_frame(
+    positions: pl.LazyFrame,
     *,
-    group_column: str = "gene_id",
+    source_base: pl.Expr,
+    target_base: pl.Expr,
+    weight: pl.Expr,
+) -> pl.LazyFrame:
+    source_code = _replace_codon_base(
+        pl.col("reference_codon_code"), pl.col("codon_offset"), source_base
+    )
+    target_code = _replace_codon_base(
+        pl.col("reference_codon_code"), pl.col("codon_offset"), target_base
+    )
+    return positions.select(
+        "gene_id",
+        "codon_id",
+        "codon_offset",
+        (source_code.cast(pl.UInt16) * 64 + target_code.cast(pl.UInt16)).alias(
+            "pair_code"
+        ),
+        weight.cast(pl.Float64).alias("weight"),
+    )
+
+
+def _reference_event_frames(
+    codons: pl.LazyFrame,
+    allele_integration: str,
+) -> tuple[pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, pl.LazyFrame]:
+    positions = _codon_positions(codons)
+    sample_base = _singleton_base_expr()
+    sns_sites = positions.filter(
+        (pl.col("allele_count") == 1) & (sample_base != pl.col("reference_base"))
+    )
+    sns_events = _event_frame(
+        sns_sites,
+        source_base=pl.col("reference_base"),
+        target_base=sample_base,
+        weight=pl.lit(1.0),
+    )
+
+    snv_sites = positions.filter(pl.col("allele_count") > 1)
+    alternative_counts = [
+        pl.when(pl.col("reference_base") != index)
+        .then(pl.col(base).cast(pl.Float64))
+        .otherwise(0.0)
+        for index, base in enumerate(BASES)
+    ]
+    snv_sites = snv_sites.with_columns(
+        max_support=pl.max_horizontal(*alternative_counts)
+    ).with_columns(
+        tied_candidates=pl.sum_horizontal(
+            *(
+                (
+                    (pl.col("reference_base") != index)
+                    & (pl.col(base).cast(pl.Float64) == pl.col("max_support"))
+                    & (pl.col(base) > 0)
+                ).cast(pl.UInt8)
+                for index, base in enumerate(BASES)
+            )
+        )
+    )
+    tie_sites = snv_sites.filter(pl.col("tied_candidates") > 1).select(
+        "gene_id", "codon_id", "codon_offset"
+    )
+
+    candidates = []
+    for index, base in enumerate(BASES):
+        candidate = snv_sites.filter(
+            (pl.col(base) > 0) & (pl.col("reference_base") != index)
+        )
+        if allele_integration == "consensus":
+            candidate = candidate.filter(
+                pl.col(base).cast(pl.Float64) == pl.col("max_support")
+            )
+            weight = 1.0 / pl.col("tied_candidates")
+        else:
+            weight = pl.col(base).cast(pl.Float64) / pl.col("coverage")
+        candidates.append(
+            _event_frame(
+                candidate,
+                source_base=pl.col("reference_base"),
+                target_base=pl.lit(index, dtype=pl.UInt8),
+                weight=weight,
+            )
+        )
+    return sns_events, pl.concat(candidates), sns_sites, snv_sites, tie_sites
+
+
+def _pairwise_event_frames(
+    codons: pl.LazyFrame,
+    allele_integration: str,
+) -> tuple[pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, pl.LazyFrame]:
+    left = _codon_positions(codons)
+    right = _codon_positions(
+        codons.select(
+            "gene_id",
+            "codon_id",
+            "reference_codon_code",
+            *(
+                pl.col(f"{column}_right").alias(column)
+                for column in CODON_PROFILE_COLUMNS[4:]
+            ),
+        )
+    )
+    # The caller supplies an already joined codon frame. Its right-hand counts
+    # carry a `_right` suffix; normalize those after position expansion.
+    right = right.select(
+        "codon_id",
+        "codon_offset",
+        *(pl.col(base).alias(f"{base}_right") for base in BASES),
+        pl.col("coverage").alias("coverage_right"),
+        pl.col("allele_count").alias("allele_count_right"),
+    )
+    positions = left.join(
+        right, on=["codon_id", "codon_offset"], how="inner", maintain_order="left"
+    )
+    left_base = _singleton_base_expr()
+    right_base = _singleton_base_expr(tuple(f"{base}_right" for base in BASES))
+    sns_sites = positions.filter(
+        (pl.col("allele_count") == 1)
+        & (pl.col("allele_count_right") == 1)
+        & (left_base != right_base)
+    )
+    sns_events = _event_frame(
+        sns_sites,
+        source_base=left_base,
+        target_base=right_base,
+        weight=pl.lit(1.0),
+    )
+
+    snv_sites = positions.filter(
+        (pl.col("allele_count") > 1) | (pl.col("allele_count_right") > 1)
+    )
+    supports = [
+        pl.col(left_base_name).cast(pl.Float64) * pl.col(f"{right_base_name}_right")
+        for left_index, left_base_name in enumerate(BASES)
+        for right_index, right_base_name in enumerate(BASES)
+        if left_index != right_index
+    ]
+    snv_sites = snv_sites.with_columns(max_support=pl.max_horizontal(*supports))
+    tie_expressions = []
+    for left_index, left_base_name in enumerate(BASES):
+        for right_index, right_base_name in enumerate(BASES):
+            if left_index == right_index:
+                continue
+            support = pl.col(left_base_name).cast(pl.Float64) * pl.col(
+                f"{right_base_name}_right"
+            )
+            tie_expressions.append(
+                ((support == pl.col("max_support")) & (support > 0)).cast(pl.UInt8)
+            )
+    snv_sites = snv_sites.with_columns(
+        tied_candidates=pl.sum_horizontal(*tie_expressions)
+    )
+    tie_sites = snv_sites.filter(pl.col("tied_candidates") > 1).select(
+        "gene_id", "codon_id", "codon_offset"
+    )
+
+    candidates = []
+    for left_index, left_base_name in enumerate(BASES):
+        for right_index, right_base_name in enumerate(BASES):
+            if left_index == right_index:
+                continue
+            support = pl.col(left_base_name).cast(pl.Float64) * pl.col(
+                f"{right_base_name}_right"
+            )
+            candidate = snv_sites.filter(support > 0)
+            if allele_integration == "consensus":
+                candidate = candidate.filter(support == pl.col("max_support"))
+                weight = 1.0 / pl.col("tied_candidates")
+            else:
+                weight = (
+                    pl.col(left_base_name).cast(pl.Float64) / pl.col("coverage")
+                ) * (
+                    pl.col(f"{right_base_name}_right").cast(pl.Float64)
+                    / pl.col("coverage_right")
+                )
+            candidates.append(
+                _event_frame(
+                    candidate,
+                    source_base=pl.lit(left_index, dtype=pl.UInt8),
+                    target_base=pl.lit(right_index, dtype=pl.UInt8),
+                    weight=weight,
+                )
+            )
+    return sns_events, pl.concat(candidates), sns_sites, snv_sites, tie_sites
+
+
+def _event_totals(events: pl.LazyFrame, category: str) -> pl.LazyFrame:
+    annotated = events.join(
+        codon_pair_lookup().lazy().select(
+            "pair_code", "synonymous_changes", "nonsynonymous_changes",
+            "valid_dnds", "stop_change",
+        ),
+        on="pair_code",
+        how="left",
+    )
+    valid = annotated.filter(pl.col("valid_dnds"))
+    changes = valid.group_by("gene_id").agg(
+        (pl.col("synonymous_changes") * pl.col("weight"))
+        .sum()
+        .alias(f"{category}_synonymous_changes"),
+        (pl.col("nonsynonymous_changes") * pl.col("weight"))
+        .sum()
+        .alias(f"{category}_nonsynonymous_changes"),
+    )
+    stops = annotated.group_by("gene_id").agg(
+        (pl.col("stop_change") * pl.col("weight"))
+        .sum()
+        .alias(f"{category}_stop_changes")
+    )
+    return changes.join(stops, on="gene_id", how="full", coalesce=True)
+
+
+def _summarize_events(
+    codons: pl.LazyFrame,
+    sns_events: pl.LazyFrame,
+    snv_events: pl.LazyFrame,
+    sns_sites: pl.LazyFrame,
+    snv_sites: pl.LazyFrame,
+    tie_sites: pl.LazyFrame,
+    *,
     prefix: str = "",
 ) -> pl.LazyFrame:
-    lookup = codon_pair_lookup().lazy()
-    annotated = frame.join(lookup, on="pair_code", how="left")
-    valid = annotated.filter(pl.col("valid_dnds"))
-    totals = valid.group_by(group_column).agg(
-        pl.len().cast(pl.Int64).alias(f"{prefix}callable_codons"),
-        pl.col("synonymous_changes").sum().alias(f"{prefix}synonymous_changes"),
-        pl.col("nonsynonymous_changes").sum().alias(f"{prefix}nonsynonymous_changes"),
-        pl.col("synonymous_sites").sum().alias(f"{prefix}synonymous_sites"),
-        pl.col("nonsynonymous_sites").sum().alias(f"{prefix}nonsynonymous_sites"),
+    denominators = (
+        codons.select("gene_id", "codon_id", "reference_codon_code")
+        .unique("codon_id")
+        .join(codon_site_lookup().lazy(), on="reference_codon_code", how="left")
+        .filter(pl.col("valid_reference"))
+        .group_by("gene_id")
+        .agg(
+            pl.len().cast(pl.Int64).alias("callable_codons"),
+            pl.col("synonymous_sites").sum(),
+            pl.col("nonsynonymous_sites").sum(),
+        )
     )
-    stops = annotated.group_by(group_column).agg(
-        pl.col("stop_change").sum().cast(pl.Int64).alias(f"{prefix}stop_changes")
+    site_counts = sns_sites.group_by("gene_id").agg(
+        pl.len().cast(pl.Int64).alias("sns_count")
+    ).join(
+        snv_sites.group_by("gene_id").agg(pl.len().cast(pl.Int64).alias("snv_count")),
+        on="gene_id",
+        how="full",
+        coalesce=True,
     )
-    # Two ratios from the same counts. p is what was observed: the fraction of
-    # sites that differ. d additionally estimates substitutions that left no
-    # trace -- a site that mutated and reverted, or was hit twice, or converged
-    # on both lineages -- via the Jukes-Cantor correction d = -3/4 ln(1 - 4p/3).
-    #
-    # Both are reported because they answer different questions and diverge in a
-    # useful way. At strain-level divergence they agree to ~0.1% and p is the
-    # honest primary; when they separate, the comparison is deep enough that the
-    # correction matters and omega needs careful reading. Correcting also shifts
-    # the ratio rather than cancelling, since the larger of pN/pS inflates more.
-    def _proportion(changes: str, sites: str) -> pl.Expr:
-        return (
-            pl.when(pl.col(f"{prefix}{sites}") > 0)
-            .then(pl.col(f"{prefix}{changes}") / pl.col(f"{prefix}{sites}"))
-            .otherwise(None)
-            .cast(pl.Float64)
-        )
-
-    def _jukes_cantor(proportion: str) -> pl.Expr:
-        # Undefined once observed divergence reaches 3/4, where even unrelated
-        # sequences match by chance; emit null there rather than a NaN.
-        argument = 1.0 - (4.0 / 3.0) * pl.col(f"{prefix}{proportion}")
-        return (
-            pl.when(argument > 0)
-            # + 0.0 normalises the -0.0 that log(1) produces when p is zero.
-            .then(-0.75 * argument.log() + 0.0)
-            .otherwise(None)
-            .cast(pl.Float64)
-        )
-
-    def _ratio(numerator: str, denominator: str) -> pl.Expr:
-        return (
-            pl.when(pl.col(f"{prefix}{denominator}") > 0)
-            .then(pl.col(f"{prefix}{numerator}") / pl.col(f"{prefix}{denominator}"))
-            .otherwise(None)
-            .cast(pl.Float64)
-        )
-
-    return (
-        totals.join(stops, on=group_column, how="full", coalesce=True)
+    tie_counts = tie_sites.group_by("gene_id").agg(
+        pl.len().cast(pl.Int64).alias("allele_tie_sites")
+    )
+    result = (
+        denominators
+        .join(site_counts, on="gene_id", how="left")
+        .join(_event_totals(sns_events, "sns"), on="gene_id", how="left")
+        .join(_event_totals(snv_events, "snv"), on="gene_id", how="left")
+        .join(tie_counts, on="gene_id", how="left")
         .with_columns(
-            _proportion("synonymous_changes", "synonymous_sites").alias(f"{prefix}pS"),
-            _proportion("nonsynonymous_changes", "nonsynonymous_sites").alias(f"{prefix}pN"),
+            pl.col("sns_count", "snv_count", "allele_tie_sites")
+            .fill_null(0)
+            .cast(pl.Int64),
+            pl.col(
+                "sns_synonymous_changes", "sns_nonsynonymous_changes",
+                "snv_synonymous_changes", "snv_nonsynonymous_changes",
+                "sns_stop_changes", "snv_stop_changes",
+            ).fill_null(0.0).cast(pl.Float64),
+        )
+    )
+
+    def proportion(changes: str, sites: str) -> pl.Expr:
+        return pl.when(pl.col(sites) > 0).then(pl.col(changes) / pl.col(sites)).otherwise(None)
+
+    def ratio(numerator: str, denominator: str) -> pl.Expr:
+        return pl.when(pl.col(denominator) > 0).then(
+            pl.col(numerator) / pl.col(denominator)
+        ).otherwise(None)
+
+    def jukes_cantor(column: str) -> pl.Expr:
+        argument = 1.0 - (4.0 / 3.0) * pl.col(column)
+        return (
+            pl.when(pl.col(column) == 0)
+            .then(0.0)
+            .when(argument > 0)
+            .then(-0.75 * argument.log())
+            .otherwise(None)
+        )
+
+    result = (
+        result.with_columns(
+            proportion("snv_synonymous_changes", "synonymous_sites").alias("pS"),
+            proportion("snv_nonsynonymous_changes", "nonsynonymous_sites").alias("pN"),
+            proportion("sns_synonymous_changes", "synonymous_sites").alias("sns_pS"),
+            proportion("sns_nonsynonymous_changes", "nonsynonymous_sites").alias("sns_pN"),
         )
         .with_columns(
-            _ratio("pN", "pS").alias(f"{prefix}pN_pS"),
-            _jukes_cantor("pS").alias(f"{prefix}dS"),
-            _jukes_cantor("pN").alias(f"{prefix}dN"),
+            ratio("pN", "pS").alias("pN_pS"),
+            jukes_cantor("sns_pS").alias("dS"),
+            jukes_cantor("sns_pN").alias("dN"),
         )
-        .with_columns(_ratio("dN", "dS").alias(f"{prefix}dN_dS"))
+        .with_columns(ratio("dN", "dS").alias("dN_dS"))
+        .drop("sns_pS", "sns_pN")
     )
+    if prefix:
+        result = result.rename(
+            {column: f"{prefix}{column}" for column in DNDS_RESULT_COLUMNS}
+        )
+    return result
 
 
 def reference_dnds(
@@ -439,19 +765,15 @@ def reference_dnds(
     gene_info: Union[str, Path],
     *,
     min_cov: int = 5,
-    min_major_freq: float = 0.0,
+    allele_integration: str = "consensus",
 ) -> pl.LazyFrame:
-    """Calculate sample-versus-reference dN/dS by gene."""
-    codons = pl.scan_parquet(codon_profile).filter(
-        (pl.col("min_coverage") >= min_cov)
-        & (pl.col("min_major_freq") >= min_major_freq)
-    ).with_columns(
-        (
-            pl.col("reference_codon_code").cast(pl.UInt16) * 64
-            + pl.col("codon_code").cast(pl.UInt16)
-        ).alias("pair_code")
+    """Calculate reference-relative SNS dN/dS and SNV pN/pS by gene."""
+    allele_integration = validate_allele_integration(allele_integration)
+    codons = pl.scan_parquet(codon_profile).filter(pl.col("min_coverage") >= min_cov)
+    event_frames = _reference_event_frames(codons, allele_integration)
+    summary = _summarize_events(
+        codons, *event_frames, prefix="ref_"
     )
-    summary = _summarize_pairs(codons, prefix="ref_")
     return (
         pl.scan_parquet(gene_info)
         .select("gene_id", "genome", "gene")
@@ -469,6 +791,15 @@ def validate_codon_profiles(
 
     metadata_1 = utils._read_custom_parquet_metadata(codon_profile_1)
     metadata_2 = utils._read_custom_parquet_metadata(codon_profile_2)
+    for path, metadata in (
+        (codon_profile_1, metadata_1),
+        (codon_profile_2, metadata_2),
+    ):
+        if metadata.get(CODON_SCHEMA_METADATA_KEY) != CODON_PROFILE_SCHEMA_VERSION:
+            raise ValueError(
+                f"Codon profile uses an unsupported schema: {path}. "
+                "Re-run profiling with the current ZipStrain version."
+            )
     for key in (CODON_SCHEMA_METADATA_KEY, GENE_INFO_HASH_METADATA_KEY):
         value_1 = metadata_1.get(key)
         value_2 = metadata_2.get(key)
@@ -484,11 +815,11 @@ def pairwise_dnds(
     gene_info: Union[str, Path],
     *,
     min_cov: int = 5,
-    min_major_freq: float = 0.0,
+    allele_integration: str = "consensus",
     genome_scope: str = "all",
     gene_scope: str = "all",
 ) -> pl.LazyFrame:
-    """Calculate sample-to-sample dN/dS from two sparse codon profiles."""
+    """Calculate pairwise SNS dN/dS and SNV pN/pS from codon profiles."""
     from zipstrain import utils
 
     validate_codon_profiles(codon_profile_1, codon_profile_2)
@@ -498,33 +829,21 @@ def pairwise_dnds(
         raise ValueError(
             "The supplied gene information table does not match the codon profiles."
         )
-    c1 = (
-        pl.scan_parquet(codon_profile_1)
-        .filter(
-            (pl.col("min_coverage") >= min_cov)
-            & (pl.col("min_major_freq") >= min_major_freq)
-        )
-        .select("gene_id", "codon_id", "codon_code")
-        .set_sorted("codon_id")
-    )
-    c2 = (
-        pl.scan_parquet(codon_profile_2)
-        .filter(
-            (pl.col("min_coverage") >= min_cov)
-            & (pl.col("min_major_freq") >= min_major_freq)
-        )
-        .select("codon_id", pl.col("codon_code").alias("codon_code_2"))
-        .set_sorted("codon_id")
-    )
+    allele_integration = validate_allele_integration(allele_integration)
+    c1 = pl.scan_parquet(codon_profile_1).filter(
+        pl.col("min_coverage") >= min_cov
+    ).set_sorted("codon_id")
+    c2 = pl.scan_parquet(codon_profile_2).filter(
+        pl.col("min_coverage") >= min_cov
+    ).select(
+        "codon_id",
+        *(pl.col(column).alias(f"{column}_right") for column in CODON_PROFILE_COLUMNS[4:]),
+    ).set_sorted("codon_id")
     # codon_id is database-wide and unique, so sorted inputs permit Polars to
     # use a merge join rather than building a large hash table.
-    pairs = c1.join(c2, on="codon_id", how="inner", maintain_order="left").with_columns(
-        (
-            pl.col("codon_code").cast(pl.UInt16) * 64
-            + pl.col("codon_code_2").cast(pl.UInt16)
-        ).alias("pair_code")
-    )
-    summary = _summarize_pairs(pairs)
+    codons = c1.join(c2, on="codon_id", how="inner", maintain_order="left")
+    event_frames = _pairwise_event_frames(codons, allele_integration)
+    summary = _summarize_events(codons, *event_frames)
     genes = pl.scan_parquet(gene_info).select("gene_id", "genome", "gene")
     if genome_scope != "all":
         genes = genes.filter(pl.col("genome") == genome_scope)

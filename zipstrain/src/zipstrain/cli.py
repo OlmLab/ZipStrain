@@ -302,6 +302,7 @@ def _validate_compare_resume_contract(
     min_gene_compare_len: int,
     ani_method: str,
     calculate: str,
+    allele_integration: str,
 ) -> None:
     """Reject a resume table produced with different comparison semantics."""
     ani_method = cp.canonical_ani_methods(ani_method)
@@ -316,6 +317,7 @@ def _validate_compare_resume_contract(
         ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
         ut.COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
         ut.COMPARE_CALCULATE_METADATA_KEY: calculate,
+        ut.COMPARE_ALLELE_INTEGRATION_METADATA_KEY: allele_integration,
     }
     mismatches = [
         f"{key}: expected {value!r}, found {metadata.get(key)!r}"
@@ -1423,16 +1425,16 @@ def get_gene_range_table(gene_file, stb_file, output_file):
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--scope', default="all", show_default=True, help="Restrict to a genome, or use GENOME:GENE when calculating gene metrics.")
 @click.option('--ani-method', '-a', default="popani", help="One or more comma-separated ANI methods (for example, popani,conani,cosani_0.4).")
-@click.option('--calculate', default="all", show_default=True, help="Metrics to compute: genome_ani, ibs, gene. Combine with '+', or use all. 'gene' needs --gene-info-table and makes the output gene-grained.")
+@click.option('--calculate', default="all", show_default=True, help="Metrics to compute: genome_ani, ibs, gene, dnds. Combine with '+', or use all. 'gene' and 'dnds' need --gene-info-table; dnds also needs codon sidecars.")
 @click.option('--gene-info-table', 'gene_range_table', default=None, help="Gene information Parquet. Required for gene metrics.")
 @click.option('--codon-profile-1', default=None, help="Codon sidecar for profile 1; inferred from its filename when omitted.")
 @click.option('--codon-profile-2', default=None, help="Codon sidecar for profile 2; inferred from its filename when omitted.")
-@click.option('--dnds-min-major-freq', default=0.0, show_default=True, type=float, help="Minimum consensus-allele frequency at every base of a callable codon.")
+@click.option('--allele-integration', type=click.Choice(dn.ALLELE_INTEGRATION_MODES), default="consensus", show_default=True, help="How dN/dS and pN/pS integrate divergent alleles: the most-supported differing allele pair (averaging exact ties), or all pairs weighted by frequency.")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
 @click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, calculate, gene_range_table, codon_profile_1, codon_profile_2, dnds_min_major_freq, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
+def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, calculate, gene_range_table, codon_profile_1, codon_profile_2, allele_integration, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
     """Compare one profile pair using the same genome/gene calculation path."""
     profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
     profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
@@ -1475,8 +1477,6 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
         )
     output_cols = cp.comparison_output_columns(calculations, ani_method)
     if dnds:
-        if not 0.0 <= dnds_min_major_freq <= 1.0:
-            raise click.UsageError("--dnds-min-major-freq must be between 0 and 1.")
         for profile, path in (
             (profile_location_1, codon_profile_1),
             (profile_location_2, codon_profile_2),
@@ -1499,6 +1499,7 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
         uses_stb=stb_file is not None,
         ani_method=ani_method,
         calculate="+".join(calculations),
+        allele_integration=allele_integration,
     )
 
     profile_1_for_compare = profile_location_1
@@ -1554,7 +1555,7 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
             codon_profile_2,
             gene_range_table,
             min_cov=min_cov,
-            min_major_freq=dnds_min_major_freq,
+            allele_integration=allele_integration,
             genome_scope=genome_scope,
             gene_scope=gene_scope,
         )
@@ -1609,10 +1610,11 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
 @click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
 @click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
-@click.option('--prepare-dnds', is_flag=True, default=False, help="Write a sparse codon profile and reference-relative gene dN/dS statistics.")
+@click.option('--prepare-dnds', is_flag=True, default=False, help="Write a covered-codon allele sidecar and reference-relative SNS dN/dS plus SNV pN/pS statistics.")
+@click.option('--allele-integration', type=click.Choice(dn.ALLELE_INTEGRATION_MODES), default="consensus", show_default=True, help="How dN/dS and pN/pS integrate divergent alleles: the most-supported differing allele pair (averaging exact ties), or all pairs weighted by frequency.")
 @click.option('--dnds-memory-limit', default=pf.dnds.DEFAULT_MEMORY_LIMIT, show_default=True, help="DuckDB memory limit for codon preparation.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, prepare_dnds, dnds_memory_limit, output_dir):
+def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, prepare_dnds, allele_integration, dnds_memory_limit, output_dir):
     """
     Profile a single BAM file using the provided BED file and optional gene information table.
     
@@ -1644,6 +1646,7 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
         read_inclusion=read_inclusion,
         prepare_dnds=prepare_dnds,
         dnds_memory_limit=dnds_memory_limit,
+        allele_integration=allele_integration,
     )
 
 @cli.command("map", cls=SectionedCommand, short_help="Map reads to sorted BAMs.")
@@ -1779,9 +1782,10 @@ map_command.option_sections = {
 @click.option('--presence-min-cov-use-fug', default=2.0, show_default=True, help="Coverage above which the present/absent call uses BER alone (below it, FUG is also required).")
 @click.option('--presence-min-coverage', default=0.1, show_default=True, help="Minimum mean coverage required to call a genome present.")
 @click.option('--genome-taxonomy', default=None, help="Optional genome->taxonomy TSV to add a genome_taxonomy column to genome_stats. Auto-discovered next to the reference/STB when produced by `zipstrain map` (Sylph route).")
-@click.option('--prepare-dnds', is_flag=True, default=False, help="Write sparse codon profiles and reference-relative gene dN/dS statistics.")
+@click.option('--prepare-dnds', is_flag=True, default=False, help="Write covered-codon allele sidecars and reference-relative SNS dN/dS plus SNV pN/pS statistics.")
+@click.option('--allele-integration', type=click.Choice(dn.ALLELE_INTEGRATION_MODES), default="consensus", show_default=True, help="How reference dN/dS and pN/pS integrate divergent alleles: the most-supported differing allele pair (averaging exact ties), or all pairs weighted by frequency.")
 @click.option('--dnds-memory-limit', default=pf.dnds.DEFAULT_MEMORY_LIMIT, show_default=True, help="DuckDB memory limit per codon-preparation task.")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy, prepare_dnds, dnds_memory_limit):
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy, prepare_dnds, allele_integration, dnds_memory_limit):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1856,6 +1860,7 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
             read_inclusion=read_inclusion,
             prepare_dnds=prepare_dnds,
             dnds_memory_limit=dnds_memory_limit,
+            allele_integration=allele_integration,
             tasks_per_batch=task_per_batch,
             max_concurrent_batches=max_concurrent_batches,
             poll_interval=poll_interval,
@@ -1906,6 +1911,7 @@ profile.option_sections = {
         "min_read_ani",
         "read_inclusion",
         "prepare_dnds",
+        "allele_integration",
         "dnds_memory_limit",
     ],
     "SNV calling and presence": [
@@ -2022,10 +2028,10 @@ def _run_matrix_compare_method(
 @click.option("--allow-mismatch", is_flag=True, default=False, show_default=True, help="Skip profile contract validation when building the profile database from a CSV.")
 @click.option("--ani-method", "-a", default="popani", show_default=True, help="One or more comma-separated ANI methods (for example, popani,conani,cosani_0.4).")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for standard compare tasks.")
-@click.option("--calculate", default="all", show_default=True, help="Metrics to compute: genome_ani (or ani), ibs, gene. Combine with '+'. With --gene-info-table, 'all' includes gene.")
+@click.option("--calculate", default="all", show_default=True, help="Metrics to compute: genome_ani (or ani), ibs, gene, dnds. Combine with '+'. With compatible inputs, 'all' includes gene and dnds.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-info-table", 'gene_range_table', default=None, help="Gene information Parquet for gene ANI and dN/dS. Matrix gene ANI can auto-discover it from profiling_assets.")
-@click.option("--dnds-min-major-freq", default=0.0, show_default=True, type=float, help="Minimum consensus-allele frequency at every base of a callable codon.")
+@click.option("--allele-integration", type=click.Choice(dn.ALLELE_INTEGRATION_MODES), default="consensus", show_default=True, help="How dN/dS and pN/pS integrate divergent alleles: the most-supported differing allele pair (averaging exact ties), or all pairs weighted by frequency.")
 @click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
 @click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for --method matrix.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
@@ -2039,7 +2045,7 @@ def _run_matrix_compare_method(
 @click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Write the companion .csv even when the estimated size exceeds 100 MB.")
-def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, dnds_min_major_freq, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
+def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, allele_integration, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
     """
     Compare profiled samples through one genome/gene calculation path.
 
@@ -2080,8 +2086,6 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
         include_gene = "gene" in calculations
         if dnds and method == "matrix":
             raise click.UsageError("dnds in --calculate is currently supported only by --method standard.")
-        if not 0.0 <= dnds_min_major_freq <= 1.0:
-            raise click.UsageError("--dnds-min-major-freq must be between 0 and 1.")
         if scope.count(":") > 1:
             raise click.UsageError("--scope must be GENOME or GENOME:GENE.")
         if ":" in scope:
@@ -2146,6 +2150,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
                 min_gene_compare_len=min_gene_compare_len,
                 ani_method=ani_method,
                 calculate=contract_calculate,
+                allele_integration=allele_integration,
             )
 
         container_engine_obj = _build_container_engine(container_engine, container_address)
@@ -2172,7 +2177,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
             compare_engine=engine,
             calculate=resolved_calculate,
             dnds=dnds,
-            dnds_min_major_freq=dnds_min_major_freq,
+            allele_integration=allele_integration,
             duckdb_memory_limit=duckdb_memory_limit,
             duckdb_threads=duckdb_threads,
             tasks_per_batch=task_per_batch,
@@ -2197,8 +2202,7 @@ compare.option_sections = {
         "ani_method",
         "calculate",
         "gene_range_table",
-        "dnds",
-        "dnds_min_major_freq",
+        "allele_integration",
         "comp_db_file",
         "allow_mismatch",
     ],

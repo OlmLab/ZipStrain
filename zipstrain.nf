@@ -14,7 +14,7 @@ params.compare_calculate="all"
 params.gene_info_table=null
 params.prepare_dnds=false
 params.dnds_memory_limit="1GB"
-params.dnds_min_major_freq=0.0
+params.allele_integration="consensus"
 params.batch_compare_n_parallel=4
 params.publish_mode="symlink"
 params.compare_scope="all"
@@ -341,9 +341,10 @@ process profile_bam {
                         --min-baseq ${params.min_baseq} \\
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
-                        --read-inclusion ${params.read_inclusion} \\
-                        ${add_prepare_dnds} \\
-                        --output-dir .
+	                        --read-inclusion ${params.read_inclusion} \\
+	                        ${add_prepare_dnds} \\
+	                        --allele-integration ${params.allele_integration} \\
+	                        --output-dir .
     """
 }
 
@@ -370,7 +371,7 @@ process compare_fast_profiles_single {
     // dN/dS is requested through --compare_calculate; the sidecars only need to be
     // named when it is, and the CLI errors if they are missing.
     def wants_dnds = wantsDnds()
-    def add_dnds = wants_dnds ? "--dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 ${codon_profile_1} --codon-profile-2 ${codon_profile_2}" : ""
+    def add_dnds = wants_dnds ? "--allele-integration ${params.allele_integration} --codon-profile-1 ${codon_profile_1} --codon-profile-2 ${codon_profile_2}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     zipstrain utilities single-compare  \
@@ -417,7 +418,7 @@ process compare_batched {
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
     def add_gene_range = gene_info_table ? "--gene-info-table ${gene_info_table}" : ""
     def wants_dnds = wantsDnds()
-    def add_dnds = wants_dnds ? "--dnds-min-major-freq ${params.dnds_min_major_freq} --codon-profile-1 {3} --codon-profile-2 {4}" : ""
+    def add_dnds = wants_dnds ? "--allele-integration ${params.allele_integration} --codon-profile-1 {3} --codon-profile-2 {4}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     echo -e "${pairs_text}" > pairs.txt
@@ -505,9 +506,10 @@ process fromSRAtoProfile{
                         --min-baseq ${params.min_baseq} \\
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
-                        --read-inclusion ${params.read_inclusion} \\
-                        ${add_prepare_dnds} \\
-                        --output-dir .
+	                        --read-inclusion ${params.read_inclusion} \\
+	                        ${add_prepare_dnds} \\
+	                        --allele-integration ${params.allele_integration} \\
+	                        --output-dir .
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """

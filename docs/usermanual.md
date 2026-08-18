@@ -203,7 +203,8 @@ Major options:
 
 - `-i, --input-table`, `-f, --reference-fasta`, `-s, --stb-file`, `-r, --run-dir` (required)
 - `--gene-fasta` — enables gene-level profiling (auto-generates a gene information table)
-- `--prepare-dnds` — additionally writes sparse codon sidecars and reference-relative dN/dS columns in gene stats; requires a reference FASTA and gene information
+- `--prepare-dnds` — writes codon sidecars and reference-relative SNS dN/dS plus SNV pN/pS columns in gene stats; requires a reference FASTA and gene information
+- `--allele-integration` (`consensus`/`weighted`, default `consensus`) — use the most-supported differing allele choice (averaging exact top ties) or all differing alleles weighted by frequency
 - `--dnds-memory-limit` (default `1GB`) — per-profile DuckDB memory cap for the optional codon preparation
 - `-u/-b/-l/-g/--profiling-contract` — supply pre-built assets to override auto-generation; `--force-prepare` regenerates them all
 - Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain).
@@ -380,8 +381,8 @@ Major options:
 - `--calculate` selects `genome_ani`/`ibs`/`gene`/`dnds`/`all`. `all` means every metric the supplied inputs support: `gene` needs a gene information
   table, and `dnds` additionally needs codon sidecars from `profile --prepare-dnds` and implies
   `gene`. Naming a metric without its prerequisite is an error rather than a silent omission, so
-  asking for `dnds` without sidecars fails immediately instead of quietly returning ANI only. dN/dS is supported by the standard method only
-- `--dnds-min-major-freq` filters callable codons by the weakest consensus-base frequency across their three positions
+  asking for `dnds` without sidecars fails immediately instead of quietly returning ANI only. dN/dS and pN/pS are supported by the standard method only
+- `--allele-integration` (`consensus`/`weighted`, default `consensus`) controls allele consequences for both dN/dS and pN/pS. Consensus selects the most-supported differing pair and divides exact top ties equally; weighted uses every differing pair at its observed joint frequency
 - `--stb-file` — required for `--method matrix`
 - Matrix method: `--bed-file`, `--gene-info-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16)
 - Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
@@ -658,7 +659,8 @@ Options:
 - `--min-freq` (default: `0.01`) — after the null-model test, retain an allele only when `count / original A+C+G+T coverage >= min_freq`
 - `--min-read-ani` (default: `0.95`) — filters low-identity / mis-mapped reads before pileup using the BAM `NM` tag and aligned query span; reads without an `NM` tag are kept; pass `0` to disable
 - `--read-inclusion` (`proper-pairs|paired|all-mapped`, default: `paired`)
-- `--prepare-dnds` (optional) — write `<sample>_codon_profile.parquet` and add reference-relative dN/dS to gene stats
+- `--prepare-dnds` (optional) — write `<sample>_codon_profile.parquet` and add reference-relative SNS dN/dS plus SNV pN/pS to gene stats
+- `--allele-integration` (`consensus|weighted`, default: `consensus`) — select the most-supported differing allele pair, averaging exact ties, or weight all differing pairs by frequency
 - `--dnds-memory-limit` (default: `1GB`) — DuckDB memory limit for that optional preparation
 - `-o, --output-dir` (required)
 
@@ -679,9 +681,7 @@ Outputs include:
 
 When `--reference-fasta` is provided during profiling, the profile parquet includes `ref_base_bitmask`.
 In the same case, the generated genome and gene stat tables also include a `ref_ani` column. With
-`--prepare-dnds`, gene stats additionally contain `ref_callable_codons`, synonymous/nonsynonymous
-change and site counts, `ref_pS`, `ref_pN`, `ref_pN_pS`, `ref_dS`, `ref_dN`,
-`ref_dN_dS`, and `ref_stop_changes`. Two ratios are reported from the same counts: `pS`/`pN`/`pN_pS` are the observed proportions of differing sites, while `dS`/`dN`/`dN_dS` add the Jukes-Cantor correction for substitutions that left no trace (a site mutated back, was hit twice, or both lineages converged). At strain-level divergence the two agree to ~0.1%; they separate as divergence grows, and the corrected ratio is the lower of the two because the larger proportion inflates more. `dS`/`dN` are null once the observed proportion reaches 3/4, where the correction is undefined.
+`--prepare-dnds`, gene stats additionally contain `ref_callable_codons`, SNS/SNV counts, separate synonymous/nonsynonymous contributions, site opportunities, `ref_pS`, `ref_pN`, `ref_pN_pS`, `ref_dS`, `ref_dN`, `ref_dN_dS`, separate stop-change counts, and `ref_allele_tie_sites`. Fixed SNSs feed dN/dS; polymorphic SNVs feed pN/pS. Weighted SNV contributions can be fractional. `dS`/`dN` use the Jukes-Cantor correction and are null once the corresponding observed SNS proportion reaches 3/4.
 
 `ref_ani` is the percentage of covered sites whose observed allele set still contains the reference allele after ZipStrain's sequence-error adjustment.
 
@@ -1281,7 +1281,8 @@ Conventions used by every example below:
 - `--prefetch_max_size` (default `200g`): SRA Toolkit prefetch size limit for SRA modes.
 - `--error_rate` (default `0.001`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.05`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
 - `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0.01`.
-- `--prepare_dnds` / `--dnds_memory_limit`: optionally prepare sparse codon sidecars and reference-relative gene dN/dS during profiling.
+- `--prepare_dnds` / `--dnds_memory_limit`: optionally prepare codon sidecars and reference-relative gene dN/dS plus pN/pS during profiling.
+- `--allele_integration` (`consensus`/`weighted`, default `consensus`): choose the most-supported differing allele pair with exact ties divided equally, or weight all differing pairs by frequency. This is forwarded to profiling and comparison tasks.
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows.
 - `--compare_scope`: compare every genome (`all`) or one genome ID.
 - `--compare_ani_method`: one ANI method or a comma-separated list
@@ -1294,7 +1295,6 @@ Conventions used by every example below:
   `gene`. Naming a metric without its prerequisite is an error rather than a silent omission, so
   asking for `dnds` without sidecars fails immediately instead of quietly returning ANI only.
 - `--gene_info_table`: optional gene-information Parquet generated by `prepare_profile`. It is required when `gene` or `dnds` is requested in `--compare_calculate`, and causes `all` to include gene metrics. Nextflow stages it into every comparison task; overlapping and nested genes each receive their full ranges.
-- `--dnds_min_major_freq`: filters callable codons by the weakest consensus-base frequency across their three positions. dN/dS itself is requested through `--compare_calculate`; when it is, Nextflow infers and stages `<sample>_codon_profile.parquet` beside every input profile.
 
 Notes:
 
@@ -1455,7 +1455,7 @@ nextflow run OlmLab/ZipStrain \
 
 Comparison outputs: the final merged table at `<output_dir>/merged_comparisons.parquet`, and (with `--parallel_mode batched`) intermediate per-batch outputs under `<output_dir>/batch_comparisons/`.
 
-To add pairwise dN/dS, first profile with `--prepare_dnds true`, then add
-`dnds` to `--compare_calculate` on this comparison command. The codon sidecars are inferred from
+To add pairwise SNS dN/dS and SNV pN/pS, first profile with `--prepare_dnds true`, then add
+`dnds` to `--compare_calculate` and optionally set `--allele_integration weighted`. The codon sidecars are inferred from
 the profile paths and must have been built from the supplied
 `--gene_info_table`.

@@ -253,6 +253,9 @@ def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monk
 
     alpha_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_alpha_gene_stats.parquet").sort("gene")
     beta_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_beta_gene_stats.parquet").sort("gene")
+    assert pl.read_parquet_metadata(
+        paths["profiles_dir"] / "sample_alpha_gene_stats.parquet"
+    )[cli_module.dn.ALLELE_INTEGRATION_METADATA_KEY] == "consensus"
     for gene_stats in (alpha_gene_stats, beta_gene_stats):
         assert gene_stats.select("gene", "length").to_dicts() == [
             {"gene": "contigA_1", "length": 10},
