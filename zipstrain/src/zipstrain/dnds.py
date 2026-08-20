@@ -572,8 +572,15 @@ def _pairwise_event_frames(
         pl.col("coverage").alias("coverage_right"),
         pl.col("allele_count").alias("allele_count_right"),
     )
-    positions = left.join(
-        right, on=["codon_id", "codon_offset"], how="inner", maintain_order="left"
+    # Materialise the joined positions once. Every candidate branch below reads
+    # this frame, and leaving it lazy made Polars re-derive the join and both
+    # three-way position expansions for each of the twelve branches.
+    positions = (
+        left.join(
+            right, on=["codon_id", "codon_offset"], how="inner", maintain_order="left"
+        )
+        .collect(optimizations=DNDS_QUERY_OPTIMIZATIONS)
+        .lazy()
     )
     left_base = _singleton_base_expr()
     right_base = _singleton_base_expr(tuple(f"{base}_right" for base in BASES))
@@ -589,61 +596,80 @@ def _pairwise_event_frames(
         weight=pl.lit(1.0),
     )
 
-    snv_sites = positions.filter(
-        (pl.col("allele_count") > 1) | (pl.col("allele_count_right") > 1)
-    )
-    supports = [
-        pl.col(left_base_name).cast(pl.Float64) * pl.col(f"{right_base_name}_right")
+    # Support for an ordered base pair is used three times over -- for the
+    # maximum, for the tie count, and by the branch itself -- so name it once
+    # rather than rebuilding the product each time.
+    ordered_pairs = [
+        (left_index, left_base_name, right_index, right_base_name)
         for left_index, left_base_name in enumerate(BASES)
         for right_index, right_base_name in enumerate(BASES)
         if left_index != right_index
     ]
-    snv_sites = snv_sites.with_columns(max_support=pl.max_horizontal(*supports))
-    tie_expressions = []
-    for left_index, left_base_name in enumerate(BASES):
-        for right_index, right_base_name in enumerate(BASES):
-            if left_index == right_index:
-                continue
-            support = pl.col(left_base_name).cast(pl.Float64) * pl.col(
-                f"{right_base_name}_right"
+    support_name = lambda left_index, right_index: f"support_{left_index}_{right_index}"
+    snv_sites = (
+        positions.filter(
+            (pl.col("allele_count") > 1) | (pl.col("allele_count_right") > 1)
+        )
+        .with_columns(
+            *(
+                (
+                    pl.col(left_base_name).cast(pl.Float64)
+                    * pl.col(f"{right_base_name}_right")
+                ).alias(support_name(left_index, right_index))
+                for left_index, left_base_name, right_index, right_base_name in ordered_pairs
             )
-            tie_expressions.append(
-                ((support == pl.col("max_support")) & (support > 0)).cast(pl.UInt8)
+        )
+        .with_columns(
+            max_support=pl.max_horizontal(
+                *(
+                    pl.col(support_name(left_index, right_index))
+                    for left_index, _, right_index, _ in ordered_pairs
+                )
             )
-    snv_sites = snv_sites.with_columns(
-        tied_candidates=pl.sum_horizontal(*tie_expressions)
+        )
+        .with_columns(
+            tied_candidates=pl.sum_horizontal(
+                *(
+                    (
+                        (
+                            pl.col(support_name(left_index, right_index))
+                            == pl.col("max_support")
+                        )
+                        & (pl.col(support_name(left_index, right_index)) > 0)
+                    ).cast(pl.UInt8)
+                    for left_index, _, right_index, _ in ordered_pairs
+                )
+            )
+        )
+        .collect(optimizations=DNDS_QUERY_OPTIMIZATIONS)
+        .lazy()
     )
     tie_sites = snv_sites.filter(pl.col("tied_candidates") > 1).select(
         "gene_id", "codon_id", "codon_offset"
     )
 
     candidates = []
-    for left_index, left_base_name in enumerate(BASES):
-        for right_index, right_base_name in enumerate(BASES):
-            if left_index == right_index:
-                continue
-            support = pl.col(left_base_name).cast(pl.Float64) * pl.col(
-                f"{right_base_name}_right"
+    for left_index, left_base_name, right_index, right_base_name in ordered_pairs:
+        support = pl.col(support_name(left_index, right_index))
+        candidate = snv_sites.filter(support > 0)
+        if allele_integration == "consensus":
+            candidate = candidate.filter(support == pl.col("max_support"))
+            weight = 1.0 / pl.col("tied_candidates")
+        else:
+            weight = (
+                pl.col(left_base_name).cast(pl.Float64) / pl.col("coverage")
+            ) * (
+                pl.col(f"{right_base_name}_right").cast(pl.Float64)
+                / pl.col("coverage_right")
             )
-            candidate = snv_sites.filter(support > 0)
-            if allele_integration == "consensus":
-                candidate = candidate.filter(support == pl.col("max_support"))
-                weight = 1.0 / pl.col("tied_candidates")
-            else:
-                weight = (
-                    pl.col(left_base_name).cast(pl.Float64) / pl.col("coverage")
-                ) * (
-                    pl.col(f"{right_base_name}_right").cast(pl.Float64)
-                    / pl.col("coverage_right")
-                )
-            candidates.append(
-                _event_frame(
-                    candidate,
-                    source_base=pl.lit(left_index, dtype=pl.UInt8),
-                    target_base=pl.lit(right_index, dtype=pl.UInt8),
-                    weight=weight,
-                )
+        candidates.append(
+            _event_frame(
+                candidate,
+                source_base=pl.lit(left_index, dtype=pl.UInt8),
+                target_base=pl.lit(right_index, dtype=pl.UInt8),
+                weight=weight,
             )
+        )
     return sns_events, pl.concat(candidates), sns_sites, snv_sites, tie_sites
 
 
