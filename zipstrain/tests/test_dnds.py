@@ -310,6 +310,88 @@ def test_pairwise_consensus_tie_is_symmetric(tmp_path):
     assert plus["allele_tie_sites"] == 1
 
 
+def test_pairwise_weighted_uses_both_samples_allele_frequencies(tmp_path):
+    genes = _gene_info(tmp_path / "gene_info.parquet")
+    sample_1 = _profile(tmp_path / "one_profile.parquet")
+    sample_2 = _set_counts(
+        _profile(tmp_path / "two_profile.parquet"),
+        scaffold="plus_scaffold",
+        pos=6,
+        G=8,
+        T=2,
+    )
+    codons = []
+    for sample in (sample_1, sample_2):
+        output = dnds.codon_profile_path(sample)
+        dnds.write_codon_profile(
+            profile_path=sample,
+            gene_info_path=genes,
+            output_path=output,
+            temp_directory=tmp_path / output.stem,
+        )
+        codons.append(output)
+
+    forward = dnds.pairwise_dnds(
+        codons[0], codons[1], genes, allele_integration="weighted"
+    ).collect().sort("gene")
+    reverse = dnds.pairwise_dnds(
+        codons[1], codons[0], genes, allele_integration="weighted"
+    ).collect().sort("gene")
+    assert forward.select(dnds.DNDS_RESULT_COLUMNS).to_dicts() == reverse.select(
+        dnds.DNDS_RESULT_COLUMNS
+    ).to_dicts()
+    result = (
+        forward.filter(pl.col("gene") == "plus")
+        .row(0, named=True)
+    )
+
+    assert result["snv_count"] == 1
+    assert result["snv_synonymous_changes"] == pytest.approx(0.8)
+    assert result["snv_nonsynonymous_changes"] == pytest.approx(0.2)
+
+
+def test_pairwise_scope_is_applied_before_offset_processing(tmp_path, monkeypatch):
+    genes = _gene_info(tmp_path / "gene_info.parquet")
+    sample_1 = _profile(tmp_path / "one_profile.parquet")
+    sample_2 = _profile(tmp_path / "two_profile.parquet", sample_2=True)
+    codons = []
+    for sample in (sample_1, sample_2):
+        output = dnds.codon_profile_path(sample)
+        dnds.write_codon_profile(
+            profile_path=sample,
+            gene_info_path=genes,
+            output_path=output,
+            temp_directory=tmp_path / output.stem,
+        )
+        codons.append(output)
+
+    observed_gene_ids = []
+    original = dnds._pairwise_positions_for_offset
+
+    def track_scope(codon_frame, offset):
+        observed_gene_ids.append(
+            codon_frame.select("gene_id")
+            .unique()
+            .collect()
+            .get_column("gene_id")
+            .sort()
+            .to_list()
+        )
+        return original(codon_frame, offset)
+
+    monkeypatch.setattr(dnds, "_pairwise_positions_for_offset", track_scope)
+    result = dnds.pairwise_dnds(
+        codons[0], codons[1], genes, gene_scope="plus"
+    ).collect()
+    empty_result = dnds.pairwise_dnds(
+        codons[0], codons[1], genes, gene_scope="missing"
+    ).collect()
+
+    assert observed_gene_ids == [[0], [0], [0], [], [], []]
+    assert result.get_column("gene").to_list() == ["plus"]
+    assert empty_result.is_empty()
+
+
 def test_zero_divergence_reports_zero_not_negative_zero(tmp_path):
     """Zero SNS divergence should be emitted as an ordinary positive zero."""
     genes = _gene_info(tmp_path / "gene_info.parquet")

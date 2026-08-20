@@ -24,8 +24,8 @@ ALLELE_INTEGRATION_METADATA_KEY = "zipstrain_dnds_allele_integration"
 DEFAULT_MEMORY_LIMIT = "1GB"
 ALLELE_INTEGRATION_MODES = ("consensus", "weighted")
 # Polars common-subplan elimination can corrupt the repeated lazy branches used
-# for SNS/SNV summaries. Only the compact per-gene result is materialized with
-# this optimization disabled; the multi-million-row codon input stays lazy.
+# for SNS/SNV summaries. Pairwise calculations materialize one codon offset at
+# a time and immediately reduce it to a compact per-gene result.
 DNDS_QUERY_OPTIMIZATIONS = pl.QueryOptFlags(comm_subplan_elim=False)
 
 CODON_PROFILE_COLUMNS = (
@@ -58,6 +58,28 @@ DNDS_RESULT_COLUMNS = (
 )
 
 REFERENCE_DNDS_RESULT_COLUMNS = tuple(f"ref_{name}" for name in DNDS_RESULT_COLUMNS)
+
+_DNDS_EVENT_COUNT_COLUMNS = (
+    "sns_count",
+    "snv_count",
+    "sns_synonymous_changes",
+    "sns_nonsynonymous_changes",
+    "sns_stop_changes",
+    "snv_synonymous_changes",
+    "snv_nonsynonymous_changes",
+    "snv_stop_changes",
+    "allele_tie_sites",
+)
+_DNDS_INTEGER_EVENT_COUNT_COLUMNS = (
+    "sns_count",
+    "snv_count",
+    "allele_tie_sites",
+)
+_DNDS_FLOAT_EVENT_COUNT_COLUMNS = tuple(
+    column
+    for column in _DNDS_EVENT_COUNT_COLUMNS
+    if column not in _DNDS_INTEGER_EVENT_COUNT_COLUMNS
+)
 
 
 # Tables 1 and 11 use the same internal codon translations. Alternative start
@@ -547,41 +569,36 @@ def _reference_event_frames(
     return sns_events, pl.concat(candidates), sns_sites, snv_sites, tie_sites
 
 
-def _pairwise_event_frames(
+def _pairwise_positions_for_offset(
     codons: pl.LazyFrame,
+    offset: int,
+) -> pl.LazyFrame:
+    """Project one codon offset from an already joined sample pair."""
+    return codons.select(
+        "gene_id",
+        "codon_id",
+        "reference_codon_code",
+        pl.lit(offset, dtype=pl.UInt8).alias("codon_offset"),
+        *(pl.col(f"{base}_{offset}").alias(base) for base in BASES),
+        *(pl.col(f"{base}_{offset}_right").alias(f"{base}_right") for base in BASES),
+    ).with_columns(
+        coverage=pl.sum_horizontal(*(pl.col(base) for base in BASES)).cast(pl.UInt64),
+        coverage_right=pl.sum_horizontal(
+            *(pl.col(f"{base}_right") for base in BASES)
+        ).cast(pl.UInt64),
+        allele_count=pl.sum_horizontal(
+            *((pl.col(base) > 0).cast(pl.UInt8) for base in BASES)
+        ),
+        allele_count_right=pl.sum_horizontal(
+            *((pl.col(f"{base}_right") > 0).cast(pl.UInt8) for base in BASES)
+        ),
+    )
+
+
+def _pairwise_position_event_frames(
+    positions: pl.LazyFrame,
     allele_integration: str,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, pl.LazyFrame]:
-    left = _codon_positions(codons)
-    right = _codon_positions(
-        codons.select(
-            "gene_id",
-            "codon_id",
-            "reference_codon_code",
-            *(
-                pl.col(f"{column}_right").alias(column)
-                for column in CODON_PROFILE_COLUMNS[4:]
-            ),
-        )
-    )
-    # The caller supplies an already joined codon frame. Its right-hand counts
-    # carry a `_right` suffix; normalize those after position expansion.
-    right = right.select(
-        "codon_id",
-        "codon_offset",
-        *(pl.col(base).alias(f"{base}_right") for base in BASES),
-        pl.col("coverage").alias("coverage_right"),
-        pl.col("allele_count").alias("allele_count_right"),
-    )
-    # Materialise the joined positions once. Every candidate branch below reads
-    # this frame, and leaving it lazy made Polars re-derive the join and both
-    # three-way position expansions for each of the twelve branches.
-    positions = (
-        left.join(
-            right, on=["codon_id", "codon_offset"], how="inner", maintain_order="left"
-        )
-        .collect(optimizations=DNDS_QUERY_OPTIMIZATIONS)
-        .lazy()
-    )
     left_base = _singleton_base_expr()
     right_base = _singleton_base_expr(tuple(f"{base}_right" for base in BASES))
     sns_sites = positions.filter(
@@ -605,7 +622,10 @@ def _pairwise_event_frames(
         for right_index, right_base_name in enumerate(BASES)
         if left_index != right_index
     ]
-    support_name = lambda left_index, right_index: f"support_{left_index}_{right_index}"
+
+    def support_name(left_index: int, right_index: int) -> str:
+        return f"support_{left_index}_{right_index}"
+
     snv_sites = (
         positions.filter(
             (pl.col("allele_count") > 1) | (pl.col("allele_count_right") > 1)
@@ -616,7 +636,12 @@ def _pairwise_event_frames(
                     pl.col(left_base_name).cast(pl.Float64)
                     * pl.col(f"{right_base_name}_right")
                 ).alias(support_name(left_index, right_index))
-                for left_index, left_base_name, right_index, right_base_name in ordered_pairs
+                for (
+                    left_index,
+                    left_base_name,
+                    right_index,
+                    right_base_name,
+                ) in ordered_pairs
             )
         )
         .with_columns(
@@ -699,28 +724,13 @@ def _event_totals(events: pl.LazyFrame, category: str) -> pl.LazyFrame:
     return changes.join(stops, on="gene_id", how="full", coalesce=True)
 
 
-def _summarize_events(
-    codons: pl.LazyFrame,
+def _event_count_summary(
     sns_events: pl.LazyFrame,
     snv_events: pl.LazyFrame,
     sns_sites: pl.LazyFrame,
     snv_sites: pl.LazyFrame,
     tie_sites: pl.LazyFrame,
-    *,
-    prefix: str = "",
 ) -> pl.LazyFrame:
-    denominators = (
-        codons.select("gene_id", "codon_id", "reference_codon_code")
-        .unique("codon_id")
-        .join(codon_site_lookup().lazy(), on="reference_codon_code", how="left")
-        .filter(pl.col("valid_reference"))
-        .group_by("gene_id")
-        .agg(
-            pl.len().cast(pl.Int64).alias("callable_codons"),
-            pl.col("synonymous_sites").sum(),
-            pl.col("nonsynonymous_sites").sum(),
-        )
-    )
     site_counts = sns_sites.group_by("gene_id").agg(
         pl.len().cast(pl.Int64).alias("sns_count")
     ).join(
@@ -732,22 +742,50 @@ def _summarize_events(
     tie_counts = tie_sites.group_by("gene_id").agg(
         pl.len().cast(pl.Int64).alias("allele_tie_sites")
     )
-    result = (
-        denominators
-        .join(site_counts, on="gene_id", how="left")
+    return (
+        site_counts
         .join(_event_totals(sns_events, "sns"), on="gene_id", how="left")
         .join(_event_totals(snv_events, "snv"), on="gene_id", how="left")
         .join(tie_counts, on="gene_id", how="left")
         .with_columns(
-            pl.col("sns_count", "snv_count", "allele_tie_sites")
+            pl.col(*_DNDS_INTEGER_EVENT_COUNT_COLUMNS)
             .fill_null(0)
             .cast(pl.Int64),
-            pl.col(
-                "sns_synonymous_changes", "sns_nonsynonymous_changes",
-                "snv_synonymous_changes", "snv_nonsynonymous_changes",
-                "sns_stop_changes", "snv_stop_changes",
-            ).fill_null(0.0).cast(pl.Float64),
+            pl.col(*_DNDS_FLOAT_EVENT_COUNT_COLUMNS)
+            .fill_null(0.0)
+            .cast(pl.Float64),
         )
+    )
+
+
+def _codon_denominators(codons: pl.LazyFrame) -> pl.LazyFrame:
+    return (
+        codons.select("gene_id", "codon_id", "reference_codon_code")
+        .unique("codon_id")
+        .join(codon_site_lookup().lazy(), on="reference_codon_code", how="left")
+        .filter(pl.col("valid_reference"))
+        .group_by("gene_id")
+        .agg(
+            pl.len().cast(pl.Int64).alias("callable_codons"),
+            pl.col("synonymous_sites").sum(),
+            pl.col("nonsynonymous_sites").sum(),
+        )
+    )
+
+
+def _finalize_dnds_summary(
+    denominators: pl.LazyFrame,
+    event_counts: pl.LazyFrame,
+    *,
+    prefix: str = "",
+) -> pl.LazyFrame:
+    result = denominators.join(event_counts, on="gene_id", how="left").with_columns(
+        pl.col(*_DNDS_INTEGER_EVENT_COUNT_COLUMNS)
+        .fill_null(0)
+        .cast(pl.Int64),
+        pl.col(*_DNDS_FLOAT_EVENT_COUNT_COLUMNS)
+        .fill_null(0.0)
+        .cast(pl.Float64),
     )
 
     def proportion(changes: str, sites: str) -> pl.Expr:
@@ -775,6 +813,70 @@ def _summarize_events(
             {column: f"{prefix}{column}" for column in DNDS_RESULT_COLUMNS}
         )
     return result
+
+
+def _summarize_events(
+    codons: pl.LazyFrame,
+    sns_events: pl.LazyFrame,
+    snv_events: pl.LazyFrame,
+    sns_sites: pl.LazyFrame,
+    snv_sites: pl.LazyFrame,
+    tie_sites: pl.LazyFrame,
+    *,
+    prefix: str = "",
+) -> pl.LazyFrame:
+    return _finalize_dnds_summary(
+        _codon_denominators(codons),
+        _event_count_summary(
+            sns_events,
+            snv_events,
+            sns_sites,
+            snv_sites,
+            tie_sites,
+        ),
+        prefix=prefix,
+    )
+
+
+def _pairwise_dnds_summary(
+    codons: pl.LazyFrame,
+    allele_integration: str,
+) -> pl.LazyFrame:
+    """Summarize one codon offset at a time to cap pairwise memory use."""
+    denominators: Optional[pl.DataFrame] = None
+    partial_counts: list[pl.DataFrame] = []
+
+    for offset in range(3):
+        positions = _pairwise_positions_for_offset(codons, offset).collect(
+            optimizations=DNDS_QUERY_OPTIMIZATIONS
+        )
+        positions_lf = positions.lazy()
+        if denominators is None:
+            denominators = _codon_denominators(positions_lf).collect(
+                optimizations=DNDS_QUERY_OPTIMIZATIONS
+            )
+        event_frames = _pairwise_position_event_frames(
+            positions_lf,
+            allele_integration,
+        )
+        partial_counts.append(
+            _event_count_summary(*event_frames).collect(
+                optimizations=DNDS_QUERY_OPTIMIZATIONS
+            )
+        )
+        # Release dense offset/support frames before collecting the next offset.
+        del event_frames, positions_lf, positions
+
+    if denominators is None:  # pragma: no cover - fixed range is non-empty
+        raise RuntimeError("Pairwise dN/dS did not process any codon offsets.")
+
+    event_counts = (
+        pl.concat(partial_counts)
+        .lazy()
+        .group_by("gene_id")
+        .agg(*(pl.col(column).sum() for column in _DNDS_EVENT_COUNT_COLUMNS))
+    )
+    return _finalize_dnds_summary(denominators.lazy(), event_counts)
 
 
 def reference_dnds(
@@ -847,9 +949,19 @@ def pairwise_dnds(
             "The supplied gene information table does not match the codon profiles."
         )
     allele_integration = validate_allele_integration(allele_integration)
+    genes = pl.scan_parquet(gene_info).select("gene_id", "genome", "gene")
+    scoped = genome_scope != "all" or gene_scope != "all"
+    if genome_scope != "all":
+        genes = genes.filter(pl.col("genome") == genome_scope)
+    if gene_scope != "all":
+        genes = genes.filter(pl.col("gene") == gene_scope)
+
     c1 = pl.scan_parquet(codon_profile_1).filter(
         pl.col("min_coverage") >= min_cov
     ).set_sorted("codon_id")
+    if scoped:
+        scoped_gene_ids = genes.select("gene_id").collect(engine="streaming").lazy()
+        c1 = c1.join(scoped_gene_ids, on="gene_id", how="semi").set_sorted("codon_id")
     c2 = pl.scan_parquet(codon_profile_2).filter(
         pl.col("min_coverage") >= min_cov
     ).select(
@@ -859,13 +971,7 @@ def pairwise_dnds(
     # codon_id is database-wide and unique, so sorted inputs permit Polars to
     # use a merge join rather than building a large hash table.
     codons = c1.join(c2, on="codon_id", how="inner", maintain_order="left")
-    event_frames = _pairwise_event_frames(codons, allele_integration)
-    summary = _summarize_events(codons, *event_frames).collect(
+    summary = _pairwise_dnds_summary(codons, allele_integration).collect(
         optimizations=DNDS_QUERY_OPTIMIZATIONS
     ).lazy()
-    genes = pl.scan_parquet(gene_info).select("gene_id", "genome", "gene")
-    if genome_scope != "all":
-        genes = genes.filter(pl.col("genome") == genome_scope)
-    if gene_scope != "all":
-        genes = genes.filter(pl.col("gene") == gene_scope)
     return genes.join(summary, on="gene_id", how="inner").drop("gene_id")
