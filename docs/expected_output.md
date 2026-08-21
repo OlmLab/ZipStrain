@@ -234,12 +234,11 @@ gene row so the table can be read on its own.
 
 Genes with fewer than `--min-gene-compare-len` shared positions are dropped.
 
-With `dnds` in `--calculate`, the standard method adds `callable_codons`,
-`sns_count`, `snv_count`, separate SNS/SNV synonymous and nonsynonymous change
-columns, site opportunities, `pS`, `pN`, `pN_pS`, `dS`, `dN`, `dN_dS`, separate
-stop-change columns, and `allele_tie_sites`. Codons must be present in both
-sidecars and pass `--min-cov`; the sidecars must share the same gene-information
-hash.
+With `dnds` in `--calculate`, the standard method adds only the six final rates:
+`dN`, `dS`, `dN_dS`, `pN`, `pS`, and `pN_pS`. Supporting site counts, change
+counts, opportunities, ties, and stop-change counts are used internally but are
+not written to comparison tables. Codons must be present in both sidecars and
+pass `--min-cov`; the sidecars must share the same gene-information hash.
 
 dN/dS and pN/pS intentionally use different observations. Fixed
 singleton-versus-singleton differences are SNSs and feed `dS`/`dN`/`dN_dS`.
@@ -247,8 +246,7 @@ Any position where either side is polymorphic is an SNV and feeds
 `pS`/`pN`/`pN_pS`. `--allele-integration consensus` selects the most-supported
 differing allele pair and splits the contribution equally only when several
 pairs have exactly the same maximum support. `weighted` includes every differing
-pair at its observed joint frequency. Consequently SNV N/S counts may be
-fractional. Stop changes are reported separately and excluded from the N/S
+pair at its observed joint frequency. Stop changes are excluded from the N/S
 rates; either ratio is null when its synonymous denominator is zero.
 
 Both ratios use synonymous and nonsynonymous opportunities from the codons that

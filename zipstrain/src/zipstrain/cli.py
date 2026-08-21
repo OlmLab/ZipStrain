@@ -1487,7 +1487,7 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
                     f"dN/dS codon profile does not exist: {path}. "
                     "Re-run profiling with --prepare-dnds, or drop dnds from --calculate."
                 )
-        output_cols.extend(dn.DNDS_RESULT_COLUMNS)
+        output_cols.extend(dn.COMPARISON_DNDS_RESULT_COLUMNS)
     compare_metadata = ut.build_single_compare_metadata(
         profile_location_1,
         profile_location_2,
@@ -1558,7 +1558,7 @@ def single_compare(profile_location_1, profile_location_2, stb_file, min_cov, mi
             allele_integration=allele_integration,
             genome_scope=genome_scope,
             gene_scope=gene_scope,
-        )
+        ).select("genome", "gene", *dn.COMPARISON_DNDS_RESULT_COLUMNS)
         comp = comp.join(pair_dnds, on=["genome", "gene"], how="left")
     comp = comp.with_columns(
         sample_1=pl.lit(profile_1_name),

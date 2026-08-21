@@ -57,6 +57,15 @@ DNDS_RESULT_COLUMNS = (
     "allele_tie_sites",
 )
 
+COMPARISON_DNDS_RESULT_COLUMNS = (
+    "dN",
+    "dS",
+    "dN_dS",
+    "pN",
+    "pS",
+    "pN_pS",
+)
+
 REFERENCE_DNDS_RESULT_COLUMNS = tuple(f"ref_{name}" for name in DNDS_RESULT_COLUMNS)
 
 _DNDS_EVENT_COUNT_COLUMNS = (

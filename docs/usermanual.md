@@ -1458,4 +1458,5 @@ Comparison outputs: the final merged table at `<output_dir>/merged_comparisons.p
 To add pairwise SNS dN/dS and SNV pN/pS, first profile with `--prepare_dnds true`, then add
 `dnds` to `--compare_calculate` and optionally set `--allele_integration weighted`. The codon sidecars are inferred from
 the profile paths and must have been built from the supplied
-`--gene_info_table`.
+`--gene_info_table`. Comparison tables contain only the final `dN`, `dS`,
+`dN_dS`, `pN`, `pS`, and `pN_pS` columns; supporting counts remain internal.

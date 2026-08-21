@@ -489,10 +489,14 @@ def test_single_compare_cli_adds_pairwise_dnds_columns(tmp_path):
 
     assert result.exit_code == 0, result.output
     result_frame = pl.read_parquet(output)
-    assert set(dnds.DNDS_RESULT_COLUMNS).issubset(result_frame.columns)
+    comparison_columns = set(dnds.COMPARISON_DNDS_RESULT_COLUMNS)
+    supporting_columns = set(dnds.DNDS_RESULT_COLUMNS) - comparison_columns
+    assert comparison_columns.issubset(result_frame.columns)
+    assert supporting_columns.isdisjoint(result_frame.columns)
     plus = result_frame.filter(pl.col("gene") == "plus").row(0, named=True)
-    assert plus["sns_synonymous_changes"] == 1.0
-    assert plus["sns_nonsynonymous_changes"] == 1.0
+    assert plus["dN"] > 0
+    assert plus["dS"] > 0
+    assert plus["dN_dS"] == pytest.approx(plus["dN"] / plus["dS"])
     assert pl.read_parquet_metadata(output)[
         "zipstrain_compare_allele_integration"
     ] == "weighted"

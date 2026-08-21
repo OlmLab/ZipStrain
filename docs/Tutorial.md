@@ -213,7 +213,7 @@ That's the whole command. Every profile in the table is compared against every o
     Use the same command with `--gene-info-table gene_info_table.parquet --calculate all` to produce one row per gene with `gene_ani`, `genome_ani`, and IBS. Use `--calculate gene` when only gene ANI is needed. Other useful flags are `--min-cov`, `--min-gene-compare-len`, and `--ani-method`. The latter accepts one method or a comma-separated list such as `popani,conani,cosani_0.95`. Run `zipstrain compare -h` for the full grouped list.
 
 !!! tip "Pairwise dN/dS"
-    If all samples were profiled with `--prepare-dnds`, add `--gene-info-table gene_info_table.parquet --calculate gene+dnds` to the standard comparison command. ZipStrain infers each codon sidecar and reports SNS-based dN/dS plus SNV-based pN/pS. Add `--allele-integration weighted` to use observed allele frequencies; the default `consensus` mode uses the most-supported differing allele pair and averages only exact ties. The matrix method does not calculate dN/dS or pN/pS.
+    If all samples were profiled with `--prepare-dnds`, add `--gene-info-table gene_info_table.parquet --calculate gene+dnds` to the standard comparison command. ZipStrain infers each codon sidecar and reports only the final `dN`, `dS`, `dN_dS`, `pN`, `pS`, and `pN_pS` columns. Add `--allele-integration weighted` to use observed allele frequencies; the default `consensus` mode uses the most-supported differing allele pair and averages only exact ties. The matrix method does not calculate dN/dS or pN/pS.
 
 #### Two comparison methods
 

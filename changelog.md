@@ -4,6 +4,7 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+- Pairwise comparison tables now retain only the final `dN`, `dS`, `dN_dS`, `pN`, `pS`, and `pN_pS` fields; supporting dN/dS counts remain internal.
 - Pairwise dN/dS now processes and aggregates one codon offset at a time, avoiding the full three-position materialization and repeated position joins. Genome/gene scopes are applied before this work, reducing both runtime and peak memory without changing results.
 - Gene annotations are now stored as `gene_info_table.parquet` with strand, phase, genetic code, partial-gene flags, and stable codon ranges. Optional `profile --prepare-dnds` writes codon sidecars and reference-relative SNS dN/dS plus SNV pN/pS; `compare --calculate gene+dnds` adds the pairwise forms. `--allele-integration consensus|weighted` selects the most-supported differing allele pair (splitting exact top ties) or frequency-weights all differing pairs. Nextflow exposes the same behavior, while ordinary profiling/comparison remains unchanged.
 - dN/dS now reports the direct SNS N/S ratio without Jukes-Cantor correction. Its denominator remains restricted to callable codons. Per-gene aggregation disables a Polars common-subplan optimization that could corrupt SNS/SNV branches on large codon profiles.
