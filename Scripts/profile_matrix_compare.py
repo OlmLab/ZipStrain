@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--result-transfer-batch-size",
         type=int,
         default=mp.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT,
-        help="Number of torch compare units to batch before transferring result vectors back to CPU.",
+        help="Maximum Torch compare units per transfer of counts and requested IBS masks (capped at 16). Larger batches use more memory.",
     )
     parser.add_argument(
         "--loader-executor",
@@ -241,14 +241,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         "_load_target_prefetch_unit_for_hdf5_torch",
         "_load_anchor_queue_batch_for_hdf5_torch",
         "_prepare_torch_matrix",
+        "_cache_torch_matrix",
         "_compare_tile_presence_torch_tensors",
         "_compare_tile_presence_torch_tensors_with_mask",
         "_compare_anchor_against_target_chunk_torch_device",
         "_accumulate_gene_counts_from_full_torch_masks",
-        "_max_ibs_from_torch_mask",
+        "_max_ibs_from_shared_mask_numpy",
+        "_finish_torch_result_batch",
         "_update_ibs_numpy",
         "_download_torch_result_tensor_batch",
         "_make_arrow_table_from_compare_payload",
+        "_make_gene_arrow_table_from_compare_payload",
         "_write_matrix_compare_payload_batch",
     ]
 

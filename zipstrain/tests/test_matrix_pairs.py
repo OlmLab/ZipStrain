@@ -1,5 +1,7 @@
 from pathlib import Path
 from itertools import combinations
+import threading
+import weakref
 
 from click.testing import CliRunner
 import duckdb
@@ -10,6 +12,298 @@ import pytest
 from zipstrain import cli
 from zipstrain import compare as cp
 from zipstrain import matrix_pairs as mp
+
+
+@pytest.mark.parametrize("kind", ["bitmask", "presence", "popani", "conani", "cosani"])
+@pytest.mark.parametrize("device", ["cpu", "cuda", "mps"])
+def test_cached_torch_comparisons_match_numpy_masks_and_genes(kind, device, monkeypatch):
+    torch = pytest.importorskip("torch")
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS not available")
+    backend = mp.MatrixPairComputeBackend(f"torch-{device}")
+    ani_kind = kind if kind in {"conani", "cosani"} else "popani"
+    backend.matrix_ani_kind = ani_kind
+    rng = np.random.default_rng(47)
+    counts = rng.integers(0, 150_000, (101, 4, 6), dtype=np.uint32)
+    counts[rng.random(counts.shape) < 0.6] = 0
+    counts[30] = 0  # scaffold separator
+    counts[31, :, 0] = [100_000, 100_001, 0, 0]
+    counts[32, :, 0] = [50_000, 50_000, 0, 0]  # exact consensus tie
+    semantics = mp.COUNT_MATRIX_VALUE_SEMANTICS
+    if kind == "bitmask":
+        counts = np.sum((counts > 0) * mp.BITMASK_BASE_BITS[None, :, None], axis=1, dtype=np.uint8)
+        semantics = mp.BITMASK_MATRIX_VALUE_SEMANTICS
+    elif kind == "presence":
+        counts = (counts > 0).astype(np.uint8)
+        semantics = mp.FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS
+    genes = [mp.GeneRangeSpec(i, f"gene{i}", 0, "g", "c", start, stop)
+             for i, (start, stop) in enumerate([(0, 29), (31, 100), (5, 20)])]
+    prepared = mp._prepare_torch_matrix(backend, counts, semantics)
+    cached = mp._cache_torch_matrix(torch, prepared, ani_kind)
+    for anchor_idx in range(5):
+        expected = mp._compare_matrix_tile_numpy(
+            anchor_matrix=counts[..., anchor_idx], target_matrices=counts[..., anchor_idx + 1:],
+            matrix_value_semantics=semantics, ani_kind=ani_kind, cos_threshold=0.95,
+        )
+        # The device stage must not download anything or run CPU IBS.
+        with monkeypatch.context() as patch:
+            def unexpected_cpu(*args, **kwargs):
+                pytest.fail("CPU work in the device comparison stage")
+            patch.setattr(torch.Tensor, "cpu", unexpected_cpu)
+            patch.setattr(mp, "_max_ibs_from_shared_mask_numpy", unexpected_cpu)
+            result = mp._compare_anchor_against_target_chunk_torch_device(
+                backend, cached.select(anchor_idx), cached.select(slice(anchor_idx + 1, None)),
+                101, semantics, ani_kind, 0.95, True, genes,
+            )
+        np.testing.assert_array_equal(result[0].cpu(), expected[0])
+        np.testing.assert_array_equal(result[1].cpu(), expected[1])
+        np.testing.assert_array_equal(result[2].cpu(), expected[3])
+        expected_genes = mp._accumulate_gene_counts_from_full_numpy_masks(
+            total_mask=expected[2], shared_mask=expected[3], gene_ranges=genes,
+        )
+        for actual, wanted in zip(result[3:], expected_genes):
+            np.testing.assert_array_equal(actual.cpu(), wanted)
+        assert mp._cache_torch_matrix(torch, cached, ani_kind) is cached
+
+
+def test_gene_prefix_is_int32_and_released_before_next_scan(monkeypatch):
+    torch = pytest.importorskip("torch")
+    original = torch.Tensor.cumsum
+    prefixes = []
+
+    def track_prefix(self, *args, **kwargs):
+        assert kwargs["dtype"] == torch.int32
+        assert not prefixes or prefixes[-1]() is None
+        result = original(self, *args, **kwargs)
+        prefixes.append(weakref.ref(result))
+        return result
+
+    monkeypatch.setattr(torch.Tensor, "cumsum", track_prefix)
+    mask = torch.ones((70_001, 2), dtype=torch.bool)
+    genes = [mp.GeneRangeSpec(0, "g", 0, "genome", "chr", 0, 70_000)]
+    total, shared = mp._accumulate_gene_counts_from_full_torch_masks(
+        torch_module=torch, total_mask=mask, shared_mask=mask, gene_ranges=genes,
+    )
+    assert total.dtype == shared.dtype == torch.int32
+    assert total.tolist() == shared.tolist() == [[70_001, 70_001]]
+    assert len(prefixes) == 2
+
+
+def test_gene_prefix_uses_int64_for_long_axes():
+    torch = pytest.importorskip("torch")
+
+    class HugeAxisMask:
+        shape = (2**31, 1)
+        device = "cpu"
+
+        def cumsum(self, dim, dtype):
+            assert dtype == torch.int64
+            return torch.tensor([[2**31]], dtype=dtype)
+
+    total, shared = mp._accumulate_gene_counts_from_full_torch_masks(
+        torch_module=torch, total_mask=HugeAxisMask(), shared_mask=HugeAxisMask(),
+        gene_ranges=[mp.GeneRangeSpec(0, "g", 0, "genome", "chr", 0, 0)],
+    )
+    assert total.tolist() == shared.tolist() == [[2**31]]
+
+
+def test_torch_planner_accounts_for_calculations_queues_and_storage():
+    options = dict(vector_length=5_000_000, remaining_targets=10_000, dtype_name="uint8",
+                   memory_limit_bytes=4 * 1024**3, backend_kind="torch", channels=1)
+    ani, length = mp._plan_chunk_sizes(**options)
+    full, _ = mp._plan_chunk_sizes(**options, calculations=("ani", "ibs", "gene"), gene_count=4000)
+    queued, _ = mp._plan_chunk_sizes(**options, calculations=("ani", "ibs", "gene"), gene_count=4000,
+                                    anchor_queue_size=3, target_queue_size=3, result_transfer_batch_size=4)
+    counts, _ = mp._plan_chunk_sizes(**{**options, "channels": 4, "dtype_name": "uint32"})
+    assert length == 5_000_000
+    assert 1 <= queued < full < ani
+    assert counts < ani
+    with pytest.raises(MemoryError, match="one whole-genome target"):
+        mp._plan_chunk_sizes(**{**options, "memory_limit_bytes": 1024**2})
+
+
+@pytest.mark.parametrize("ani_method,storage,sparse", [
+    ("popani", "bitmask", False), ("popani", "bitmask", True),
+    ("popani", "counts", False), ("conani", "counts", True), ("cosani_0.95", "counts", False),
+])
+@pytest.mark.parametrize("transfer_batch", [1, 3])
+@pytest.mark.parametrize("torch_backend", ["torch-cpu", "torch-mps", "torch-cuda"])
+def test_torch_pipeline_matches_numpy_across_blocks(tmp_path, monkeypatch, ani_method, storage, sparse, transfer_batch, torch_backend):
+    torch = pytest.importorskip("torch")
+    if torch_backend == "torch-mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS not available")
+    if torch_backend == "torch-cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    profiles, matrix = tmp_path / "profiles", tmp_path / "matrix.h5"
+    genes = tmp_path / "genes.tsv"
+    genes.write_text("gene1\tchr1\t1\t3\n")
+    _write_many_profiles_same_genome(profiles, sample_count=8)
+    _build_matrix_hdf5_with_contract(profiles, matrix, storage_mode=storage, sparse=sparse, gene_range_table=genes)
+    # Force several target blocks and frequent row-limited checkpoints.
+    monkeypatch.setattr(mp, "_plan_chunk_sizes", lambda vector_length, remaining_targets, **kwargs: (min(3, remaining_targets), vector_length))
+    monkeypatch.setattr(mp, "MATRIX_COMPARE_WRITE_MAX_ROWS", 4)
+    for backend in ("numpy", torch_backend):
+        mp.matrix_compare(matrix, tmp_path / f"{backend}.duckdb", backend=backend, ani_method=ani_method,
+                          calculate="ani+ibs+gene", target_queue_size=2, anchor_queue_size=2,
+                          result_transfer_batch_size=transfer_batch, memory_limit_gb=1)
+    _, completed, actual = _load_matrix_compare_db(tmp_path / f"{torch_backend}.duckdb")
+    _, expected_completed, expected = _load_matrix_compare_db(tmp_path / "numpy.duckdb")
+    assert completed == expected_completed
+    assert actual.sort(["sample_1", "sample_2", "genome"]).equals(expected.sort(["sample_1", "sample_2", "genome"]))
+    actual_genes = _load_matrix_compare_gene_results(tmp_path / f"{torch_backend}.duckdb")
+    expected_genes = _load_matrix_compare_gene_results(tmp_path / "numpy.duckdb")
+    keys = ["sample_1", "sample_2", "genome", "gene"]
+    assert actual_genes.sort(keys).equals(expected_genes.sort(keys))
+
+
+def test_ibs_cpu_work_overlaps_next_device_comparison(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    profiles, matrix = tmp_path / "profiles", tmp_path / "matrix.h5"
+    _write_many_profiles_same_genome(profiles, sample_count=5)
+    _build_matrix_hdf5_with_contract(profiles, matrix)
+    original_finish = mp._finish_torch_result_batch
+    original_compare = mp._compare_anchor_against_target_chunk_torch_device
+    started, next_compute = threading.Event(), threading.Event()
+    main_thread = threading.get_ident()
+    calls = 0
+
+    def finish(payloads):
+        assert threading.get_ident() != main_thread
+        started.set()
+        assert next_compute.wait(10), "IBS blocked the next device comparison"
+        return original_finish(payloads)
+
+    def compare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            assert started.wait(10)
+            next_compute.set()
+        return original_compare(*args, **kwargs)
+
+    monkeypatch.setattr(mp, "_finish_torch_result_batch", finish)
+    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", compare)
+    mp.matrix_compare(matrix, tmp_path / "compare.duckdb", backend="torch-cpu", calculate="ani+ibs")
+    assert calls == 4
+
+
+@pytest.mark.parametrize("executor_kind", ["thread", "process"])
+def test_persistent_writer_with_executor_and_resume(tmp_path, monkeypatch, executor_kind):
+    pytest.importorskip("torch")
+    profiles, matrix = tmp_path / "profiles", tmp_path / "matrix.h5"
+    _write_many_profiles_same_genome(profiles, sample_count=5)
+    _build_matrix_hdf5_with_contract(profiles, matrix)
+    monkeypatch.setattr(mp, "MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS", 1)
+    monkeypatch.setattr(mp, "_plan_chunk_sizes", lambda vector_length, remaining_targets, **kwargs: (min(2, remaining_targets), vector_length))
+    output = tmp_path / "compare.duckdb"
+    summary = mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs",
+                               writer_executor_kind=executor_kind, loader_executor_kind=executor_kind, target_queue_size=2)
+    assert summary.written_rows == 10
+    summary = mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs",
+                               writer_executor_kind=executor_kind, loader_executor_kind=executor_kind)
+    assert summary.written_rows == 0
+
+
+def test_anchor_loader_uses_actual_sample_rows_after_resume(tmp_path):
+    torch = pytest.importorskip("torch")
+    profiles, matrix = tmp_path / "profiles", tmp_path / "matrix.h5"
+    _write_many_profiles_same_genome(profiles, sample_count=5)
+    _build_matrix_hdf5_with_contract(profiles, matrix)
+    batch = mp._load_anchor_queue_batch_for_hdf5_torch(
+        matrix, 0, [(1, "sample_1"), (4, "sample_4")], 0, 3, "uint8",
+        np.zeros(3, dtype=np.uint8), mp.BITMASK_MATRIX_VALUE_SEMANTICS, torch,
+    )
+    assert batch[0][2].tolist() == [0, 2, 1]
+    assert batch[1][2].tolist() == [1, 0, 1]
+
+
+def test_writer_reuses_connection_and_bounds_queued_batches(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    profiles, matrix = tmp_path / "profiles", tmp_path / "matrix.h5"
+    _write_many_profiles_same_genome(profiles, sample_count=8)
+    _build_matrix_hdf5_with_contract(profiles, matrix)
+    original_executor = mp.ThreadPoolExecutor
+    original_write = mp._write_matrix_compare_payload_batch
+    connections, batch_sizes = [], []
+    queued, peaks = {"cpu": 0, "writer": 0}, {"cpu": 0, "writer": 0}
+    lock = threading.Lock()
+
+    class TrackingExecutor(original_executor):
+        def submit(self, fn, *args, **kwargs):
+            stage = {mp._finish_torch_result_batch: "cpu", mp._write_matrix_compare_payload_batch_persistent: "writer"}.get(fn)
+            if stage is None:
+                return super().submit(fn, *args, **kwargs)
+            with lock:
+                queued[stage] += 1
+                peaks[stage] = max(peaks[stage], queued[stage])
+            future = super().submit(fn, *args, **kwargs)
+
+            def finished(_future):
+                with lock:
+                    queued[stage] -= 1
+
+            future.add_done_callback(finished)
+            return future
+
+    def write(path, payloads, log_context=None, *, connection=None):
+        connections.append(connection)
+        batch_sizes.append(sum(mp._compare_payload_size(item)[0] for item in payloads))
+        if len(payloads) > 1:
+            assert batch_sizes[-1] <= 1024
+        return original_write(path, payloads, log_context, connection=connection)
+
+    monkeypatch.setattr(mp, "ThreadPoolExecutor", TrackingExecutor)
+    monkeypatch.setattr(mp, "_write_matrix_compare_payload_batch", write)
+    monkeypatch.setattr(mp, "MATRIX_COMPARE_WRITE_MAX_BYTES", 1024)
+    mp.matrix_compare(matrix, tmp_path / "compare.duckdb", backend="torch-cpu", calculate="ani+ibs")
+    assert len(connections) > 1
+    assert connections[0] is not None
+    assert all(conn is connections[0] for conn in connections)
+    assert all(1 <= peak <= mp.MATRIX_COMPARE_PIPELINE_DEPTH for peak in peaks.values())
+    assert queued == {"cpu": 0, "writer": 0}
+
+
+def test_cpu_failure_leaves_results_resumable(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    profiles, matrix = tmp_path / "profiles", tmp_path / "matrix.h5"
+    _write_many_profiles_same_genome(profiles, sample_count=5)
+    _build_matrix_hdf5_with_contract(profiles, matrix)
+    output = tmp_path / "compare.duckdb"
+    original = mp._finish_torch_result_batch
+
+    def fail(_payloads):
+        raise RuntimeError("simulated IBS failure")
+
+    monkeypatch.setattr(mp, "_finish_torch_result_batch", fail)
+    with pytest.raises(RuntimeError, match="simulated IBS failure"):
+        mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs")
+    _, completed, _ = _load_matrix_compare_db(output)
+    assert not completed
+    monkeypatch.setattr(mp, "_finish_torch_result_batch", original)
+    assert mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs").written_rows == 10
+
+
+def test_writer_setup_failure_stops_queued_batches_and_closes(tmp_path, monkeypatch):
+    closed = []
+
+    class BrokenConnection:
+        def execute(self, _sql):
+            raise RuntimeError("simulated writer setup failure")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(mp.duckdb, "connect", lambda _path: BrokenConnection())
+    try:
+        with pytest.raises(RuntimeError, match="simulated writer setup failure"):
+            mp._write_matrix_compare_payload_batch_persistent(tmp_path / "compare.duckdb", [], None, 1024**3)
+        with pytest.raises(RuntimeError, match="earlier failed transaction"):
+            mp._write_matrix_compare_payload_batch_persistent(tmp_path / "compare.duckdb", [], None, 1024**3)
+    finally:
+        mp._close_matrix_compare_writer()
+    assert closed == [True]
 
 
 def _write_profiles(profile_dir: Path) -> None:
@@ -2802,45 +3096,13 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
+        **kwargs,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
-
-    def identity_prepare(compute_backend, matrix, matrix_value_semantics):
-        return matrix
-
-    def zero_compare(
-        compute_backend,
-        anchor_torch,
-        target_torch,
-        vector_length: int,
-        matrix_value_semantics: str,
-        ani_kind: str = "popani",
-        cos_threshold=None,
-        need_ibs: bool = False,
-        gene_ranges=None,
-    ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
-        return (
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            None,
-            None,
-            None,
-        )
-
-    def download_stub(compute_backend, totals_tensors, shared_tensors):
-        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
-        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
-            out[idx, 0, : len(totals_tensor)] = totals_tensor
-            out[idx, 1, : len(shared_tensor)] = shared_tensor
-        return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
     monkeypatch.setattr(mp, "_load_target_queue_block_for_hdf5_torch", tracking_target_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
-    monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
-    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -2886,45 +3148,13 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
+        **kwargs,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
-
-    def identity_prepare(compute_backend, matrix, matrix_value_semantics):
-        return matrix
-
-    def zero_compare(
-        compute_backend,
-        anchor_torch,
-        target_torch,
-        vector_length: int,
-        matrix_value_semantics: str,
-        ani_kind: str = "popani",
-        cos_threshold=None,
-        need_ibs: bool = False,
-        gene_ranges=None,
-    ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
-        return (
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            None,
-            None,
-            None,
-        )
-
-    def download_stub(compute_backend, totals_tensors, shared_tensors):
-        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
-        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
-            out[idx, 0, : len(totals_tensor)] = totals_tensor
-            out[idx, 1, : len(shared_tensor)] = shared_tensor
-        return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
     monkeypatch.setattr(mp, "_load_anchor_queue_batch_for_hdf5_torch", tracking_anchor_load)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
-    monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
-    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -2971,45 +3201,13 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
+        **kwargs,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
-
-    def identity_prepare(compute_backend, matrix, matrix_value_semantics):
-        return matrix
-
-    def zero_compare(
-        compute_backend,
-        anchor_torch,
-        target_torch,
-        vector_length: int,
-        matrix_value_semantics: str,
-        ani_kind: str = "popani",
-        cos_threshold=None,
-        need_ibs: bool = False,
-        gene_ranges=None,
-    ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
-        return (
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            None,
-            None,
-            None,
-        )
-
-    def download_stub(compute_backend, totals_tensors, shared_tensors):
-        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
-        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
-            out[idx, 0, : len(totals_tensor)] = totals_tensor
-            out[idx, 1, : len(shared_tensor)] = shared_tensor
-        return out
 
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
     monkeypatch.setattr(mp, "_load_target_prefetch_unit_for_hdf5_torch", tracking_prefetch)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
-    monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
-    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
 
     summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -3047,38 +3245,9 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
         dtype_name: str,
         memory_limit_bytes: int,
         backend_kind: str,
+        **kwargs,
     ) -> tuple[int, int]:
         return min(2, remaining_targets), vector_length
-
-    def identity_prepare(compute_backend, matrix, matrix_value_semantics):
-        return matrix
-
-    def zero_compare(
-        compute_backend,
-        anchor_torch,
-        target_torch,
-        vector_length: int,
-        matrix_value_semantics: str,
-        ani_kind: str = "popani",
-        cos_threshold=None,
-        need_ibs: bool = False,
-        gene_ranges=None,
-    ) -> tuple[np.ndarray, np.ndarray, None, None, None]:
-        return (
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            np.zeros(target_torch.shape[-1], dtype=np.int64),
-            None,
-            None,
-            None,
-        )
-
-    def download_stub(compute_backend, totals_tensors, shared_tensors):
-        max_len = max((len(tensor) for tensor in totals_tensors), default=0)
-        out = np.zeros((len(totals_tensors), 2, max_len), dtype=np.int64)
-        for idx, (totals_tensor, shared_tensor) in enumerate(zip(totals_tensors, shared_tensors)):
-            out[idx, 0, : len(totals_tensor)] = totals_tensor
-            out[idx, 1, : len(shared_tensor)] = shared_tensor
-        return out
 
     original_mark = mp._mark_completed_pair_genomes
     mark_calls = {"count": 0}
@@ -3092,9 +3261,6 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
     monkeypatch.setattr(mp, "MatrixPairComputeBackend", FakeTorchBackend)
     monkeypatch.setattr(mp, "MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS", 1)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", two_target_plan)
-    monkeypatch.setattr(mp, "_prepare_torch_matrix", identity_prepare)
-    monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", zero_compare)
-    monkeypatch.setattr(mp, "_download_torch_result_tensor_batch", download_stub)
     monkeypatch.setattr(mp, "_mark_completed_pair_genomes", interrupt_after_first_commit)
 
     with pytest.raises(KeyboardInterrupt, match="simulated ctrl-c"):

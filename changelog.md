@@ -2,6 +2,12 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## 1.0.4
+
+Compared with `1.0.3`:
+
+- Matrix comparison: reduced gene-prefix memory, reused target preprocessing, overlapped CPU IBS with Torch computation, and bounded result queues with a persistent batched Arrow/DuckDB writer. Memory planning now accounts for metrics, storage, and queues; fixed noncontiguous anchor loading when resuming. Calculation semantics and output columns are unchanged.
+
 ## 1.0.3
 
 Compared with `1.0.2`:

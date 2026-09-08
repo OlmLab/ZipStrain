@@ -1093,10 +1093,10 @@ Important options:
 - `-o, --output-file` (required)
 - `-g, --genome` optional genome scope (default: `all`)
 - `-a, --ani-method` ANI method: `popani`, `conani`, or `cosani_<threshold>`, where the cosine threshold is from `0` through `1`
-- `--memory-limit-gb` approximate compare memory budget
+- `--memory-limit-gb` approximate compare memory budget; Torch planning includes host/device representations, calculation buffers, and queued work
 - `--anchor-queue-size` number of torch anchor matrices to keep queued in host RAM while still transferring only one anchor at a time to the GPU (default: `1`)
 - `--target-queue-size` number of torch target blocks to keep queued in host RAM; `1` preserves the current synchronous target-load behavior (default: `1`)
-- `--result-transfer-batch-size` number of torch compare units to batch before transferring result vectors back to CPU (default: `1`)
+- `--result-transfer-batch-size` maximum number of Torch anchor-versus-target-block units to batch before transferring genome/gene counts and, when requested, IBS masks back to CPU (default: `1`; batches also flush at the 16-unit checkpoint cap)
 - `--loader-executor` executor kind for torch loader prefetch work (`thread|process`, default: `thread`)
 - `--writer-executor` executor kind for torch result writing/checkpoint work (`thread|process`, default: `thread`)
 - `--calculate` matrix metrics to compute:
@@ -1117,6 +1117,11 @@ Notes:
 - conANI derives each sample's consensus allele set at every covered position; ties are retained, and a position matches when the two consensus sets intersect
 - cosANI casts counts to `float32`, scales the four-base dot product to cosine similarity in `[0,1]`, and counts a position as shared when it meets the requested threshold
 - ANI, IBS, and gene ANI all use the same method-specific shared-position mask
+- Torch caches target presence/coverage, packed masks, or cosine norms once per target block. Internal anchors reuse those cached values; the ANI definitions and comparison schema are unchanged.
+- Gene counts use one full-genome prefix at a time, with explicit 32-bit accumulation when the genome axis fits (64-bit for longer axes). Genome and gene count results are downloaded together.
+- IBS retains the same CPU longest-run calculation and scaffold/gap boundaries. A CPU worker processes downloaded shared masks while Torch can compute the next anchor. This is bounded CPU/compute overlap, not a promise of asynchronous device-to-host transfers; CUDA and MPS transfers still synchronize before the CPU reads their results.
+- At most two CPU postprocessing batches and two writer batches can be outstanding. The writer keeps one DuckDB connection and commits results and completion markers together, preserving resumability. Writer batches target at most 250,000 rows or the smaller of 32 MiB and 1% of the memory budget, using estimated output bytes including names; a single comparison unit can exceed those targets.
+- Increasing queue sizes or transfer batch size uses more memory and can reduce the number of target samples that fit in a block. Whole genomes remain the comparison unit. If the estimated budget cannot fit one target plus required buffers, comparison raises an error rather than silently planning an oversized block. The budget is an estimate, not a hard process/GPU allocator limit.
 - the compare database and exported parquet record the full ANI method, including a cosANI threshold, and resume rejects a different method
 - install Torch support with `pip install "zipstrain[matrix]"`
 - `--backend numpy` works without Torch and is the simplest CPU-only path
@@ -1263,7 +1268,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:1.0.3`;
+- sets the default container to `parsaghadermazi/zipstrain:1.0.4`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 

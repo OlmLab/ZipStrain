@@ -6,6 +6,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import gc
 import importlib
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ import duckdb
 import numpy as np
 import polars as pl
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from zipstrain import compare as cp
@@ -47,6 +49,10 @@ CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT = "per_genome_sample_major_sparse_bitm
 MATRIX_HDF5_FILE_VERSION = "1"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
+MATRIX_COMPARE_PIPELINE_DEPTH = 2
+MATRIX_COMPARE_WRITE_MAX_ROWS = 250_000
+MATRIX_COMPARE_WRITE_MAX_BYTES = 32 * 1024 * 1024
+_matrix_writer_state = threading.local()
 MATRIX_HDF5_SUFFIXES = (".h5", ".hdf5", ".hd5")
 HDF5_FILE_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 MATRIX_HDF5_CONTRACT_GENOMES_GROUP = "contract_genomes"
@@ -1919,30 +1925,40 @@ def _write_matrix_compare_payload_batch(
     output_file: Path,
     batch_payloads: list[dict[str, object]],
     log_context: Optional[dict[str, object]] = None,
+    *,
+    connection: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> int:
     batch_rows = 0
     completed_rows: list[tuple[int, int, int]] = []
-    write_conn = duckdb.connect(str(output_file))
-    write_conn.execute("SET preserve_insertion_order=false")
+    write_conn = connection if connection is not None else duckdb.connect(str(output_file))
+    if connection is None:
+        write_conn.execute("SET preserve_insertion_order=false")
     try:
         write_conn.execute("BEGIN")
         try:
+            tables = []
+            gene_tables = []
             for payload in batch_payloads:
                 completed_rows.extend(_completed_pair_rows_from_payload(payload))
                 table = _make_arrow_table_from_compare_payload(payload)
                 if table is not None:
-                    _insert_matrix_compare_result_table(write_conn, table)
+                    tables.append(table)
                     batch_rows += table.num_rows
                 gene_table = _make_gene_arrow_table_from_compare_payload(payload)
                 if gene_table is not None:
-                    _insert_matrix_compare_gene_result_table(write_conn, gene_table)
+                    gene_tables.append(gene_table)
+            if tables:
+                _insert_matrix_compare_result_table(write_conn, pa.concat_tables(tables))
+            if gene_tables:
+                _insert_matrix_compare_gene_result_table(write_conn, pa.concat_tables(gene_tables))
             _mark_completed_pair_genomes(write_conn, completed_rows)
             write_conn.execute("COMMIT")
-        except Exception:
+        except BaseException:
             write_conn.execute("ROLLBACK")
             raise
     finally:
-        write_conn.close()
+        if connection is None:
+            write_conn.close()
     if log_context is not None:
         _emit_matrix_compare_writer_log(
             start_time=float(log_context["start_time"]),
@@ -1957,6 +1973,43 @@ def _write_matrix_compare_payload_batch(
             target_chunks=int(log_context["target_chunks"]),
         )
     return batch_rows
+
+
+def _write_matrix_compare_payload_batch_persistent(
+    output_file: Path,
+    batch_payloads: list[dict[str, object]],
+    log_context: Optional[dict[str, object]],
+    memory_limit_bytes: int,
+) -> int:
+    # Each single-worker thread/process owns its connection. Never pass DuckDB
+    # connections across threads or pickle them into the process executor.
+    state = _matrix_writer_state
+    if getattr(state, "failed", False):
+        raise RuntimeError("Matrix result writer stopped after an earlier failed transaction.")
+    try:
+        if getattr(state, "connection", None) is None:
+            state.connection = duckdb.connect(str(output_file))
+            state.output_file = output_file
+            state.connection.execute("SET preserve_insertion_order=false")
+            state.connection.execute("SET threads=1")
+            state.connection.execute(f"SET memory_limit='{_matrix_writer_memory_limit(memory_limit_bytes)}B'")
+        if state.output_file != output_file:
+            raise RuntimeError("Matrix result writer cannot switch databases before closing.")
+        return _write_matrix_compare_payload_batch(
+            output_file, batch_payloads, log_context, connection=state.connection,
+        )
+    except BaseException:
+        state.failed = True
+        raise
+
+
+def _close_matrix_compare_writer() -> None:
+    connection = getattr(_matrix_writer_state, "connection", None)
+    try:
+        if connection is not None:
+            connection.close()
+    finally:
+        _matrix_writer_state.__dict__.clear()
 
 
 def _validate_matrix_db_appendable(metadata: dict[str, str]) -> tuple[str, str]:
@@ -3811,18 +3864,49 @@ def _plan_chunk_sizes(
     memory_limit_bytes: int,
     backend_kind: str,
     channels: int = 4,
+    *,
+    calculations: tuple[str, ...] = ("ani",),
+    ani_kind: str = "popani",
+    anchor_queue_size: int = 1,
+    target_queue_size: int = 1,
+    result_transfer_batch_size: int = 1,
+    gene_count: int = 0,
+    process_io: bool = False,
 ) -> tuple[int, int]:
     dtype_bytes = np.dtype(MATRIX_DTYPES[dtype_name]).itemsize
+    if backend_kind == "torch":
+        # Count both host and device allocations (also appropriate for unified MPS
+        # memory). Sparse HDF5 blocks are expanded before comparison.
+        raw = channels * dtype_bytes
+        packed = channels == 1 or ani_kind == "conani"
+        cached = 5 if packed else 20 + (1 if ani_kind == "cosani" else 0)
+        batch_units = min(result_transfer_batch_size, MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS)
+        prefix_bytes = 4 if vector_length <= np.iinfo(np.int32).max else 8
+        per_position_anchor = raw * (2 * anchor_queue_size + 2) + cached + 16
+        per_position_target = raw * (2 * target_queue_size + 2 * int(process_io)) + cached + 20
+        if "gene" in calculations:
+            per_position_target += prefix_bytes
+        if "ibs" in calculations:
+            # Retained device masks, two CPU batches, and the transfer being built.
+            per_position_target += batch_units * (MATRIX_COMPARE_PIPELINE_DEPTH + 2)
+        gene_bytes = gene_count * (16 * batch_units + 192 * (MATRIX_COMPARE_PIPELINE_DEPTH + 2))
+        write_bytes, _ = _matrix_write_batch_limits(memory_limit_bytes)
+        budget = int(memory_limit_bytes * 0.8) - _matrix_writer_memory_limit(memory_limit_bytes) - 6 * write_bytes
+        available = budget - max(vector_length, 1) * per_position_anchor
+        per_target = max(vector_length, 1) * per_position_target + gene_bytes
+        capacity = available // max(per_target, 1)
+        if capacity < 1:
+            raise MemoryError(
+                "Matrix compare memory budget cannot fit one whole-genome target plus "
+                "the requested calculation/queue buffers. Increase --memory-limit-gb "
+                "or reduce queue sizes / --result-transfer-batch-size."
+            )
+        return min(remaining_targets, int(capacity)), vector_length
     reserve = int(memory_limit_bytes * 0.15)
     budget = max(memory_limit_bytes - reserve, 64 * 1024 * 1024)
 
     per_position_anchor = channels * dtype_bytes + 8
     per_position_target = channels * dtype_bytes + 8
-    if backend_kind == "torch":
-        compute_dtype_bytes = 4 if channels == 4 else dtype_bytes
-        per_position_anchor += channels * compute_dtype_bytes
-        per_position_target += channels * compute_dtype_bytes
-
     max_targets_full = max(
         1,
         int((budget / max(vector_length, 1) - per_position_anchor) // max(per_position_target, 1)),
@@ -3831,6 +3915,15 @@ def _plan_chunk_sizes(
         return min(remaining_targets, max_targets_full), vector_length
 
     return 1, vector_length
+
+
+def _matrix_write_batch_limits(memory_limit_bytes: int) -> tuple[int, int]:
+    byte_limit = min(MATRIX_COMPARE_WRITE_MAX_BYTES, max(1024, memory_limit_bytes // 100))
+    return byte_limit, MATRIX_COMPARE_WRITE_MAX_ROWS
+
+
+def _matrix_writer_memory_limit(memory_limit_bytes: int) -> int:
+    return max(1024 * 1024, min(256 * 1024 * 1024, memory_limit_bytes // 10))
 
 
 def _compare_tile_presence_numpy(
@@ -4158,14 +4251,14 @@ def _accumulate_gene_counts_from_full_torch_masks(
     total_mask,
     shared_mask,
     gene_ranges: list[GeneRangeSpec],
-) -> tuple[np.ndarray, np.ndarray]:
+):
     if not gene_ranges:
         target_count = int(total_mask.shape[1]) if int(total_mask.ndim) > 1 else 0
-        empty = np.zeros((0, target_count), dtype=np.int64)
+        empty = torch_module.zeros((0, target_count), dtype=torch_module.int64, device=total_mask.device)
         return empty, empty
 
     device = total_mask.device
-    prefix_dtype = getattr(torch_module, "int32", torch_module.int64)
+    prefix_dtype = torch_module.int32 if total_mask.shape[0] <= np.iinfo(np.int32).max else torch_module.int64
     gene_starts = torch_module.tensor(
         [int(gene.axis_start) for gene in gene_ranges],
         dtype=torch_module.int64,
@@ -4176,18 +4269,16 @@ def _accumulate_gene_counts_from_full_torch_masks(
         dtype=torch_module.int64,
         device=device,
     )
-    total_prefix = total_mask.to(prefix_dtype).cumsum(dim=0)
-    shared_prefix = shared_mask.to(prefix_dtype).cumsum(dim=0)
-    total_stop = total_prefix.index_select(0, gene_stops)
-    shared_stop = shared_prefix.index_select(0, gene_stops)
     start_positions = torch_module.clamp(gene_starts - 1, min=0)
     has_start = (gene_starts > 0).unsqueeze(1).to(prefix_dtype)
-    total_start = total_prefix.index_select(0, start_positions) * has_start
-    shared_start = shared_prefix.index_select(0, start_positions) * has_start
 
-    gene_total_positions = (total_stop - total_start).detach().cpu().numpy().astype(np.int64, copy=False)
-    gene_share_allele_pos = (shared_stop - shared_start).detach().cpu().numpy().astype(np.int64, copy=False)
-    return gene_total_positions, gene_share_allele_pos
+    def counts(mask):
+        # dtype must be explicit: cumsum otherwise promotes int32 to int64.
+        # Only one full-genome prefix is live at a time; return small gene counts.
+        prefix = mask.cumsum(dim=0, dtype=prefix_dtype)
+        return prefix.index_select(0, gene_stops) - prefix.index_select(0, start_positions) * has_start
+
+    return counts(total_mask), counts(shared_mask)
 
 
 def _accumulate_gene_counts_from_full_numpy_masks(
@@ -4355,8 +4446,8 @@ def _make_gene_arrow_table_from_compare_payload(
     gene_names = list(payload.get("gene_names") or [])
     if not gene_names:
         return None
-    gene_total_all = np.asarray(payload.get("gene_total_positions"), dtype=np.int64)
-    gene_shared_all = np.asarray(payload.get("gene_share_allele_pos"), dtype=np.int64)
+    gene_total_all = np.asarray(payload.get("gene_total_positions"))
+    gene_shared_all = np.asarray(payload.get("gene_share_allele_pos"))
     if gene_total_all.size == 0 or gene_shared_all.size == 0:
         return None
     valid_mask = gene_total_all > 0
@@ -4378,14 +4469,14 @@ def _make_gene_arrow_table_from_compare_payload(
     row_count = len(gene_idx_flat)
     return pa.Table.from_arrays(
         [
-            pa.array([sample_1_idx] * row_count, type=pa.int64()),
+            pa.array(np.full(row_count, sample_1_idx, dtype=np.int64)),
             pa.array(sample_2_idx_all[target_idx_flat].astype(np.int64, copy=False), type=pa.int64()),
-            pa.array([sample_1] * row_count, type=pa.string()),
-            pa.array([sample_2_all[idx] for idx in target_idx_flat.tolist()], type=pa.string()),
-            pa.array([genome_idx] * row_count, type=pa.int64()),
-            pa.array([genome] * row_count, type=pa.string()),
-            pa.array([gene_names[idx] for idx in gene_idx_flat.tolist()], type=pa.string()),
-            pa.array(ani_values.tolist(), type=pa.float64()),
+            pa.repeat(pa.scalar(sample_1), row_count),
+            pc.take(pa.array(sample_2_all, type=pa.string()), pa.array(target_idx_flat)),
+            pa.array(np.full(row_count, genome_idx, dtype=np.int64)),
+            pa.repeat(pa.scalar(genome), row_count),
+            pc.take(pa.array(gene_names, type=pa.string()), pa.array(gene_idx_flat)),
+            pa.array(ani_values, type=pa.float64()),
         ],
         schema=matrix_compare_gene_result_db_schema(),
     )
@@ -4548,7 +4639,10 @@ class _Hdf5GenomeMatrixTorchDataset:
         return matrix_tensor
 
     def load_range(self, start: int, stop: int):
-        batch_np = self._load_batch_numpy(np.arange(int(start), int(stop), dtype=np.int64))
+        return self.load_rows(np.arange(int(start), int(stop), dtype=np.int64))
+
+    def load_rows(self, rows):
+        batch_np = self._load_batch_numpy(np.asarray(rows, dtype=np.int64))
         batch_tensor = self.torch_module.from_numpy(batch_np)
         if batch_tensor.dtype != self.host_dtype:
             batch_tensor = batch_tensor.to(dtype=self.host_dtype)
@@ -4698,7 +4792,9 @@ def _load_anchor_queue_batch_for_hdf5_torch(
         torch_module=torch_module,
     )
     try:
-        anchor_tensor = dataset.load_range(batch_start, batch_start + len(batch_rows))
+        # Resuming can leave noncontiguous anchors. A range through the filtered
+        # work list can otherwise load a different sample under the right name.
+        anchor_tensor = dataset.load_rows([sample_idx for sample_idx, _ in batch_rows])
     finally:
         dataset.close()
     if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS:
@@ -4744,6 +4840,36 @@ def _build_matrix_io_executor(kind: str):
     raise ValueError(f"Unsupported matrix I/O executor kind '{kind}'.")
 
 
+@dataclass
+class _CachedTorchMatrix:
+    values: object
+    covered: object
+    norm: object = None
+
+    def select(self, targets):
+        return _CachedTorchMatrix(
+            self.values[..., targets],
+            self.covered[..., targets],
+            None if self.norm is None else self.norm[..., targets],
+        )
+
+
+def _cache_torch_matrix(torch_module, tensor, ani_kind):
+    if isinstance(tensor, _CachedTorchMatrix):
+        return tensor
+    # Prepared conANI is already packed on the host, preserving exact count ties.
+    if tensor.ndim == 2:
+        values = tensor.to(torch_module.int32)
+        return _CachedTorchMatrix(values, values != 0)
+    values = (tensor > 0).to(torch_module.float32) if ani_kind == "popani" else tensor
+    covered = values.amax(dim=1)
+    norm = None
+    if ani_kind == "cosani":
+        norm = torch_module.sqrt((values * values).sum(dim=1))
+        covered = covered > 0
+    return _CachedTorchMatrix(values, covered, norm)
+
+
 def _compare_anchor_against_target_chunk_torch_device(
     compute_backend: MatrixPairComputeBackend,
     anchor_torch,
@@ -4755,81 +4881,50 @@ def _compare_anchor_against_target_chunk_torch_device(
     need_ibs: bool = False,
     gene_ranges: Optional[list[GeneRangeSpec]] = None,
 ):
-    target_axis = (
-        1
-        if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
-        or (
-            matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
-            and ani_kind == "conani"
-            and target_torch.ndim == 2
-        )
-        else 2
-    )
-    target_count = int(target_torch.shape[target_axis])
-    chunk_totals_torch = compute_backend.torch.zeros(
-        target_count,
-        dtype=compute_backend.torch.int64,
-        device=compute_backend.device,
-    )
-    chunk_shared_torch = compute_backend.torch.zeros(
-        target_count,
-        dtype=compute_backend.torch.int64,
-        device=compute_backend.device,
-    )
-    max_runs = None
-    gene_total_positions = None
-    gene_share_allele_pos = None
-    anchor_slice = anchor_torch[:vector_length, ...]
-    target_slice = target_torch[:vector_length, ...]
-    if (
-        matrix_value_semantics == FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS
-        and ani_kind == "popani"
-    ):
-        if gene_ranges:
-            total_inc, shared_inc, total_mask, shared_mask = _compare_tile_presence_torch_tensors_with_mask(
-                torch_module=compute_backend.torch,
-                anchor_t=anchor_slice,
-                targets_t=target_slice,
-            )
-        elif need_ibs:
-            total_inc, shared_inc, shared_mask = _compare_tile_presence_torch_tensors_with_shared_mask(
-                torch_module=compute_backend.torch,
-                anchor_t=anchor_slice,
-                targets_t=target_slice,
-            )
-            total_mask = None
-        else:
-            total_inc, shared_inc = _compare_tile_presence_torch_tensors(
-                torch_module=compute_backend.torch,
-                anchor_t=anchor_slice,
-                targets_t=target_slice,
-            )
-            total_mask = None
-            shared_mask = None
+    """Return device counts and, for IBS, the unmodified shared-position mask."""
+    torch = compute_backend.torch
+    target = _cache_torch_matrix(torch, target_torch, ani_kind)
+    if isinstance(anchor_torch, _CachedTorchMatrix):
+        anchor = anchor_torch
     else:
-        total_inc, shared_inc, total_mask, shared_mask = _compare_matrix_tile_torch(
-            torch_module=compute_backend.torch,
-            anchor_t=anchor_slice,
-            targets_t=target_slice,
-            matrix_value_semantics=matrix_value_semantics,
-            ani_kind=ani_kind,
-            cos_threshold=cos_threshold,
+        anchor = _cache_torch_matrix(torch, anchor_torch.unsqueeze(-1), ani_kind).select(0)
+    a = anchor.values[:vector_length]
+    t = target.values[:vector_length]
+    ac = anchor.covered[:vector_length]
+    tc = target.covered[:vector_length]
+    total_mask = None
+    if t.ndim == 2:
+        total_mask = ac.unsqueeze(1) & tc
+        shared_mask = total_mask & ((a.unsqueeze(1) & t) != 0)
+        totals = total_mask.sum(dim=0, dtype=torch.int64)
+    elif ani_kind == "cosani":
+        if cos_threshold is None:
+            raise ValueError("cosANI requires a similarity threshold.")
+        total_mask = ac.unsqueeze(1) & tc
+        dot = torch.matmul(a.unsqueeze(1), t).squeeze(1)
+        denominator = anchor.norm[:vector_length].unsqueeze(1) * target.norm[:vector_length]
+        cosine = torch.where(
+            denominator > 0,
+            dot / denominator.clamp_min(torch.finfo(torch.float32).tiny),
+            torch.zeros_like(dot),
         )
-
-    chunk_totals_torch += total_inc
-    chunk_shared_torch += shared_inc
+        shared_mask = total_mask & (cosine >= float(cos_threshold))
+        totals = total_mask.sum(dim=0, dtype=torch.int64)
+        del dot, denominator, cosine
+    else:
+        # Preserve the existing popANI matmuls, with target presence/coverage reused.
+        totals = torch.matmul(ac.unsqueeze(0), tc).squeeze(0).to(torch.int64)
+        shared_mask = (torch.matmul(a.unsqueeze(1), t).squeeze(1) > 0)
+        if gene_ranges:
+            total_mask = (ac.unsqueeze(1) > 0) & (tc > 0)
+    shared = shared_mask.sum(dim=0, dtype=torch.int64)
+    gene_total = gene_shared = None
     if gene_ranges:
-        gene_total_positions, gene_share_allele_pos = _accumulate_gene_counts_from_full_torch_masks(
-            torch_module=compute_backend.torch,
-            total_mask=total_mask,
-            shared_mask=shared_mask,
+        gene_total, gene_shared = _accumulate_gene_counts_from_full_torch_masks(
+            torch_module=torch, total_mask=total_mask, shared_mask=shared_mask,
             gene_ranges=gene_ranges,
         )
-        if need_ibs:
-            max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
-    elif need_ibs:
-        max_runs = _max_ibs_from_shared_mask_numpy(shared_mask)
-    return chunk_totals_torch, chunk_shared_torch, max_runs, gene_total_positions, gene_share_allele_pos
+    return totals, shared, shared_mask if need_ibs else None, gene_total, gene_shared
 
 
 def _download_torch_result_tensor_batch(
@@ -4874,6 +4969,37 @@ def _download_torch_result_tensor_batch(
     return combined_np
 
 
+def _finish_torch_result_batch(batch_payloads):
+    """CPU-only stage: keep the established IBS algorithm off the GPU dispatch path."""
+    for payload in batch_payloads:
+        mask = payload.pop("shared_mask", None)
+        payload["max_consecutive_length"] = (
+            None if mask is None else _max_ibs_from_shared_mask_numpy(mask)
+        )
+    return batch_payloads
+
+
+def _compare_payload_size(payload) -> tuple[int, int]:
+    targets = len(payload["sample_2_idx"])
+    genes = payload.get("gene_names") or []
+    rows = targets * (1 + len(genes))
+    # Include repeated UTF-8 names in the eventual Arrow table, not just compact
+    # numeric input arrays. Count zero-overlap rows too (a conservative estimate).
+    names_bytes = len(str(payload["sample_1"]).encode()) + len(str(payload["genome"]).encode())
+    names_bytes += max((len(str(name).encode()) for name in payload["sample_2"]), default=0)
+    gene_bytes = targets * sum(len(str(name).encode()) for name in genes)
+    array_bytes = sum(value.nbytes for value in payload.values() if isinstance(value, np.ndarray))
+    return array_bytes + rows * (96 + names_bytes) + gene_bytes, rows
+
+
+def _submit_matrix_background(loop, executor, function, *args):
+    future = loop.run_in_executor(executor, function, *args)
+    # Awaiting still raises normally. Also observe failures in queued work that
+    # cannot be awaited after an earlier failure has already aborted the run.
+    future.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return future
+
+
 async def _matrix_compare_reuse_target_chunks_torch_async(
     matrix_db_file: Path,
     output_file: Path,
@@ -4912,6 +5038,16 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     compute_backend.matrix_ani_kind = ani_kind
     dtype_name = _matrix_dtype_name_from_metadata(metadata)
     matrix_channels = _matrix_channels_from_metadata(metadata)
+    gene_ranges_by_genome = _group_gene_ranges_by_genome(gene_ranges)
+    max_gene_count = max((len(ranges) for ranges in gene_ranges_by_genome.values()), default=0) if "gene" in calculations else 0
+    planner_options = dict(
+        channels=matrix_channels, calculations=calculations, ani_kind=ani_kind,
+        anchor_queue_size=anchor_queue_size, target_queue_size=target_queue_size,
+        result_transfer_batch_size=result_transfer_batch_size,
+        gene_count=max_gene_count,
+        process_io="process" in (loader_executor_kind, writer_executor_kind),
+    )
+    write_byte_limit, write_row_limit = _matrix_write_batch_limits(memory_limit_bytes)
     max_vector_length = max(spec.matrix_length for spec in genomes)
     global_block_size, _ = _plan_chunk_sizes(
         vector_length=max_vector_length,
@@ -4919,14 +5055,15 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
         dtype_name=dtype_name,
         memory_limit_bytes=memory_limit_bytes,
         backend_kind=compute_backend.kind,
+        **planner_options,
     )
     global_block_size = max(1, global_block_size)
     samples_by_id = {sample_idx: sample_name for sample_idx, sample_name in samples}
-    gene_ranges_by_genome = _group_gene_ranges_by_genome(gene_ranges)
     loop = asyncio.get_running_loop()
     target_loader_executor = _build_matrix_io_executor(loader_executor_kind)
     anchor_loader_executor = _build_matrix_io_executor(loader_executor_kind)
     writer_executor = _build_matrix_io_executor(writer_executor_kind)
+    postprocess_executor = ThreadPoolExecutor(max_workers=1)
     pending_write_futures: deque[tuple[asyncio.Future[int], list[dict[str, object]]]] = deque()
 
     def load_target_block_sync(
@@ -5001,7 +5138,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
         unit_index = next_target_prefetch_idx
         next_target_prefetch_idx += 1
         prefetch_block_start, prefetch_block_rows, prefetch_spec = work_units[unit_index]
-        pending_target_future = loop.run_in_executor(
+        pending_target_future = _submit_matrix_background(
+            loop,
             target_loader_executor,
             _load_target_prefetch_unit_for_hdf5_torch,
             unit_index,
@@ -5030,6 +5168,9 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     try:
         for unit_index, (block_start, block_rows, spec) in enumerate(work_units):
             await drain_target_prefetch(force=False)
+            if pending_target_future is not None and next_target_prefetch_idx - 1 == unit_index:
+                # Await the block already being read instead of loading it twice.
+                await drain_target_prefetch(force=True)
             if target_queue and target_queue[0][0] == unit_index:
                 block_ids, block_names, zero_matrix, target_matrices = target_queue.popleft()[1]
             else:
@@ -5077,6 +5218,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 dtype_name=dtype_name,
                 memory_limit_bytes=memory_limit_bytes,
                 backend_kind=compute_backend.kind,
+                **planner_options,
             )
             if tile_targets < len(block_ids):
                 raise RuntimeError(
@@ -5088,12 +5230,16 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 matrix=target_matrices,
                 matrix_value_semantics=matrix_value_semantics,
             )
+            target_torch = _cache_torch_matrix(compute_backend.torch, target_torch, ani_kind)
             del target_matrices
             processed_pairs_for_block = 0
             target_chunks += 1
             pending_device_results: list[dict[str, object]] = []
             pending_payloads: list[dict[str, object]] = []
             pending_progress: list[dict[str, object]] = []
+            pending_write_progress: list[dict[str, object]] = []
+            pending_cpu_futures = deque()
+            pending_bytes = pending_rows = 0
 
             def submit_write_batch(
                 batch_payloads: list[dict[str, object]],
@@ -5111,7 +5257,11 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 if emit_writer_logs and batch_progress:
                     log_context = {
                         "start_time": run_start_time,
-                        "completed": completed_work + batch_pairs,
+                        "completed": completed_work + batch_pairs + sum(
+                            int(event["delta"])
+                            for _future, events in pending_write_futures
+                            for event in events
+                        ),
                         "total": total_work,
                         "batch_pairs": batch_pairs,
                         "anchor_name": str(last_event["anchor_name"]),
@@ -5122,85 +5272,108 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     }
                 pending_write_futures.append(
                     (
-                        loop.run_in_executor(
+                        _submit_matrix_background(
+                            loop,
                             writer_executor,
-                            _write_matrix_compare_payload_batch,
+                            _write_matrix_compare_payload_batch_persistent,
                             output_file,
                             batch_payloads,
                             log_context,
+                            memory_limit_bytes,
                         ),
                         batch_progress,
                     )
                 )
 
+            async def flush_write_payloads():
+                nonlocal pending_payloads, pending_write_progress, pending_bytes, pending_rows
+                if not pending_payloads:
+                    return
+                await drain_writer_results()
+                while len(pending_write_futures) >= MATRIX_COMPARE_PIPELINE_DEPTH:
+                    await drain_writer_results(force_one=True)
+                submit_write_batch(pending_payloads, pending_write_progress)
+                pending_payloads, pending_write_progress = [], []
+                pending_bytes = pending_rows = 0
+
+            async def drain_cpu_results(force_one=False, force_all=False):
+                nonlocal pending_bytes, pending_rows
+                while pending_cpu_futures:
+                    future, events = pending_cpu_futures[0]
+                    if not (force_one or force_all or future.done()):
+                        break
+                    payloads = await future
+                    pending_cpu_futures.popleft()
+                    for payload, event in zip(payloads, events):
+                        size, rows = _compare_payload_size(payload)
+                        if pending_payloads and (
+                            pending_bytes + size > write_byte_limit
+                            or pending_rows + rows > write_row_limit
+                        ):
+                            await flush_write_payloads()
+                        pending_payloads.append(payload)
+                        pending_write_progress.append(event)
+                        pending_bytes += size
+                        pending_rows += rows
+                        if (
+                            pending_bytes >= write_byte_limit
+                            or pending_rows >= write_row_limit
+                            or len(pending_payloads) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS
+                        ):
+                            await flush_write_payloads()
+                    force_one = False
+
             async def flush_pending_device_results() -> None:
-                nonlocal pending_device_results, pending_payloads
+                nonlocal pending_device_results, pending_progress
                 if not pending_device_results:
                     return
-                batch_device_results = pending_device_results
-                pending_device_results = []
-                combined_np = _download_torch_result_tensor_batch(
-                    compute_backend=compute_backend,
-                    totals_tensors=[item["total_positions"] for item in batch_device_results],
-                    shared_tensors=[item["share_allele_pos"] for item in batch_device_results],
-                )
-                for result_idx, item in enumerate(batch_device_results):
-                    valid_count = int(item["valid_count"])
-                    pending_payloads.append(
-                        {
-                            "sample_1_idx": int(item["sample_1_idx"]),
-                            "sample_1": str(item["sample_1"]),
-                            "sample_2_idx": np.asarray(item["sample_2_idx"], dtype=np.int64),
-                            "sample_2": list(item["sample_2"]),
-                            "genome_idx": int(item["genome_idx"]),
-                            "genome": str(item["genome"]),
-                            "calculations": tuple(item["calculations"]),
-                            "total_positions": combined_np[result_idx, 0, :valid_count].astype(np.int64, copy=True),
-                            "share_allele_pos": combined_np[result_idx, 1, :valid_count].astype(np.int64, copy=True),
-                            "max_consecutive_length": None
-                            if item.get("max_consecutive_length") is None
-                            else np.asarray(item["max_consecutive_length"], dtype=np.int64)[:valid_count].copy(),
-                            "gene_names": list(item.get("gene_names") or []),
-                            "gene_total_positions": None
-                            if item.get("gene_total_positions") is None
-                            else np.asarray(item["gene_total_positions"], dtype=np.int64)[:, :valid_count].copy(),
-                            "gene_share_allele_pos": None
-                            if item.get("gene_share_allele_pos") is None
-                            else np.asarray(item["gene_share_allele_pos"], dtype=np.int64)[:, :valid_count].copy(),
-                        }
-                    )
+                await drain_cpu_results()
+                while len(pending_cpu_futures) >= MATRIX_COMPARE_PIPELINE_DEPTH:
+                    await drain_cpu_results(force_one=True)
+                batch = pending_device_results
+                events = pending_progress
+                pending_device_results, pending_progress = [], []
+                # Pack genome and gene counts together: one small-count transfer
+                # per batch, rather than separate gene .cpu() calls per anchor.
+                totals, shared = [], []
+                for item in batch:
+                    for key, gene_key, tensors in (
+                        ("total_positions", "gene_total_positions", totals),
+                        ("share_allele_pos", "gene_share_allele_pos", shared),
+                    ):
+                        tensor = item[key]
+                        if item[gene_key] is not None:
+                            tensor = compute_backend.torch.cat((tensor, item[gene_key].reshape(-1)))
+                        tensors.append(tensor)
+                combined = _download_torch_result_tensor_batch(compute_backend, totals, shared)
+                del totals, shared
+                payloads = []
+                for idx, item in enumerate(batch):
+                    count = item.pop("valid_count")
+                    gene_count = len(item["gene_names"])
+                    for offset, key, gene_key in (
+                        (0, "total_positions", "gene_total_positions"),
+                        (1, "share_allele_pos", "gene_share_allele_pos"),
+                    ):
+                        item[key] = combined[idx, offset, :count].copy()
+                        item[gene_key] = (
+                            combined[idx, offset, count:count * (1 + gene_count)].reshape(gene_count, count).copy()
+                            if item[gene_key] is not None else None
+                        )
+                    if item["shared_mask"] is not None:
+                        item["shared_mask"] = _shared_mask_to_numpy(item["shared_mask"])
+                    payloads.append(item)
+                if "ibs" in calculations:
+                    future = _submit_matrix_background(loop, postprocess_executor, _finish_torch_result_batch, payloads)
+                else:
+                    future = loop.create_future()
+                    future.set_result(_finish_torch_result_batch(payloads))
+                pending_cpu_futures.append((future, events))
 
             async def flush_pending_block_units() -> None:
-                nonlocal pending_payloads, pending_progress, completed_work
                 await flush_pending_device_results()
-                if not pending_payloads and not pending_progress:
-                    return
-                batch_payloads = pending_payloads
-                batch_progress = pending_progress
-                pending_payloads = []
-                pending_progress = []
-                if batch_payloads:
-                    if pending_write_futures:
-                        await drain_writer_results(force_one=True)
-                    submit_write_batch(batch_payloads, batch_progress)
-                    return
-                for event in batch_progress:
-                    completed_work += int(event["delta"])
-                if batch_progress and progress_callback is not None:
-                    last_event = batch_progress[-1]
-                    progress_callback(
-                        {
-                            "phase": "advance",
-                            "completed": completed_work,
-                            "total": total_work,
-                            "anchor_name": str(last_event["anchor_name"]),
-                            "genome": str(last_event["genome"]),
-                            "scaffold": "",
-                            "targets_completed": int(last_event["targets_completed"]),
-                            "targets_total": int(last_event["targets_total"]),
-                            "target_chunks": int(last_event["target_chunks"]),
-                        }
-                    )
+                await drain_cpu_results(force_all=True)
+                await flush_write_payloads()
 
             anchor_queue: deque[tuple[int, str, object]] = deque()
             next_anchor_offset = 0
@@ -5219,7 +5392,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 if not batch_rows:
                     return
                 next_anchor_offset += len(batch_rows)
-                pending_anchor_future = loop.run_in_executor(
+                pending_anchor_future = _submit_matrix_background(
+                    loop,
                     anchor_loader_executor,
                     _load_anchor_queue_batch_for_hdf5_torch,
                     matrix_db_file,
@@ -5284,19 +5458,19 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "calculations": calculations,
                         "total_positions": total_inc_torch[missing_positions],
                         "share_allele_pos": shared_inc_torch[missing_positions],
-                        "max_consecutive_length": None
-                        if ibs_inc is None
-                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        "shared_mask": None if ibs_inc is None else ibs_inc[:, missing_positions],
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None
-                        else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
+                        else gene_total_inc[:, missing_positions],
                         "gene_share_allele_pos": None
                         if gene_shared_inc is None
-                        else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
+                        else gene_shared_inc[:, missing_positions],
                         "valid_count": len(missing_positions),
                     }
                 )
+                del total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc
+                del anchor_matrix, anchor_torch
                 processed_pairs_for_block += len(missing_positions)
                 pending_progress.append(
                     {
@@ -5308,10 +5482,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "target_chunks": target_chunks,
                     }
                 )
-                if len(pending_device_results) >= result_transfer_batch_size:
+                if len(pending_device_results) >= min(result_transfer_batch_size, MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS):
                     await flush_pending_device_results()
-                if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
-                    await flush_pending_block_units()
 
             for local_anchor_pos in range(len(block_ids) - 1):
                 await drain_writer_results()
@@ -5320,24 +5492,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                     continue
                 total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc = _compare_anchor_against_target_chunk_torch_device(
                     compute_backend=compute_backend,
-                    anchor_torch=(
-                        target_torch[:, local_anchor_pos]
-                        if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
-                        or (
-                            matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
-                            and ani_kind == "conani"
-                        )
-                        else target_torch[:, :, local_anchor_pos]
-                    ),
-                    target_torch=(
-                        target_torch[:, local_anchor_pos + 1:]
-                        if matrix_value_semantics == BITMASK_MATRIX_VALUE_SEMANTICS
-                        or (
-                            matrix_value_semantics == COUNT_MATRIX_VALUE_SEMANTICS
-                            and ani_kind == "conani"
-                        )
-                        else target_torch[:, :, local_anchor_pos + 1:]
-                    ),
+                    anchor_torch=target_torch.select(local_anchor_pos),
+                    target_torch=target_torch.select(slice(local_anchor_pos + 1, None)),
                     vector_length=spec.matrix_length,
                     matrix_value_semantics=matrix_value_semantics,
                     ani_kind=ani_kind,
@@ -5358,19 +5514,18 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "calculations": calculations,
                         "total_positions": total_inc_torch[missing_positions],
                         "share_allele_pos": shared_inc_torch[missing_positions],
-                        "max_consecutive_length": None
-                        if ibs_inc is None
-                        else ibs_inc[missing_positions].astype(np.int64, copy=True),
+                        "shared_mask": None if ibs_inc is None else ibs_inc[:, missing_positions],
                         "gene_names": [gene.gene for gene in genome_gene_ranges] if "gene" in calculations else [],
                         "gene_total_positions": None
                         if gene_total_inc is None
-                        else gene_total_inc[:, missing_positions].astype(np.int64, copy=True),
+                        else gene_total_inc[:, missing_positions],
                         "gene_share_allele_pos": None
                         if gene_shared_inc is None
-                        else gene_shared_inc[:, missing_positions].astype(np.int64, copy=True),
+                        else gene_shared_inc[:, missing_positions],
                         "valid_count": len(missing_positions),
                     }
                 )
+                del total_inc_torch, shared_inc_torch, ibs_inc, gene_total_inc, gene_shared_inc
                 processed_pairs_for_block += len(missing_positions)
                 pending_progress.append(
                     {
@@ -5382,10 +5537,8 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                         "target_chunks": target_chunks,
                     }
                 )
-                if len(pending_device_results) >= result_transfer_batch_size:
+                if len(pending_device_results) >= min(result_transfer_batch_size, MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS):
                     await flush_pending_device_results()
-                if len(pending_progress) >= MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS:
-                    await flush_pending_block_units()
 
             await flush_pending_block_units()
             await drain_writer_results()
@@ -5402,7 +5555,11 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     finally:
         target_loader_executor.shutdown(wait=True)
         anchor_loader_executor.shutdown(wait=True)
-        writer_executor.shutdown(wait=True)
+        postprocess_executor.shutdown(wait=True)
+        try:
+            writer_executor.submit(_close_matrix_compare_writer).result()
+        finally:
+            writer_executor.shutdown(wait=True)
 
     return MatrixCompareSummary(
         output_file=output_file,

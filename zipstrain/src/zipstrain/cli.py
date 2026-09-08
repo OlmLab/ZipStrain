@@ -854,7 +854,7 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--anchor-queue-size', type=int, default=1, show_default=True, help="Host-side torch anchor queue size. Only one anchor is transferred to the GPU at a time.")
 @click.option('--target-queue-size', type=int, default=1, show_default=True, help="Host-side torch target queue size. `1` keeps the current synchronous target-load behavior.")
-@click.option('--result-transfer-batch-size', type=int, default=mp.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT, show_default=True, help="Number of torch compare units to batch before transferring result vectors back to CPU.")
+@click.option('--result-transfer-batch-size', type=int, default=mp.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT, show_default=True, help="Maximum Torch compare units per transfer of genome/gene counts and requested IBS masks; capped at 16 units. Larger batches use more memory.")
 @click.option(
     '--loader-executor',
     type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
