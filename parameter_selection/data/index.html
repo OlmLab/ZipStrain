@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Simulation result provenance - ZipStrain</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../../assets/_mkdocstrings.css" rel="stylesheet" />
+        <link href="../../assets/paramsel.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Simulation result provenance";
+        var mkdocs_page_input_path = "parameter_selection/data/README.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> ZipStrain
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../quickstart/">Quick Start</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../usermanual/">User Manual</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../expected_output/">Expected output</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../downstream/">Downstream Analyses</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Parameter selection guide</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" >Profiling parameters</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../">popANI depth bias</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../api/">API</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">ZipStrain</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Simulation result provenance</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="simulation-result-provenance">Simulation result provenance</h1>
+<p>These CSVs are a selected subset of the sequencing-error calibration pilot. They contain measured
+outputs, not synthetic chart values. Each pair row identifies its technology, nominal depth, seed,
+truth class and filter settings. Counts are integers; figures average independent pairs at each depth.</p>
+<h2 id="inputs-and-software">Inputs and software</h2>
+<ul>
+<li>ZipStrain 1.0.4, commit <code>e3d04ec90667dd73029f99fe743a3a0991b8ada6</code> (before the default p-value change).</li>
+<li>Reference: <a href="https://www.ebi.ac.uk/ena/browser/view/U00096.3">E. coli K12 U00096.3</a>.</li>
+<li>Three 10,000-base windows starting at zero-based offsets 4,260,000; 3,170,000; 270,000.
+  Named gc0, gc1, gc2; GC fractions 0.4706, 0.5115, 0.5356. Only positions 2001–8000
+  (one-based, inclusive) of each window are evaluated.</li>
+<li>A reference FASTA SHA256: <code>bbd7ecd8b7004cb1317ed6ebefa6c3959f4dc7a1f018a0ec59eb04e4d858cf43</code>.</li>
+<li>B: 60 random substitutions per evaluated window (mutation seed81273), 180 total / 18,000 positions.</li>
+<li><a href="https://www.niehs.nih.gov/research/resources/software/biostatistics/art">ART</a> 2.5.8: HS25,
+  paired150bp, fragment mean350/SD50.</li>
+<li><a href="https://github.com/rrwick/Badread">Badread</a> commit <code>e2ccccc608c8132fe22844fcc6c9a544fbb44a77</code>:
+  nanopore2023 error and qscore models; identity20,3 or25,3; length4000,2000.
+  Junk/random reads, chimeras, glitches and adapters disabled.</li>
+<li>Independent library seeds11,29 for A and100011,100029 for B. Lower depths reuse subsets
+  of each source library; they are not independent replicates across depth.</li>
+<li>Bowtie2 2.5.5 default end-to-end; minimap2 2.31-r1302 map-ont; samtools1.21.</li>
+<li>Both samples mapped to A; no competing references. Read ANI0.95, mapQ0, all-mapped inclusion,
+  baseQ13 and reference BAQ. Comparison requires retained coverage5 in both samples.</li>
+</ul>
+<h2 id="sweep-and-included-data">Sweep and included data</h2>
+<p>Full sweep: error_rate {0.0001,0.0003,0.001,0.003,0.01,0.03}, min_freq {0,0.005,0.01,0.02,0.05},
+p_threshold {0.05,1e-6}. The pilot null table covers depth12000, beyond the observed maximum.
+There were54 raw profile datasets,3180 pair/configuration rows and540 mixture/configuration rows.</p>
+<p><code>simulation_pairs.csv</code> includes error_rate0.001, min_freq0 or0.01, both p-values and all available depths.
+Kinds <code>different</code>, <code>identical_A</code>, <code>identical_B</code> distinguish true A/B differences from same-template
+controls. Seed0 denotes a control comparing libraries11 and29, not a third independent simulation.
+At1000x, Illumina has two A/B pairs; ONT Q20 has only seed11; Q25 has no1000x data.</p>
+<p>Important columns:</p>
+<ul>
+<li><code>sites</code>, <code>callable_sites</code>: evaluated positions and positions passing pairwise retained coverage.</li>
+<li><code>raw_joint_cov5</code>: positions meeting coverage5 before allele filtering.</li>
+<li><code>true_differences</code>:180 for A/B;0 for identical controls.</li>
+<li><code>recovered_differences</code>, <code>masked_differences</code>, <code>uncallable_differences</code>: partition true differences.</li>
+<li><code>true_diff_callable</code>: recovered + masked; <code>same_callable</code>: callable unchanged positions.</li>
+<li><code>false_differences</code>: unchanged sites incorrectly called different.</li>
+<li><code>popani</code>, <code>true_ani_callable</code>: observed ANI and truth restricted to the callable positions, in percent.</li>
+</ul>
+<p><code>simulation_mixtures.csv</code> includes error_rate0.001, min_freq0.01 and both p-values. Mixtures at
+nominal300x combine source-seed11 A/B reads at B fractions0.01,0.05,0.10. Read-name hashing chooses
+whole reads/pairs, not independently sampled position counts. These are reused libraries, not new
+independent simulations. <code>retained_minor_sites</code> is out of180; <code>raw_minor_present</code> records minor-base
+presence before allele filtering. <code>error_allele_sites</code> counts callable invariant sites retaining any
+incorrect allele, out of <code>nonvariant_callable</code> (17,820 here). It is not a pairwise false-difference count.
+<code>median_observed_minor_fraction</code> is the median raw minor-base fraction at true variant positions;
+finite read sampling means it need not equal the nominal mixture proportion.</p>
+<h2 id="validation-and-regeneration">Validation and regeneration</h2>
+<p>Production ZipStrain Poisson thresholds/allele filters were checked against an independent indexed
+threshold calculation for all60 configurations. Production popANI was checked against presence-mask
+intersection. Duplicate positions, output-key uniqueness, truth partitions and mixture count bounds
+were validated. No false differences occurred in this finite pilot; this does not imply zero real-world risk.</p>
+<p>From the repository root:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>Scripts/plot_parameter_selection_simulation.py
+<span class="c1"># Optional visual-QA PNGs; requires Kaleido and Chrome:</span>
+python<span class="w"> </span>Scripts/plot_parameter_selection_simulation.py<span class="w"> </span>--preview-dir<span class="w"> </span>/tmp/parameter-selection-previews
+</code></pre></div>
+<p>The script regenerates figures4–6 from these CSVs; it does not rerun simulation or mapping. Raw BAMs,
+full sweep and simulation scripts are not bundled with the tutorial. Original experiment artifacts
+were kept outside the production repository in <code>/tmp/zipstrain-error-calibration-20260913</code>; that is
+a temporary local directory, not a durable public download. The committed CSVs are the durable
+source for the displayed figures. Figures1–3 have separate provenance in the original tutorial.</p>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../assets/paramsel_tabs.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

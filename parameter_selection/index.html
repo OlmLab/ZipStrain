@@ -75,11 +75,23 @@
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#seeing-it-ani-across-depth">Seeing it: ANI across depth</a>
     </li>
-    <li class="toctree-l3"><a class="reference internal" href="#the-headline-two-knobs-the-same-cure">The headline: two knobs, the same cure</a>
+    <li class="toctree-l3"><a class="reference internal" href="#the-real-sample-study-two-routes-to-flatter-curves">The real-sample study: two routes to flatter curves</a>
     </li>
-    <li class="toctree-l3"><a class="reference internal" href="#the-cost-essentially-none">The cost: essentially none</a>
+    <li class="toctree-l3"><a class="reference internal" href="#the-real-sample-study-little-loss-of-compared-positions">The real-sample study: little loss of compared positions</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#checking-accuracy-simulated-reads-with-known-differences">Checking accuracy: simulated reads with known differences</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#stricter-p-values-recover-hidden-differences">Stricter p-values recover hidden differences</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#the-frequency-floor-matters-at-high-depth">The frequency floor matters at high depth</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#the-cost-minor-alleles-even-when-breadth-is-unchanged">The cost: minor alleles, even when breadth is unchanged</a>
+    </li>
+        </ul>
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#recommendation">Recommendation</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#references">References</a>
     </li>
     </ul>
                 </li>
@@ -116,12 +128,11 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="keeping-popani-honest-across-depth">Keeping popANI honest across depth</h1>
-<p>popANI creeps upward as sequencing depth goes up, far enough to push a genuine same-strain pair over
+<p>popANI can creep upward as sequencing depth goes up, far enough to push a genuine same-strain pair over
 the "same clone" line for no biological reason.</p>
 <p>This is one of the <strong>profiling parameter</strong> guides. It covers two choices you make together: how
 strict to build the <strong>sequencing-error null model</strong> (its error rate, plus an optional <code>min_freq</code>
-post-filter), and which <strong>ANI metric</strong> to pair it with (<code>popANI</code>, <code>cosANI</code>, or <code>conANI</code>). Get these
-right and the score stays stable across sequencing depth. The rest of the page shows the effect,
+post-filter), and which <strong>ANI metric</strong> to pair it with (<code>popANI</code>, <code>cosANI</code>, or <code>conANI</code>). These choices affect both depth stability and sensitivity to real differences. The rest of the page shows the effect,
 measures three ways to remove it, and recommends what ZipStrain ships with.</p>
 <div class="admonition note">
 <p class="admonition-title">Test data</p>
@@ -152,8 +163,9 @@ measures three ways to remove it, and recommends what ZipStrain ships with.</p>
 </tbody>
 </table>
 <p>A single reference pair that we know carries the same strain is downsampled to four read
-fractions. Because the biology never changes, any movement in ANI across those fractions is pure
-depth bias, which makes this pair an ideal ruler.</p>
+fractions. This tests depth sensitivity while holding the underlying samples fixed. Sampling can still
+change callable positions and detection of genuine minor alleles; this pair alone does not
+establish which ANI estimate is closest to biological truth.</p>
 </div>
 <h2 id="the-problem">The problem</h2>
 <p>popANI calls a position "shared" when the two samples have <strong>at least one allele in common</strong>. Deeper
@@ -162,8 +174,8 @@ positions clear that low bar and the score creeps toward 100.</p>
 <p>To pin this down, we ran a simple experiment. We took <strong>one pair of samples that we know carry the
 same strain</strong> and subsampled their raw reads to four increasing depths (<code>f005 → f100</code>). That gives us
 a depth axis while the biology stays completely fixed: the same pair, the same genome, just more or
-fewer reads. So anything that moves in popANI across those depths is a depth artefact, not real
-signal. On this pair, popANI climbs steadily from <strong>99.9227</strong> at the shallowest depth to <strong>99.9920</strong>
+fewer reads. This measures depth dependence, but cannot by itself separate error alleles from genuine rare
+alleles detected only at higher depth. On this pair, popANI climbs steadily from <strong>99.9227</strong> at the shallowest depth to <strong>99.9920</strong>
 at full depth, crossing the <code>99.99</code> "same clone" line for no reason other than the reads we added.
 Everything that follows is about removing that artefact: flattening the depth curve while leaving the
 real same-versus-different-strain signal alone.</p>
@@ -173,44 +185,187 @@ inflation. The dashed and dotted curves are the compare-time <code>min_freq</cod
 zoomed into the top fraction of a percent so the small differences are actually visible.</p>
 <div class="zs-tabs" id="depthtabs"><div class="zs-tabbar"><button class="zs-tab active" data-t="t1c">Both samples deepen together</button><button class="zs-tab" data-t="t1a">Sample 1 varies</button><button class="zs-tab" data-t="t1b">Sample 2 varies</button></div><div class="zs-panel active" id="t1c"><div class="zs-plotwrap"><iframe class="zs-plot" src="fig1c_matched_depths.html" style="width:1410px;height:1600px" loading="lazy"></iframe></div><p class="zs-cap">Matched downsampling. As both samples get deeper (f005 to f100), popANI climbs while cosANI, conANI and the compare-time min_freq references stay flat. Each small panel is one null-model setting.</p></div><div class="zs-panel" id="t1a"><div class="zs-plotwrap"><iframe class="zs-plot" src="fig1a_sample1_varies.html" style="width:1410px;height:1600px" loading="lazy"></iframe></div><p class="zs-cap">Only Sample 1 is downsampled, with Sample 2 held at full depth.</p></div><div class="zs-panel" id="t1b"><div class="zs-plotwrap"><iframe class="zs-plot" src="fig1b_sample2_varies.html" style="width:1410px;height:1600px" loading="lazy"></iframe></div><p class="zs-cap">Only Sample 2 is downsampled while Sample 1 stays at full depth. It is the mirror image, which confirms the effect is symmetric.</p></div></div>
 
-<h2 id="the-headline-two-knobs-the-same-cure">The headline: two knobs, the same cure</h2>
+<h2 id="the-real-sample-study-two-routes-to-flatter-curves">The real-sample study: two routes to flatter curves</h2>
 <p>You can attack the bias at two stages: a stricter sequencing-error <strong>null model</strong> (the rows) or a
 stricter <strong>ANI metric</strong> (the columns). The grid below shows the residual depth bias for every
 combination, and darker means flatter.</p>
 <div class="zs-plotwrap"><iframe class="zs-plot" src="fig2_residual_bias_heatmap.html" style="width:860px;height:700px" loading="lazy"></iframe></div>
-<p class="zs-cap">Residual depth bias, measured as max minus min ANI across depth. Reading down a column shows what the null model buys you at a fixed metric; reading across a row shows what the metric buys you at a fixed null model. Both routes reach the same near-flat floor, and they overlap: they are correcting the <em>same</em> error, so stacking them buys you very little.</p>
+<p class="zs-cap">Residual depth bias, measured as max minus min ANI across depth. Reading down a column shows what the null model buys you at a fixed metric; reading across a row shows what the metric buys you at a fixed null model. Both routes reach a near-flat floor on this pair. Similar depth stability does not establish equivalent biological accuracy or prove that combining filters is unnecessary.</p>
 
 <p>Two settings are enough on their own: a null model built at a <strong>1% error rate</strong> (span 0.009) and
 <strong>cosANI at a threshold of 0.01</strong> (span 0.002). Either one pulls the bias down from 0.069 into the
-range of ordinary measurement noise.</p>
-<h2 id="the-cost-essentially-none">The cost: essentially none</h2>
+near-flat range on this pair; no independent measurement-noise baseline was established.</p>
+<h2 id="the-real-sample-study-little-loss-of-compared-positions">The real-sample study: little loss of compared positions</h2>
 <p>A fix that flattens the curve by throwing away data would be a hollow win. That is not what happens
 here. Every correction leaves the number of compared positions basically untouched (around 1.71M),
-so the choice between them comes down to <em>where</em> the correction lives, not to lost data.</p>
+but retained positions do not measure retained minor-allele information. The simulation below tests
+that additional cost explicitly.</p>
 <div class="zs-plotwrap"><iframe class="zs-plot" src="fig3_fixes_bias_vs_breadth.html" style="width:1260px;height:770px" loading="lazy"></iframe></div>
 <p class="zs-cap">Each fix on its own: bias removed on the left (lower is better) against positions kept on the right (higher is better). The right-hand bars are all about the same height, so none of the fixes costs meaningful breadth on this pair.</p>
 
+<h2 id="checking-accuracy-simulated-reads-with-known-differences">Checking accuracy: simulated reads with known differences</h2>
+<p>A flat depth curve is useful, but it is not enough: a filter could flatten the curve by removing
+real minor alleles. We therefore added a second experiment with <strong>known sequence differences</strong>, so
+we can distinguish recovered differences, differences hidden by shared errors, and sites that lack
+sufficient coverage. This complements the real-sample study above rather than replacing it.</p>
+<div class="admonition note">
+<p class="admonition-title">Simulation design</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Reference</strong></td>
+<td>Three 10-kb windows from E. coli K12 U00096.3, spanning 47–54% GC</td>
+</tr>
+<tr>
+<td><strong>Truth</strong></td>
+<td>180 substitutions in 18,000 evaluated positions: <strong>99% ANI</strong></td>
+</tr>
+<tr>
+<td><strong>Reads</strong></td>
+<td>ART (<a href="https://doi.org/10.1093/bioinformatics/btr708">Huang et al., 2012</a>) HiSeq2500 paired 150-bp; Badread (<a href="https://doi.org/10.21105/joss.01316">Wick, 2019</a>) nanopore2023 with Q20 and Q25 read-quality distributions</td>
+</tr>
+<tr>
+<td><strong>Replication</strong></td>
+<td>Two independent simulated sample pairs per technology; lower depths are nested read subsets</td>
+</tr>
+<tr>
+<td><strong>Depths</strong></td>
+<td>10×, 30×, 100×, 300×; also 1,000× for Illumina and one ONT Q20 pair</td>
+</tr>
+<tr>
+<td><strong>Fixed filters</strong></td>
+<td>Read ANI ≥ 0.95; baseQ ≥ 13; mapQ ≥ 0; all-mapped inclusion; reference-based BAQ enabled; comparison coverage ≥ 5 after allele filtering</td>
+</tr>
+<tr>
+<td><strong>Sweep</strong></td>
+<td>Six error rates × five frequency floors × two p-values: <strong>60 parameter combinations</strong></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Reads were aligned with Bowtie2 (<a href="https://doi.org/10.1038/nmeth.1923">Langmead &amp; Salzberg, 2012</a>)
+for Illumina and minimap2 <code>map-ont</code> (<a href="https://doi.org/10.1093/bioinformatics/bty191">Li, 2018</a>)
+for ONT, then processed with SAMtools (<a href="https://doi.org/10.1093/gigascience/giab008">Danecek et al., 2021</a>)
+and ZipStrain's production pileup parser, allele filtering and popANI expression.
+The evaluation excludes 2 kb at either end of each window. These are small controlled simulations,
+not a full metagenomic benchmark. Q20/Q25 are simulator settings, not named ONT chemistries.</p>
+<h3 id="stricter-p-values-recover-hidden-differences">Stricter p-values recover hidden differences</h3>
+<p>Here <strong>masked</strong> means a true difference has sufficient coverage in both samples but is called
+shared because an erroneous allele survives filtering. It is distinct from an <strong>uncallable</strong> site.
+The comparison holds <code>error_rate=0.001</code> and <code>min_freq=0.01</code> fixed and changes only the null-model
+p-value between <code>0.05</code> and <code>0.000001</code>.</p>
+<div class="zs-plotwrap"><iframe class="zs-plot" title="Simulation: masked true differences across sequencing depths" src="fig4_simulation_masking.html" style="width:1100px;height:550px" loading="lazy"></iframe></div>
+<p class="zs-cap">Mean masked differences per 180 known substitutions. Error bars span the two simulation replicates, not a confidence interval. ONT Q20 at 1,000× has only one replicate; ONT Q25 was not tested at 1,000×. Hover for replicate counts and uncallable differences. At 10×, additional differences are uncallable and are not counted as masked.</p>
+
+<p>At <strong>100×</strong>, where all 18,000 positions were callable:</p>
+<table>
+<thead>
+<tr>
+<th>Simulation</th>
+<th style="text-align: right;">Masked with p = 0.05</th>
+<th style="text-align: right;">popANI with p = 0.05</th>
+<th style="text-align: right;">Masked with p = 1e-6</th>
+<th style="text-align: right;">popANI with p = 1e-6</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Illumina HiSeq2500</td>
+<td style="text-align: right;">4 / 180</td>
+<td style="text-align: right;">99.022%</td>
+<td style="text-align: right;">0 / 180</td>
+<td style="text-align: right;">99.000%</td>
+</tr>
+<tr>
+<td>ONT Q20</td>
+<td style="text-align: right;">24 / 180</td>
+<td style="text-align: right;">99.133%</td>
+<td style="text-align: right;">0 / 180</td>
+<td style="text-align: right;">99.000%</td>
+</tr>
+<tr>
+<td>ONT Q25</td>
+<td style="text-align: right;">9 / 180</td>
+<td style="text-align: right;">99.050%</td>
+<td style="text-align: right;">0 / 180</td>
+<td style="text-align: right;">99.000%</td>
+</tr>
+</tbody>
+</table>
+<p>These are replicate averages. For Illumina, the stricter setting recovered all 180 differences
+at every tested depth from 30× through 1,000×, in both pairs. Identical-template controls produced
+100% popANI on callable positions across the parameter sweep; there were also no false differences
+at unchanged sites in the pure-strain comparisons. This finite pilot does not establish a zero
+false-positive rate in real samples.</p>
+<div class="admonition example">
+<p class="admonition-title">How one erroneous read hides a difference</p>
+<p>At one simulated C-versus-T position, sample A had <strong>78 C + 1 erroneous T</strong>, while sample B
+had <strong>72 T</strong>. With p = 0.05, the erroneous T survived and popANI called a match. With p = 1e-6,
+it was removed and the true difference was recovered. The 1% frequency floor alone cannot
+remove that T: one read out of 79 is <strong>1.27%</strong>.</p>
+</div>
+<h3 id="the-frequency-floor-matters-at-high-depth">The frequency floor matters at high depth</h3>
+<div class="zs-plotwrap"><iframe class="zs-plot" title="Simulation: effect of a frequency floor at 1000-fold coverage" src="fig5_simulation_frequency_floor.html" style="width:1100px;height:490px" loading="lazy"></iframe></div>
+<p class="zs-cap">One ONT Q20 pair at 1,000×, holding error_rate = 0.001 and p = 0.05 fixed. Removing the frequency floor hid 94 of 180 differences; a 1% floor reduced this to three. All evaluation positions were callable.</p>
+
+<p>Without a frequency floor, this pair reported <strong>99.522%</strong> ANI instead of 99%. With <code>min_freq=0.01</code>,
+it reported <strong>99.017%</strong>. With the floor enabled, masking did <strong>not</strong> progressively worsen with depth;
+in this pilot the largest mean masking occurred around 100×. The coverage-dependent effect therefore
+depends on the filtering settings, not just on the definition of popANI.</p>
+<p>The error rate seen by the null model is also not the simulator's total error rate. At 300×,
+residual substitution fractions after alignment, read/base filtering and BAQ were approximately
+<strong>0.078% for Illumina, 0.161% for ONT Q20, and 0.055% for ONT Q25</strong>. These are before null-model
+filtering and exclude indels; a global mean alone does not capture context-specific errors.</p>
+<h3 id="the-cost-minor-alleles-even-when-breadth-is-unchanged">The cost: minor alleles, even when breadth is unchanged</h3>
+<p>We mixed reads from the two templates to create 1%, 5% and 10% minor strains at nominal 300×.
+Each mixture has 180 known minor-allele sites. These mixtures reuse the first simulation's reads
+and are not additional independent replicates.</p>
+<div class="zs-plotwrap"><iframe class="zs-plot" title="Simulation: true minor-allele retention under two null-model thresholds" src="fig6_simulation_minor_alleles.html" style="width:1100px;height:550px" loading="lazy"></iframe></div>
+<p class="zs-cap">Retained true minor-allele sites divided by 180, with error_rate = 0.001 and min_freq = 0.01 fixed. Hover for exact counts and the number of invariant positions retaining an erroneous allele. Sampling around a 1% cutoff already removes some genuine 1%-frequency alleles; stricter null filtering removes more.</p>
+
+<p>For the <strong>1% ONT Q20 mixture</strong>, tightening the p-value reduced genuine minor-allele retention
+from <strong>84/180 to 26/180</strong>, while reducing invariant sites with retained error alleles from
+<strong>125 to 15 out of 17,820</strong>. At <strong>5%</strong>, both settings retained all 180 ONT Q20 minor alleles;
+Illumina retained 180 with p = 0.05 and 179 with p = 1e-6. All 10% minor alleles
+survived both settings in these simulations.</p>
+<p>This is why unchanged comparison breadth is not proof that a correction is free. It can preserve
+positions while removing biologically meaningful alleles. Genuine shared alleles in mixed populations
+are intentional popANI matches, not necessarily errors to eliminate.</p>
 <h2 id="recommendation">Recommendation</h2>
 <div class="admonition tip">
-<p class="admonition-title">Recommended parameters</p>
-<p><strong>Pick one: a 1% null model, or cosANI at 0.01.</strong> Either one removes the depth bias on its own.
-They correct the same error, so there is no reason to apply both.</p>
-<p><strong>If you want your profiles to stay general, keep the null model loose and use cosANI.</strong> A loose
-null model at profiling time keeps all of the profile's allele detail, so the same profiles work
-for any downstream comparison. You then apply the depth correction later, at compare time, with
-cosANI, and you can change the cosANI threshold whenever you like without re-profiling. Baking a
-strict null model into the profile does the opposite: it throws away information up front and
-locks one level of strictness into the file.</p>
-<p><strong>Why there is no compare-time <code>min_freq</code> option.</strong> A frequency filter applied only at compare
-time reproduces cosANI almost exactly (a depth span of 0.003 versus 0.002 at the 0.01 level). It
-adds nothing new, and because it runs as a custom per-comparison step it slows things down. So its
-job lives in the two places that already do it efficiently: <strong>null-model generation</strong> at profile
-time, and <strong>cosANI</strong> at compare time.</p>
+<p class="admonition-title">Defaults for strain comparison</p>
+<p>Use <strong>error_rate = 0.001</strong>, <strong>p_threshold = 0.000001</strong>, and <strong>min_freq = 0.01</strong>.
+These defaults are supported by the controlled pilot for recovering fixed differences, but
+can discard genuine rare alleles. They are not a universal technology-specific calibration.</p>
+<p>Choose <strong>popANI, conANI or cosANI</strong> according to the biological question, not only which makes
+the depth curve flattest. The real-pair study's 1% error-rate and cosANI observations
+remain useful, but do not establish that the two approaches are interchangeable.</p>
+<p>Filtering at profiling time is irreversible in the saved counts. If you change null-model
+parameters, rebuild the model and rerun profiling. Use <code>--force-prepare</code> to regenerate
+auto-prepared assets.</p>
+<p>For rare-variant work, validate sensitivity at the allele frequencies and depths of interest
+before loosening the filters. A 1% frequency floor is not a guarantee of reliable 1%-allele detection.</p>
 </div>
-<hr />
-<p class="zs-foot">Depth-bias parameter study. One same-strain pair (SRR30025063 × SRR30025566,
-GCF_900475675.1), four read fractions, swept over null-model strictness, ANI metric, and a
-compare-time frequency filter. The figures are interactive, so hover for exact values.</p>
+<div class="admonition note">
+<p class="admonition-title">Reading the real-sample figures</p>
+<p>Figures 1–3 show the real-pair results. Their p-value was not recorded on this page
+and should not be inferred from the recommended defaults.
+Compare-time frequency-filter curves are experimental references, not a supported CLI option.</p>
+</div>
+<h2 id="references">References</h2>
+<ul>
+<li>Huang W, Li L, Myers JR, Marth GT. (2012). <strong>ART: a next-generation sequencing read simulator.</strong> <em>Bioinformatics</em>, 28(4), 593–594. <a href="https://doi.org/10.1093/bioinformatics/btr708">doi:10.1093/bioinformatics/btr708</a>.</li>
+<li>Wick RR. (2019). <strong>Badread: simulation of error-prone long reads.</strong> <em>Journal of Open Source Software</em>, 4(36), 1316. <a href="https://doi.org/10.21105/joss.01316">doi:10.21105/joss.01316</a>.</li>
+<li>Langmead B, Salzberg SL. (2012). <strong>Fast gapped-read alignment with Bowtie 2.</strong> <em>Nature Methods</em>, 9(4), 357–359. <a href="https://doi.org/10.1038/nmeth.1923">doi:10.1038/nmeth.1923</a>.</li>
+<li>Li H. (2018). <strong>Minimap2: pairwise alignment for nucleotide sequences.</strong> <em>Bioinformatics</em>, 34(18), 3094–3100. <a href="https://doi.org/10.1093/bioinformatics/bty191">doi:10.1093/bioinformatics/bty191</a>.</li>
+<li>Danecek P, et al. (2021). <strong>Twelve years of SAMtools and BCFtools.</strong> <em>GigaScience</em>, 10(2), giab008. <a href="https://doi.org/10.1093/gigascience/giab008">doi:10.1093/gigascience/giab008</a>.</li>
+</ul>
               
             </div>
           </div><footer>

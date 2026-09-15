@@ -300,7 +300,7 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 <span class="w">    </span>--stb-file<span class="w"> </span>N5_271_010G1.maxbin2.stb<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--run-dir<span class="w"> </span>out_profile
 </code></pre></div>
-<p>Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. An automatically generated Poisson null model (1% total error rate by default) removes allele counts at or below the sequencing-error ceiling. The optional <code>--min-freq</code> filter then removes alleles below a chosen fraction of the original A+C+G+T depth; it defaults to <code>0</code>, so frequency filtering is off unless requested. The result is one profile per sample plus genome- and gene-level summary statistics.</p>
+<p>Profiling walks every mapped read at nucleotide resolution and, for each position, counts the A/T/C/G bases observed. An automatically generated Poisson null model (0.1% total error rate by default) removes allele counts at or below the sequencing-error ceiling. The <code>--min-freq</code> filter then removes alleles below a chosen fraction of the original A+C+G+T depth; it defaults to <code>0.01</code>, requiring a 1% within-position allele frequency. Set <code>--min-freq 0</code> to disable frequency filtering. The result is one profile per sample plus genome- and gene-level summary statistics.</p>
 <p>After a successful run the output directory is organized like this:</p>
 <div class="highlight"><pre><span></span><code>out_profile/
 ├── N5_271_010G1/                      # one folder per sample
@@ -318,7 +318,7 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 </code></pre></div>
 <div class="admonition tip">
 <p class="admonition-title">Gene profiling and tuning</p>
-<p>Pass <code>--gene-fasta</code> to enable gene-level profiling, use the null-model options (<code>--error-rate</code>, <code>--max-total-reads</code>, <code>--p-threshold</code>) to tune sequencing-error filtering, or set <code>--min-freq 0.01</code> to require a 1% allele frequency. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use <code>--force-prepare</code> to rebuild cached assets after changing null-model parameters. Run <code>zipstrain profile -h</code> to see all options grouped by category.</p>
+<p>Pass <code>--gene-fasta</code> to enable gene-level profiling. Sequencing-error filtering defaults to <code>--error-rate 0.001</code>, <code>--p-threshold 0.000001</code>, and <code>--min-freq 0.01</code>. These defaults favor strain comparison; stringent filtering can discard genuine rare alleles, especially near 1% frequency. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use <code>--force-prepare</code> to rebuild cached assets after changing null-model parameters. Existing supplied null-model files retain their original thresholds: rebuild them and rerun profiling to apply the new defaults. Run <code>zipstrain profile -h</code> to see all options grouped by category.</p>
 </div>
 <details class="note">
 <summary>Preparing assets separately (advanced / cluster use)</summary>
@@ -347,9 +347,9 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 <p>Add <code>--compare-genes</code> to the same command to compare at the gene level instead of the genome level. Other useful flags: <code>--min-cov</code> (minimum coverage to consider a position), <code>--ani-method</code> (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;t&gt;</code>), and <code>--calculate</code> (trim to just <code>ani</code> for a smaller table). Run <code>zipstrain compare -h</code> for the full, grouped list.</p>
 </div>
 <h4 id="two-comparison-methods">Two comparison methods</h4>
-<p><code>zipstrain compare</code> has two engines, chosen with <code>--method</code>. They compute the <strong>same numbers</strong> and write the <strong>same <code>all_comparisons.parquet</code></strong> — they differ only in <em>how</em> they get there, which changes how well each scales to repeated, growing analyses. Here's what each does under the hood.</p>
+<p><code>zipstrain compare</code> has two engines, chosen with <code>--method</code>. They compute the <strong>same values for the genome metrics supported by both</strong> and write the result to the same <code>all_comparisons.parquet</code> filename. The standard table can include additional requested summary columns that are not emitted by the matrix method. The methods differ mainly in <em>how</em> they calculate the shared metrics, which changes how well each scales to repeated, growing analyses.</p>
 <p><strong>Standard (<code>--method standard</code>, the default)</strong> compares profiles <strong>directly and pairwise</strong>. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.</p>
-<p><strong>Matrix (<code>--method matrix</code>)</strong> first turns your profiles into a <strong>matrix store</strong>: for each genome, one dense <code>samples × positions × 4</code> array of base counts (built once, saved as HDF5 in <code>intermediate_files/</code>). The comparison then becomes vectorized array math over that store — all-vs-all in one sweep — which can run on a <strong>GPU</strong> (<code>--backend torch-mps</code> on Apple Silicon, <code>--backend torch-cuda</code> on NVIDIA). It records completed pairs in a resumable DuckDB, so it never redoes work, and new samples can be <strong>appended</strong> to the store without rebuilding it. That reusable, appendable substrate is the whole point: it pays a one-time build cost so that repeated all-vs-all comparisons — especially focused on one genome or a small set, over a cohort that keeps growing — stay fast. It needs the matrix extra (<code>pip install "zipstrain[matrix]"</code>).</p>
+<p><strong>Matrix (<code>--method matrix</code>)</strong> first turns your profiles into a reusable HDF5 <strong>matrix store</strong>, then performs vectorized all-vs-all comparisons. For default popANI, each covered position is packed into one byte: <code>A=1</code>, <code>T=2</code>, <code>C=4</code>, and <code>G=8</code>, with multiple observed alleles combined by bitwise OR (for example, <code>A+C=5</code>). For conANI or cosANI, ZipStrain instead stores the four <code>A,T,C,G</code> counts. The high-level command chooses the correct representation automatically. Comparison can run on a <strong>GPU</strong> (<code>--backend torch-mps</code> on Apple Silicon, <code>--backend torch-cuda</code> on NVIDIA), records completed pairs in a resumable DuckDB, and appends new samples without rebuilding existing rows. This approach is highly optimized when you have many samples but only one or a few genomes, because parallelization across sample pairs is efficient. It needs the matrix extra (<code>pip install "zipstrain[matrix]"</code>).</p>
 <table>
 <thead>
 <tr>
@@ -404,6 +404,7 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 <span class="w">    </span>--run-dir<span class="w"> </span>out_compare
 </code></pre></div>
 <p>The matrix store and its resumable compare database are kept in <code>out_compare/intermediate_files/</code> and reused on later runs. The bed file the store needs is auto-discovered from the <code>profiling_assets/</code> folder created during profiling; pass <code>--bed-file</code> if it can't be found.</p>
+<p><code>--ani-method popani</code> builds the compact bitmask store. <code>--ani-method conani</code> or <code>--ani-method cosani_0.95</code> builds a count store instead. <code>--min-cov</code> is applied while the matrix is built: positions below it become zero. A run directory therefore has a fixed ANI method and minimum coverage; use a different <code>--run-dir</code> to change either contract.</p>
 </div>
 </div>
 </div>
@@ -434,8 +435,8 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se"
 │ genome                   ┆ total_positions ┆ share_allele_pos ┆ genome_ani ┆ … ┆ sample_1     ┆ sample_2     │
 │ ---                      ┆ ---             ┆ ---              ┆ ---            ┆   ┆ ---          ┆ ---          │
 ╞══════════════════════════╪═════════════════╪══════════════════╪════════════════╪═══╪══════════════╪══════════════╡
-│ fobin.fasta              ┆ 1183            ┆ 1183             ┆ 100.0          ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
-│ maxbin2.maxbin.001.fasta ┆ 0               ┆ 0                ┆ 0.0            ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
+│ fobin.fasta              ┆ 1072            ┆ 1072             ┆ 100.0          ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
+│ maxbin2.maxbin.001.fasta ┆ 32663           ┆ 32663            ┆ 100.0          ┆ … ┆ N5_271_010G1 ┆ N5_271_010G2 │
 └──────────────────────────┴─────────────────┴──────────────────┴────────────────┴───┴──────────────┴──────────────┘
 </code></pre></div>
 <p>Key columns:</p>
@@ -464,6 +465,10 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se"
 <td>Genome-wide ANI (%) between the two samples for this genome. The parquet metadata key <code>zipstrain_compare_ani_method</code> records the method (<code>popani</code>, <code>conani</code>, or <code>cosani_&lt;threshold&gt;</code>)</td>
 </tr>
 <tr>
+<td><code>max_consecutive_length</code></td>
+<td>Longest run of shared alleles at adjacent coordinates on one scaffold; a mismatch or uncovered coordinate breaks the run</td>
+</tr>
+<tr>
 <td><code>sample_1</code>, <code>sample_2</code></td>
 <td>The pair being compared</td>
 </tr>
@@ -471,7 +476,8 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se"
 </table>
 <div class="admonition info">
 <p class="admonition-title">Interpreting popANI</p>
-<p><code>genome_ani</code> near <strong>100.0</strong> means the same strain is present in both samples (they share essentially all alleles). Lower values indicate diverging strains. A genome with <code>total_positions = 0</code> (like <code>maxbin2.maxbin.001.fasta</code> above) simply wasn't covered deeply enough in both samples to compare, so its <code>0.0</code> ANI is "not enough data," not "totally different." A common threshold for calling two samples the <em>same strain</em> is popANI ≥ 99.999%.</p>
+<p><code>genome_ani</code> near <strong>100.0</strong> means the same strain is present in both samples (they share essentially all alleles). Lower values indicate diverging strains. Here, both genomes have substantial coverage overlap and every comparable position shares an allele. In general, <code>total_positions = 0</code> means no positions passed the coverage requirement in both samples; ANI is then not interpretable and must not be read as "totally different." A common threshold for calling two samples the <em>same strain</em> is popANI ≥ 99.999%.</p>
+<p>These values use the default <code>--min-cov 5</code>. <code>total_positions</code> is the intersection of passing coordinates, not either sample's individual count. For example, <code>fobin.fasta</code> has 1,183 covered positions in N5_271_010G2 at <code>--min-cov 1</code>, but only 1,181 coordinates pass in both samples at that threshold and 1,072 pass in both at the default threshold.</p>
 <p>This interpretation assumes the default <code>--ani-method popani</code>; if you run <code>--ani-method conani</code>, the same column is still called <code>genome_ani</code>, but the parquet header records <code>zipstrain_compare_ani_method=conani</code>.</p>
 </div>
 <hr />

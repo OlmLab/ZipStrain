@@ -294,7 +294,7 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892095  0   51  0   0   0
 GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 </code></pre></div>
-<p>The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. <code>--min-freq</code> is applied against the original A+C+G+T depth before any allele is removed and defaults to <code>0</code>. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.</p>
+<p>The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. <code>--min-freq</code> is applied against the original A+C+G+T depth before any allele is removed and defaults to <code>0.01</code> (1%); set it to <code>0</code> to disable frequency filtering. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.</p>
 <h3 id="sample_snvsparquet"><code>&lt;sample&gt;_SNVs.parquet</code></h3>
 <p>Every covered position that is <strong>divergent</strong> from the reference — either polymorphic or a substitution — classified in the style of inStrain's <code>SNVs.tsv</code>. Skipped without <code>--reference-fasta</code> (or with <code>--no-snvs</code>). Because the profile counts are sequence-error adjusted, a base with <code>count &gt; 0</code> is a "passing" allele.</p>
 <table>
@@ -386,14 +386,14 @@ GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 </tr>
 <tr>
 <td><code>max_consecutive_length</code></td>
-<td>Longest run of consecutive shared positions (an identical-by-state / IBS measure)</td>
+<td>Longest run of shared alleles at adjacent coordinates on one scaffold (an identical-by-state / IBS measure); a missing or uncovered coordinate breaks the run</td>
 </tr>
 </tbody>
 </table>
 <p>With gene ranges available, genome-level gene identity summary columns are also added by the default <code>--calculate all</code>: <code>shared_genes_count</code>, <code>identical_gene_count</code>, <code>perc_id_genes</code>.</p>
 <div class="admonition note">
 <p class="admonition-title">ANI method is stored in the parquet header</p>
-<p><code>--ani-method conani</code> changes how the ANI match indicator is computed, but it does not add separate consensus-specific output columns to the comparison table. Check <code>zipstrain_compare_ani_method</code> in the parquet metadata to know what <code>genome_ani</code> represents. Matrix mode supports <code>popani</code> only.</p>
+<p><code>--ani-method conani</code> or <code>--ani-method cosani_&lt;threshold&gt;</code> changes how the ANI match indicator is computed, but it does not add method-specific output columns. Check <code>zipstrain_compare_ani_method</code> in the parquet metadata to know what <code>genome_ani</code> represents. Both standard and matrix comparison support <code>popani</code>, <code>conani</code>, and <code>cosani_&lt;threshold&gt;</code>.</p>
 </div>
 <p>Example (same-strain replicates → 100% popANI):</p>
 <div class="highlight"><pre><span></span><code>sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_consecutive_length
