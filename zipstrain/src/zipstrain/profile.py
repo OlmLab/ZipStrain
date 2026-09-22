@@ -17,6 +17,7 @@ import re
 import shutil
 import duckdb
 from concurrent.futures import ThreadPoolExecutor
+from zipstrain.resource_limits import cpu_budget
 import tempfile
 import subprocess
 import pyarrow as pa
@@ -537,6 +538,7 @@ def _sort_existing_profile_parquet(
     output_file: pathlib.Path,
     tmp_dir: pathlib.Path,
     metadata: Optional[dict[str, str]] = None,
+    threads: int | None = None,
 ) -> None:
     """Sort an existing classic profile parquet and attach sortedness metadata."""
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -545,6 +547,7 @@ def _sort_existing_profile_parquet(
 
     conn = duckdb.connect()
     try:
+        conn.execute(f"SET threads={threads or cpu_budget() or 1}")
         in_sql = _duckdb_quote_sql_string(str(input_file))
         out_sql = _duckdb_quote_sql_string(str(sorted_path))
         input_columns = pq.read_schema(input_file).names
@@ -834,6 +837,7 @@ def _annotate_mpileup_chunk_with_duckdb(
         mpileup_sorted = _profile_parquet_is_coordinate_sorted(adjusted_mpileup_parquet)
     conn = duckdb.connect()
     try:
+        conn.execute("SET threads=1")
         conn.register(
             "stb_src",
             scaffold_to_genome.select(["scaffold", "genome"]).collect().to_arrow(),
@@ -1242,6 +1246,7 @@ def _profile_chunk_task(
             input_file=raw_chunk_path,
             output_file=raw_sorted_path,
             tmp_dir=output_dir,
+            threads=1,
         )
         raw_for_processing = raw_sorted_path
 
@@ -1261,6 +1266,7 @@ def _profile_chunk_task(
             input_file=candidate_chunk_path,
             output_file=final_chunk_path,
             tmp_dir=output_dir,
+            threads=1,
         )
 
     # Synchronous shell pipe (samtools view | process-read-locs); absolute output path
@@ -1388,7 +1394,12 @@ def profile_bam_in_chunks(
     # own children); this deliberately avoids asyncio subprocess, whose default
     # ThreadedChildWatcher spawns a waitpid thread per child and deadlocks
     # asyncio.run()'s shutdown once hundreds accumulate under concurrent invocation.
-    with ThreadPoolExecutor(max_workers=max(1, int(max_concurrency))) as executor:
+    requested_workers = max(1, int(max_concurrency))
+    budget = cpu_budget()
+    if budget is not None:
+        # Chunk subprocesses and the process-wide Polars pool share one allocation.
+        requested_workers = min(requested_workers, max(1, budget - pl.thread_pool_size()))
+    with ThreadPoolExecutor(max_workers=requested_workers) as executor:
         futures = [
             executor.submit(
                 _profile_chunk_task,

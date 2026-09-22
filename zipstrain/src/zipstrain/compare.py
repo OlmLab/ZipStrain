@@ -184,6 +184,11 @@ def _duckdb_configure_connection(
     temp_directory: Optional[Union[str, Path]] = None,
     threads: Optional[int] = None,
 ) -> None:
+    from zipstrain.resource_limits import cpu_budget
+
+    budget = cpu_budget()
+    if budget is not None:
+        threads = min(threads, budget) if threads is not None else budget
     if memory_limit:
         conn.execute(f"SET memory_limit='{_duckdb_quote_sql_string(memory_limit)}'")
     if temp_directory:

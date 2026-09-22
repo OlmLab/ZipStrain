@@ -2,6 +2,12 @@
 
 Entries are brief by design and describe changes relative to the previous released version.
 
+## Unreleased
+
+- Resource limits: bound ZipStrain's Polars, DuckDB and other native worker pools to each job's CPU allocation; divide Nextflow batched-comparison CPUs among concurrent pairs (default one), and cap in-process profiling/chunk-compare workers. Nextflow also assigns a per-pair DuckDB memory limit from task memory unless overridden.
+- Profiling: tightened the default null-model `p_threshold` to `1e-6` across Python, CLI and Nextflow; retained `error_rate=0.001` and `min_freq=0.01`. Rebuild existing null models to apply the new threshold. Stricter filtering can reduce sensitivity to rare alleles.
+- Documentation: added simulated-read accuracy and minor-allele sensitivity results to the parameter-selection guide, with interactive figures, source data and a regeneration script; distinguished depth stability from accuracy and updated the recommendation.
+
 ## 1.0.4
 
 Compared with `1.0.3`:

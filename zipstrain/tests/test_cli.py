@@ -965,7 +965,8 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
 
 
 @pytest.mark.parametrize("engine", ["polars", "duckdb"])
-def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, engine):
+def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, engine, monkeypatch):
+    monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "2")
     profile_1_path = tmp_path / "profile_1.parquet"
     profile_2_path = tmp_path / "profile_2.parquet"
     profile_3_path = tmp_path / "profile_3.parquet"
@@ -1001,7 +1002,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
             "--output-file",
             str(output_file),
             "--workers",
-            "1",
+            "9",
             "--calculate",
             "ani",
             "--engine",
@@ -1011,6 +1012,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
 
     assert result.exit_code == 0, result.output
     assert "pairs=2" in result.output
+    assert "workers=2" in result.output
     assert "avg_wall_s_per_pair=" in result.output
 
     actual = pl.read_parquet(output_file).sort(["sample_1", "sample_2", "genome"])

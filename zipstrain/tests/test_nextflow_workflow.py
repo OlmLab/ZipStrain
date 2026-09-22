@@ -134,6 +134,16 @@ def test_nextflow_requires_mode_and_defaults_to_batched_compare():
     assert "Set --parallel_mode to either single or batched" in text
 
 
+def test_nextflow_budgets_cpu_per_pair_and_profiles():
+    text = NEXTFLOW_FILE.read_text()
+    assert "params.batch_compare_n_parallel=1" in text
+    assert "def threads_per_pair = task.cpus.intdiv(parallel_pairs)" in text
+    assert "export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}" in text
+    assert "--duckdb-threads ${threads_per_pair}" in text
+    assert "--halt soon,fail=1" in text
+    assert "export ZIPSTRAIN_CPU_BUDGET=${task.cpus}" in text
+
+
 def test_nextflow_from_sra_to_profile_auto_builds_reference_without_genes():
     text = NEXTFLOW_FILE.read_text()
     assert 'if (!params.reference_genome)' in text
@@ -252,7 +262,9 @@ def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log:
     reason="nextflow + a JVM must be installed in the current Python environment "
     "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
 )
-def test_compare_genomes_mode_runs_end_to_end(tmp_path):
+@pytest.mark.parametrize("parallel_mode", ["single", "batched"])
+@pytest.mark.parametrize("compare_engine", ["polars", "duckdb"])
+def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode, compare_engine):
     """
     Actually compiles and executes zipstrain.nf, rather than grepping its text.
 
@@ -263,6 +275,8 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
     """
     profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
     output_dir = tmp_path / "out"
+    if parallel_mode == "batched" and shutil.which("parallel") is None:
+        pytest.skip("GNU parallel is required for the batched comparison path")
 
     # The repo's nextflow.config enables Docker by default and includes conf.config,
     # which sizes these processes at 8 cpus for cluster nodes. This test is meant to
@@ -273,6 +287,7 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
         "docker { enabled = false }\n"
         "process {\n"
         "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'compare_genome_batched' { cpus = 2; memory = '1 GB' }\n"
         "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
         "}\n"
     )
@@ -287,7 +302,9 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path):
             "--input_type", "profile_table",
             "--input_table", str(profiles_csv),
             "--stb", str(stb_path),
-            "--parallel_mode", "single",
+            "--parallel_mode", parallel_mode,
+            "--compare_engine", compare_engine,
+            "--batch_compare_n_parallel", "2",
             "--output_dir", str(output_dir),
         ],
         cwd=tmp_path,

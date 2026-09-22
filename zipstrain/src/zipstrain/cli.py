@@ -3,6 +3,10 @@ zipstrain.utils
 ========================
 This module contains the command-line interface (CLI) implementation for the zipstrain application.
 """
+from zipstrain.resource_limits import configure_cli_threads
+
+configure_cli_threads()
+
 import click as click
 from zipstrain import __version__
 import zipstrain.utils as ut

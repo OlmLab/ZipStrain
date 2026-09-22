@@ -24,7 +24,7 @@ import numpy as np
 
 NULL_MODEL_ERROR_RATE_DEFAULT = 0.001
 NULL_MODEL_MAX_COVERAGE_DEFAULT = 50_000
-NULL_MODEL_P_THRESHOLD_DEFAULT = 0.05
+NULL_MODEL_P_THRESHOLD_DEFAULT = 1e-6
 
 CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
 REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
@@ -1177,6 +1177,7 @@ def chunk_genome_compare(
 ) -> dict[str, object]:
     """Run classic genome compare on one pair table using in-process parallel workers."""
     from zipstrain import compare as cp
+    from zipstrain.resource_limits import cpu_budget
 
     if workers is not None and workers < 1:
         raise ValueError("workers must be >= 1")
@@ -1212,7 +1213,12 @@ def chunk_genome_compare(
         .get_column("__pair_count")
         .item()
     )
-    resolved_workers = max(1, min(workers or (os.cpu_count() or 1), max(total_pairs, 1)))
+    budget = cpu_budget()
+    available_cpus = budget or (os.cpu_count() or 1)
+    resolved_workers = max(1, min(workers or available_cpus, available_cpus, max(total_pairs, 1)))
+    if engine == "duckdb" and budget is not None:
+        per_worker_threads = max(1, budget // resolved_workers)
+        duckdb_threads = min(duckdb_threads, per_worker_threads) if duckdb_threads is not None else per_worker_threads
     pair_batch_size = max(1024, resolved_workers * 8)
     start_time = time.perf_counter()
     emit(
@@ -1447,7 +1453,12 @@ def _duckdb_quote_sql_string(value: str) -> str:
 
 
 def _duckdb_connect_with_temp_dir(temp_dir: str) -> duckdb.DuckDBPyConnection:
+    from zipstrain.resource_limits import cpu_budget
+
     conn = duckdb.connect()
+    budget = cpu_budget()
+    if budget is not None:
+        conn.execute(f"SET threads={budget}")
     conn.execute(f"SET temp_directory = '{_duckdb_quote_sql_string(temp_dir)}'")
     conn.execute("SET preserve_insertion_order = false")
     return conn

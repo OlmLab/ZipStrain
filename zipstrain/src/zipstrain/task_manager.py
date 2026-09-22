@@ -1722,7 +1722,7 @@ class ProfileBamTask(Task):
     <profiling-contract-link-cmd>
     ln -s <null-model> null_model.parquet
     samtools index <bam-file>
-    zipstrain utilities profile-single --bam-file input.bam <reference-fasta-arg> \
+    env ZIPSTRAIN_CPU_BUDGET=<max-concurrency> zipstrain utilities profile-single --bam-file input.bam <reference-fasta-arg> \
     --bed-file bed_file.bed \
     <gene-range-table-arg> \
     <profiling-contract-arg> \
@@ -1751,7 +1751,7 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    zipstrain utilities single_compare_genome --profile-location-1 <profile_1_file> \
+    env ZIPSTRAIN_CPU_BUDGET=${ZIPSTRAIN_CPU_BUDGET:-${SLURM_CPUS_PER_TASK:-1}} zipstrain utilities single_compare_genome --profile-location-1 <profile_1_file> \
     --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
@@ -2117,7 +2117,7 @@ class FastGeneCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
     """
     TEMPLATE_CMD="""
-    zipstrain utilities single_compare_gene --profile-location-1 <profile_1_file> \
+    env ZIPSTRAIN_CPU_BUDGET=${ZIPSTRAIN_CPU_BUDGET:-${SLURM_CPUS_PER_TASK:-1}} zipstrain utilities single_compare_gene --profile-location-1 <profile_1_file> \
     --profile-location-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \

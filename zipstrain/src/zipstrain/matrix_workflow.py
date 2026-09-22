@@ -103,6 +103,7 @@ def _validate_existing_matrix_run(
         return
     conn = duckdb.connect(str(compare_db), read_only=True)
     try:
+        conn.execute("SET threads=1")
         if not mp._matrix_compare_table_exists(conn, "matrix_compare_metadata"):
             raise ValueError(
                 "Existing matrix compare DB is missing metadata and cannot be resumed safely."

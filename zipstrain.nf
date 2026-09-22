@@ -1,6 +1,6 @@
 params.error_rate=0.001
 params.max_total_reads=50000
-params.p_threshold=0.05
+params.p_threshold=0.000001
 params.mode = null
 params.parallel_mode="batched"
 params.min_cov=5
@@ -9,7 +9,7 @@ params.batch_size=10
 params.compare_duckdb_memory_limit=""
 params.compare_engine="polars"
 params.compare_calculate="all"
-params.batch_compare_n_parallel=4
+params.batch_compare_n_parallel=1
 params.publish_mode="symlink"
 params.compare_genome_scope="all"
 params.compare_gene_scope="all:all"
@@ -146,6 +146,7 @@ process build_db_from_Sylph{
     path "reference_genomes_gene.fasta",emit:reference_genome_genes
     script:
     """
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities build-genome-db \
         --tool sylph \
         --abundance-table ${sylph_abundance} \
@@ -254,6 +255,7 @@ process prepare_profile{
     path "profiling_contract.json", emit: profiling_contract
     script:
 """
+export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
 zipstrain utilities prepare_profiling \\
         --reference-fasta ${reference_genome} \\
         --gene-fasta ${gene_fasta} \\
@@ -289,6 +291,7 @@ process profile_bam {
     val sample_name, emit: sample_name
     script:
     """
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities profile-single \\
                         --bam-file ${bamfile} \\
                         --reference-fasta ${reference_fasta} \\
@@ -321,10 +324,12 @@ process compare_genome_fast_profiles_single {
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, (task.memory.toBytes() * 0.7d).toLong())}B"
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities single_compare_genome  \
                         --profile-location-1 ${profile_location_1} \
                         --profile-location-2 ${profile_location_2} \
@@ -332,6 +337,7 @@ process compare_genome_fast_profiles_single {
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         ${add_compare_engine} \
+                        --duckdb-threads ${task.cpus} \
                         ${add_calculate} \
                         ${add_duckdb_memory_limit} \
                         ${add_genome_scope} \
@@ -352,9 +358,11 @@ process compare_gene_fast_profiles_single {
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, (task.memory.toBytes() * 0.7d).toLong())}B"
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities single_compare_gene  \
                         --profile-location-1 ${profile_location_1} \
                         --profile-location-2 ${profile_location_2} \
@@ -362,6 +370,7 @@ process compare_gene_fast_profiles_single {
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         ${add_compare_engine} \
+                        --duckdb-threads ${task.cpus} \
                         --ani-method ${params.compare_ani_method} \
                         ${add_duckdb_memory_limit} \
                         --scope ${params.compare_gene_scope} \
@@ -388,27 +397,36 @@ process compare_genome_batched {
     path "Batch_*_comparisons.parquet", emit: comparison_results
 
     script:
+    def parallel_pairs = params.batch_compare_n_parallel as int
+    if (parallel_pairs < 1 || parallel_pairs > task.cpus) {
+        error "batch_compare_n_parallel must be between 1 and the compare task CPU allocation (${task.cpus})"
+    }
+    def threads_per_pair = task.cpus.intdiv(parallel_pairs)
+    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, ((task.memory.toBytes() / parallel_pairs) * 0.7d).toLong())}B"
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
     remove_profile_locations = profile_locations.join(' ')
     def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
     def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
+    export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_genome \
+    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities single_compare_genome \
                         --profile-location-1 {1} \
                         --profile-location-2 {2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         ${add_compare_engine} \
+                        --duckdb-threads ${threads_per_pair} \
                         ${add_calculate} \
                         ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_genome_scope}
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
     mv *_comparison.parquet comps/
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
     rm -rf comps
     rm -f pairs.txt
@@ -433,26 +451,35 @@ process compare_gene_batched {
     output:
     path "Batch_*_comparisons.parquet", emit: comparison_results
     script:
+    def parallel_pairs = params.batch_compare_n_parallel as int
+    if (parallel_pairs < 1 || parallel_pairs > task.cpus) {
+        error "batch_compare_n_parallel must be between 1 and the compare task CPU allocation (${task.cpus})"
+    }
+    def threads_per_pair = task.cpus.intdiv(parallel_pairs)
+    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, ((task.memory.toBytes() / parallel_pairs) * 0.7d).toLong())}B"
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
     remove_profile_locations = profile_locations.join(' ')
     def add_gene_scope= (params.compare_gene_scope=="all") ? "" : "--scope ${params.compare_gene_scope}"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb" && params.compare_duckdb_memory_limit) ? "--duckdb-memory-limit ${params.compare_duckdb_memory_limit}" : ""
+    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
     def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
+    export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --colsep '\\t' -j ${params.batch_compare_n_parallel} 'zipstrain utilities single_compare_gene \
+    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities single_compare_gene \
                         --profile-location-1 {1} \
                         --profile-location-2 {2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         ${add_compare_engine} \
+                        --duckdb-threads ${threads_per_pair} \
                         --ani-method ${params.compare_ani_method} \
                         ${add_duckdb_memory_limit} \
                         -o {1}_{2}_comparison.parquet' ${add_gene_scope}
     mkdir comps
     hash=\$(sha1sum pairs.txt | awk '{print \$1}')
     mv *_comparison.parquet comps/
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
     rm -rf comps
     rm -f pairs.txt
@@ -475,6 +502,7 @@ process merge_comparison_tables {
     path "merged_comparisons.parquet", emit: merged_comparisons
     script:
     """
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities merge_parquet --input-dir . --output-file merged_comparisons.parquet
     """
 }
@@ -505,6 +533,7 @@ process fromSRAtoProfile{
     else
     bowtie2 -x ${reference_genome} -U ${sra_id}/${sra_id}*.fastq --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
     fi
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities profile-single \\
                         --bam-file ${sra_id}.bam \\
                         --reference-fasta ${reference_genome} \\
@@ -538,6 +567,7 @@ process prepare_profile_no_genes{
     path "profiling_contract.json", emit: profiling_contract
     script:
 """
+export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
 zipstrain utilities prepare_profiling \\
         --reference-fasta ${reference_genome} \\
         --stb-file ${stb_file} \\
@@ -575,6 +605,7 @@ process fromSRAtoProfileBuildDb{
         bowtie_reads="-U ${sra_id}/${sra_id}*.fastq"
     fi
 
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities build-genome-db \\
         --tool sylph \\
         --abundance-table ${sra_id}_sylph_abundance.tsv \\
@@ -593,6 +624,7 @@ process fromSRAtoProfileBuildDb{
 
     bowtie2 -x reference_genomes.fna \$bowtie_reads --threads ${task.cpus} | samtools view -bS -F 4 - | samtools sort -@ ${task.cpus} -o ${sra_id}.bam -
 
+    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities profile-single \\
         --bam-file ${sra_id}.bam \\
         --reference-fasta reference_genomes.fna \\

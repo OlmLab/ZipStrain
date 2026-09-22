@@ -205,9 +205,11 @@ Major options:
 - `--gene-fasta` — enables gene-level profiling (auto-generates a gene range table)
 - `-u/-b/-l/-g/--profiling-contract` — supply pre-built assets to override auto-generation; `--force-prepare` regenerates them all
 - Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain).
-- Allele filters: the Poisson null model assumes a 0.1% total error rate by default and removes counts at or below its error ceiling. `--min-freq` defaults to `0.01`, requiring at least 1% within-position frequency; set it to `0` to disable frequency filtering. The denominator is the original A+C+G+T depth before allele filtering.
+- Allele filters: the Poisson null model assumes a 0.1% total error rate and `p_threshold=0.000001` by default, removing counts at or below its error ceiling. `--min-freq` defaults to `0.01`, requiring at least 1% within-position frequency; set it to `0` to disable frequency filtering. The denominator is the original A+C+G+T depth before allele filtering. These defaults favor strain comparison over rare-allele sensitivity. Supplied null models keep their existing thresholds; rebuild the model and rerun profiling to apply changed defaults.
 - Presence & SNVs: `--no-snvs`, `--snv-min-cov` (5), `--presence-ber` (0.5), `--presence-fug` (1.0), `--presence-min-cov-use-fug` (2.0), `--presence-min-coverage` (0.1), `--genome-taxonomy`
 - Execution: `-n, --num-procs` (8), `-m, --max-concurrent-batches` (5), `-t, --task-per-batch` (10), `-e, --execution-mode` (`local`/`slurm`), `-c, --slurm-config`, `-o, --container-engine`, `--container-address`
+
+ZipStrain profiles each BAM with a CPU budget no larger than `--num-procs` or the Slurm CPU allocation, whichever is smaller. It reserves part of that budget for Polars and limits concurrent profiling chunks accordingly. The external mapper and samtools sort retain their own thread settings.
 
 <details>
 <summary><code>zipstrain profile --help</code></summary>
@@ -260,11 +262,11 @@ Optional pre-built assets (auto-generated if omitted):
 
 Profiling parameters:
   --error-rate FLOAT              Error rate used when auto-generating the
-                                  null model.  [default: 0.01]
+                                  null model.  [default: 0.001]
   --max-total-reads INTEGER       Maximum coverage considered when auto-
                                   generating the null model.  [default: 50000]
   --p-threshold FLOAT             Significance threshold used when auto-
-                                  generating the null model.  [default: 0.05]
+                                  generating the null model.  [default: 1e-06]
   --model-type [poisson]          Null model type used when auto-generating
                                   the null model.  [default: poisson]
   --force-prepare                 Regenerate all auto-generated profiling
@@ -347,6 +349,8 @@ Other options:
 Compare profiled samples to each other, one row per genome per sample pair, and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). By default it compares at the genome level; add `--compare-genes` for gene-level comparison. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
 
 There are two engines. `--method standard` (default) does direct pairwise comparison and is simplest. `--method matrix` builds a reusable matrix store, which pays off for repeated all-vs-all comparison. Both are **resumable and extendable**: re-running with the same `--run-dir` and a profiles table that includes new samples computes only the new pairs. See the [Tutorial](./Tutorial.md) for a worked matrix walk-through and [Expected output](./expected_output.md) for the columns.
+
+Standard comparison runs each pair in a separate ZipStrain process. The generated batch scripts limit its compute pools to the Slurm `--cpus-per-task` allocation, or one CPU per pair when no allocation is exposed. Set `ZIPSTRAIN_CPU_BUDGET` before running to specify a different explicit per-process cap; it cannot exceed an exposed Slurm allocation. `--duckdb-threads` is also bounded by that cap. Multiple concurrent local batches can still use more CPUs in aggregate, so tune `--max-concurrent-batches` to the resources available.
 
 ```bash
 # Standard genome comparison from a CSV of profiles
@@ -592,7 +596,7 @@ Options:
 - `-s, --stb-file` (required)
 - `-e, --error-rate` (default: `0.001`)
 - `-m, --max-total-reads` (default: `50000`)
-- `-p, --p-threshold` (default: `0.05`)
+- `-p, --p-threshold` (default: `0.000001`)
 - `-t, --model-type` (default: `poisson`)
 - `-o, --output-dir` (required)
 
@@ -1309,12 +1313,12 @@ Conventions used by every example below:
 - `--sylph_db` / `--sylph_db_link`: path to the Sylph database, or the URL to download it from if the path is missing (defaults to the GTDB r220 database).
 - `--genome_db_cache_dir`: cache directory for genomes downloaded during Sylph-based reference building.
 - `--prefetch_max_size` (default `200g`): SRA Toolkit prefetch size limit for SRA modes.
-- `--error_rate` (default `0.001`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.05`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
+- `--error_rate` (default `0.001`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.000001`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
 - `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0.01`.
-- `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows.
+- `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows. Batched mode defaults to one simultaneous pair per task; it divides `task.cpus` among simultaneous pairs and rejects a pair count above the task CPU allocation.
 - `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
-- `--compare_engine` (`polars` | `duckdb`, default `polars`) and `--compare_duckdb_memory_limit` (DuckDB only).
+- `--compare_engine` (`polars` | `duckdb`, default `polars`) and `--compare_duckdb_memory_limit` (DuckDB only). Without an explicit memory limit, each DuckDB pair receives 70% of its share of the Nextflow task memory; an explicit limit is per pair and should fit within that share.
 - `--compare_calculate`: genome metrics to compute (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations).
 
 Notes:
@@ -1323,6 +1327,7 @@ Notes:
 - For `--input_type pair_table`, the columns are `sample_name_1`, `sample_name_2`, `profile_location_1`, `profile_location_2`.
 - `--mode` is required; running without it intentionally fails rather than choosing a default workflow.
 - `--parallel_mode` defaults to `batched`.
+- Each Nextflow ZipStrain process sets `ZIPSTRAIN_CPU_BUDGET` from `task.cpus` before importing Polars. For batched comparisons, this is the integer CPU share per pair. ZipStrain also honors `SLURM_CPUS_PER_TASK` when present and uses the smaller of the two. For direct CLI use outside Nextflow, set `ZIPSTRAIN_CPU_BUDGET` explicitly when the scheduler does not expose the allocation. This caps compute pools, not every incidental runtime thread reported by the OS.
 - For auto-built references, genome selection comes from the merged Sylph abundance table via `zipstrain utilities build-genome-db`.
 
 ### Command 1: Map reads (`--mode map_reads`)
@@ -1447,7 +1452,7 @@ nextflow run OlmLab/ZipStrain \
   --compare_calculate ani+ibs+identical_genes \
   --parallel_mode batched \
   --batch_size 1000 \
-  --batch_compare_n_parallel 4 \
+  --batch_compare_n_parallel 1 \
   --output_dir out_compare_genomes \
   -resume
 ```
@@ -1466,7 +1471,7 @@ nextflow run OlmLab/ZipStrain \
   --compare_ani_method popani \
   --parallel_mode batched \
   --batch_size 1000 \
-  --batch_compare_n_parallel 4 \
+  --batch_compare_n_parallel 1 \
   --output_dir out_compare_genes \
   -resume
 ```
