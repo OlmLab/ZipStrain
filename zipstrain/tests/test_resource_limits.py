@@ -3,6 +3,7 @@ import subprocess
 import sys
 
 import duckdb
+import polars as pl
 import pytest
 
 from zipstrain import compare
@@ -54,6 +55,75 @@ def test_cli_initializes_polars_with_job_budget(command, pool):
         check=True,
     )
     assert tuple(map(int, result.stdout.split())) == (pool, pool, 1)
+
+
+def test_polars_cli_import_does_not_initialize_duckdb():
+    env = os.environ.copy()
+    env["ZIPSTRAIN_CPU_BUDGET"] = "2"
+    code = (
+        "import sys, psutil; "
+        "before = psutil.Process().num_threads(); "
+        "import zipstrain.cli; "
+        "after = psutil.Process().num_threads(); "
+        "print(int('duckdb' in sys.modules), before, after)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=env, text=True, capture_output=True, check=True,
+    )
+    loaded, before, after = map(int, result.stdout.split())
+    assert loaded == 0
+    assert after < before + 8
+
+
+def test_polars_pair_comparison_does_not_initialize_duckdb(tmp_path):
+    frame = pl.DataFrame({
+        "chrom": ["chr1"], "pos": [1], "gene": ["NA"], "genome": ["genome1"],
+        "A": [10], "C": [0], "G": [0], "T": [0],
+    })
+    profile_1 = tmp_path / "a_profile.parquet"
+    profile_2 = tmp_path / "b_profile.parquet"
+    output = tmp_path / "comparison.parquet"
+    frame.write_parquet(profile_1)
+    frame.write_parquet(profile_2)
+    args = [
+        "utilities", "single_compare_genome", "--profile-location-1", str(profile_1),
+        "--profile-location-2", str(profile_2), "--engine", "polars",
+        "--calculate", "ani", "--output-file", str(output),
+    ]
+    code = (
+        "import sys; from zipstrain.cli import cli; "
+        f"cli.main(args={args!r}, standalone_mode=False); "
+        "print('duckdb_loaded=' + str(int('duckdb' in sys.modules)))"
+    )
+    env = os.environ.copy()
+    env["ZIPSTRAIN_CPU_BUDGET"] = "2"
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=env, text=True, capture_output=True, check=True,
+    )
+    assert "duckdb_loaded=0" in result.stdout
+    assert pl.read_parquet(output).get_column("genome_ani").to_list() == [100.0]
+
+
+def test_duckdb_connection_and_default_pool_are_bounded_at_creation():
+    env = os.environ.copy()
+    env["ZIPSTRAIN_CPU_BUDGET"] = "2"
+    code = (
+        "import psutil; "
+        "before = psutil.Process().num_threads(); "
+        "from zipstrain.resource_limits import connect_duckdb; "
+        "conn = connect_duckdb(threads=32); "
+        "import duckdb; "
+        "active = psutil.Process().num_threads(); "
+        "print(before, active, "
+        "conn.execute(\"SELECT current_setting('threads')\").fetchone()[0], "
+        "duckdb.sql(\"SELECT current_setting('threads')\").fetchone()[0])"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=env, text=True, capture_output=True, check=True,
+    )
+    before, active, explicit_threads, default_threads = map(int, result.stdout.split())
+    assert (explicit_threads, default_threads) == (2, 2)
+    assert active < before + 8
 
 
 def test_duckdb_connection_uses_job_budget(monkeypatch):

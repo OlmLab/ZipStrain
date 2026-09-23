@@ -295,7 +295,7 @@ def test_writer_setup_failure_stops_queued_batches_and_closes(tmp_path, monkeypa
         def close(self):
             closed.append(True)
 
-    monkeypatch.setattr(mp.duckdb, "connect", lambda _path: BrokenConnection())
+    monkeypatch.setattr(mp, "connect_duckdb", lambda _path, **_kwargs: BrokenConnection())
     try:
         with pytest.raises(RuntimeError, match="simulated writer setup failure"):
             mp._write_matrix_compare_payload_batch_persistent(tmp_path / "compare.duckdb", [], None, 1024**3)

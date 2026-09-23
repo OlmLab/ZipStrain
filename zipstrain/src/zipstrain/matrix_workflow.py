@@ -15,10 +15,10 @@ import pathlib
 import shutil
 from typing import Callable
 
-import duckdb
 import polars as pl
 
 from zipstrain import matrix_pairs as mp
+from zipstrain.resource_limits import connect_duckdb
 
 
 # Sentinel genome value for profile positions that are not assigned to any
@@ -101,9 +101,8 @@ def _validate_existing_matrix_run(
 
     if not compare_db.exists() or compare_db.stat().st_size == 0:
         return
-    conn = duckdb.connect(str(compare_db), read_only=True)
+    conn = connect_duckdb(str(compare_db), read_only=True, threads=1)
     try:
-        conn.execute("SET threads=1")
         if not mp._matrix_compare_table_exists(conn, "matrix_compare_metadata"):
             raise ValueError(
                 "Existing matrix compare DB is missing metadata and cannot be resumed safely."

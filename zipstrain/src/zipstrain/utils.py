@@ -3,6 +3,8 @@ zipstrain.utils
 ========================
 This module provides utility functions for profiling and compare operations.
 """
+from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -19,8 +21,12 @@ import pyarrow.parquet as pq
 from collections import Counter
 from scipy.stats import poisson
 import subprocess
-import duckdb
 import numpy as np
+from typing import TYPE_CHECKING
+from zipstrain.resource_limits import connect_duckdb
+
+if TYPE_CHECKING:
+    import duckdb
 
 NULL_MODEL_ERROR_RATE_DEFAULT = 0.001
 NULL_MODEL_MAX_COVERAGE_DEFAULT = 50_000
@@ -1453,12 +1459,7 @@ def _duckdb_quote_sql_string(value: str) -> str:
 
 
 def _duckdb_connect_with_temp_dir(temp_dir: str) -> duckdb.DuckDBPyConnection:
-    from zipstrain.resource_limits import cpu_budget
-
-    conn = duckdb.connect()
-    budget = cpu_budget()
-    if budget is not None:
-        conn.execute(f"SET threads={budget}")
+    conn = connect_duckdb()
     conn.execute(f"SET temp_directory = '{_duckdb_quote_sql_string(temp_dir)}'")
     conn.execute("SET preserve_insertion_order = false")
     return conn

@@ -15,9 +15,8 @@ import os
 import signal
 import re
 import shutil
-import duckdb
 from concurrent.futures import ThreadPoolExecutor
-from zipstrain.resource_limits import cpu_budget
+from zipstrain.resource_limits import connect_duckdb, cpu_budget
 import tempfile
 import subprocess
 import pyarrow as pa
@@ -545,9 +544,8 @@ def _sort_existing_profile_parquet(
     sorted_path = tmp_dir / f"{output_file.stem}.sorted.parquet"
     sorted_path.unlink(missing_ok=True)
 
-    conn = duckdb.connect()
+    conn = connect_duckdb(threads=threads or cpu_budget() or 1)
     try:
-        conn.execute(f"SET threads={threads or cpu_budget() or 1}")
         in_sql = _duckdb_quote_sql_string(str(input_file))
         out_sql = _duckdb_quote_sql_string(str(sorted_path))
         input_columns = pq.read_schema(input_file).names
@@ -835,9 +833,8 @@ def _annotate_mpileup_chunk_with_duckdb(
     """Annotate one adjusted mpileup chunk with genome+gene in DuckDB."""
     if mpileup_sorted is None:
         mpileup_sorted = _profile_parquet_is_coordinate_sorted(adjusted_mpileup_parquet)
-    conn = duckdb.connect()
+    conn = connect_duckdb(threads=1)
     try:
-        conn.execute("SET threads=1")
         conn.register(
             "stb_src",
             scaffold_to_genome.select(["scaffold", "genome"]).collect().to_arrow(),

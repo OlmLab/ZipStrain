@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from zipstrain.resource_limits import cpu_budget
+from zipstrain.resource_limits import connect_duckdb, cpu_budget
 import gc
 import importlib
 import sys
@@ -11,9 +11,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
-import duckdb
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -21,6 +20,9 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from zipstrain import compare as cp
+
+if TYPE_CHECKING:
+    import duckdb
 
 PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
 COUNT_DTYPES = {
@@ -1723,8 +1725,7 @@ def _prepare_matrix_compare_db(
     ani_method: str,
 ) -> duckdb.DuckDBPyConnection:
     existed_before = output_file.exists() and output_file.stat().st_size > 0
-    compare_conn = duckdb.connect(str(output_file))
-    compare_conn.execute("SET threads=1")
+    compare_conn = connect_duckdb(str(output_file), threads=1)
     compare_conn.execute("SET preserve_insertion_order=false")
     if not existed_before:
         _init_matrix_compare_db_schema(compare_conn)
@@ -1932,9 +1933,8 @@ def _write_matrix_compare_payload_batch(
 ) -> int:
     batch_rows = 0
     completed_rows: list[tuple[int, int, int]] = []
-    write_conn = connection if connection is not None else duckdb.connect(str(output_file))
+    write_conn = connection if connection is not None else connect_duckdb(str(output_file), threads=1)
     if connection is None:
-        write_conn.execute("SET threads=1")
         write_conn.execute("SET preserve_insertion_order=false")
     try:
         write_conn.execute("BEGIN")
@@ -1991,10 +1991,9 @@ def _write_matrix_compare_payload_batch_persistent(
         raise RuntimeError("Matrix result writer stopped after an earlier failed transaction.")
     try:
         if getattr(state, "connection", None) is None:
-            state.connection = duckdb.connect(str(output_file))
+            state.connection = connect_duckdb(str(output_file), threads=1)
             state.output_file = output_file
             state.connection.execute("SET preserve_insertion_order=false")
-            state.connection.execute("SET threads=1")
             state.connection.execute(f"SET memory_limit='{_matrix_writer_memory_limit(memory_limit_bytes)}B'")
         if state.output_file != output_file:
             raise RuntimeError("Matrix result writer cannot switch databases before closing.")
@@ -2069,10 +2068,7 @@ def _open_matrix_build_connection(
     output_file: Path,
     duckdb_memory_limit_bytes: int,
 ) -> duckdb.DuckDBPyConnection:
-    conn = duckdb.connect(str(output_file))
-    budget = cpu_budget()
-    if budget is not None:
-        conn.execute(f"SET threads={budget}")
+    conn = connect_duckdb(str(output_file))
     conn.execute("SET preserve_insertion_order=false")
     conn.execute(f"SET memory_limit='{_duckdb_memory_limit_setting(duckdb_memory_limit_bytes)}'")
     return conn
@@ -3622,11 +3618,8 @@ def export_matrix_db_hdf5(
         raise ValueError("export_batch_mb must be > 0")
 
     h5py_module = _import_h5py()
-    read_conn = duckdb.connect(str(matrix_db_file), read_only=True)
+    read_conn = connect_duckdb(str(matrix_db_file), read_only=True)
     try:
-        budget = cpu_budget()
-        if budget is not None:
-            read_conn.execute(f"SET threads={budget}")
         read_conn.execute("SET preserve_insertion_order=false")
         metadata = _load_matrix_db_metadata(read_conn)
         samples = _load_matrix_db_samples(read_conn)
@@ -6067,12 +6060,9 @@ def export_matrix_compare_parquet(
     if output_file.exists():
         raise FileExistsError(f"Output file already exists: {output_file}")
 
-    conn = duckdb.connect(str(matrix_compare_db_file), read_only=True)
+    conn = connect_duckdb(str(matrix_compare_db_file), read_only=True)
     compare_metadata: dict[str, str] = {}
     try:
-        budget = cpu_budget()
-        if budget is not None:
-            conn.execute(f"SET threads={budget}")
         compare_metadata = {
             str(k): str(v)
             for k, v in conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()

@@ -3,12 +3,16 @@
 This module provides all comparison functions for zipstrain.
 
 """
+from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Literal, Optional, Union
+from typing import TYPE_CHECKING, Iterable, Literal, Optional, Union
 
 import polars as pl
-import duckdb
+from zipstrain.resource_limits import connect_duckdb
+
+if TYPE_CHECKING:
+    import duckdb
 
 
 PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
@@ -612,7 +616,7 @@ def duckdb_prefilter_by_scope(
     if not scope_requested:
         return _as_lazy_profile(mpile1), _as_lazy_profile(mpile2)
 
-    con = duckdb.connect()
+    con = connect_duckdb(threads=threads)
     try:
         _duckdb_configure_connection(
             con,
@@ -689,7 +693,7 @@ def duckdb_filter_join(
     and optional gene scope are pushed down into DuckDB. The returned lazy frame
     contains: `surr`, `scaffold`, `pos`, `gene`, and `genome`.
     """
-    con = duckdb.connect()
+    con = connect_duckdb(threads=threads)
 
     try:
         _duckdb_configure_connection(
@@ -734,7 +738,7 @@ def duckdb_compare_genomes_to_parquet(
 
     This path avoids materializing large intermediate tables in Python memory.
     """
-    con = duckdb.connect()
+    con = connect_duckdb(threads=threads)
     try:
         _duckdb_configure_connection(
             con,
@@ -779,7 +783,7 @@ def duckdb_compare_genomes(
     threads: Optional[int] = None,
 ) -> pl.LazyFrame:
     """Run genome comparison in DuckDB and return selected metrics as a LazyFrame."""
-    con = duckdb.connect()
+    con = connect_duckdb(threads=threads)
     try:
         _duckdb_configure_connection(
             con,
@@ -825,7 +829,7 @@ def duckdb_compare_genes_to_parquet(
     threads: Optional[int] = None,
 ) -> None:
     """Run gene comparison in DuckDB and write final output directly to parquet."""
-    con = duckdb.connect()
+    con = connect_duckdb(threads=threads)
     try:
         _duckdb_configure_connection(
             con,

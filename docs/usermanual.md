@@ -1272,7 +1272,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:1.1.0`;
+- sets the default container to `parsaghadermazi/zipstrain:1.1.1`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 
@@ -1327,7 +1327,7 @@ Notes:
 - For `--input_type pair_table`, the columns are `sample_name_1`, `sample_name_2`, `profile_location_1`, `profile_location_2`.
 - `--mode` is required; running without it intentionally fails rather than choosing a default workflow.
 - `--parallel_mode` defaults to `batched`.
-- Each Nextflow ZipStrain process sets `ZIPSTRAIN_CPU_BUDGET` from `task.cpus` before importing Polars. For batched comparisons, this is the integer CPU share per pair. ZipStrain also honors `SLURM_CPUS_PER_TASK` when present and uses the smaller of the two. For direct CLI use outside Nextflow, set `ZIPSTRAIN_CPU_BUDGET` explicitly when the scheduler does not expose the allocation. This caps compute pools, not every incidental runtime thread reported by the OS.
+- Each Nextflow ZipStrain process sets `ZIPSTRAIN_CPU_BUDGET` from `task.cpus` before importing Polars. For batched comparisons, this is the integer CPU share per pair. ZipStrain also honors `SLURM_CPUS_PER_TASK` when present and uses the smaller of the two. For direct CLI use outside Nextflow, set `ZIPSTRAIN_CPU_BUDGET` explicitly when the scheduler does not expose the allocation. Polars-only comparisons do not load DuckDB; DuckDB connections, when needed, are bounded at creation. These caps limit compute pools, not every incidental runtime thread reported by the OS.
 - For auto-built references, genome selection comes from the merged Sylph abundance table via `zipstrain utilities build-genome-db`.
 
 ### Command 1: Map reads (`--mode map_reads`)

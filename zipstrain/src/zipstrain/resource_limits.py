@@ -2,6 +2,11 @@
 
 import os
 import sys
+import threading
+
+
+_duckdb_default_lock = threading.Lock()
+_duckdb_default_threads: int | None = None
 
 
 def _positive_int(value: str | None) -> int | None:
@@ -22,6 +27,36 @@ def cpu_budget() -> int | None:
         return explicit or slurm
     # A Slurm job without --cpus-per-task has one CPU per task by default.
     return 1 if os.environ.get("SLURM_JOB_ID") else None
+
+
+def duckdb_thread_budget(requested: int | None = None) -> int:
+    """Bound DuckDB by the job budget, or by affinity outside a job."""
+    if requested is not None and requested < 1:
+        raise ValueError("DuckDB threads must be >= 1")
+    budget = cpu_budget()
+    if budget is None:
+        budget = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    budget = max(1, budget or 1)
+    return min(requested, budget) if requested is not None else budget
+
+
+def connect_duckdb(*args, threads: int | None = None, **kwargs):
+    """Open a bounded connection without leaving DuckDB's default pool unbounded."""
+    global _duckdb_default_threads
+
+    limit = duckdb_thread_budget(threads)
+    import duckdb
+
+    # DuckDB initializes a module-level connection on import. Keep its worker
+    # pool bounded even though ZipStrain uses explicit connections for queries.
+    with _duckdb_default_lock:
+        if _duckdb_default_threads is None or limit < _duckdb_default_threads:
+            duckdb.sql(f"SET threads={limit}")
+            _duckdb_default_threads = limit
+
+    config = dict(kwargs.pop("config", {}))
+    config["threads"] = limit
+    return duckdb.connect(*args, config=config, **kwargs)
 
 
 def _option_int(name: str) -> int | None:

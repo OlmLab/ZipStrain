@@ -4,6 +4,12 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+## 1.1.1
+
+Compared with `1.1.0`:
+
+- Keep DuckDB unloaded on Polars-only CLI paths and bound both DuckDB's default pool and explicit connections at creation, avoiding node-sized thread pools on shared HPC nodes.
+
 ## 1.1.0
 
 Compared with `1.0.4`:
