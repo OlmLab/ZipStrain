@@ -21,6 +21,7 @@ params.min_baseq=13
 params.min_freq=0.01
 params.min_read_ani=0.95
 params.read_inclusion="paired"
+params.profile_backend="python"
 params.sylph_db = null
 params.sylph_db_link="http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb"
 params.genome_db_cache_dir="genome_cache"
@@ -290,6 +291,7 @@ process profile_bam {
     path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats
     val sample_name, emit: sample_name
     script:
+    def profile_backend_arg = (params.profile_backend == "python") ? "" : "--backend ${params.profile_backend}"
     """
     export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities profile-single \\
@@ -306,7 +308,7 @@ process profile_bam {
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
-                        --output-dir .
+                        --output-dir . ${profile_backend_arg}
     """
 }
 
@@ -523,6 +525,7 @@ process fromSRAtoProfile{
     path "${sra_id}_gene_stats.parquet", emit: gene_stats
     val sra_id, emit: sample_name
     script:
+    def profile_backend_arg = (params.profile_backend == "python") ? "" : "--backend ${params.profile_backend}"
     """
     prefetch --max-size ${params.prefetch_max_size} ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -548,7 +551,7 @@ process fromSRAtoProfile{
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
-                        --output-dir .
+                        --output-dir . ${profile_backend_arg}
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """
@@ -591,6 +594,7 @@ process fromSRAtoProfileBuildDb{
     path "${sra_id}_sylph_abundance.tsv", emit: sylph_abundance
     val sra_id, emit: sample_name
     script:
+    def profile_backend_arg = (params.profile_backend == "python") ? "" : "--backend ${params.profile_backend}"
     """
     prefetch --max-size ${params.prefetch_max_size} ${sra_id}
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -638,7 +642,7 @@ process fromSRAtoProfileBuildDb{
         --min-freq ${params.min_freq} \\
         --min-read-ani ${params.min_read_ani} \\
         --read-inclusion ${params.read_inclusion} \\
-        --output-dir .
+        --output-dir . ${profile_backend_arg}
 
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam

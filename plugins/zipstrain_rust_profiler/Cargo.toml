@@ -1,0 +1,18 @@
+[package]
+name = "zipstrain-rust-profiler"
+version = "0.1.0"
+edition = "2021"
+description = "Optional native profiling backend for ZipStrain"
+license = "MIT"
+repository = "https://github.com/OlmLab/ZipStrain"
+
+[[bin]]
+name = "zipstrain-rust-profiler"
+path = "src/bin/profile.rs"
+
+[dependencies]
+rust-htslib = { version = "1.0.1", default-features = false }
+arrow-array = "56"
+arrow-schema = "56"
+parquet = { version = "56", default-features = false, features = ["arrow", "zstd"] }
+serde_json = "1"

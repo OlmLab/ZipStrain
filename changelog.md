@@ -4,6 +4,13 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+## 1.2.0
+
+Compared with `1.1.1`:
+
+- Profiling: added an optional plugin backend interface and the separately installable `zipstrain_rust_profiler` package; Python remains the default backend.
+- Documentation: explained the Poisson null model and its assumptions in the parameter-selection guide; clarified the experiments, fit all six figures to the tutorial width without internal scrolling, reduced chart sizes, added missing figure numbers, and simplified labels and explanations.
+
 ## 1.1.1
 
 Compared with `1.1.0`:

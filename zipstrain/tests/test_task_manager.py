@@ -298,6 +298,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
         gene_range_file=str(gene_range_file),
         profiling_contract_file=None,
         genome_length_file=str(genome_length_file),
+        backend="rust_profiler",
     )
 
     async def _collect():
@@ -314,6 +315,7 @@ def test_profile_task_generator_includes_gene_stats_output(tmp_path):
     assert expected_outputs["genome-stats"]._expected_file_name == "sample_1_genome_stats.parquet"
     assert expected_outputs["gene-stats"]._expected_file_name == "sample_1_gene_stats.parquet"
     assert tasks[0].inputs["min-freq"].get_value() == "0.01"
+    assert tasks[0].inputs["backend"].get_value() == "rust_profiler"
 
 
 def test_profile_bam_task_template_moves_gene_stats():
@@ -327,6 +329,7 @@ def test_profile_bam_task_template_moves_gene_stats():
     assert "--min-freq <min-freq>" in cmd
     assert "<min-read-ani-arg>" in cmd
     assert "--read-inclusion <read-inclusion>" in cmd
+    assert "--backend <backend>" in cmd
     assert "--null-model null_model.parquet" in cmd
     assert "mv input_profile.parquet <sample-name>_profile.parquet" in cmd
     assert "mv input_gene_stats.parquet <sample-name>_gene_stats.parquet" in cmd

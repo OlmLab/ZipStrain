@@ -7,6 +7,8 @@ ZipStrain runs on **Linux and macOS** (including Apple Silicon). There are two w
 
 For the difference between the two, see the [User Manual](./usermanual.md#zipstrain-command-line-interface). Whichever you choose, finish by confirming it works.
 
+Profiling has an optional Rust backend distributed separately on PyPI. See [Plugins](plugins.md) for installation and selection.
+
 !!! tip "Recommended quick path (CLI)"
     `conda create -n zipstrain -c conda-forge -c bioconda python=3.12 zipstrain bowtie2 samtools sylph` installs the CLI and every external tool `map`/`profile`/`compare` need in one command. Then `conda activate zipstrain && zipstrain test`.
 
@@ -153,7 +155,7 @@ A known-good combination (the current ZipStrain development environment). Newer 
 
 | Package / tool | Version | Used by |
 |---|---|---|
-| zipstrain | 1.1.1 | — |
+| zipstrain | 1.2.0 | — |
 | Python | 3.12 | everything |
 | samtools | 1.23 | `profile`, `map` |
 | bowtie2 | 2.5.5 | `map` |
@@ -233,7 +235,7 @@ On a cluster, keep site-specific SLURM profiles in a local ignored config such a
 |---|---|
 | Nextflow | 24.10.0 |
 | Java (JDK) | 17+ |
-| ZipStrain container | `parsaghadermazi/zipstrain:1.1.1` |
+| ZipStrain container | `parsaghadermazi/zipstrain:1.2.0` |
 
 ZipStrain's continuous integration runs the pipeline against **Nextflow 24.10.0**, so that is the confirmed-working version. Pin it with `export NXF_VER=24.10.0` before running to match CI exactly. Newer Nextflow releases (26.x) tightened DSL syntax — the bundled `zipstrain.nf` is kept compatible, but pin to a tested version if you hit parse errors.
 

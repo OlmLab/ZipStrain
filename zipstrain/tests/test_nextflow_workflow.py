@@ -91,6 +91,14 @@ def test_profile_bam_process_emits_gene_stats():
     assert 'path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats' in output_section
 
 
+def test_profile_backend_is_forwarded_by_all_nextflow_profilers():
+    text = NEXTFLOW_FILE.read_text()
+    assert 'params.profile_backend="python"' in text
+    assert text.count('params.profile_backend == "python"') == 3
+    assert text.count("--backend ${params.profile_backend}") == 3
+    assert text.count("--output-dir . ${profile_backend_arg}") == 3
+
+
 def test_from_sra_to_profile_process_emits_gene_stats():
     output_section = _extract_output_section("fromSRAtoProfile")
     assert 'path "${sra_id}_gene_stats.parquet", emit: gene_stats' in output_section

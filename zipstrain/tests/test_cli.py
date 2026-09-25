@@ -1442,6 +1442,7 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["min_freq"] == cli.pf.PROFILE_MIN_FREQ_DEFAULT
     assert captured["min_read_ani"] == cli.pf.PROFILE_MIN_READ_ANI_DEFAULT
     assert captured["read_inclusion"] == cli.pf.PROFILE_READ_INCLUSION_DEFAULT
+    assert captured["backend"] == "python"
 
 
 def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
@@ -1483,6 +1484,8 @@ def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
             "0.97",
             "--read-inclusion",
             "proper-pairs",
+            "--backend",
+            "rust_profiler",
         ],
     )
     assert result.exit_code == 0
@@ -1491,6 +1494,7 @@ def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
     assert captured["min_freq"] == 0.03
     assert captured["min_read_ani"] == 0.97
     assert captured["read_inclusion"] == "proper-pairs"
+    assert captured["backend"] == "rust_profiler"
 
 
 def test_profile_command_auto_generates_assets_from_minimal_inputs(tmp_path, monkeypatch):

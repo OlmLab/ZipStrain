@@ -24,16 +24,19 @@ truth class and filter settings. Counts are integers; figures average independen
 - Both samples mapped to A; no competing references. Read ANI0.95, mapQ0, all-mapped inclusion,
   baseQ13 and reference BAQ. Comparison requires retained coverage5 in both samples.
 
-## Sweep and included data
+## Settings tested and included data
 
-Full sweep: error_rate {0.0001,0.0003,0.001,0.003,0.01,0.03}, min_freq {0,0.005,0.01,0.02,0.05},
-p_threshold {0.05,1e-6}. The pilot null table covers depth12000, beyond the observed maximum.
-There were54 raw profile datasets,3180 pair/configuration rows and540 mixture/configuration rows.
+We tested six assumed error rates (0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03), five minimum
+allele frequencies (0, 0.005, 0.01, 0.02, 0.05), and two `p_threshold` values (0.05, 1e-6).
+That makes 60 combinations. The null-model table covers depth up to 12,000, beyond the highest
+depth observed here. The full experiment produced 54 raw profile datasets, 3,180 pair-and-setting
+rows, and 540 mixture-and-setting rows.
 
-`simulation_pairs.csv` includes error_rate0.001, min_freq0 or0.01, both p-values and all available depths.
-Kinds `different`, `identical_A`, `identical_B` distinguish true A/B differences from same-template
-controls. Seed0 denotes a control comparing libraries11 and29, not a third independent simulation.
-At1000x, Illumina has two A/B pairs; ONT Q20 has only seed11; Q25 has no1000x data.
+`simulation_pairs.csv` includes an assumed error rate of 0.001, minimum allele frequencies of 0
+or 0.01, both p-values, and all available depths. The `different`, `identical_A`, and `identical_B`
+labels distinguish true A/B differences from same-template controls. Seed 0 denotes a control
+comparing libraries 11 and 29, not a third independent simulation. At 1,000×, Illumina has two
+A/B pairs; ONT Q20 has only seed 11; ONT Q25 has no data.
 
 Important columns:
 
@@ -45,8 +48,9 @@ Important columns:
 - `false_differences`: unchanged sites incorrectly called different.
 - `popani`, `true_ani_callable`: observed ANI and truth restricted to the callable positions, in percent.
 
-`simulation_mixtures.csv` includes error_rate0.001, min_freq0.01 and both p-values. Mixtures at
-nominal300x combine source-seed11 A/B reads at B fractions0.01,0.05,0.10. Read-name hashing chooses
+`simulation_mixtures.csv` includes an assumed error rate of 0.001, a minimum allele frequency of
+0.01, and both p-values. Mixtures at a nominal depth of 300× combine A/B reads from source seed 11
+at B fractions of 0.01, 0.05, and 0.10. Read-name hashing chooses
 whole reads/pairs, not independently sampled position counts. These are reused libraries, not new
 independent simulations. `retained_minor_sites` is out of180; `raw_minor_present` records minor-base
 presence before allele filtering. `error_allele_sites` counts callable invariant sites retaining any
@@ -56,8 +60,8 @@ finite read sampling means it need not equal the nominal mixture proportion.
 
 ## Validation and regeneration
 
-Production ZipStrain Poisson thresholds/allele filters were checked against an independent indexed
-threshold calculation for all60 configurations. Production popANI was checked against presence-mask
+Production ZipStrain Poisson thresholds and allele filters were checked against an independent
+indexed threshold calculation for all 60 settings. Production popANI was checked against presence-mask
 intersection. Duplicate positions, output-key uniqueness, truth partitions and mixture count bounds
 were validated. No false differences occurred in this finite pilot; this does not imply zero real-world risk.
 
@@ -69,8 +73,9 @@ python Scripts/plot_parameter_selection_simulation.py
 python Scripts/plot_parameter_selection_simulation.py --preview-dir /tmp/parameter-selection-previews
 ```
 
-The script regenerates figures4–6 from these CSVs; it does not rerun simulation or mapping. Raw BAMs,
-full sweep and simulation scripts are not bundled with the tutorial. Original experiment artifacts
-were kept outside the production repository in `/tmp/zipstrain-error-calibration-20260913`; that is
-a temporary local directory, not a durable public download. The committed CSVs are the durable
-source for the displayed figures. Figures1–3 have separate provenance in the original tutorial.
+The script regenerates Figures 4–6 from these CSVs; it does not rerun simulation or mapping. Raw
+BAMs, results from the full range of settings, and simulation scripts are not bundled with the
+tutorial. The original experiment artifacts were kept outside the production repository in
+`/tmp/zipstrain-error-calibration-20260913`; that is a temporary local directory, not a durable
+public download. The committed CSVs are the durable source for the displayed figures. Figures 1–3
+have separate provenance in the original tutorial.

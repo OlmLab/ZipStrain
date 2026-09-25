@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "zipstrain_rust_profiler"
+version = "0.1.0"
+description = "Optional native profiling backend for ZipStrain"
+requires-python = ">=3.12"
+license = "MIT"
+readme = "README.md"
+dependencies = ["zipstrain>=1.2.0,<2"]
+
+[project.urls]
+Repository = "https://github.com/OlmLab/ZipStrain"
+Documentation = "https://olmlab.github.io/ZipStrain/plugins/"
+
+[project.entry-points."zipstrain.profile_backends"]
+rust_profiler = "zipstrain_rust_profiler:RustProfileBackend"
+
+[tool.maturin]
+bindings = "bin"
+python-source = "python"
+module-name = "zipstrain_rust_profiler"
+include = ["LICENSE"]

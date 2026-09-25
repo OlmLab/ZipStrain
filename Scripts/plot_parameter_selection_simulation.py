@@ -15,16 +15,16 @@ TECHS = [('illumina_HS25', 'Illumina HiSeq2500'), ('ont_Q20', 'ONT Q20 model'), 
 SETTINGS = [(0.05, 'p = 0.05', '#e67e22'), (1e-6, 'p = 1e-6', '#2980b9')]
 
 
-def save(fig, name, height, preview):
+def save(fig, name, height, preview, bottom=100):
     fig.update_layout(template='plotly_white', height=height,
                       font=dict(family='Arial, sans-serif', color='#2F3542', size=13),
                       legend=dict(orientation='h', y=-0.24, x=0.5, xanchor='center'),
-                      margin=dict(t=105, b=120, l=65, r=30))
+                      margin=dict(t=65, b=bottom, l=60, r=20))
     fig.write_html(ROOT / f'{name}.html', include_plotlyjs='cdn', full_html=True,
                    div_id=name, config=dict(responsive=True, displaylogo=False))
     if preview:
         preview.mkdir(parents=True, exist_ok=True)
-        fig.write_image(preview / f'{name}.png', width=1100, height=height)
+        fig.write_image(preview / f'{name}.png', width=800, height=height)
 
 
 def main(preview=None):
@@ -48,8 +48,8 @@ def main(preview=None):
     fig.update_xaxes(type='log', range=[0.9, 3.1], tickvals=[10, 30, 100, 300, 1000], title_text='Nominal depth (x)')
     fig.update_yaxes(range=[-1, 30])
     fig.update_yaxes(title_text='Masked true differences / 180', row=1, col=1)
-    fig.update_layout(title=dict(text='Figure 4 · Stricter p-value recovers real differences<br><sup>error_rate = 0.001; min_freq = 0.01. Bars show replicate ranges, not confidence intervals.</sup>', x=.04))
-    save(fig, 'fig4_simulation_masking', 530, preview)
+    fig.update_layout(title=dict(text='Figure 4 · Recovered differences', x=.04, y=.99, yanchor='top', font=dict(size=16)))
+    save(fig, 'fig4_simulation_masking', 455, preview)
 
     d = pairs[(pairs.kind == 'different') & (pairs.technology == 'ont_Q20') &
               (pairs.nominal_depth == 1000) & (pairs.p_threshold == .05)].sort_values('min_freq')
@@ -59,8 +59,8 @@ def main(preview=None):
         text=[f'{n}/180 masked' for n in d.masked_differences], textposition='outside',
         customdata=d[['popani']], hovertemplate='%{x}<br>Masked=%{y}/180<br>popANI=%{customdata[0]:.4f}%<extra></extra>'))
     fig.update_yaxes(title_text='Masked true differences / 180', range=[0, 110])
-    fig.update_layout(title=dict(text='Figure 5 · The frequency floor limits high-depth inflation<br><sup>ONT Q20, 1,000x, one simulated pair; error_rate = 0.001; p = 0.05. True ANI = 99%.</sup>', x=.04), showlegend=False)
-    save(fig, 'fig5_simulation_frequency_floor', 470, preview)
+    fig.update_layout(title=dict(text='Figure 5 · Frequency cutoff', x=.04, y=.99, yanchor='top', font=dict(size=16)), showlegend=False)
+    save(fig, 'fig5_simulation_frequency_floor', 395, preview, bottom=75)
 
     fig = make_subplots(rows=1, cols=3, subplot_titles=[name for _, name in TECHS], shared_yaxes=True)
     for col, (tech, _) in enumerate(TECHS, 1):
@@ -73,8 +73,8 @@ def main(preview=None):
     fig.update_yaxes(range=[0, 105])
     fig.update_yaxes(title_text='True minor-allele sites retained (%)', row=1, col=1)
     fig.update_xaxes(title_text='Minor-strain fraction')
-    fig.update_layout(barmode='group', title=dict(text='Figure 6 · Stricter filtering costs rare-allele sensitivity<br><sup>Read-level mixtures at 300x; 180 true minor-allele sites; error_rate = 0.001; min_freq = 0.01.</sup>', x=.04))
-    save(fig, 'fig6_simulation_minor_alleles', 530, preview)
+    fig.update_layout(barmode='group', title=dict(text='Figure 6 · Rare-allele retention', x=.04, y=.99, yanchor='top', font=dict(size=16)))
+    save(fig, 'fig6_simulation_minor_alleles', 455, preview)
 
 
 if __name__ == '__main__':

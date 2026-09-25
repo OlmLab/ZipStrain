@@ -12,6 +12,7 @@ from zipstrain import __version__
 import zipstrain.utils as ut
 import zipstrain.compare as cp
 import zipstrain.profile as pf
+import zipstrain.profile_backends as profile_backends
 import zipstrain.task_manager as tm
 import zipstrain.database as db
 import zipstrain.build_db as bdb
@@ -1616,37 +1617,33 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
 @click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
-def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, output_dir):
+@click.option('--backend', default='python', show_default=True, help="Profiling backend: python or an installed entry-point plugin (for example, rust_profiler).")
+def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, output_dir, backend):
     """
     Profile a single BAM file using the provided BED file and optional gene range table.
     
     """
-    output_dir=pathlib.Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stb= pf.read_stb(stb_file)
-    null_model=pl.scan_parquet(null_model)
-    profile_contract_values = (
-        ut.read_profile_contract_file(profiling_contract)
-        if profiling_contract is not None
-        else None
-    )
-    pf.profile_bam(
-        bed_file=bed_file,
-        bam_file=bam_file,
-        reference_fasta=reference_fasta,
-        gene_range_table=gene_range_table,
-        stb=stb,
-        null_model=null_model,
-        output_dir=output_dir,
+    request = profile_backends.ProfileRequest(
+        bed_file=pathlib.Path(bed_file),
+        bam_file=pathlib.Path(bam_file),
+        reference_fasta=pathlib.Path(reference_fasta) if reference_fasta is not None else None,
+        gene_range_table=pathlib.Path(gene_range_table) if gene_range_table is not None else None,
+        stb_file=pathlib.Path(stb_file),
+        null_model=pathlib.Path(null_model),
+        profiling_contract=pathlib.Path(profiling_contract) if profiling_contract is not None else None,
         num_chunks=num_chunks,
         max_concurrency=max_concurrency,
-        profile_contract=profile_contract_values,
         min_mapq=min_mapq,
         min_baseq=min_baseq,
         min_freq=min_freq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
+        output_dir=pathlib.Path(output_dir),
     )
+    try:
+        profile_backends.run_profile(request, backend_name=backend)
+    except profile_backends.ProfileBackendError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 @cli.command("map", cls=SectionedCommand, short_help="Map reads to sorted BAMs.")
 @click.option('--reads-table', '-i', required=True, help="CSV of reads to map, with columns 'sample_name,reads1[,reads2]' (reads2 blank/absent for single-end).")
@@ -1766,6 +1763,7 @@ map_command.option_sections = {
 @click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
 @click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
 @click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
+@click.option('--backend', default='python', show_default=True, help="Profiling backend: python or an installed entry-point plugin (for example, rust_profiler).")
 @click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
 @click.option('--max-concurrent-batches', '-m', default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option('--poll-interval', '-p', default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
@@ -1781,7 +1779,7 @@ map_command.option_sections = {
 @click.option('--presence-min-cov-use-fug', default=2.0, show_default=True, help="Coverage above which the present/absent call uses BER alone (below it, FUG is also required).")
 @click.option('--presence-min-coverage', default=0.1, show_default=True, help="Minimum mean coverage required to call a genome present.")
 @click.option('--genome-taxonomy', default=None, help="Optional genome->taxonomy TSV to add a genome_taxonomy column to genome_stats. Auto-discovered next to the reference/STB when produced by `zipstrain map` (Sylph route).")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy):
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, backend, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1848,6 +1846,7 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
             min_freq=min_freq,
             min_read_ani=min_read_ani,
             read_inclusion=read_inclusion,
+            backend=backend,
             tasks_per_batch=task_per_batch,
             max_concurrent_batches=max_concurrent_batches,
             poll_interval=poll_interval,
@@ -1897,6 +1896,7 @@ profile.option_sections = {
         "min_freq",
         "min_read_ani",
         "read_inclusion",
+        "backend",
     ],
     "SNV calling and presence": [
         "no_snvs",

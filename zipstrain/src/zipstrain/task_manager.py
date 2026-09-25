@@ -510,6 +510,7 @@ class ProfileTaskGenerator(TaskGenerator):
         min_freq: float = 0.01,
         min_read_ani: float | None = None,
         read_inclusion: str = "all-mapped",
+        backend: str = "python",
     ) -> None:
         super().__init__(data, yield_size)
         self.reference_fasta_file = pathlib.Path(reference_fasta_file) if reference_fasta_file is not None else None
@@ -525,6 +526,7 @@ class ProfileTaskGenerator(TaskGenerator):
         self.min_freq = min_freq
         self.min_read_ani = min_read_ani
         self.read_inclusion = read_inclusion
+        self.backend = backend
         self.engine = container_engine
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
@@ -593,6 +595,7 @@ class ProfileTaskGenerator(TaskGenerator):
                 "min-freq": StringInput(str(self.min_freq)),
                 "min-read-ani-arg": StringInput(min_read_ani_arg),
                 "read-inclusion": StringInput(self.read_inclusion),
+                "backend": StringInput(self.backend),
                 }
                 expected_outputs ={
                 "profile":  FileOutput(row["sample_name"]+"_profile.parquet" ),
@@ -1735,6 +1738,7 @@ class ProfileBamTask(Task):
     --min-freq <min-freq> \
     <min-read-ani-arg> \
     --read-inclusion <read-inclusion> \
+    --backend <backend> \
     --output-dir .
     mv input_profile.parquet <sample-name>_profile.parquet
     mv input_genome_stats.parquet <sample-name>_genome_stats.parquet
@@ -1998,6 +2002,7 @@ def lazy_run_profile(
     poll_interval: float = 5.0,
     execution_mode: str = "local",
     slurm_config: SlurmConfig | None = None,
+    backend: str = "python",
 )->None:
     profile_task_generator=ProfileTaskGenerator(
         data=bams_lf,
@@ -2016,6 +2021,7 @@ def lazy_run_profile(
         min_freq=min_freq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
+        backend=backend,
     )
     if execution_mode=="local":
         batch_type="local"

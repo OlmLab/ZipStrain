@@ -76,3 +76,39 @@ jobs:
         with:
           files: zipstrain/coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  rust-plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        run: sudo apt-get install -y libclang-dev
+
+      - name: Install ZipStrain and Maturin
+        working-directory: zipstrain
+        run: |
+          python -m pip install -e ".[test]"
+          python -m pip install 'maturin>=1.8,<2'
+
+      - name: Build and install optional plugin wheel
+        working-directory: plugins/zipstrain_rust_profiler
+        run: |
+          maturin build --release --strip --locked --compatibility linux --out "$RUNNER_TEMP/rust-plugin-wheels"
+          python -m pip install --no-deps "$RUNNER_TEMP"/rust-plugin-wheels/*.whl
+
+      - name: Test Rust profiler and Python parity
+        run: python -m pytest plugins/zipstrain_rust_profiler/tests -q -rs
