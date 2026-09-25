@@ -57,4 +57,4 @@ Every run writes a `zipstrain_run.log` so you can tell if it is running, finishe
 - [Tutorial](Tutorial.md) — worked end-to-end examples (CLI and Nextflow)
 - [Expected output](expected_output.md) — every output file and column explained
 - [User Manual](usermanual.md) — full command reference and the Nextflow pipeline
-- [Plugins](plugins.md) — optional profiling backends and how to use them
+- [Plugins](plugins.md) — optional plugins that extend ZipStrain, such as the faster Rust profiler

@@ -1,21 +1,43 @@
 # Plugins
 
-ZipStrain works without plugins. Profiling uses its built-in Python backend unless you select another one. Plugins are installed separately from ZipStrain and selected by name at run time.
+ZipStrain offers a plugin system for extending its core workflows with optional, separately installed components. Plugins can replace or add functionality in a specific part of the pipeline (for example, a faster profiling engine) without changing how the rest of ZipStrain works. The plugin catalog will grow over time.
 
 ## Available plugins
 
-| Plugin | Select with | What it changes | Availability |
-|---|---|---|---|
-| `zipstrain_rust_profiler` | `--backend rust_profiler` | Profiles BAMs with a native, multithreaded Rust implementation | Separate PyPI package |
+| Plugin | Extends | Select with | What it does | Install |
+|---|---|---|---|---|
+| [`zipstrain_rust_profiler`](#rust-profiler) | Profiling | `--backend rust_profiler` | Profiles BAMs with a native, multithreaded Rust implementation; up to ~10x faster with lower memory use on large BAMs | `pip install zipstrain_rust_profiler` |
+
+ZipStrain works fully without any plugins. Each plugin is installed separately and only takes effect when you select it by name at run time; otherwise ZipStrain uses its built-in behavior.
+
+### Naming conventions
 
 Plugin distributions follow the `zipstrain_<capability>` naming pattern. The
 distribution and Python import use the same underscore-separated name; the
-backend selector is the shorter capability name. Python package indexes treat
+run-time selector is the shorter capability name. Python package indexes treat
 underscores and hyphens as equivalent in distribution names.
 
-`python` is the built-in profiling backend, not a plugin. The `zipstrain[matrix]` extra is also not a plugin: it installs dependencies for matrix comparison. Likewise, `--backend` on `zipstrain compare` selects a **comparison** compute backend, not a profiling plugin.
+### What is not a plugin
+
+- `python` is the built-in profiling backend, not a plugin.
+- The `zipstrain[matrix]` extra installs dependencies for matrix comparison; it is not a plugin.
+- `--backend` on `zipstrain compare` selects a **comparison** compute backend, not a profiling plugin.
 
 ## Rust profiler
+
+**Extends:** profiling · **Selector:** `--backend rust_profiler`
+
+### Why use it
+
+Profiling time and memory grow with BAM size. The Rust profiler is a drop-in replacement for the built-in Python profiler that:
+
+- **Runs up to ~10x faster**, using a native, multithreaded implementation.
+- **Manages memory better on large BAMs**, keeping peak memory lower and more predictable so deeply sequenced samples are less likely to exhaust available RAM on a workstation or HPC node.
+- **Produces the same outputs**, so downstream comparison and analysis steps work unchanged.
+
+It is most useful for large or deeply sequenced BAMs, large sample sets, and memory-constrained cluster jobs.
+
+### How it fits into ZipStrain
 
 The Rust profiler reads a coordinate-sorted, indexed BAM and writes the same three core Parquet outputs as Python profiling: `<sample>_profile.parquet`, `<sample>_gene_stats.parquet`, and `<sample>_genome_stats.parquet`. When you use the high-level `zipstrain profile` command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.
 

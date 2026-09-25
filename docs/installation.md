@@ -7,7 +7,7 @@ ZipStrain runs on **Linux and macOS** (including Apple Silicon). There are two w
 
 For the difference between the two, see the [User Manual](./usermanual.md#zipstrain-command-line-interface). Whichever you choose, finish by confirming it works.
 
-Profiling has an optional Rust backend distributed separately on PyPI. See [Plugins](plugins.md) for installation and selection.
+ZipStrain can be extended with optional plugins distributed separately on PyPI, such as the Rust profiler for faster, lower-memory profiling. See [Plugins](plugins.md) for the list of available plugins and how to install and select them.
 
 !!! tip "Recommended quick path (CLI)"
     `conda create -n zipstrain -c conda-forge -c bioconda python=3.12 zipstrain bowtie2 samtools sylph` installs the CLI and every external tool `map`/`profile`/`compare` need in one command. Then `conda activate zipstrain && zipstrain test`.
