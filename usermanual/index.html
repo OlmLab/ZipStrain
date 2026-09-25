@@ -154,6 +154,10 @@
                 </li>
               </ul>
               <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../plugins/">Plugins</a>
+                </li>
+              </ul>
+              <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
                 </li>
               </ul>
@@ -1391,7 +1395,7 @@ zipstrain<span class="w"> </span><span class="nb">test</span><span class="w"> </
 <p>You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a <code>nextflow.config</code> that:</p>
 <ul>
 <li>enables <strong>Docker by default</strong> (with <code>--platform linux/amd64</code> for Apple Silicon), so a laptop run needs no <code>-profile</code>;</li>
-<li>sets the default container to <code>parsaghadermazi/zipstrain:1.1.1</code>;</li>
+<li>sets the default container to <code>parsaghadermazi/zipstrain:1.2.0</code>;</li>
 <li>declares <code>zipstrain.nf</code> as the main script (so <code>-main-script</code> is not needed);</li>
 <li><code>includeConfig</code>s <code>conf.config</code>, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.</li>
 </ul>

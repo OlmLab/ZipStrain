@@ -54,6 +54,10 @@
                 </li>
               </ul>
               <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../plugins/">Plugins</a>
+                </li>
+              </ul>
+              <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
                 </li>
               </ul>
@@ -14585,10 +14589,7 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">705</span>
-<span class="normal">706</span>
-<span class="normal">707</span>
-<span class="normal">708</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">708</span>
 <span class="normal">709</span>
 <span class="normal">710</span>
 <span class="normal">711</span>
@@ -14760,7 +14761,10 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 <span class="normal">877</span>
 <span class="normal">878</span>
 <span class="normal">879</span>
-<span class="normal">880</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">Batch</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
+<span class="normal">880</span>
+<span class="normal">881</span>
+<span class="normal">882</span>
+<span class="normal">883</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">Batch</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Batch is a collection of tasks to be executed as a group. This is a base class and should not be instantiated directly.</span>
 <span class="sd">    A batch is the unit of execution meaning that the enitre batch is either run locally or submitted to a job scheduler like Slurm.</span>
 
@@ -15017,10 +15021,10 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">838</span>
-<span class="normal">839</span>
-<span class="normal">840</span>
-<span class="normal">841</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@abstractmethod</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">841</span>
+<span class="normal">842</span>
+<span class="normal">843</span>
+<span class="normal">844</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@abstractmethod</span>
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">cancel</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Cancels the batch. This method should be implemented by subclasses.&quot;&quot;&quot;</span>
     <span class="o">...</span>
@@ -15046,10 +15050,10 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">833</span>
-<span class="normal">834</span>
-<span class="normal">835</span>
-<span class="normal">836</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">836</span>
+<span class="normal">837</span>
+<span class="normal">838</span>
+<span class="normal">839</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;The base class defines if any cleanup is needed after batch success. By default, it does nothing.&quot;&quot;&quot;</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_cleaned_up</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="k">return</span> <span class="kc">None</span>
@@ -15079,14 +15083,14 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">801</span>
-<span class="normal">802</span>
-<span class="normal">803</span>
-<span class="normal">804</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">804</span>
 <span class="normal">805</span>
 <span class="normal">806</span>
 <span class="normal">807</span>
-<span class="normal">808</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">log_progress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">message</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">force</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">log_progress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">message</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">force</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Log progress if the batch snapshot changed, unless forced.&quot;&quot;&quot;</span>
     <span class="n">done</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">success</span><span class="p">,</span> <span class="n">failed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_progress_counts</span><span class="p">()</span>
     <span class="n">snapshot</span> <span class="o">=</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">,</span> <span class="n">done</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">success</span><span class="p">,</span> <span class="n">failed</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">retry_count</span><span class="p">)</span>
@@ -15116,10 +15120,10 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">843</span>
-<span class="normal">844</span>
-<span class="normal">845</span>
-<span class="normal">846</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">outputs_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">outputs_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Check if all BATCH-LEVEL expected outputs are ready.&quot;&quot;&quot;</span>
 
     <span class="k">return</span> <span class="nb">all</span><span class="p">([</span><span class="n">output</span><span class="o">.</span><span class="n">ready</span><span class="p">()</span> <span class="k">for</span> <span class="n">output</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">expected_outputs</span><span class="p">])</span>
@@ -15150,10 +15154,10 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span>
-<span class="normal">855</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@abstractmethod</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
+<span class="normal">858</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@abstractmethod</span>
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Runs the batch. This method should be implemented by subclasses.&quot;&quot;&quot;</span>
     <span class="o">...</span>
@@ -15183,10 +15187,10 @@ A batch is the unit of execution meaning that the enitre batch is either run loc
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">872</span>
-<span class="normal">873</span>
-<span class="normal">874</span>
-<span class="normal">875</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">update_status</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">875</span>
+<span class="normal">876</span>
+<span class="normal">877</span>
+<span class="normal">878</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">update_status</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Updates the status of the batch by collecting the status of all tasks.&quot;&quot;&quot;</span>
     <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_collect_task_status</span><span class="p">()</span>
     <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span>
@@ -15430,11 +15434,7 @@ batch (Batch): The batch that produces this output and sets the expected file pa
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1770</span>
-<span class="normal">1771</span>
-<span class="normal">1772</span>
-<span class="normal">1773</span>
-<span class="normal">1774</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1774</span>
 <span class="normal">1775</span>
 <span class="normal">1776</span>
 <span class="normal">1777</span>
@@ -15448,7 +15448,11 @@ batch (Batch): The batch that produces this output and sets the expected file pa
 <span class="normal">1785</span>
 <span class="normal">1786</span>
 <span class="normal">1787</span>
-<span class="normal">1788</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CollectComps</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
+<span class="normal">1788</span>
+<span class="normal">1789</span>
+<span class="normal">1790</span>
+<span class="normal">1791</span>
+<span class="normal">1792</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CollectComps</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A Task that collects and merges comparison parquet files from multiple FastCompareTask tasks into a single parquet file.</span>
 
 <span class="sd">    Args:</span>
@@ -15566,13 +15570,7 @@ batch (Batch): The batch that produces this output and sets the expected file pa
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2361</span>
-<span class="normal">2362</span>
-<span class="normal">2363</span>
-<span class="normal">2364</span>
-<span class="normal">2365</span>
-<span class="normal">2366</span>
-<span class="normal">2367</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2367</span>
 <span class="normal">2368</span>
 <span class="normal">2369</span>
 <span class="normal">2370</span>
@@ -15584,7 +15582,13 @@ batch (Batch): The batch that produces this output and sets the expected file pa
 <span class="normal">2376</span>
 <span class="normal">2377</span>
 <span class="normal">2378</span>
-<span class="normal">2379</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CollectGeneComps</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
+<span class="normal">2379</span>
+<span class="normal">2380</span>
+<span class="normal">2381</span>
+<span class="normal">2382</span>
+<span class="normal">2383</span>
+<span class="normal">2384</span>
+<span class="normal">2385</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CollectGeneComps</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A Task that collects and merges gene comparison parquet files from multiple FastGeneCompareTask tasks into a single parquet file.</span>
 
 <span class="sd">    Args:</span>
@@ -15745,10 +15749,7 @@ is "slurm". Default is None.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1532</span>
-<span class="normal">1533</span>
-<span class="normal">1534</span>
-<span class="normal">1535</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1535</span>
 <span class="normal">1536</span>
 <span class="normal">1537</span>
 <span class="normal">1538</span>
@@ -15898,7 +15899,10 @@ is "slurm". Default is None.</p>
 <span class="normal">1682</span>
 <span class="normal">1683</span>
 <span class="normal">1684</span>
-<span class="normal">1685</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CompareRunner</span><span class="p">(</span><span class="n">Runner</span><span class="p">):</span>
+<span class="normal">1685</span>
+<span class="normal">1686</span>
+<span class="normal">1687</span>
+<span class="normal">1688</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CompareRunner</span><span class="p">(</span><span class="n">Runner</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Creates and schedules batches of FastCompareTask tasks using either local or Slurm batches.</span>
 
@@ -16194,10 +16198,7 @@ zipstrain.compare module.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">606</span>
-<span class="normal">607</span>
-<span class="normal">608</span>
-<span class="normal">609</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">609</span>
 <span class="normal">610</span>
 <span class="normal">611</span>
 <span class="normal">612</span>
@@ -16290,7 +16291,10 @@ zipstrain.compare module.</p>
 <span class="normal">699</span>
 <span class="normal">700</span>
 <span class="normal">701</span>
-<span class="normal">702</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CompareTaskGenerator</span><span class="p">(</span><span class="n">TaskGenerator</span><span class="p">):</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CompareTaskGenerator</span><span class="p">(</span><span class="n">TaskGenerator</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;This TaskGenerator generates FastCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genomes functionality in</span>
 <span class="sd">    zipstrain.compare module.</span>
 
@@ -16424,10 +16428,7 @@ while polars is collecting data to avoid blocking.</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">656</span>
-<span class="normal">657</span>
-<span class="normal">658</span>
-<span class="normal">659</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">659</span>
 <span class="normal">660</span>
 <span class="normal">661</span>
 <span class="normal">662</span>
@@ -16470,7 +16471,10 @@ while polars is collecting data to avoid blocking.</p>
 <span class="normal">699</span>
 <span class="normal">700</span>
 <span class="normal">701</span>
-<span class="normal">702</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">generate_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Task</span><span class="p">]:</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">generate_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Task</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Yeilds lists of FastCompareTask objects based on the data in batches of yield_size. This method yields the control back to the event loop</span>
 <span class="sd">    while polars is collecting data to avoid blocking.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
@@ -16539,9 +16543,9 @@ while polars is collecting data to avoid blocking.</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">652</span>
-<span class="normal">653</span>
-<span class="normal">654</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_total_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">655</span>
+<span class="normal">656</span>
+<span class="normal">657</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_total_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns total number of pairwise comparisons to be made.&quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="n">size</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">len</span><span class="p">())</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">engine</span><span class="o">=</span><span class="s2">&quot;streaming&quot;</span><span class="p">)[</span><span class="s2">&quot;size&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">]</span>
 </code></pre></div></td></tr></table></div>
@@ -16585,17 +16589,17 @@ while polars is collecting data to avoid blocking.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1809</span>
-<span class="normal">1810</span>
-<span class="normal">1811</span>
-<span class="normal">1812</span>
-<span class="normal">1813</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1813</span>
 <span class="normal">1814</span>
 <span class="normal">1815</span>
 <span class="normal">1816</span>
 <span class="normal">1817</span>
 <span class="normal">1818</span>
-<span class="normal">1819</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastCompareLocalBatch</span><span class="p">(</span><span class="n">LocalBatch</span><span class="p">):</span>
+<span class="normal">1819</span>
+<span class="normal">1820</span>
+<span class="normal">1821</span>
+<span class="normal">1822</span>
+<span class="normal">1823</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastCompareLocalBatch</span><span class="p">(</span><span class="n">LocalBatch</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A LocalBatch that runs FastCompareTask tasks locally.&quot;&quot;&quot;</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cleaned_up</span><span class="p">:</span>
@@ -16657,18 +16661,18 @@ while polars is collecting data to avoid blocking.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1821</span>
-<span class="normal">1822</span>
-<span class="normal">1823</span>
-<span class="normal">1824</span>
-<span class="normal">1825</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1825</span>
 <span class="normal">1826</span>
 <span class="normal">1827</span>
 <span class="normal">1828</span>
 <span class="normal">1829</span>
 <span class="normal">1830</span>
 <span class="normal">1831</span>
-<span class="normal">1832</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastCompareSlurmBatch</span><span class="p">(</span><span class="n">SlurmBatch</span><span class="p">):</span>
+<span class="normal">1832</span>
+<span class="normal">1833</span>
+<span class="normal">1834</span>
+<span class="normal">1835</span>
+<span class="normal">1836</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastCompareSlurmBatch</span><span class="p">(</span><span class="n">SlurmBatch</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A SlurmBatch that runs FastCompareTask tasks on a Slurm cluster. Maybe removed in future&quot;&quot;&quot;</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cleaned_up</span><span class="p">:</span>
@@ -16779,11 +16783,7 @@ while polars is collecting data to avoid blocking.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1744</span>
-<span class="normal">1745</span>
-<span class="normal">1746</span>
-<span class="normal">1747</span>
-<span class="normal">1748</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1748</span>
 <span class="normal">1749</span>
 <span class="normal">1750</span>
 <span class="normal">1751</span>
@@ -16802,7 +16802,11 @@ while polars is collecting data to avoid blocking.</p>
 <span class="normal">1764</span>
 <span class="normal">1765</span>
 <span class="normal">1766</span>
-<span class="normal">1767</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastCompareTask</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
+<span class="normal">1767</span>
+<span class="normal">1768</span>
+<span class="normal">1769</span>
+<span class="normal">1770</span>
+<span class="normal">1771</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastCompareTask</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A Task that performs a genome comparison using `zipstrain utilities single_compare_genome`.</span>
 
 <span class="sd">    Args:</span>
@@ -16877,17 +16881,17 @@ while polars is collecting data to avoid blocking.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2395</span>
-<span class="normal">2396</span>
-<span class="normal">2397</span>
-<span class="normal">2398</span>
-<span class="normal">2399</span>
-<span class="normal">2400</span>
-<span class="normal">2401</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2401</span>
 <span class="normal">2402</span>
 <span class="normal">2403</span>
 <span class="normal">2404</span>
-<span class="normal">2405</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastGeneCompareLocalBatch</span><span class="p">(</span><span class="n">LocalBatch</span><span class="p">):</span>
+<span class="normal">2405</span>
+<span class="normal">2406</span>
+<span class="normal">2407</span>
+<span class="normal">2408</span>
+<span class="normal">2409</span>
+<span class="normal">2410</span>
+<span class="normal">2411</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastGeneCompareLocalBatch</span><span class="p">(</span><span class="n">LocalBatch</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A LocalBatch that runs FastGeneCompareTask tasks locally.&quot;&quot;&quot;</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cleaned_up</span><span class="p">:</span>
@@ -16949,17 +16953,17 @@ while polars is collecting data to avoid blocking.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2408</span>
-<span class="normal">2409</span>
-<span class="normal">2410</span>
-<span class="normal">2411</span>
-<span class="normal">2412</span>
-<span class="normal">2413</span>
-<span class="normal">2414</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2414</span>
 <span class="normal">2415</span>
 <span class="normal">2416</span>
 <span class="normal">2417</span>
-<span class="normal">2418</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastGeneCompareSlurmBatch</span><span class="p">(</span><span class="n">SlurmBatch</span><span class="p">):</span>
+<span class="normal">2418</span>
+<span class="normal">2419</span>
+<span class="normal">2420</span>
+<span class="normal">2421</span>
+<span class="normal">2422</span>
+<span class="normal">2423</span>
+<span class="normal">2424</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastGeneCompareSlurmBatch</span><span class="p">(</span><span class="n">SlurmBatch</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A SlurmBatch that runs FastGeneCompareTask tasks on a Slurm cluster.&quot;&quot;&quot;</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cleaned_up</span><span class="p">:</span>
@@ -17069,13 +17073,7 @@ while polars is collecting data to avoid blocking.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2110</span>
-<span class="normal">2111</span>
-<span class="normal">2112</span>
-<span class="normal">2113</span>
-<span class="normal">2114</span>
-<span class="normal">2115</span>
-<span class="normal">2116</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2116</span>
 <span class="normal">2117</span>
 <span class="normal">2118</span>
 <span class="normal">2119</span>
@@ -17089,7 +17087,13 @@ while polars is collecting data to avoid blocking.</p>
 <span class="normal">2127</span>
 <span class="normal">2128</span>
 <span class="normal">2129</span>
-<span class="normal">2130</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastGeneCompareTask</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
+<span class="normal">2130</span>
+<span class="normal">2131</span>
+<span class="normal">2132</span>
+<span class="normal">2133</span>
+<span class="normal">2134</span>
+<span class="normal">2135</span>
+<span class="normal">2136</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FastGeneCompareTask</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A Task that performs a gene comparison using `zipstrain utilities single_compare_gene`.</span>
 
 <span class="sd">    Args:</span>
@@ -17529,13 +17533,7 @@ is "slurm". Default is None.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2213</span>
-<span class="normal">2214</span>
-<span class="normal">2215</span>
-<span class="normal">2216</span>
-<span class="normal">2217</span>
-<span class="normal">2218</span>
-<span class="normal">2219</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2219</span>
 <span class="normal">2220</span>
 <span class="normal">2221</span>
 <span class="normal">2222</span>
@@ -17675,7 +17673,13 @@ is "slurm". Default is None.</p>
 <span class="normal">2356</span>
 <span class="normal">2357</span>
 <span class="normal">2358</span>
-<span class="normal">2359</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">GeneCompareRunner</span><span class="p">(</span><span class="n">Runner</span><span class="p">):</span>
+<span class="normal">2359</span>
+<span class="normal">2360</span>
+<span class="normal">2361</span>
+<span class="normal">2362</span>
+<span class="normal">2363</span>
+<span class="normal">2364</span>
+<span class="normal">2365</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">GeneCompareRunner</span><span class="p">(</span><span class="n">Runner</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Creates and schedules batches of FastGeneCompareTask tasks using either local or Slurm batches.</span>
 
@@ -17944,13 +17948,7 @@ zipstrain.compare module.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2132</span>
-<span class="normal">2133</span>
-<span class="normal">2134</span>
-<span class="normal">2135</span>
-<span class="normal">2136</span>
-<span class="normal">2137</span>
-<span class="normal">2138</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2138</span>
 <span class="normal">2139</span>
 <span class="normal">2140</span>
 <span class="normal">2141</span>
@@ -18023,7 +18021,13 @@ zipstrain.compare module.</p>
 <span class="normal">2208</span>
 <span class="normal">2209</span>
 <span class="normal">2210</span>
-<span class="normal">2211</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">GeneCompareTaskGenerator</span><span class="p">(</span><span class="n">TaskGenerator</span><span class="p">):</span>
+<span class="normal">2211</span>
+<span class="normal">2212</span>
+<span class="normal">2213</span>
+<span class="normal">2214</span>
+<span class="normal">2215</span>
+<span class="normal">2216</span>
+<span class="normal">2217</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">GeneCompareTaskGenerator</span><span class="p">(</span><span class="n">TaskGenerator</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;This TaskGenerator generates FastGeneCompareTask objects from a polars DataFrame. Each task compares two profiles using compare_genes functionality in</span>
 <span class="sd">    zipstrain.compare module.</span>
 
@@ -18140,13 +18144,7 @@ while polars is collecting data to avoid blocking.</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2171</span>
-<span class="normal">2172</span>
-<span class="normal">2173</span>
-<span class="normal">2174</span>
-<span class="normal">2175</span>
-<span class="normal">2176</span>
-<span class="normal">2177</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2177</span>
 <span class="normal">2178</span>
 <span class="normal">2179</span>
 <span class="normal">2180</span>
@@ -18180,7 +18178,13 @@ while polars is collecting data to avoid blocking.</p>
 <span class="normal">2208</span>
 <span class="normal">2209</span>
 <span class="normal">2210</span>
-<span class="normal">2211</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">generate_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Task</span><span class="p">]:</span>
+<span class="normal">2211</span>
+<span class="normal">2212</span>
+<span class="normal">2213</span>
+<span class="normal">2214</span>
+<span class="normal">2215</span>
+<span class="normal">2216</span>
+<span class="normal">2217</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">generate_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Task</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Yields lists of FastGeneCompareTask objects based on the data in batches of yield_size. This method yields the control back to the event loop</span>
 <span class="sd">    while polars is collecting data to avoid blocking.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
@@ -18243,9 +18247,9 @@ while polars is collecting data to avoid blocking.</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2167</span>
-<span class="normal">2168</span>
-<span class="normal">2169</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_total_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2173</span>
+<span class="normal">2174</span>
+<span class="normal">2175</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_total_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns total number of pairwise comparisons to be made.&quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="n">size</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">len</span><span class="p">())</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">engine</span><span class="o">=</span><span class="s2">&quot;streaming&quot;</span><span class="p">)[</span><span class="s2">&quot;size&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">]</span>
 </code></pre></div></td></tr></table></div>
@@ -18614,10 +18618,7 @@ subclass this and implement validate() and get_value().</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">882</span>
-<span class="normal">883</span>
-<span class="normal">884</span>
-<span class="normal">885</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">885</span>
 <span class="normal">886</span>
 <span class="normal">887</span>
 <span class="normal">888</span>
@@ -18701,7 +18702,10 @@ subclass this and implement validate() and get_value().</p>
 <span class="normal">966</span>
 <span class="normal">967</span>
 <span class="normal">968</span>
-<span class="normal">969</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">LocalBatch</span><span class="p">(</span><span class="n">Batch</span><span class="p">):</span>
+<span class="normal">969</span>
+<span class="normal">970</span>
+<span class="normal">971</span>
+<span class="normal">972</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">LocalBatch</span><span class="p">(</span><span class="n">Batch</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Batch that runs tasks locally in a single shell script.&quot;&quot;&quot;</span>
     <span class="n">TEMPLATE_CMD</span> <span class="o">=</span> <span class="s2">&quot;#!/bin/bash</span><span class="se">\n</span><span class="s2">&quot;</span>
 
@@ -18825,16 +18829,16 @@ subclass this and implement validate() and get_value().</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">960</span>
-<span class="normal">961</span>
-<span class="normal">962</span>
-<span class="normal">963</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">963</span>
 <span class="normal">964</span>
 <span class="normal">965</span>
 <span class="normal">966</span>
 <span class="normal">967</span>
 <span class="normal">968</span>
-<span class="normal">969</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">cancel</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">969</span>
+<span class="normal">970</span>
+<span class="normal">971</span>
+<span class="normal">972</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">cancel</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Cancels the local batch by terminating the subprocess if it&#39;s running.&quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_proc</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_proc</span><span class="o">.</span><span class="n">returncode</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_proc</span><span class="o">.</span><span class="n">terminate</span><span class="p">()</span>
@@ -18870,10 +18874,7 @@ subclass this and implement validate() and get_value().</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">892</span>
-<span class="normal">893</span>
-<span class="normal">894</span>
-<span class="normal">895</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">895</span>
 <span class="normal">896</span>
 <span class="normal">897</span>
 <span class="normal">898</span>
@@ -18929,7 +18930,10 @@ subclass this and implement validate() and get_value().</p>
 <span class="normal">948</span>
 <span class="normal">949</span>
 <span class="normal">950</span>
-<span class="normal">951</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">951</span>
+<span class="normal">952</span>
+<span class="normal">953</span>
+<span class="normal">954</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;This method runs all tasks in the batch locally by creating a shell script and executing it.&quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">status</span> <span class="o">!=</span> <span class="n">Status</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">:</span>
 
@@ -19226,11 +19230,7 @@ task (Task): The task that produces this output.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1792</span>
-<span class="normal">1793</span>
-<span class="normal">1794</span>
-<span class="normal">1795</span>
-<span class="normal">1796</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1796</span>
 <span class="normal">1797</span>
 <span class="normal">1798</span>
 <span class="normal">1799</span>
@@ -19238,7 +19238,11 @@ task (Task): The task that produces this output.</p>
 <span class="normal">1801</span>
 <span class="normal">1802</span>
 <span class="normal">1803</span>
-<span class="normal">1804</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PrepareCompareGenomeRunOutputs</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
+<span class="normal">1804</span>
+<span class="normal">1805</span>
+<span class="normal">1806</span>
+<span class="normal">1807</span>
+<span class="normal">1808</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PrepareCompareGenomeRunOutputs</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A Task that prepares the final output by merging all parquet files after all genome comparisons are done.&quot;&quot;&quot;</span>
     <span class="n">TEMPLATE_CMD</span><span class="o">=</span><span class="s2">&quot;&quot;&quot;</span>
 <span class="s2">    mkdir -p &lt;output-dir&gt;/comps</span>
@@ -19324,19 +19328,19 @@ task (Task): The task that produces this output.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2381</span>
-<span class="normal">2382</span>
-<span class="normal">2383</span>
-<span class="normal">2384</span>
-<span class="normal">2385</span>
-<span class="normal">2386</span>
-<span class="normal">2387</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2387</span>
 <span class="normal">2388</span>
 <span class="normal">2389</span>
 <span class="normal">2390</span>
 <span class="normal">2391</span>
 <span class="normal">2392</span>
-<span class="normal">2393</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PrepareGeneCompareRunOutputs</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
+<span class="normal">2393</span>
+<span class="normal">2394</span>
+<span class="normal">2395</span>
+<span class="normal">2396</span>
+<span class="normal">2397</span>
+<span class="normal">2398</span>
+<span class="normal">2399</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PrepareGeneCompareRunOutputs</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A Task that prepares the final output by merging all gene comparison parquet files after all gene comparisons are done.&quot;&quot;&quot;</span>
     <span class="n">TEMPLATE_CMD</span><span class="o">=</span><span class="s2">&quot;&quot;&quot;</span>
 <span class="s2">    mkdir -p &lt;output-dir&gt;/gene_comps</span>
@@ -19489,10 +19493,7 @@ The inputs to this task includes:</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1689</span>
-<span class="normal">1690</span>
-<span class="normal">1691</span>
-<span class="normal">1692</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1692</span>
 <span class="normal">1693</span>
 <span class="normal">1694</span>
 <span class="normal">1695</span>
@@ -19542,7 +19543,11 @@ The inputs to this task includes:</p>
 <span class="normal">1739</span>
 <span class="normal">1740</span>
 <span class="normal">1741</span>
-<span class="normal">1742</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProfileBamTask</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
+<span class="normal">1742</span>
+<span class="normal">1743</span>
+<span class="normal">1744</span>
+<span class="normal">1745</span>
+<span class="normal">1746</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProfileBamTask</span><span class="p">(</span><span class="n">Task</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A Task that profiles a BAM file into the standard ZipStrain parquet outputs.</span>
 <span class="sd">    The inputs to this task includes:</span>
 
@@ -19591,6 +19596,7 @@ The inputs to this task includes:</p>
 <span class="s2">    --min-freq &lt;min-freq&gt; </span><span class="se">\</span>
 <span class="s2">    &lt;min-read-ani-arg&gt; </span><span class="se">\</span>
 <span class="s2">    --read-inclusion &lt;read-inclusion&gt; </span><span class="se">\</span>
+<span class="s2">    --backend &lt;backend&gt; </span><span class="se">\</span>
 <span class="s2">    --output-dir .</span>
 <span class="s2">    mv input_profile.parquet &lt;sample-name&gt;_profile.parquet</span>
 <span class="s2">    mv input_genome_stats.parquet &lt;sample-name&gt;_genome_stats.parquet</span>
@@ -19738,10 +19744,7 @@ is "slurm". Default is None.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1425</span>
-<span class="normal">1426</span>
-<span class="normal">1427</span>
-<span class="normal">1428</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1428</span>
 <span class="normal">1429</span>
 <span class="normal">1430</span>
 <span class="normal">1431</span>
@@ -19842,7 +19845,10 @@ is "slurm". Default is None.</p>
 <span class="normal">1526</span>
 <span class="normal">1527</span>
 <span class="normal">1528</span>
-<span class="normal">1529</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProfileRunner</span><span class="p">(</span><span class="n">Runner</span><span class="p">):</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProfileRunner</span><span class="p">(</span><span class="n">Runner</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Creates and schedules batches of ProfileBamTask tasks using either local or Slurm batches.</span>
 
@@ -20109,7 +20115,10 @@ is "slurm". Default is None.</p>
 <span class="normal">601</span>
 <span class="normal">602</span>
 <span class="normal">603</span>
-<span class="normal">604</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProfileTaskGenerator</span><span class="p">(</span><span class="n">TaskGenerator</span><span class="p">):</span>
+<span class="normal">604</span>
+<span class="normal">605</span>
+<span class="normal">606</span>
+<span class="normal">607</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProfileTaskGenerator</span><span class="p">(</span><span class="n">TaskGenerator</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;This TaskGenerator generates FastProfileTask objects from a polars DataFrame. Each task profiles a BAM file.&quot;&quot;&quot;</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
@@ -20129,6 +20138,7 @@ is "slurm". Default is None.</p>
         <span class="n">min_freq</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.01</span><span class="p">,</span>
         <span class="n">min_read_ani</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">read_inclusion</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;all-mapped&quot;</span><span class="p">,</span>
+        <span class="n">backend</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;python&quot;</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">yield_size</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">reference_fasta_file</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">reference_fasta_file</span><span class="p">)</span> <span class="k">if</span> <span class="n">reference_fasta_file</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
@@ -20144,6 +20154,7 @@ is "slurm". Default is None.</p>
         <span class="bp">self</span><span class="o">.</span><span class="n">min_freq</span> <span class="o">=</span> <span class="n">min_freq</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">min_read_ani</span> <span class="o">=</span> <span class="n">min_read_ani</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">read_inclusion</span> <span class="o">=</span> <span class="n">read_inclusion</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">backend</span> <span class="o">=</span> <span class="n">backend</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">engine</span> <span class="o">=</span> <span class="n">container_engine</span>
         <span class="k">if</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">pl</span><span class="o">.</span><span class="n">LazyFrame</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;data must be a polars LazyFrame.&quot;</span><span class="p">)</span>
@@ -20212,6 +20223,7 @@ is "slurm". Default is None.</p>
                 <span class="s2">&quot;min-freq&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">min_freq</span><span class="p">)),</span>
                 <span class="s2">&quot;min-read-ani-arg&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="n">min_read_ani_arg</span><span class="p">),</span>
                 <span class="s2">&quot;read-inclusion&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">read_inclusion</span><span class="p">),</span>
+                <span class="s2">&quot;backend&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="p">),</span>
                 <span class="p">}</span>
                 <span class="n">expected_outputs</span> <span class="o">=</span><span class="p">{</span>
                 <span class="s2">&quot;profile&quot;</span><span class="p">:</span>  <span class="n">FileOutput</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;sample_name&quot;</span><span class="p">]</span><span class="o">+</span><span class="s2">&quot;_profile.parquet&quot;</span> <span class="p">),</span>
@@ -20258,9 +20270,7 @@ while polars is collecting data to avoid blocking.</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">552</span>
 <span class="normal">553</span>
 <span class="normal">554</span>
 <span class="normal">555</span>
@@ -20312,7 +20322,10 @@ while polars is collecting data to avoid blocking.</p>
 <span class="normal">601</span>
 <span class="normal">602</span>
 <span class="normal">603</span>
-<span class="normal">604</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">generate_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Task</span><span class="p">]:</span>
+<span class="normal">604</span>
+<span class="normal">605</span>
+<span class="normal">606</span>
+<span class="normal">607</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">generate_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Task</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Yeilds lists of FastProfileTask objects based on the data in batches of yield_size. This method yields the control back to the event loop</span>
 <span class="sd">    while polars is collecting data to avoid blocking.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
@@ -20358,6 +20371,7 @@ while polars is collecting data to avoid blocking.</p>
             <span class="s2">&quot;min-freq&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">min_freq</span><span class="p">)),</span>
             <span class="s2">&quot;min-read-ani-arg&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="n">min_read_ani_arg</span><span class="p">),</span>
             <span class="s2">&quot;read-inclusion&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">read_inclusion</span><span class="p">),</span>
+            <span class="s2">&quot;backend&quot;</span><span class="p">:</span> <span class="n">StringInput</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="p">),</span>
             <span class="p">}</span>
             <span class="n">expected_outputs</span> <span class="o">=</span><span class="p">{</span>
             <span class="s2">&quot;profile&quot;</span><span class="p">:</span>  <span class="n">FileOutput</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;sample_name&quot;</span><span class="p">]</span><span class="o">+</span><span class="s2">&quot;_profile.parquet&quot;</span> <span class="p">),</span>
@@ -20389,9 +20403,9 @@ while polars is collecting data to avoid blocking.</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_total_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">548</span>
+<span class="normal">549</span>
+<span class="normal">550</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_total_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns total number of profiles to be generated.&quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="n">size</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">len</span><span class="p">())</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">engine</span><span class="o">=</span><span class="s2">&quot;streaming&quot;</span><span class="p">)[</span><span class="s2">&quot;size&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">]</span>
 </code></pre></div></td></tr></table></div>
@@ -20542,10 +20556,7 @@ is "slurm". Default is None.</p>
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1118</span>
-<span class="normal">1119</span>
-<span class="normal">1120</span>
-<span class="normal">1121</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1121</span>
 <span class="normal">1122</span>
 <span class="normal">1123</span>
 <span class="normal">1124</span>
@@ -20847,7 +20858,10 @@ is "slurm". Default is None.</p>
 <span class="normal">1420</span>
 <span class="normal">1421</span>
 <span class="normal">1422</span>
-<span class="normal">1423</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">Runner</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
+<span class="normal">1423</span>
+<span class="normal">1424</span>
+<span class="normal">1425</span>
+<span class="normal">1426</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">Runner</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Base Runner class to manage task generation, batching, and execution.</span>
 
 <span class="sd">    Args:</span>
@@ -21193,10 +21207,7 @@ and system stats (CPU/RAM) using Rich Live to mirror the Runner presentation.</p
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1209</span>
-<span class="normal">1210</span>
-<span class="normal">1211</span>
-<span class="normal">1212</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1212</span>
 <span class="normal">1213</span>
 <span class="normal">1214</span>
 <span class="normal">1215</span>
@@ -21359,7 +21370,10 @@ and system stats (CPU/RAM) using Rich Live to mirror the Runner presentation.</p
 <span class="normal">1372</span>
 <span class="normal">1373</span>
 <span class="normal">1374</span>
-<span class="normal">1375</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="normal">1375</span>
+<span class="normal">1376</span>
+<span class="normal">1377</span>
+<span class="normal">1378</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Run the producer, batcher and worker coroutines and present a live UI while working.</span>
 <span class="sd">    Runs the task generator to produce tasks, batches them using the batcher,</span>
@@ -21623,10 +21637,7 @@ and system stats (CPU/RAM) using Rich Live to mirror the Runner presentation.</p
 
               <details class="quote">
                 <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 972</span>
-<span class="normal"> 973</span>
-<span class="normal"> 974</span>
-<span class="normal"> 975</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 975</span>
 <span class="normal"> 976</span>
 <span class="normal"> 977</span>
 <span class="normal"> 978</span>
@@ -21756,7 +21767,10 @@ and system stats (CPU/RAM) using Rich Live to mirror the Runner presentation.</p
 <span class="normal">1102</span>
 <span class="normal">1103</span>
 <span class="normal">1104</span>
-<span class="normal">1105</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">SlurmBatch</span><span class="p">(</span><span class="n">Batch</span><span class="p">):</span>
+<span class="normal">1105</span>
+<span class="normal">1106</span>
+<span class="normal">1107</span>
+<span class="normal">1108</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">SlurmBatch</span><span class="p">(</span><span class="n">Batch</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Batch that submits tasks to a Slurm job scheduler.</span>
 
 <span class="sd">     Args:</span>
@@ -21926,17 +21940,17 @@ and system stats (CPU/RAM) using Rich Live to mirror the Runner presentation.</p
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 998</span>
-<span class="normal"> 999</span>
-<span class="normal">1000</span>
-<span class="normal">1001</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1001</span>
 <span class="normal">1002</span>
 <span class="normal">1003</span>
 <span class="normal">1004</span>
 <span class="normal">1005</span>
 <span class="normal">1006</span>
 <span class="normal">1007</span>
-<span class="normal">1008</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">cancel</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">1008</span>
+<span class="normal">1009</span>
+<span class="normal">1010</span>
+<span class="normal">1011</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">cancel</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Cancel a running or submitted Slurm job.&quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_id</span><span class="p">:</span>
         <span class="n">proc</span> <span class="o">=</span> <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">create_subprocess_exec</span><span class="p">(</span>
@@ -21974,10 +21988,7 @@ This method is unavoidably different from LocalBatch.run() because of the nature
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1010</span>
-<span class="normal">1011</span>
-<span class="normal">1012</span>
-<span class="normal">1013</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1013</span>
 <span class="normal">1014</span>
 <span class="normal">1015</span>
 <span class="normal">1016</span>
@@ -22028,7 +22039,10 @@ This method is unavoidably different from LocalBatch.run() because of the nature
 <span class="normal">1061</span>
 <span class="normal">1062</span>
 <span class="normal">1063</span>
-<span class="normal">1064</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">1064</span>
+<span class="normal">1065</span>
+<span class="normal">1066</span>
+<span class="normal">1067</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;This method submits the batch to Slurm by creating a batch script and using sbatch command. It also monitors the job status until completion.</span>
 <span class="sd">    This method is unavoidably different from LocalBatch.run() because of the nature of Slurm job submission.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
@@ -23427,9 +23441,9 @@ Some important concepts:</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1109</span>
-<span class="normal">1110</span>
-<span class="normal">1111</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_cpu_usage</span><span class="p">():</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1112</span>
+<span class="normal">1113</span>
+<span class="normal">1114</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_cpu_usage</span><span class="p">():</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns the current CPU usage percentage.&quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="n">psutil</span><span class="o">.</span><span class="n">cpu_percent</span><span class="p">(</span><span class="n">interval</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
@@ -23454,9 +23468,9 @@ Some important concepts:</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1113</span>
-<span class="normal">1114</span>
-<span class="normal">1115</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_memory_usage</span><span class="p">():</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1116</span>
+<span class="normal">1117</span>
+<span class="normal">1118</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_memory_usage</span><span class="p">():</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns the current memory usage percentage.&quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="n">psutil</span><span class="o">.</span><span class="n">virtual_memory</span><span class="p">()</span><span class="o">.</span><span class="n">percent</span>
 </code></pre></div></td></tr></table></div>
@@ -23603,13 +23617,7 @@ Some important concepts:</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2045</span>
-<span class="normal">2046</span>
-<span class="normal">2047</span>
-<span class="normal">2048</span>
-<span class="normal">2049</span>
-<span class="normal">2050</span>
-<span class="normal">2051</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2051</span>
 <span class="normal">2052</span>
 <span class="normal">2053</span>
 <span class="normal">2054</span>
@@ -23665,7 +23673,13 @@ Some important concepts:</p>
 <span class="normal">2104</span>
 <span class="normal">2105</span>
 <span class="normal">2106</span>
-<span class="normal">2107</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lazy_run_compares</span><span class="p">(</span>
+<span class="normal">2107</span>
+<span class="normal">2108</span>
+<span class="normal">2109</span>
+<span class="normal">2110</span>
+<span class="normal">2111</span>
+<span class="normal">2112</span>
+<span class="normal">2113</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lazy_run_compares</span><span class="p">(</span>
     <span class="n">run_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">,</span>
     <span class="n">container_engine</span><span class="p">:</span> <span class="n">Engine</span><span class="p">,</span>
     <span class="n">comps_db</span><span class="p">:</span> <span class="n">database</span><span class="o">.</span><span class="n">GenomeComparisonDatabase</span><span class="o">|</span><span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -23862,13 +23876,7 @@ Some important concepts:</p>
 
             <details class="quote">
               <summary>Source code in <code>zipstrain/src/zipstrain/task_manager.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2426</span>
-<span class="normal">2427</span>
-<span class="normal">2428</span>
-<span class="normal">2429</span>
-<span class="normal">2430</span>
-<span class="normal">2431</span>
-<span class="normal">2432</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2432</span>
 <span class="normal">2433</span>
 <span class="normal">2434</span>
 <span class="normal">2435</span>
@@ -23921,7 +23929,13 @@ Some important concepts:</p>
 <span class="normal">2482</span>
 <span class="normal">2483</span>
 <span class="normal">2484</span>
-<span class="normal">2485</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lazy_run_gene_compares</span><span class="p">(</span>
+<span class="normal">2485</span>
+<span class="normal">2486</span>
+<span class="normal">2487</span>
+<span class="normal">2488</span>
+<span class="normal">2489</span>
+<span class="normal">2490</span>
+<span class="normal">2491</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lazy_run_gene_compares</span><span class="p">(</span>
     <span class="n">run_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">,</span>
     <span class="n">container_engine</span><span class="p">:</span> <span class="n">Engine</span><span class="p">,</span>
     <span class="n">comps_db</span><span class="p">:</span> <span class="n">database</span><span class="o">.</span><span class="n">GeneComparisonDatabase</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

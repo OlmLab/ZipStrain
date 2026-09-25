@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Plugins - ZipStrain</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../assets/_mkdocstrings.css" rel="stylesheet" />
+        <link href="../assets/paramsel.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Plugins";
+        var mkdocs_page_input_path = "plugins.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> ZipStrain
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../quickstart/">Quick Start</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../usermanual/">User Manual</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">Plugins</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#available-plugins">Available plugins</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#naming-conventions">Naming conventions</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#what-is-not-a-plugin">What is not a plugin</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#rust-profiler">Rust profiler</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#why-use-it">Why use it</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#how-it-fits-into-zipstrain">How it fits into ZipStrain</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#install-from-pypi">Install from PyPI</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#select-it-in-the-cli">Select it in the CLI</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#select-it-in-nextflow">Select it in Nextflow</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../expected_output/">Expected output</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../downstream/">Downstream Analyses</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Parameter selection guide</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" >Profiling parameters</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../parameter_selection/">popANI depth bias</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../api/">API</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">ZipStrain</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Plugins</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="plugins">Plugins</h1>
+<p>ZipStrain offers a plugin system for extending its core workflows with optional, separately installed components. Plugins can replace or add functionality in a specific part of the pipeline (for example, a faster profiling engine) without changing how the rest of ZipStrain works. The plugin catalog will grow over time.</p>
+<h2 id="available-plugins">Available plugins</h2>
+<table>
+<thead>
+<tr>
+<th>Plugin</th>
+<th>Extends</th>
+<th>Select with</th>
+<th>What it does</th>
+<th>Install</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#rust-profiler"><code>zipstrain_rust_profiler</code></a></td>
+<td>Profiling</td>
+<td><code>--backend rust_profiler</code></td>
+<td>Profiles BAMs with a native, multithreaded Rust implementation; up to ~10x faster with lower memory use on large BAMs</td>
+<td><code>pip install zipstrain_rust_profiler</code></td>
+</tr>
+</tbody>
+</table>
+<p>ZipStrain works fully without any plugins. Each plugin is installed separately and only takes effect when you select it by name at run time; otherwise ZipStrain uses its built-in behavior.</p>
+<h3 id="naming-conventions">Naming conventions</h3>
+<p>Plugin distributions follow the <code>zipstrain_&lt;capability&gt;</code> naming pattern. The
+distribution and Python import use the same underscore-separated name; the
+run-time selector is the shorter capability name. Python package indexes treat
+underscores and hyphens as equivalent in distribution names.</p>
+<h3 id="what-is-not-a-plugin">What is not a plugin</h3>
+<ul>
+<li><code>python</code> is the built-in profiling backend, not a plugin.</li>
+<li>The <code>zipstrain[matrix]</code> extra installs dependencies for matrix comparison; it is not a plugin.</li>
+<li><code>--backend</code> on <code>zipstrain compare</code> selects a <strong>comparison</strong> compute backend, not a profiling plugin.</li>
+</ul>
+<h2 id="rust-profiler">Rust profiler</h2>
+<p><strong>Extends:</strong> profiling · <strong>Selector:</strong> <code>--backend rust_profiler</code></p>
+<h3 id="why-use-it">Why use it</h3>
+<p>Profiling time and memory grow with BAM size. The Rust profiler is a drop-in replacement for the built-in Python profiler that:</p>
+<ul>
+<li><strong>Runs up to ~10x faster</strong>, using a native, multithreaded implementation.</li>
+<li><strong>Manages memory better on large BAMs</strong>, keeping peak memory lower and more predictable so deeply sequenced samples are less likely to exhaust available RAM on a workstation or HPC node.</li>
+<li><strong>Produces the same outputs</strong>, so downstream comparison and analysis steps work unchanged.</li>
+</ul>
+<p>It is most useful for large or deeply sequenced BAMs, large sample sets, and memory-constrained cluster jobs.</p>
+<h3 id="how-it-fits-into-zipstrain">How it fits into ZipStrain</h3>
+<p>The Rust profiler reads a coordinate-sorted, indexed BAM and writes the same three core Parquet outputs as Python profiling: <code>&lt;sample&gt;_profile.parquet</code>, <code>&lt;sample&gt;_gene_stats.parquet</code>, and <code>&lt;sample&gt;_genome_stats.parquet</code>. When you use the high-level <code>zipstrain profile</code> command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.</p>
+<p>The plugin is optional: installing ZipStrain alone does not install it, and leaving out <code>--backend</code> keeps the Python behavior.</p>
+<h3 id="install-from-pypi">Install from PyPI</h3>
+<p>In a Python 3.12+ environment, install the plugin with pip:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>zipstrain_rust_profiler
+</code></pre></div>
+<p>This also installs ZipStrain 1.2.0 or newer if needed. On a supported platform, pip downloads a prebuilt wheel, so Rust is not needed at installation time. Building from source requires a Rust toolchain and native build prerequisites, including libclang on Linux.</p>
+<p>If using the high-level <code>profile</code> workflow, keep <code>samtools</code> available as described in <a href="../installation/">Installation</a>. The standalone Rust profiler reads the BAM directly, but the ZipStrain workflow still invokes <code>samtools index</code>.</p>
+<h3 id="select-it-in-the-cli">Select it in the CLI</h3>
+<p>Use the normal profiling command and add one flag:</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--input-table<span class="w"> </span>mapped/samples.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reference-fasta<span class="w"> </span>ref.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>ref.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--run-dir<span class="w"> </span>profiled<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>rust_profiler
+</code></pre></div>
+<p><code>mapped/samples.txt</code> is the same CSV used by Python profiling, with <code>sample_name,bamfile</code> columns. Keep the BAMs coordinate-sorted. <code>--num-procs</code> controls the maximum Rust workers per sample; the plugin also respects ZipStrain's detected CPU allocation. Existing profiling filters such as <code>--min-baseq</code>, <code>--min-read-ani</code>, and <code>--read-inclusion</code> are passed through.</p>
+<p>For one BAM with already prepared assets, use <code>zipstrain utilities profile-single</code>:</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>profile-single<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bam-file<span class="w"> </span>sample.bam<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bed-file<span class="w"> </span>genomes.bed<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stb-file<span class="w"> </span>reference.stb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--null-model<span class="w"> </span>null_model.parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>sample_profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>rust_profiler
+</code></pre></div>
+<p>This command requires an indexed BAM, BED file, STB file, and null-model Parquet. <code>--reference-fasta</code>, <code>--gene-range-table</code>, and <code>--profiling-contract</code> remain optional; provide the reference FASTA if you want <code>ref_base_bitmask</code> in the profile. Its worker limit is <code>--max-concurrency</code>.</p>
+<h3 id="select-it-in-nextflow">Select it in Nextflow</h3>
+<p>For Nextflow modes that run profiling, set:</p>
+<div class="highlight"><pre><span></span><code>--profile_backend<span class="w"> </span>rust_profiler
+</code></pre></div>
+<p>For example, add that parameter to the <a href="../usermanual/#command-2-profile-bams-mode-profile"><code>--mode profile</code> command</a>. <strong>Install the plugin inside the environment that runs each profiling task.</strong> The standard ZipStrain Docker/Apptainer images do not include this optional package, so a containerized run needs a custom image containing both ZipStrain and the Rust plugin. Installing the plugin only on the machine that launches Nextflow is not sufficient. With the default <code>python</code> backend, Nextflow does not pass a plugin flag to the standard images.</p>
+<p>If ZipStrain says <code>Profiling backend 'rust_profiler' is not installed</code>, check the Python environment or task container where <code>profile-single</code> actually runs. ZipStrain does not silently fall back to Python when you explicitly request a plugin.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../installation/" class="btn btn-neutral float-left" title="Installation"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../Tutorial/" class="btn btn-neutral float-right" title="Tutorial">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../installation/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../Tutorial/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../assets/paramsel_tabs.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
