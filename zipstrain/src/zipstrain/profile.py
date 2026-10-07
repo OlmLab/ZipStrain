@@ -76,9 +76,11 @@ def read_stb(stb_file) -> pl.LazyFrame:
     stray spaces around the tab; without stripping, those scaffolds fail to join
     and are silently dropped to genome ``NA``.
     """
-    return pl.scan_csv(stb_file, separator="\t", has_header=False).select(
-        pl.col("column_1").cast(pl.Utf8).str.strip_chars().alias("scaffold"),
-        pl.col("column_2").cast(pl.Utf8).str.strip_chars().alias("genome"),
+    return pl.scan_csv(
+        stb_file, separator="\t", has_header=False, new_columns=["scaffold", "genome"]
+    ).select(
+        pl.col("scaffold").cast(pl.Utf8).str.strip_chars(),
+        pl.col("genome").cast(pl.Utf8).str.strip_chars(),
     )
 RAW_PROFILE_PARQUET_FIELDS = [
     ("chrom", pa.string()),
@@ -469,7 +471,7 @@ def add_genome_info_to_mpileup(mpileup_df:pl.LazyFrame, scaffold_to_genome:pl.La
     ).with_columns(
         pl.col("genome").fill_null("NA")
     )
-    return mpileup_df.set_sorted(["chrom", "pos"])
+    return mpileup_df
 
 def add_gene_info_to_mpileup(mpileup_df:pl.LazyFrame, gene_range:pl.LazyFrame)->pl.LazyFrame:
     mpileup_df=mpileup_df.sort(["chrom", "pos"]).set_sorted(["chrom", "pos"])
@@ -1360,7 +1362,9 @@ def profile_bam_in_chunks(
             read_inclusion=read_inclusion,
         )
         effective_bam_file = filtered_bam_file
-    bed_lf=pl.scan_csv(bed_file,has_header=False,separator="\t")
+    bed_lf = pl.scan_csv(
+        bed_file, has_header=False, separator="\t", new_columns=["scaffold", "start", "end"]
+    )
     if gene_range_table_path is None:
         gene_range_lf = empty_gene_range_table()
     else:
@@ -1368,12 +1372,8 @@ def profile_bam_in_chunks(
             gene_range_table_path,
             has_header=False,
             separator="\t",
-        ).rename({
-            "column_1": "gene",
-            "column_2": "scaffold",
-            "column_3": "start",
-            "column_4": "end",
-        })
+            new_columns=["gene", "scaffold", "start", "end"],
+        )
         gene_range_lf = gene_range_lf.sort(["scaffold", "start"]).set_sorted(["scaffold", "start"])
     bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
@@ -1466,7 +1466,7 @@ def profile_bam_in_chunks(
             profile=mpileup_df,
             read_loc_table=read_loc_df,
             stb=stb,
-            bed=bed_lf.rename({"column_1":"scaffold","column_2":"start","column_3":"end"}),
+            bed=bed_lf,
         ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
     
     

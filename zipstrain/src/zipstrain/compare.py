@@ -322,8 +322,10 @@ def _join_stb_requested_genomes(
     genome_scope: str,
 ) -> pl.LazyFrame:
     genomes_utf8 = (
-        pl.scan_csv(stb_file, separator="\t", has_header=False)
-        .select(pl.col("column_2").cast(pl.Utf8).str.strip_chars().alias("genome"))
+        pl.scan_csv(
+            stb_file, separator="\t", has_header=False, new_columns=["scaffold", "genome"]
+        )
+        .select(pl.col("genome").cast(pl.Utf8).str.strip_chars())
         .unique()
     )
     genome_dtype = genome_comp.collect_schema().get("genome")

@@ -923,11 +923,13 @@ def _collect_scaffold_specs_from_bed(
         raise FileNotFoundError(f"BED path is not a file: {bed_path}")
 
     bed_spans = (
-        pl.scan_csv(bed_path, separator="\t", has_header=False)
+        pl.scan_csv(
+            bed_path, separator="\t", has_header=False, new_columns=["chrom", "start", "end"]
+        )
         .select(
-            pl.col("column_1").cast(pl.Utf8).alias("chrom"),
-            pl.col("column_2").cast(pl.Int64).alias("start"),
-            pl.col("column_3").cast(pl.Int64).alias("end"),
+            pl.col("chrom").cast(pl.Utf8),
+            pl.col("start").cast(pl.Int64),
+            pl.col("end").cast(pl.Int64),
         )
         .group_by("chrom")
         .agg(
@@ -1009,10 +1011,12 @@ def _read_stb_mapping(stb_file: Path) -> pl.DataFrame:
         raise FileNotFoundError(f"STB path is not a file: {stb_path}")
 
     mapping = (
-        pl.scan_csv(stb_path, separator="\t", has_header=False)
+        pl.scan_csv(
+            stb_path, separator="\t", has_header=False, new_columns=["scaffold", "genome"]
+        )
         .select(
-            pl.col("column_1").cast(pl.Utf8).alias("scaffold"),
-            pl.col("column_2").cast(pl.Utf8).alias("genome"),
+            pl.col("scaffold").cast(pl.Utf8),
+            pl.col("genome").cast(pl.Utf8),
         )
         .collect(engine="streaming")
     )
@@ -1045,11 +1049,13 @@ def _collect_scaffold_specs_from_bed_and_stb(
         raise FileNotFoundError(f"BED path is not a file: {bed_path}")
 
     bed_spans = (
-        pl.scan_csv(bed_path, separator="\t", has_header=False)
+        pl.scan_csv(
+            bed_path, separator="\t", has_header=False, new_columns=["chrom", "start", "end"]
+        )
         .select(
-            pl.col("column_1").cast(pl.Utf8).alias("chrom"),
-            pl.col("column_2").cast(pl.Int64).alias("start"),
-            pl.col("column_3").cast(pl.Int64).alias("end"),
+            pl.col("chrom").cast(pl.Utf8),
+            pl.col("start").cast(pl.Int64),
+            pl.col("end").cast(pl.Int64),
         )
         .group_by("chrom")
         .agg(
@@ -1216,14 +1222,7 @@ def _collect_gene_range_specs(
             gene_range_path,
             has_header=False,
             separator="\t",
-        )
-        .rename(
-            {
-                "column_1": "gene",
-                "column_2": "scaffold",
-                "column_3": "start",
-                "column_4": "end",
-            }
+            new_columns=["gene", "scaffold", "start", "end"],
         )
         .select(
             pl.col("gene").cast(pl.Utf8),
@@ -1311,14 +1310,7 @@ def _expand_scaffold_specs_with_gene_ranges(
             gene_range_path,
             has_header=False,
             separator="\t",
-        )
-        .rename(
-            {
-                "column_1": "gene",
-                "column_2": "scaffold",
-                "column_3": "start",
-                "column_4": "end",
-            }
+            new_columns=["gene", "scaffold", "start", "end"],
         )
         .select(
             pl.col("scaffold").cast(pl.Utf8),

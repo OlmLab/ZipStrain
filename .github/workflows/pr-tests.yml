@@ -18,8 +18,17 @@ concurrency:
 
 jobs:
   test:
+    name: test (Polars ${{ matrix.polars_label }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - polars_label: "1.x"
+            polars_spec: "polars>=1.41,<2"
+          - polars_label: "2.x"
+            polars_spec: "polars>=2,<3"
     permissions:
       contents: read
 
@@ -57,7 +66,7 @@ jobs:
         working-directory: zipstrain
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[test,matrix]"
+          python -m pip install -e ".[test,matrix]" "${{ matrix.polars_spec }}"
 
       - name: Run test suite
         working-directory: zipstrain

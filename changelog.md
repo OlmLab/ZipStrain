@@ -4,6 +4,12 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+## 1.2.2
+
+Compared with `1.2.1`:
+
+- Support Polars 2.0 without breaking Polars 1.x by naming columns explicitly when reading headerless STB, BED, and gene-range tables. Remove an incorrect sortedness assertion in genome annotation, and test both Polars major versions in CI.
+
 ## 1.2.1
 
 Compared with `1.2.0`:

@@ -1304,11 +1304,13 @@ def presence_profile(profile_file, stb_file, bed_file, read_loc_file, min_cov_fu
     """
     profile = pl.scan_parquet(profile_file)
     stb = pf.read_stb(stb_file)
-    bed = pl.scan_csv(bed_file, separator="\t", has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").cast(pl.Int64).alias("start"),
-        pl.col("column_3").cast(pl.Int64).alias("end")
-    ).select(["scaffold", "start", "end"])
+    bed = pl.scan_csv(
+        bed_file, separator="\t", has_header=False, new_columns=["scaffold", "start", "end"]
+    ).select(
+        pl.col("scaffold"),
+        pl.col("start").cast(pl.Int64),
+        pl.col("end").cast(pl.Int64),
+    )
     read_loc_table = pl.scan_parquet(read_loc_file).rename({
         "chrom":"scaffold",
         "pos":"loc"

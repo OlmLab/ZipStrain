@@ -2021,11 +2021,8 @@ def test_generate_stb(tmp_path):
     assert result.exit_code == 0
     stb_path = tmp_path / "stb_output.tsv"
     assert stb_path.exists()
-    stb=pl.read_csv(stb_path,separator="\t",has_header=False).rename(
-        {
-            "column_1":"scaffold",
-            "column_2":"genome"
-        }
+    stb = pl.read_csv(
+        stb_path, separator="\t", has_header=False, new_columns=["scaffold", "genome"]
     )
     result_dict = stb.rows_by_key("scaffold", unique=True, named=True)
     assert result_dict["chr1_1"]["genome"] == "genome1"

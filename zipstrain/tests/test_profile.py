@@ -33,6 +33,16 @@ gene_locs = (["NA","NA","gene1","gene1","gene1","gene1","NA","NA","NA","NA"])+ \
               "NA","NA","gene3","gene3","gene3","gene3","gene3","NA","NA","NA"])
 
 
+def test_read_stb_uses_explicit_headerless_columns(tmp_path):
+    stb_file = tmp_path / "reference.stb"
+    stb_file.write_text("chr1 \t genome1 \nchr2\tgenome2\n")
+
+    result = profile.read_stb(stb_file).collect()
+
+    assert result.columns == ["scaffold", "genome"]
+    assert result.rows() == [("chr1", "genome1"), ("chr2", "genome2")]
+
+
 @pytest.fixture(scope="module")
 def profile_1()->pl.LazyFrame:
     return pl.DataFrame({
@@ -354,10 +364,7 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
             "max_error_count": [0, 0, 0, 0, 0, 0, 0, 0],
         }
     ).write_parquet(null_model_file)
-    stb_lf = pl.scan_csv(stb_file, separator="\t", has_header=False).with_columns(
-        pl.col("column_1").alias("scaffold"),
-        pl.col("column_2").alias("genome"),
-    )
+    stb_lf = profile.read_stb(stb_file)
     return bam_file, reference_fasta, bed_file, gene_range_table, stb_file, null_model_file, stb_lf
 
 

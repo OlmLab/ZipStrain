@@ -587,8 +587,8 @@ def test_build_reference_from_abundance_writes_concat_and_stb(tmp_path):
     assert ">GCA_123456.1__contigA" in fasta_text
     assert ">GCF_000001405.40__contigB" in fasta_text
 
-    stb = pl.read_csv(out_stb, separator="\t", has_header=False).rename(
-        {"column_1": "scaffold", "column_2": "genome"}
+    stb = pl.read_csv(
+        out_stb, separator="\t", has_header=False, new_columns=["scaffold", "genome"]
     )
     assert stb.height == 4
     assert set(stb["genome"].to_list()) == {"GCA_123456.1", "GCF_000001405.40"}

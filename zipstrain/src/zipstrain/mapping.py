@@ -397,8 +397,10 @@ def write_reference_taxonomy(
     when no genome could be matched.
     """
     genome_ids = (
-        pl.scan_csv(stb_file, separator="\t", has_header=False)
-        .select(pl.col("column_2").alias("genome"))
+        pl.scan_csv(
+            stb_file, separator="\t", has_header=False, new_columns=["scaffold", "genome"]
+        )
+        .select("genome")
         .unique()
         .collect()
         .get_column("genome")
