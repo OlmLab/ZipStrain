@@ -4,6 +4,12 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+## 1.2.1
+
+Compared with `1.2.0`:
+
+- Matrix comparison: preserve sample and genome IDs when resuming against rebuilt, reordered, or expanded HDF5 matrices. Completed comparisons, including zero-overlap pairs and gene results, are reused without rewriting prior rows.
+
 ## 1.2.0
 
 Compared with `1.1.1`:

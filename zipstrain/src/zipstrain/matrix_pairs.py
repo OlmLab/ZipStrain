@@ -1713,6 +1713,44 @@ def _ensure_matrix_compare_gene_results_table(
     )
 
 
+@dataclass(frozen=True)
+class _MatrixCompareIds:
+    """Translate physical matrix indices to permanent comparison identities."""
+
+    samples: np.ndarray
+    genomes: dict[int, int]
+
+
+def _sync_matrix_compare_catalog(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    table: str,
+    index_column: str,
+    name_column: str,
+    rows: list[tuple[int, str]],
+) -> dict[str, int]:
+    """Preserve existing identities and append names without rewriting results."""
+    existing = conn.execute(f"SELECT {index_column}, {name_column} FROM {table}").fetchall()
+    by_name = {str(name): int(index) for index, name in existing}
+    if len(by_name) != len(existing) or any(index < 0 for index in by_name.values()):
+        raise ValueError(f"Existing matrix compare DB has an invalid identity catalog: {table}")
+    if len({name for _index, name in rows}) != len(rows):
+        raise ValueError(f"Matrix contains duplicate names for {table}")
+    next_index = max(by_name.values(), default=-1) + 1
+    additions = []
+    for matrix_index, name in rows:
+        if name in by_name:
+            continue
+        # New databases retain the original IDs, including scoped genome IDs.
+        index = next_index if existing else matrix_index
+        by_name[name] = index
+        additions.append((index, name))
+        next_index += 1
+    if additions:
+        conn.executemany(f"INSERT INTO {table} VALUES (?, ?)", additions)
+    return by_name
+
+
 def _prepare_matrix_compare_db(
     *,
     output_file: Path,
@@ -1723,77 +1761,104 @@ def _prepare_matrix_compare_db(
     calculations: tuple[str, ...],
     min_cov: int,
     ani_method: str,
-) -> duckdb.DuckDBPyConnection:
+) -> tuple[duckdb.DuckDBPyConnection, _MatrixCompareIds]:
+    """Reconcile compact identity catalogs without changing old comparison rows."""
+    if [index for index, _name in samples] != list(range(len(samples))):
+        raise ValueError("Matrix sample indices must be contiguous row indices starting at zero.")
     existed_before = output_file.exists() and output_file.stat().st_size > 0
     compare_conn = connect_duckdb(str(output_file), threads=1)
-    compare_conn.execute("SET preserve_insertion_order=false")
-    if not existed_before:
-        _init_matrix_compare_db_schema(compare_conn)
-        compare_conn.executemany(
-            "INSERT INTO matrix_compare_metadata VALUES (?, ?)",
-            _compare_db_metadata_rows(
+    try:
+        compare_conn.execute("SET preserve_insertion_order=false")
+        compare_conn.execute("BEGIN")
+        if not existed_before:
+            _init_matrix_compare_db_schema(compare_conn)
+            compare_conn.executemany(
+                "INSERT INTO matrix_compare_metadata VALUES (?, ?)",
+                _compare_db_metadata_rows(
+                    matrix_metadata=matrix_metadata,
+                    genome_scope=genome_scope,
+                    calculations=calculations,
+                    min_cov=min_cov,
+                    ani_method=ani_method,
+                ),
+            )
+        else:
+            if not _matrix_compare_table_exists(compare_conn, "matrix_compare_metadata"):
+                raise ValueError(
+                    "Existing matrix compare DB is missing metadata and cannot be resumed safely. "
+                    "Remove it and rerun matrix-compare."
+                )
+            compare_metadata = {
+                str(k): str(v)
+                for k, v in compare_conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
+            }
+            if "matrix_input_format" not in compare_metadata:
+                compare_conn.execute(
+                    "INSERT INTO matrix_compare_metadata VALUES (?, ?)",
+                    ["matrix_input_format", "hdf5"],
+                )
+                compare_metadata["matrix_input_format"] = "hdf5"
+            _validate_matrix_compare_db_metadata(
+                compare_metadata=compare_metadata,
                 matrix_metadata=matrix_metadata,
                 genome_scope=genome_scope,
                 calculations=calculations,
                 min_cov=min_cov,
                 ani_method=ani_method,
-            ),
-        )
-    else:
-        if not _matrix_compare_table_exists(compare_conn, "matrix_compare_metadata"):
-            raise ValueError(
-                "Existing matrix compare DB is missing metadata and cannot be resumed safely. "
-                "Remove it and rerun matrix-compare."
             )
-        compare_metadata = {
-            str(k): str(v)
-            for k, v in compare_conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
-        }
-        if "matrix_input_format" not in compare_metadata:
-            compare_conn.execute(
-                "INSERT OR REPLACE INTO matrix_compare_metadata VALUES (?, ?)",
-                ["matrix_input_format", "hdf5"],
-            )
-            compare_metadata["matrix_input_format"] = "hdf5"
-        _validate_matrix_compare_db_metadata(
-            compare_metadata=compare_metadata,
-            matrix_metadata=matrix_metadata,
-            genome_scope=genome_scope,
-            calculations=calculations,
-            min_cov=min_cov,
-            ani_method=ani_method,
-        )
-        _ensure_matrix_compare_completed_table(compare_conn)
-        _ensure_matrix_compare_gene_results_table(compare_conn)
+            _ensure_matrix_compare_completed_table(compare_conn)
+            _ensure_matrix_compare_gene_results_table(compare_conn)
 
-    compare_conn.executemany(
-        "INSERT OR REPLACE INTO matrix_compare_samples VALUES (?, ?)",
-        [(sample_idx, sample_name) for sample_idx, sample_name in samples],
-    )
-    compare_conn.executemany(
-        "INSERT OR REPLACE INTO matrix_compare_genomes VALUES (?, ?)",
-        [(spec.genome_idx, spec.genome) for spec in genomes],
-    )
-    compare_conn.commit()
-    return compare_conn
+        sample_ids = _sync_matrix_compare_catalog(
+            compare_conn,
+            table="matrix_compare_samples",
+            index_column="sample_idx",
+            name_column="sample_name",
+            rows=samples,
+        )
+        genome_ids = _sync_matrix_compare_catalog(
+            compare_conn,
+            table="matrix_compare_genomes",
+            index_column="genome_idx",
+            name_column="genome",
+            rows=[(spec.genome_idx, spec.genome) for spec in genomes],
+        )
+        identities = _MatrixCompareIds(
+            samples=np.asarray([sample_ids[name] for _index, name in samples], dtype=np.int64),
+            genomes={spec.genome_idx: genome_ids[spec.genome] for spec in genomes},
+        )
+        compare_conn.commit()
+        return compare_conn, identities
+    except BaseException:
+        compare_conn.close()
+        raise
 
 
 def _load_matrix_compare_resume_state(
     compare_conn: duckdb.DuckDBPyConnection,
     sample_count: int,
     genome_ids: list[int],
+    compare_ids: Optional[_MatrixCompareIds] = None,
 ) -> tuple[dict[int, set[tuple[int, int]]], int, int]:
+    """Read existing completion keys and translate them to this matrix's rows."""
     total_pairs = sample_count * (sample_count - 1) // 2
     if total_pairs == 0 or not genome_ids:
         return {genome_idx: set() for genome_idx in genome_ids}, 0, 0
 
+    if (
+        compare_ids is not None
+        and np.array_equal(compare_ids.samples, np.arange(sample_count))
+        and all(matrix_id == compare_id for matrix_id, compare_id in compare_ids.genomes.items())
+    ):
+        compare_ids = None
+    sample_limit = sample_count if compare_ids is None else int(compare_ids.samples.max()) + 1
     completed_rows = compare_conn.execute(
         """
         SELECT sample_idx_1, sample_idx_2, genome_idx
         FROM matrix_compare_completed_pair_genomes
         WHERE sample_idx_1 < ? AND sample_idx_2 < ?
         """,
-        [sample_count, sample_count],
+        [sample_limit, sample_limit],
     ).fetchall()
     completed_by_genome: dict[int, set[tuple[int, int]]] = {
         genome_idx: set() for genome_idx in genome_ids
@@ -1801,11 +1866,24 @@ def _load_matrix_compare_resume_state(
     completed_pair_counts: dict[tuple[int, int], int] = {}
     valid_genome_ids = set(genome_ids)
     completed_pair_genomes = 0
+    sample_rows = None if compare_ids is None else {
+        int(compare_id): matrix_row for matrix_row, compare_id in enumerate(compare_ids.samples)
+    }
+    genome_rows = None if compare_ids is None else {
+        compare_id: matrix_id for matrix_id, compare_id in compare_ids.genomes.items()
+    }
     for sample_idx_1, sample_idx_2, genome_idx in completed_rows:
+        if sample_rows is not None:
+            sample_idx_1 = sample_rows.get(int(sample_idx_1))
+            sample_idx_2 = sample_rows.get(int(sample_idx_2))
+            genome_idx = genome_rows.get(int(genome_idx))
+            if sample_idx_1 is None or sample_idx_2 is None or genome_idx is None:
+                continue
         genome_idx = int(genome_idx)
         if genome_idx not in valid_genome_ids:
             continue
-        pair = (int(sample_idx_1), int(sample_idx_2))
+        first, second = int(sample_idx_1), int(sample_idx_2)
+        pair = (first, second) if first < second else (second, first)
         genome_pairs = completed_by_genome[genome_idx]
         if pair in genome_pairs:
             continue
@@ -1919,7 +1997,11 @@ def _completed_pair_rows_from_payload(
     genome_idx = int(payload["genome_idx"])
     sample_2_idx = np.asarray(payload["sample_2_idx"], dtype=np.int64)
     return [
-        (sample_1_idx, int(sample_2_idx_value), genome_idx)
+        (
+            min(sample_1_idx, int(sample_2_idx_value)),
+            max(sample_1_idx, int(sample_2_idx_value)),
+            genome_idx,
+        )
         for sample_2_idx_value in sample_2_idx.tolist()
     ]
 
@@ -4363,6 +4445,32 @@ def _shared_mask_to_numpy(shared_mask) -> np.ndarray:
     return np.asarray(shared_mask)
 
 
+def _compare_pair_arrow_columns(
+    sample_1_idx: int,
+    sample_1: str,
+    sample_2_idx,
+    sample_2: list[str],
+) -> tuple[pa.Array, pa.Array, pa.Array, pa.Array]:
+    """Canonicalize both names and IDs once per pair, before gene expansion."""
+    target_ids = np.asarray(sample_2_idx, dtype=np.int64)
+    target_names = pa.array(sample_2, type=pa.string())
+    swap = target_ids < sample_1_idx
+    if not bool(swap.any()):
+        return (
+            pa.repeat(pa.scalar(sample_1_idx, type=pa.int64()), len(target_ids)),
+            pa.array(target_ids, type=pa.int64()),
+            pa.repeat(pa.scalar(sample_1), len(target_ids)),
+            target_names,
+        )
+    swap_mask = pa.array(swap)
+    return (
+        pa.array(np.minimum(sample_1_idx, target_ids), type=pa.int64()),
+        pa.array(np.maximum(sample_1_idx, target_ids), type=pa.int64()),
+        pc.if_else(swap_mask, target_names, pa.scalar(sample_1)),
+        pc.if_else(swap_mask, pa.scalar(sample_1), target_names),
+    )
+
+
 def _make_arrow_table(
     sample_1_idx: int,
     sample_1: str,
@@ -4397,10 +4505,7 @@ def _make_arrow_table(
 
     return pa.Table.from_arrays(
         [
-            pa.array([sample_1_idx] * row_count, type=pa.int64()),
-            pa.array(sample_2_idx, type=pa.int64()),
-            pa.array([sample_1] * row_count, type=pa.string()),
-            pa.array(sample_2, type=pa.string()),
+            *_compare_pair_arrow_columns(sample_1_idx, sample_1, sample_2_idx, sample_2),
             pa.array([genome_idx] * row_count, type=pa.int64()),
             pa.array([genome] * row_count, type=pa.string()),
             pa.array(total_values, type=pa.int64()),
@@ -4469,12 +4574,23 @@ def _make_gene_arrow_table_from_compare_payload(
     genome = str(payload["genome"])
 
     row_count = len(gene_idx_flat)
+    target_indices = pa.array(target_idx_flat)
+    if not bool((sample_2_idx_all < sample_1_idx).any()):
+        # Preserve the constant-column fast path for ordinary builds/appends.
+        pair_columns = [
+            pa.array(np.full(row_count, sample_1_idx, dtype=np.int64)),
+            pa.array(sample_2_idx_all[target_idx_flat], type=pa.int64()),
+            pa.repeat(pa.scalar(sample_1), row_count),
+            pc.take(pa.array(sample_2_all, type=pa.string()), target_indices),
+        ]
+    else:
+        pair_columns = [
+            pc.take(column, target_indices)
+            for column in _compare_pair_arrow_columns(sample_1_idx, sample_1, sample_2_idx_all, sample_2_all)
+        ]
     return pa.Table.from_arrays(
         [
-            pa.array(np.full(row_count, sample_1_idx, dtype=np.int64)),
-            pa.array(sample_2_idx_all[target_idx_flat].astype(np.int64, copy=False), type=pa.int64()),
-            pa.repeat(pa.scalar(sample_1), row_count),
-            pc.take(pa.array(sample_2_all, type=pa.string()), pa.array(target_idx_flat)),
+            *pair_columns,
             pa.array(np.full(row_count, genome_idx, dtype=np.int64)),
             pa.repeat(pa.scalar(genome), row_count),
             pc.take(pa.array(gene_names, type=pa.string()), pa.array(gene_idx_flat)),
@@ -5009,6 +5125,7 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
     genome_scope: Optional[str],
     metadata: dict[str, str],
     samples: list[tuple[int, str]],
+    compare_ids: _MatrixCompareIds,
     genomes: list[GenomeSpec],
     genome_scaffolds: list[GenomeScaffoldOffset],
     completed_pairs_by_genome: dict[int, set[tuple[int, int]]],
@@ -5247,6 +5364,10 @@ async def _matrix_compare_reuse_target_chunks_torch_async(
                 batch_payloads: list[dict[str, object]],
                 batch_progress: list[dict[str, object]],
             ) -> None:
+                for payload in batch_payloads:
+                    payload["sample_1_idx"] = int(compare_ids.samples[int(payload["sample_1_idx"])])
+                    payload["sample_2_idx"] = compare_ids.samples[payload["sample_2_idx"]]
+                    payload["genome_idx"] = compare_ids.genomes[int(payload["genome_idx"])]
                 batch_pairs = sum(int(event["delta"]) for event in batch_progress)
                 last_event = batch_progress[-1] if batch_progress else {
                     "anchor_name": "",
@@ -5587,6 +5708,7 @@ def _matrix_compare_reuse_target_chunks_torch(
     genome_scope: Optional[str],
     metadata: dict[str, str],
     samples: list[tuple[int, str]],
+    compare_ids: _MatrixCompareIds,
     genomes: list[GenomeSpec],
     genome_scaffolds: list[GenomeScaffoldOffset],
     completed_pairs_by_genome: dict[int, set[tuple[int, int]]],
@@ -5616,6 +5738,7 @@ def _matrix_compare_reuse_target_chunks_torch(
             genome_scope=genome_scope,
             metadata=metadata,
             samples=samples,
+            compare_ids=compare_ids,
             genomes=genomes,
             genome_scaffolds=genome_scaffolds,
             completed_pairs_by_genome=completed_pairs_by_genome,
@@ -5745,7 +5868,7 @@ def matrix_compare(
                 "Gene ANI was requested, but this matrix store does not contain gene annotations. "
                 "Rebuild it with --gene-range-table."
             )
-        compare_conn = _prepare_matrix_compare_db(
+        compare_conn, compare_ids = _prepare_matrix_compare_db(
             output_file=output_file,
             matrix_metadata=metadata,
             samples=samples,
@@ -5759,6 +5882,7 @@ def matrix_compare(
             compare_conn,
             sample_count=len(samples),
             genome_ids=[spec.genome_idx for spec in genomes],
+            compare_ids=compare_ids,
         )
         if total_work == 0:
             return MatrixCompareSummary(
@@ -5787,6 +5911,7 @@ def matrix_compare(
                 genome_scope=genome_scope,
                 metadata=metadata,
                 samples=samples,
+                compare_ids=compare_ids,
                 genomes=genomes,
                 genome_scaffolds=genome_scaffolds,
                 completed_pairs_by_genome=completed_pairs_by_genome,
@@ -5941,6 +6066,9 @@ def matrix_compare(
                             backend_kind=compute_backend.kind,
                         )
                         chunk_ids = target_ids_all[target_offset: target_offset + max_targets]
+                        compare_anchor_id = int(compare_ids.samples[sample_1_idx])
+                        compare_target_ids = compare_ids.samples[chunk_ids]
+                        compare_genome_id = compare_ids.genomes[spec.genome_idx]
                         chunk_names = target_names_all[target_offset: target_offset + max_targets]
                         chunk_rows = remaining_target_row_indices[target_offset: target_offset + max_targets]
                         target_matrices = dataset.load_indices(chunk_rows)
@@ -5969,11 +6097,11 @@ def matrix_compare(
                             )
                             gene_table = _make_gene_arrow_table_from_compare_payload(
                                 {
-                                    "sample_1_idx": sample_1_idx,
+                                    "sample_1_idx": compare_anchor_id,
                                     "sample_1": sample_1_name,
-                                    "sample_2_idx": chunk_ids,
+                                    "sample_2_idx": compare_target_ids,
                                     "sample_2": chunk_names,
-                                    "genome_idx": spec.genome_idx,
+                                    "genome_idx": compare_genome_id,
                                     "genome": spec.genome,
                                     "gene_names": [gene.gene for gene in genome_gene_ranges],
                                     "gene_total_positions": gene_total,
@@ -5986,11 +6114,11 @@ def matrix_compare(
                         if mask.any():
                             pending_tables.append(
                                 _make_arrow_table(
-                                    sample_1_idx=sample_1_idx,
+                                    sample_1_idx=compare_anchor_id,
                                     sample_1=sample_1_name,
-                                    sample_2_idx=[int(chunk_ids[idx]) for idx, keep in enumerate(mask) if keep],
+                                    sample_2_idx=compare_target_ids[mask].tolist(),
                                     sample_2=[name for idx, name in enumerate(chunk_names) if mask[idx]],
-                                    genome_idx=spec.genome_idx,
+                                    genome_idx=compare_genome_id,
                                     genome=spec.genome,
                                     calculations=calculations,
                                     total_positions=totals_chunk[mask] if "ani" in calculations else None,
@@ -5999,8 +6127,12 @@ def matrix_compare(
                                 )
                             )
                         pending_completed_rows.extend(
-                            (sample_1_idx, int(target_idx), spec.genome_idx)
-                            for target_idx in chunk_ids.tolist()
+                            (
+                                min(compare_anchor_id, int(target_idx)),
+                                max(compare_anchor_id, int(target_idx)),
+                                compare_genome_id,
+                            )
+                            for target_idx in compare_target_ids.tolist()
                         )
                         target_offset += max_targets
                         target_chunks += 1

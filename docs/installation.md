@@ -155,7 +155,7 @@ A known-good combination (the current ZipStrain development environment). Newer 
 
 | Package / tool | Version | Used by |
 |---|---|---|
-| zipstrain | 1.2.0 | — |
+| zipstrain | 1.2.1 | — |
 | Python | 3.12 | everything |
 | samtools | 1.23 | `profile`, `map` |
 | bowtie2 | 2.5.5 | `map` |
@@ -235,7 +235,7 @@ On a cluster, keep site-specific SLURM profiles in a local ignored config such a
 |---|---|
 | Nextflow | 24.10.0 |
 | Java (JDK) | 17+ |
-| ZipStrain container | `parsaghadermazi/zipstrain:1.2.0` |
+| ZipStrain container | `parsaghadermazi/zipstrain:1.2.1` |
 
 ZipStrain's continuous integration runs the pipeline against **Nextflow 24.10.0**, so that is the confirmed-working version. Pin it with `export NXF_VER=24.10.0` before running to match CI exactly. Newer Nextflow releases (26.x) tightened DSL syntax — the bundled `zipstrain.nf` is kept compatible, but pin to a tested version if you hit parse errors.
 

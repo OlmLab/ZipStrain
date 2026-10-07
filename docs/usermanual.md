@@ -1091,6 +1091,20 @@ What it does:
 - computes gene ANI when gene annotations are present in the matrix store and `gene` is requested
 - stores result rows and completion metadata in the compare DB incrementally
 
+Comparison IDs are permanent within the compare database and are matched to
+matrix rows by sample name. Rebuilding a matrix with additional samples or a
+different row order therefore preserves completed comparisons, including gene
+results and zero-overlap pairs. Existing result tables are not rewritten, and
+the matrix is still read in its physical row order. Genome identities are also
+matched by name rather than by their position in a rebuilt store.
+
+Reuse assumes that existing samples' profile values, reference coordinates, and
+gene definitions are unchanged. Calculation settings and matrix storage metadata
+must remain compatible. This identity mapping does not detect changed profile
+content. Use a new compare database when previously compared inputs change, and
+do not resume a reordered matrix with an older comparison engine that assumes
+matrix row numbers are comparison IDs.
+
 Important options:
 
 - `-m, --matrix-db-file` (required)
@@ -1272,7 +1286,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:1.2.0`;
+- sets the default container to `parsaghadermazi/zipstrain:1.2.1`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 
