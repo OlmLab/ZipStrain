@@ -714,9 +714,24 @@ fn merge_chunks(
     Ok(stats)
 }
 
+fn ensure_bam_index(bam_path: &Path) -> AnyResult<()> {
+    let has_index = [".bai", ".csi"].iter().any(|suffix| {
+        let mut path = bam_path.as_os_str().to_os_string();
+        path.push(suffix);
+        Path::new(&path).is_file()
+    }) || bam_path.with_extension("bai").is_file()
+        || bam_path.with_extension("csi").is_file();
+    if !has_index {
+        bam::index::build(bam_path, None, bam::index::Type::Bai, 1)
+            .map_err(|e| format!("BAM indexing failed for {}: {e}", bam_path.display()))?;
+    }
+    Ok(())
+}
+
 fn main() -> AnyResult<()> {
     let start = Instant::now();
     let args = parse_args()?;
+    ensure_bam_index(&args.bam)?;
     if let Some(reference) = &args.reference {
         let mut fai = reference.as_os_str().to_os_string();
         fai.push(".fai");

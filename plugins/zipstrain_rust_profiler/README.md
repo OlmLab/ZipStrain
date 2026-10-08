@@ -1,5 +1,7 @@
 # zipstrain_rust_profiler
 
+The Rust profiler builds a missing BAM index beside the input before profiling. The BAM must be coordinate-sorted and its directory writable unless an index already exists.
+
 A ZipStrain plugin that provides a native, multithreaded profiling backend. It
 can profile up to ~10x faster than the built-in Python profiler, with better
 memory management on large BAM files, while producing the same outputs. This

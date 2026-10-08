@@ -2,6 +2,7 @@
 
 from importlib.metadata import entry_points
 from pathlib import Path
+import shutil
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -62,3 +63,27 @@ def test_installed_backend_matches_python_fixture(tmp_path):
                     assert actual_value == pytest.approx(expected_value, rel=1e-10, abs=1e-10)
                 else:
                     assert actual_value == expected_value
+
+
+@pytest.mark.skipif(
+    not entry_points(group="zipstrain.profile_backends", name="rust_profiler"),
+    reason="The compiled Rust plugin wheel is not installed",
+)
+def test_installed_backend_builds_missing_bam_index(tmp_path):
+    bam = tmp_path / "unindexed.bam"
+    shutil.copyfile(DATA / "small.bam", bam)
+    run_profile(
+        ProfileRequest(
+            bam_file=bam,
+            bed_file=DATA / "small.bed",
+            stb_file=DATA / "small.stb",
+            null_model=DATA / "null_model.parquet",
+            gene_range_table=DATA / "genes.tsv",
+            output_dir=tmp_path / "out",
+            num_chunks=2,
+            max_concurrency=2,
+        ),
+        "rust_profiler",
+    )
+    assert bam.with_suffix(".bam.bai").is_file()
+    assert (tmp_path / "out" / "unindexed_profile.parquet").is_file()

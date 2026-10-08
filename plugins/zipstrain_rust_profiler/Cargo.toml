@@ -1,6 +1,6 @@
 [package]
 name = "zipstrain-rust-profiler"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Optional native profiling backend for ZipStrain"
 license = "MIT"

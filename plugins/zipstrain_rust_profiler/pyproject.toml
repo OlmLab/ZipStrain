@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "zipstrain_rust_profiler"
-version = "0.1.0"
+version = "0.1.1"
 description = "Optional native profiling backend for ZipStrain"
 requires-python = ">=3.12"
 license = "MIT"

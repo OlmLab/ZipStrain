@@ -39,7 +39,7 @@ It is most useful for large or deeply sequenced BAMs, large sample sets, and mem
 
 ### How it fits into ZipStrain
 
-The Rust profiler reads a coordinate-sorted, indexed BAM and writes the same three core Parquet outputs as Python profiling: `<sample>_profile.parquet`, `<sample>_gene_stats.parquet`, and `<sample>_genome_stats.parquet`. When you use the high-level `zipstrain profile` command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.
+The Rust profiler reads a coordinate-sorted BAM and writes the same three core Parquet outputs as Python profiling: `<sample>_profile.parquet`, `<sample>_gene_stats.parquet`, and `<sample>_genome_stats.parquet`. If the BAM has no BAI or CSI index, the profiler creates a `.bam.bai` beside it before starting workers. The BAM directory must be writable in that case; pre-index BAMs stored read-only. When you use the high-level `zipstrain profile` command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.
 
 The plugin is optional: installing ZipStrain alone does not install it, and leaving out `--backend` keeps the Python behavior.
 
@@ -53,7 +53,7 @@ python -m pip install zipstrain_rust_profiler
 
 This also installs ZipStrain 1.2.0 or newer if needed. On a supported platform, pip downloads a prebuilt wheel, so Rust is not needed at installation time. Building from source requires a Rust toolchain and native build prerequisites, including libclang on Linux.
 
-If using the high-level `profile` workflow, keep `samtools` available as described in [Installation](installation.md). The standalone Rust profiler reads the BAM directly, but the ZipStrain workflow still invokes `samtools index`.
+If using the high-level `profile` workflow, keep `samtools` available as described in [Installation](installation.md). The Rust profiler reads and indexes the BAM directly through HTSlib, without invoking `samtools index` itself.
 
 ### Select it in the CLI
 
