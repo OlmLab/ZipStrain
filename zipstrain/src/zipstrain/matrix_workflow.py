@@ -80,6 +80,7 @@ def _validate_existing_matrix_run(
     scope: str,
     min_cov: int,
     ani_method: str,
+    min_freq: float | None = None,
 ) -> None:
     metadata = mp._load_matrix_hdf5_metadata(store)
     normalized_ani_method, _threshold = mp.parse_matrix_ani_method(ani_method)
@@ -97,6 +98,12 @@ def _validate_existing_matrix_run(
         raise ValueError(
             f"This run directory contains a matrix built with min_cov={stored_min_cov}; "
             f"requested min_cov={min_cov}. Use a different --run-dir."
+        )
+    stored_min_freq = mp._matrix_min_freq_from_metadata(metadata)
+    if min_freq is not None and float(min_freq) != stored_min_freq:
+        raise ValueError(
+            f"This run directory contains a matrix built with min_freq={stored_min_freq}; "
+            f"requested min_freq={min_freq}. Use a different --run-dir."
         )
 
     if not compare_db.exists() or compare_db.stat().st_size == 0:
@@ -188,6 +195,7 @@ def run_matrix_compare(
     min_cov: int = mp.MATRIX_BUILD_MIN_COV,
     ani_method: str = "popani",
     compare_genes: bool = False,
+    min_freq: float | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> pathlib.Path:
     """Build/extend a matrix store, run resumable compare, and export to parquet.
@@ -227,6 +235,7 @@ def run_matrix_compare(
             scope=scope,
             min_cov=min_cov,
             ani_method=ani_method,
+            min_freq=min_freq,
         )
     existing_names = _existing_store_sample_names(store)
     new_profiles = [(name, location) for name, location in profiles if name not in existing_names]
@@ -251,6 +260,7 @@ def run_matrix_compare(
             storage_mode=storage_mode,
             count_dtype=None,
             min_cov=min_cov,
+            min_freq=mp.MATRIX_BUILD_MIN_FREQ_DEFAULT if min_freq is None else min_freq,
             memory_limit_gb=memory_limit_gb,
         )
     elif new_profiles:

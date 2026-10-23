@@ -653,6 +653,7 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
     help="Count dtype for --storage-mode counts. auto selects uint16 or uint32 after checking all profiles.",
 )
 @click.option('--min-cov', type=int, default=mp.MATRIX_BUILD_MIN_COV, show_default=True, help="Build-time minimum coverage. Positions below it are stored as zero.")
+@click.option('--min-freq', type=click.FloatRange(0.0, 1.0), default=mp.MATRIX_BUILD_MIN_FREQ_DEFAULT, show_default=True, help="Build-time minimum allele frequency. An allele is stored only when its count is at least this fraction of the position depth; 0 keeps every nonzero allele.")
 @click.option(
     '--memory-limit-gb',
     type=float,
@@ -673,7 +674,7 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
     default=False,
     help="Store genome matrices sparsely in HDF5. Compare currently materializes them back to dense on load.",
 )
-def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_range_table, storage_mode, count_dtype, min_cov, memory_limit_gb, export_batch_mb, sparse):
+def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_range_table, storage_mode, count_dtype, min_cov, min_freq, memory_limit_gb, export_batch_mb, sparse):
     """
     Build a matrix store directly from classic profile parquets.
 
@@ -724,6 +725,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
                 storage_mode=storage_mode,
                 count_dtype=count_dtype,
                 min_cov=min_cov,
+                min_freq=min_freq,
                 memory_limit_gb=memory_limit_gb,
                 export_batch_mb=export_batch_mb,
                 sparse=sparse,
@@ -744,6 +746,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
             storage_mode=storage_mode,
             count_dtype=count_dtype,
             min_cov=min_cov,
+            min_freq=min_freq,
             memory_limit_gb=memory_limit_gb,
             export_batch_mb=export_batch_mb,
             sparse=sparse,
@@ -756,7 +759,8 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
         f"stored_rows={summary.stored_rows} "
         f"storage_mode={summary.storage_mode} "
         f"dtype={summary.count_dtype} "
-        f"min_cov={min_cov}"
+        f"min_cov={min_cov} "
+        f"min_freq={min_freq}"
     )
 
 
@@ -1935,6 +1939,7 @@ def _run_matrix_compare_method(
     min_cov,
     compare_genes,
     ani_method,
+    min_freq=None,
     no_csv=False,
     force_csv=False,
     run_log=None,
@@ -1967,6 +1972,7 @@ def _run_matrix_compare_method(
             backend=backend,
             memory_limit_gb=memory_limit_gb,
             min_cov=min_cov,
+            min_freq=min_freq,
             ani_method=ani_method,
             compare_genes=compare_genes,
             progress_callback=_on_step,
@@ -2009,6 +2015,7 @@ def _run_matrix_compare_method(
 @click.option("--compare-genes", is_flag=True, default=False, show_default=True, help="Compare genes instead of genomes.")
 @click.option("--scope", default=None, help="Comparison scope. Defaults to 'all' for genomes and 'all:all' for genes.")
 @click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
+@click.option("--min-freq", type=click.FloatRange(0.0, 1.0), default=None, help=f"--method matrix: build-time minimum allele frequency for a new matrix store (default {mp.MATRIX_BUILD_MIN_FREQ_DEFAULT}). An existing store keeps its recorded value; passing a different value is an error.")
 @click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum gene length to consider for comparison.")
 @click.option("--stb-file", default=None, help="Scaffold-to-genome mapping file. Required for --method matrix.")
 @click.option("--comp-db-file", default=None, help="Optional existing comparison parquet to resume/extend (standard method). Auto-detected from --run-dir if omitted.")
@@ -2031,7 +2038,7 @@ def _run_matrix_compare_method(
 @click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Write the companion .csv even when the estimated size exceeds 100 MB.")
-def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
+def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_freq, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
     """
     Compare profiled samples at the genome level (default) or gene level (--compare-genes).
 
@@ -2059,6 +2066,7 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                 backend=backend,
                 memory_limit_gb=memory_limit_gb,
                 min_cov=min_cov,
+                min_freq=min_freq,
                 compare_genes=compare_genes,
                 ani_method=ani_method,
                 no_csv=no_csv,

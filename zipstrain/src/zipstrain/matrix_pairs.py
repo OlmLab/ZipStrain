@@ -35,6 +35,12 @@ MATRIX_DTYPES = {
 }
 MATRIX_COUNT_DTYPE_CHOICES = ("auto", "uint16", "uint32")
 MATRIX_BUILD_MIN_COV = 5
+#: Build-time minimum within-position allele frequency. An allele is stored
+#: only when its count is at least ``min_freq`` times the position depth.
+MATRIX_BUILD_MIN_FREQ_DEFAULT = 0.05
+#: Matrix-store metadata key; stores written before it existed applied no
+#: frequency filter and read back as 0.0.
+MATRIX_MIN_FREQ_METADATA_KEY = "allele_filter_min_freq"
 FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 BITMASK_MATRIX_VALUE_SEMANTICS = "packed_allele_presence_after_cov_filter"
 COUNT_MATRIX_VALUE_SEMANTICS = "allele_counts_after_cov_filter"
@@ -1364,6 +1370,27 @@ def _unpack_matrix(blob: bytes, dtype_name: str, shape: tuple[int, int]) -> np.n
     return out.reshape(shape)
 
 
+def _validate_min_freq(min_freq: float) -> float:
+    try:
+        value = float(min_freq)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("min_freq must be a number between 0 and 1") from exc
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("min_freq must be between 0 and 1")
+    return value
+
+
+def _matrix_min_freq_from_metadata(metadata: dict[str, str]) -> float:
+    """Build-time allele-frequency filter of a matrix store (0.0 for older stores)."""
+    raw = metadata.get(MATRIX_MIN_FREQ_METADATA_KEY)
+    if raw is None or str(raw) == "":
+        return 0.0
+    try:
+        return _validate_min_freq(float(str(raw)))
+    except ValueError as exc:
+        raise ValueError("Matrix store has an invalid build-time allele-frequency filter.") from exc
+
+
 def _memory_limit_bytes(memory_limit_gb: float) -> int:
     if memory_limit_gb <= 0:
         raise ValueError("memory_limit_gb must be > 0")
@@ -1610,6 +1637,7 @@ def _compare_db_metadata_rows(
         ("calculate", "+".join(calculations)),
         ("ani_method", ani_method),
         ("min_cov", str(min_cov)),
+        ("matrix_min_freq", repr(_matrix_min_freq_from_metadata(matrix_metadata))),
     ]
 
 
@@ -1634,6 +1662,9 @@ def _validate_matrix_compare_db_metadata(
     mismatches: list[str] = []
     for key, expected_value in expected.items():
         actual = compare_metadata.get(key)
+        if key == "matrix_min_freq" and actual is None:
+            # Compare DBs written before the key existed used unfiltered stores.
+            actual = repr(0.0)
         if actual != expected_value:
             mismatches.append(f"{key} expected={expected_value!r} actual={actual!r}")
     if mismatches:
@@ -2235,6 +2266,7 @@ def _load_profile_genome_matrix(
     count_dtype: str,
     min_cov: int,
     storage_mode: str = MATRIX_STORAGE_LEGACY_PRESENCE,
+    min_freq: float = 0.0,
 ) -> np.ndarray:
     if storage_mode == MATRIX_STORAGE_BITMASK:
         np_dtype = np.dtype(np.uint8)
@@ -2271,6 +2303,10 @@ def _load_profile_genome_matrix(
             + offset.axis_start
         )
         counts = scaffold_frame.select("A", "T", "C", "G").to_numpy()
+        if min_freq > 0.0:
+            # Same rule as the profiler: keep counts >= depth * min_freq.
+            depth = counts.sum(axis=1, dtype=np.int64)[:, np.newaxis].astype(np.float64)
+            counts = np.where(counts.astype(np.float64) >= depth * min_freq, counts, 0)
         if storage_mode == MATRIX_STORAGE_COUNTS:
             max_count = int(counts.max(initial=0))
             max_allowed = int(np.iinfo(np_dtype).max)
@@ -2366,6 +2402,7 @@ def build_matrix_db(
     stb_file: Optional[Path] = None,
     progress_callback: Optional[BuildProgressCallback] = None,
     sparse: bool = False,
+    min_freq: float = MATRIX_BUILD_MIN_FREQ_DEFAULT,
 ) -> MatrixDbSummary:
     summary = build_matrix_hdf5(
         profile_dir=profile_dir,
@@ -2374,6 +2411,7 @@ def build_matrix_db(
         storage_mode=storage_mode,
         count_dtype=count_dtype,
         min_cov=min_cov,
+        min_freq=min_freq,
         memory_limit_gb=memory_limit_gb,
         bed_file=bed_file,
         stb_file=stb_file,
@@ -2411,11 +2449,19 @@ def build_matrix_hdf5(
     progress_callback: Optional[BuildProgressCallback] = None,
     export_batch_mb: float = MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
     sparse: bool = False,
+    min_freq: float = MATRIX_BUILD_MIN_FREQ_DEFAULT,
 ) -> MatrixHdf5Summary:
     """Build the current HDF5-backed matrix store from classic profile parquets.
 
     The resulting matrix store keeps one whole-genome matrix per genome and is
     intended for repeated, resumable matrix comparisons.
+
+    Positions with depth below ``min_cov`` are stored as zero. At retained
+    positions an allele is stored only when its count is at least
+    ``min_freq`` times the position depth (default
+    ``MATRIX_BUILD_MIN_FREQ_DEFAULT``); ``min_freq=0`` keeps every allele
+    with a nonzero count. Both thresholds are recorded in the store and reused
+    by appends.
     """
     if storage_mode is None:
         storage_mode = (
@@ -2430,6 +2476,7 @@ def build_matrix_hdf5(
         )
     if min_cov < 1:
         raise ValueError("min_cov must be >= 1")
+    min_freq = _validate_min_freq(min_freq)
     if export_batch_mb <= 0:
         raise ValueError("export_batch_mb must be > 0")
     if bed_file is None or stb_file is None:
@@ -2535,6 +2582,7 @@ def build_matrix_hdf5(
             "layout": layout,
             "matrix_value_semantics": value_semantics,
             "coverage_filter_min_cov": str(min_cov),
+            MATRIX_MIN_FREQ_METADATA_KEY: repr(min_freq),
             "memory_limit_gb": str(memory_limit_gb),
             "export_batch_mb": str(export_batch_mb),
             "separator_rows_between_scaffolds": "1",
@@ -2683,6 +2731,7 @@ def build_matrix_hdf5(
                         count_dtype=resolved_count_dtype,
                         min_cov=min_cov,
                         storage_mode=storage_mode,
+                        min_freq=min_freq,
                     )
                     if sparse:
                         indptr_ds, indices_ds, current_nnz = sparse_states[genome_spec.genome_idx]
@@ -2766,6 +2815,7 @@ def _append_matrix_hdf5_in_place(
     memory_limit_gb: float,
     memory_limit_bytes: int,
     progress_callback: Optional[BuildProgressCallback],
+    min_freq: float = 0.0,
 ) -> MatrixHdf5AppendSummary:
     total_work = len(appended_samples) * len(genomes)
     completed_work = 0
@@ -2856,6 +2906,7 @@ def _append_matrix_hdf5_in_place(
                     count_dtype=count_dtype,
                     min_cov=min_cov,
                     storage_mode=storage_mode,
+                    min_freq=min_freq,
                 )
                 if _matrix_hdf5_layout_is_sparse(layout):
                     indptr_ds, indices_ds, values_ds, current_nnz = sparse_states[spec.genome_idx]
@@ -2944,6 +2995,7 @@ def _append_matrix_hdf5_via_rewrite(
     memory_limit_bytes: int,
     export_batch_mb: float,
     progress_callback: Optional[BuildProgressCallback],
+    min_freq: float = 0.0,
 ) -> MatrixHdf5AppendSummary:
     total_work = len(appended_samples) * len(genomes)
     completed_work = 0
@@ -3158,6 +3210,7 @@ def _append_matrix_hdf5_via_rewrite(
                         count_dtype=count_dtype,
                         min_cov=min_cov,
                         storage_mode=storage_mode,
+                        min_freq=min_freq,
                     )
                     if _matrix_hdf5_layout_is_sparse(layout):
                         flat_indices, flat_values = _dense_matrix_to_sparse_components(
@@ -3252,6 +3305,8 @@ def append_matrix_hdf5(
     count_dtype, genome_scope, layout, storage_mode, min_cov = _validate_matrix_hdf5_appendable(
         metadata
     )
+    # Appended samples use the store's own allele-frequency filter.
+    append_min_freq = _matrix_min_freq_from_metadata(metadata)
     genomes = _load_matrix_hdf5_genomes(matrix_hdf5_file)
     genome_scaffolds = _load_matrix_hdf5_genome_scaffolds(matrix_hdf5_file)
     contract_genomes, contract_genome_scaffolds = _load_matrix_hdf5_reference_contract(matrix_hdf5_file)
@@ -3349,6 +3404,7 @@ def append_matrix_hdf5(
             memory_limit_gb=memory_limit_gb,
             memory_limit_bytes=memory_limit_bytes,
             progress_callback=progress_callback,
+            min_freq=append_min_freq,
         )
     return _append_matrix_hdf5_via_rewrite(
         matrix_hdf5_file=matrix_hdf5_file,
@@ -3370,6 +3426,7 @@ def append_matrix_hdf5(
         memory_limit_bytes=memory_limit_bytes,
         export_batch_mb=export_batch_mb,
         progress_callback=progress_callback,
+        min_freq=append_min_freq,
     )
 
 
@@ -6233,6 +6290,7 @@ def export_matrix_compare_parquet(
         ut.COMPARE_KIND_METADATA_KEY: table,
         ut.COMPARE_SCOPE_METADATA_KEY: compare_metadata.get("genome_scope", "all"),
         ut.COMPARE_MIN_COV_METADATA_KEY: compare_metadata.get("min_cov", str(MATRIX_BUILD_MIN_COV)),
+        ut.COMPARE_MIN_FREQ_METADATA_KEY: compare_metadata.get("matrix_min_freq", repr(0.0)),
         ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
         ut.COMPARE_ENGINE_METADATA_KEY: "matrix",
         ut.COMPARE_USES_STB_METADATA_KEY: "1",
