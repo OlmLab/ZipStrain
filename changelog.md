@@ -4,6 +4,8 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+- Matrix store: added a build-time minimum allele frequency (`build_matrix_hdf5(..., min_freq=...)`, CLI `build-matrix-db --min-freq`, `compare --method matrix --min-freq`), default `0.05` (`MATRIX_BUILD_MIN_FREQ_DEFAULT`). An allele is stored only when its count is at least `min_freq` x the position depth. The value is recorded in the store and in compare databases and exported parquets; appends reuse it, and resuming a compare database against a store with a different value is rejected. Behaviour change: matrices built with the default now drop alleles below 5% of depth (previously any nonzero count was kept). Existing stores read back as `min_freq=0` and are unaffected. Pass `--min-freq 0` to reproduce the previous behaviour.
+
 ## 1.2.2
 
 Compared with `1.2.1`:

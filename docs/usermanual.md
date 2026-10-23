@@ -373,7 +373,7 @@ Major options:
 - `--scope` (`all` for genomes, `all:all` for genes), `--min-cov` (5), `--min-gene-compare-len` (100)
 - `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`ani`/`ibs`/`identical_genes`/`all`)
 - `--stb-file` — required for `--method matrix`
-- Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16)
+- Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16), `--min-freq` (build-time allele-frequency filter for a new matrix store, default `0.05`; an existing store keeps its recorded value)
 - Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
@@ -977,6 +977,7 @@ What it does:
 - uses the BED and STB files as the explicit scaffold/genome contract for the store
 - stores each genome in either compact allele-bitmask or full-count form
 - applies `--min-cov` during matrix construction; positions below it are stored as zero
+- applies `--min-freq` during matrix construction; at retained positions an allele is stored only when its count is at least `min_freq` x the position depth
 - can optionally store scaffold-relative gene ranges for later gene ANI
 - is intended for repeated cohort-scale comparison runs against the same reference set
 
@@ -991,6 +992,7 @@ Important options:
 - `--storage-mode` (`bitmask|counts`, default: `bitmask`); for compatibility, supplying `--count-dtype` without this option selects `counts`
 - `--count-dtype` (`auto|uint16|uint32`) applies only to `--storage-mode counts`; omitted means `auto`
 - `--min-cov` build-time minimum coverage (default: `5`)
+- `--min-freq` build-time minimum allele frequency (default: `0.05`); `0` keeps every allele with a nonzero count
 - `--memory-limit-gb` approximate maximum memory budget for the entire build process (default: `16.0`)
 - `--export-batch-mb` approximate matrix-store sample-axis chunk target size in MiB (default: `128.0`)
 - `--sparse` store genome matrices sparsely in HDF5
@@ -1011,6 +1013,8 @@ Storage modes:
 - `bitmask` stores one `uint8` per sample and position. The exact encoding is `A=1`, `T=2`, `C=4`, `G=8`; observed alleles are combined by bitwise OR. Thus `A+T=3`, `A+C=5`, and `A+T+C+G=15`. Zero means the position did not pass `--min-cov`. This is the smallest representation and supports popANI only.
 - `counts` stores four values per sample and position in `A,T,C,G` order. It supports popANI, conANI, and cosANI. `auto` scans the profile count range and chooses `uint16` when every count is at most 65,535, otherwise `uint32`. An explicit dtype fails before writing if a count does not fit; counts are never clipped or wrapped. An append that exceeds the store's existing dtype also fails before mutation, so use `uint32` at the initial build when later samples may exceed 65,535.
 - `--min-cov` is part of the store contract. Appends inherit it, and comparison cannot replace it. Rebuild the store to use another threshold.
+- `--min-freq` is recorded the same way (`allele_filter_min_freq`). Appends apply the store's value, compare databases record it as `matrix_min_freq` and refuse to resume against a store built with a different value, and exported comparison parquets carry it as `zipstrain_compare_min_freq`. Stores built before this option existed applied no frequency filter and read back as `0`.
+- The matrix default (`0.05`) is stricter than the profiler's `--min-freq` default (`0.01`): profiles keep alleles at 1-5%, but default matrix stores built from them do not. Pass `--min-freq 0.01` to keep the profiler's threshold.
 
 #### `zipstrain utilities append-matrix-db`
 
