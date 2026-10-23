@@ -51,6 +51,10 @@ These power the CLI commands:
 `min_cov` is applied at build time and persisted in the store contract.
 `matrix_compare(..., ani_method=...)` accepts `popani`, `conani`, and
 `cosani_<threshold>`; the latter two require count storage.
+`matrix_compare(..., compare_kernel="gemm", calculate="ani")` selects the
+blocked matrix-multiplication kernel in `zipstrain.matrix_gemm` for
+genome-level popANI/conANI; results are identical to the default
+`compare_kernel="pairwise"`.
 
 For usage patterns and examples, see the [Tutorial](./Tutorial.md) and the [CLI reference](./usermanual.md#zipstrain-command-line-interface).
 

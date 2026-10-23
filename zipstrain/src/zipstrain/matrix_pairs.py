@@ -52,6 +52,7 @@ CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT = "per_genome_sample_major_sparse_bitm
 MATRIX_HDF5_FILE_VERSION = "1"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
+MATRIX_COMPARE_KERNELS = ("pairwise", "gemm")
 MATRIX_COMPARE_PIPELINE_DEPTH = 2
 MATRIX_COMPARE_WRITE_MAX_ROWS = 250_000
 MATRIX_COMPARE_WRITE_MAX_BYTES = 32 * 1024 * 1024
@@ -5771,12 +5772,22 @@ def matrix_compare(
     calculate: Optional[str] = "all",
     emit_writer_logs: bool = False,
     progress_callback: Optional[CompareProgressCallback] = None,
+    compare_kernel: str = "pairwise",
 ) -> MatrixCompareSummary:
     """Run resumable all-vs-all matrix comparison on the current matrix store.
 
     Results are written into a DuckDB compare database. Re-running the same
     command against an existing compare database resumes from the remaining
     uncompleted pairs.
+
+    ``compare_kernel`` selects the comparison algorithm. ``"pairwise"`` (the
+    default) compares one anchor against target blocks and supports every
+    metric. ``"gemm"`` computes genome-level popANI/conANI for whole blocks
+    of sample pairs with dense matrix multiplications (see
+    :mod:`zipstrain.matrix_gemm`); it requires ``calculate="ani"`` and gives
+    identical ``total_positions``/``share_allele_pos``/``genome_ani`` values.
+    Anchor/target queue, transfer-batch and executor options are ignored by
+    the GEMM kernel.
     """
     if min_cov is not None and min_cov < 1:
         raise ValueError("min_cov must be >= 1")
@@ -5794,6 +5805,15 @@ def matrix_compare(
     if writer_executor_kind not in MATRIX_IO_EXECUTOR_KINDS:
         raise ValueError(
             f"writer_executor_kind must be one of {', '.join(MATRIX_IO_EXECUTOR_KINDS)}"
+        )
+    if compare_kernel not in MATRIX_COMPARE_KERNELS:
+        raise ValueError(
+            f"compare_kernel must be one of {', '.join(MATRIX_COMPARE_KERNELS)}"
+        )
+    if compare_kernel == "gemm" and normalized_ani_method not in ("popani", "conani"):
+        raise ValueError(
+            "compare_kernel='gemm' supports ani_method popani or conani; "
+            f"use compare_kernel='pairwise' for {normalized_ani_method}."
         )
     matrix_db_file = matrix_db_file.resolve()
     output_file = output_file.resolve()
@@ -5860,6 +5880,11 @@ def matrix_compare(
                 "Gene ANI was requested, but this matrix store does not contain gene annotations. "
                 "Rebuild it with --gene-range-table."
             )
+        if compare_kernel == "gemm" and tuple(calculations) != ("ani",):
+            raise ValueError(
+                "compare_kernel='gemm' computes genome-level ANI only; pass calculate='ani' "
+                f"(requested: {'+'.join(calculations)}). IBS and gene ANI need compare_kernel='pairwise'."
+            )
         compare_conn, compare_ids = _prepare_matrix_compare_db(
             output_file=output_file,
             matrix_metadata=metadata,
@@ -5891,6 +5916,33 @@ def matrix_compare(
                 device=compute_backend.device,
                 memory_limit_gb=memory_limit_gb,
                 ani_method=normalized_ani_method,
+            )
+
+        if compare_kernel == "gemm":
+            from zipstrain import matrix_gemm
+
+            return matrix_gemm.matrix_compare_gemm(
+                matrix_db_file=matrix_db_file,
+                output_file=output_file,
+                compare_conn=compare_conn,
+                compare_ids=compare_ids,
+                samples=samples,
+                genomes=genomes,
+                genome_scaffolds=genome_scaffolds,
+                completed_pairs_by_genome=completed_pairs_by_genome,
+                requested_pairs=requested_pairs,
+                total_work=total_work,
+                metadata=metadata,
+                matrix_value_semantics=matrix_value_semantics,
+                ani_method=normalized_ani_method,
+                compute_backend=compute_backend,
+                memory_limit_bytes=memory_limit_bytes,
+                memory_limit_gb=memory_limit_gb,
+                min_cov=min_cov,
+                genome_scope=genome_scope,
+                emit_writer_logs=emit_writer_logs,
+                run_start_time=run_start_time,
+                progress_callback=progress_callback,
             )
 
         if compute_backend.kind == "torch":

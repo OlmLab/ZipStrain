@@ -882,6 +882,14 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
     show_default=True,
     help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
 )
+@click.option(
+    '--compare-kernel',
+    type=click.Choice(mp.MATRIX_COMPARE_KERNELS),
+    default="pairwise",
+    show_default=True,
+    help="Comparison algorithm. 'gemm' computes genome-level popANI/conANI for whole sample blocks "
+    "with matrix multiplications (much faster; requires --calculate ani). 'pairwise' supports all metrics.",
+)
 def matrix_compare(
     matrix_db_file,
     output_file,
@@ -895,6 +903,7 @@ def matrix_compare(
     writer_executor,
     calculate,
     backend,
+    compare_kernel,
 ):
     """
     Run resumable matrix compare on all non-redundant, non-self sample pairs.
@@ -955,6 +964,7 @@ def matrix_compare(
                 calculate=calculate,
                 emit_writer_logs=False,
                 progress_callback=_progress_callback,
+                compare_kernel=compare_kernel,
             )
     else:
         summary = mp.matrix_compare(
@@ -972,6 +982,7 @@ def matrix_compare(
             calculate=calculate,
             emit_writer_logs=True,
             progress_callback=None,
+            compare_kernel=compare_kernel,
         )
     click.echo(
         f"wrote={summary.output_file} "

@@ -1128,6 +1128,30 @@ Important options:
   - `torch-cpu`
   - `torch-cuda`
   - `torch-mps`
+- `--compare-kernel` comparison algorithm (default: `pairwise`):
+  - `pairwise` compares one anchor sample against target blocks and supports every metric and ANI method
+  - `gemm` computes genome-level popANI or conANI for whole blocks of sample pairs with dense matrix multiplications; requires `--calculate ani`
+
+GEMM kernel (`--compare-kernel gemm`):
+
+```bash
+zipstrain utilities matrix-compare \
+  --matrix-db-file matrix_db.h5 \
+  --output-file matrix_compare.duckdb \
+  --calculate ani \
+  --compare-kernel gemm \
+  --backend torch-cuda \
+  --memory-limit-gb 64
+```
+
+- each stored row is reduced to a 4-bit allele mask per position (popANI: alleles present after the build-time coverage filter; conANI: consensus alleles, ties retained), so bitmask, count, legacy presence, dense and sparse stores are all supported
+- `total_positions` is one matrix product of the covered-position indicators; mismatches can only occur at positions where the covered samples of the whole store share no common allele, so `share_allele_pos` is corrected with a few additional products restricted to those positions (inclusion-exclusion over multi-allele masks)
+- products run in `float32`, which is exact for integer sums below `2**24`; partial sums are flushed to `int64` before that bound, so results are identical to `pairwise`, including `genome_ani`, zero-overlap handling and the completion table
+- samples are processed in blocks sized from `--memory-limit-gb` (and free CUDA memory); the whole genome matrix is cached in RAM when it fits in a third of the budget
+- each sample-block pair is written in one transaction, so runs are resumable, and a compare DB started with one kernel can be finished with the other
+- `--anchor-queue-size`, `--target-queue-size`, `--result-transfer-batch-size` and the executor options are ignored
+- IBS (`max_consecutive_length`), gene ANI and cosANI are not available with `gemm`; use `pairwise`
+- on CUDA, TF32 is disabled for the duration of the run to keep products exact
 
 Notes:
 
