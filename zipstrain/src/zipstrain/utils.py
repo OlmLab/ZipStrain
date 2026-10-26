@@ -771,6 +771,29 @@ def process_read_location(output_file:str, batch_size:int=10000)->None:
         writer.close()
 
 
+def extract_scaffold_length(bed_table: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    Extract per-scaffold lengths from a BED table.
+
+    ``make_the_bed`` can split one long scaffold across several BED rows, so the
+    per-row spans are summed back together per scaffold.
+
+    Parameters:
+    bed_table (pl.LazyFrame): BED table containing genomic regions.
+
+    Returns:
+    pl.LazyFrame: A LazyFrame with one row per scaffold and its total length.
+    """
+    return bed_table.select(
+        pl.col("scaffold"),
+        (pl.col("end") - pl.col("start")).alias("scaffold_length")
+    ).group_by("scaffold").agg(
+        scaffold_length=pl.sum("scaffold_length")
+    ).select(
+        pl.col("scaffold").alias("scaffold"),
+        pl.col("scaffold_length")
+    )
+
 def extract_genome_length(stb: pl.LazyFrame, bed_table: pl.LazyFrame) -> pl.LazyFrame:
     """
     Extract the genome length information from the scaffold-to-genome mapping table.
@@ -782,15 +805,7 @@ def extract_genome_length(stb: pl.LazyFrame, bed_table: pl.LazyFrame) -> pl.Lazy
     Returns:
     pl.LazyFrame: A LazyFrame containing the genome lengths.
     """
-    lf= bed_table.select(
-        pl.col("scaffold"),
-        (pl.col("end") - pl.col("start")).alias("scaffold_length")
-    ).group_by("scaffold").agg(
-        scaffold_length=pl.sum("scaffold_length")
-    ).select(
-        pl.col("scaffold").alias("scaffold"),
-        pl.col("scaffold_length")
-    ).join(
+    lf= extract_scaffold_length(bed_table).join(
         stb.select(
             pl.col("scaffold").alias("scaffold"),
             pl.col("genome").alias("genome")
@@ -1469,6 +1484,8 @@ def get_genome_gaps(
     read_loc_table: pl.LazyFrame,
     stb: pl.LazyFrame,
     genome_length: pl.LazyFrame,
+    scaffold_length: pl.LazyFrame,
+    avg_read_length: int = 0,
                     )-> pl.LazyFrame:
     # The read-location table can be much larger than the profile itself. Stream it to a
     # temporary parquet and let DuckDB handle the global sort/window with disk spill.
@@ -1485,6 +1502,10 @@ def get_genome_gaps(
             conn.register(
                 "genome_length_src",
                 genome_length.select("genome", "genome_length").collect().to_arrow(),
+            )
+            conn.register(
+                "scaffold_length_src",
+                scaffold_length.select("scaffold", "scaffold_length").collect().to_arrow(),
             )
             read_loc_sql = _duckdb_quote_sql_string(str(read_loc_path))
             table = conn.execute(
@@ -1507,19 +1528,47 @@ def get_genome_gaps(
                     CAST(genome_length AS DOUBLE) AS genome_length
                   FROM genome_length_src
                 ),
+                scaffold_length AS (
+                  SELECT
+                    CAST(scaffold AS VARCHAR) AS scaffold,
+                    CAST(scaffold_length AS BIGINT) AS scaffold_length
+                  FROM scaffold_length_src
+                ),
+                positions AS (
+                  SELECT scaffold, loc FROM read_loc
+                  UNION ALL
+                  -- End-of-scaffold sentinel, one per covered scaffold. Metapresence
+                  -- appends (sequence_length - avg_read_length) to its position list so a
+                  -- trailing uncovered region is charged as a gap; without it a genome
+                  -- whose reads stop early looks perfectly uniform.
+                  SELECT
+                    rs.scaffold,
+                    GREATEST(sl.scaffold_length - {int(avg_read_length)}, 0)::BIGINT AS loc
+                  FROM (SELECT DISTINCT scaffold FROM read_loc) rs
+                  INNER JOIN scaffold_length sl ON rs.scaffold = sl.scaffold
+                ),
                 mapped AS (
                   SELECT
-                    rl.scaffold,
-                    rl.loc,
-                    rl.loc - LAG(rl.loc) OVER (PARTITION BY rl.scaffold ORDER BY rl.loc) AS gap_length,
+                    p.scaffold,
+                    p.loc,
+                    p.loc - LAG(p.loc) OVER (PARTITION BY p.scaffold ORDER BY p.loc) AS gap_length,
                     stb.genome
+                  FROM positions p
+                  LEFT JOIN stb ON p.scaffold = stb.scaffold
+                ),
+                read_count AS (
+                  -- Sentinels must not inflate reads_mapped, so count real reads only.
+                  SELECT
+                    stb.genome,
+                    COUNT(*)::BIGINT AS rn
                   FROM read_loc rl
                   LEFT JOIN stb ON rl.scaffold = stb.scaffold
+                  GROUP BY stb.genome
                 ),
                 delta AS (
                   SELECT
                     m.genome,
-                    COUNT(*)::BIGINT AS rn,
+                    COUNT(m.gap_length)::BIGINT AS gap_count,
                     AVG(m.gap_length)::DOUBLE AS gap_mean,
                     STDDEV_SAMP(m.gap_length)::DOUBLE AS gap_std,
                     ROUND(gl.genome_length / COUNT(*))::DOUBLE AS delta
@@ -1532,23 +1581,24 @@ def get_genome_gaps(
                     m.genome,
                     m.gap_length,
                     d.delta,
-                    d.rn,
+                    d.gap_count,
                     d.gap_mean,
                     d.gap_std,
-                    (COUNT(*)::DOUBLE / NULLIF(d.rn - 1, 0)) * (m.gap_length - d.delta) AS pd
+                    (COUNT(*)::DOUBLE / NULLIF(d.gap_count, 0)) * (m.gap_length - d.delta) AS pd
                   FROM mapped m
                   INNER JOIN delta d ON m.genome = d.genome
                   WHERE m.gap_length > d.delta
-                  GROUP BY m.genome, m.gap_length, d.delta, d.rn, d.gap_mean, d.gap_std
+                  GROUP BY m.genome, m.gap_length, d.delta, d.gap_count, d.gap_mean, d.gap_std
                 )
                 SELECT
-                  CAST(genome AS VARCHAR) AS genome,
-                  (MIN(delta) - SUM(pd)) / MIN(delta) AS fug,
-                  MIN(rn)::BIGINT AS rn,
-                  MIN(gap_mean)::DOUBLE AS gap_mean,
-                  MIN(gap_std)::DOUBLE AS gap_std
-                FROM gap_excess
-                GROUP BY genome
+                  CAST(ge.genome AS VARCHAR) AS genome,
+                  (MIN(ge.delta) - SUM(ge.pd)) / MIN(ge.delta) AS fug,
+                  MIN(rc.rn)::BIGINT AS rn,
+                  MIN(ge.gap_mean)::DOUBLE AS gap_mean,
+                  MIN(ge.gap_std)::DOUBLE AS gap_std
+                FROM gap_excess ge
+                LEFT JOIN read_count rc ON ge.genome = rc.genome
+                GROUP BY ge.genome
                 """
             ).fetch_arrow_table()
         finally:
@@ -1569,7 +1619,8 @@ def get_genome_stats(
 )->pl.LazyFrame:
     include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
     genome_lengths = extract_genome_length(stb, bed)
-    genome_gap_stats = get_genome_gaps(read_loc_table, stb, genome_lengths)
+    scaffold_lengths = extract_scaffold_length(bed)
+    genome_gap_stats = get_genome_gaps(read_loc_table, stb, genome_lengths, scaffold_lengths)
     profile_columns = [
         pl.col("genome").cast(pl.Utf8).alias("genome"),
         pl.col("A"),
