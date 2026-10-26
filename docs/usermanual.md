@@ -1148,7 +1148,9 @@ zipstrain utilities matrix-compare \
 - `total_positions` is one matrix product of the covered-position indicators; mismatches can only occur at positions where the covered samples of the whole store share no common allele, so `share_allele_pos` is corrected with a few additional products restricted to those positions (inclusion-exclusion over multi-allele masks)
 - products run in `float32`, which is exact for integer sums below `2**24`; partial sums are flushed to `int64` before that bound, so results are identical to `pairwise`, including `genome_ani`, zero-overlap handling and the completion table
 - samples are processed in blocks sized from `--memory-limit-gb` (and free CUDA memory); the whole genome matrix is cached in RAM when it fits in a third of the budget
+- count rows are converted to packed masks in bounded batches, including when building the full RAM cache; dense rows can also be split across positions. An expanded sparse count row must fit the conversion workspace, otherwise the run reports a memory error before loading it
 - each sample-block pair is written in one transaction, so runs are resumable, and a compare DB started with one kernel can be finished with the other
+- when samples are appended, fully completed block pairs are skipped. Partially completed block pairs are recomputed, and only unfinished pair results are saved
 - `--anchor-queue-size`, `--target-queue-size`, `--result-transfer-batch-size` and the executor options are ignored
 - IBS (`max_consecutive_length`), gene ANI and cosANI are not available with `gemm`; use `pairwise`
 - on CUDA, TF32 is disabled for the duration of the run to keep products exact

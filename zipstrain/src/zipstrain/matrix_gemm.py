@@ -52,6 +52,9 @@ GEMM_POSITION_CHUNK_DEFAULT = 32_768
 #: Largest sample block considered by the planner. Diagonal block pairs are
 #: computed in full, so larger blocks add ~n*B/2 redundant pair counts.
 GEMM_MAX_BLOCK_SAMPLES = 4_096
+#: Bound raw count reads and their mask-conversion temporaries independently
+#: of the size of the final, one-byte-per-position mask cache.
+GEMM_READ_BUFFER_BYTES_DEFAULT = 128 * 1024**2
 
 _ALLELE_BITS = tuple(int(bit) for bit in mp.BITMASK_BASE_BITS)
 # Inclusion-exclusion terms for |{b : b in mask_i and b in mask_j}| > 0:
@@ -348,6 +351,7 @@ class _GenomeRows:
         ani_kind: str,
         sample_count: int,
         cache_all_rows: bool,
+        read_memory_limit_bytes: int = GEMM_READ_BUFFER_BYTES_DEFAULT,
     ) -> None:
         self.dataset = mp._Hdf5GenomeMatrixNumpyDataset(
             matrix_hdf5_file=matrix_db_file,
@@ -360,18 +364,67 @@ class _GenomeRows:
         self.ani_kind = ani_kind
         self.sample_count = sample_count
         self.matrix_length = int(spec.matrix_length)
+        self.read_memory_limit_bytes = int(read_memory_limit_bytes)
+        if self.read_memory_limit_bytes < 1:
+            raise ValueError("read_memory_limit_bytes must be >= 1")
         self._cache: Optional[np.ndarray] = None
         if cache_all_rows:
-            self._cache = self._read(0, sample_count)
+            try:
+                self._cache = self._read(0, sample_count)
+            except BaseException:
+                self.dataset.close()
+                raise
 
     def _read(self, start: int, stop: int) -> np.ndarray:
         dataset = self.dataset
         dataset._ensure_open()
-        if dataset._matrix_dataset is not None:
-            raw = np.asarray(dataset._matrix_dataset[start:stop, ...], dtype=dataset.numpy_dtype)
-        else:
-            raw = dataset._load_batch_numpy(np.arange(start, stop, dtype=np.int64))
-        return rows_to_allele_bitmask(raw, matrix_value_semantics=self.semantics, ani_kind=self.ani_kind)
+        if self.semantics == mp.BITMASK_MATRIX_VALUE_SEMANTICS:
+            if dataset._matrix_dataset is not None:
+                return np.asarray(dataset._matrix_dataset[start:stop, ...], dtype=np.uint8)
+            return dataset._load_batch_numpy(np.arange(start, stop, dtype=np.int64))
+
+        # The planner budgets for packed masks. Reading all count rows before
+        # converting them would temporarily require 8--32 times as much memory.
+        # Include raw counts, consensus maxima, selection masks and conversion
+        # temporaries in a separate bounded workspace, including uncached reads.
+        itemsize = np.dtype(dataset.numpy_dtype).itemsize
+        bytes_per_position = 5 * itemsize + 16
+        if dataset._matrix_dataset is None:
+            # Sparse expansion also reads up to four int64 indices and four
+            # values per position alongside the dense count buffer.
+            bytes_per_position = max(bytes_per_position, 8 * itemsize + 32)
+        workspace_bytes = min(self.read_memory_limit_bytes, GEMM_READ_BUFFER_BYTES_DEFAULT)
+        positions_per_read = workspace_bytes // bytes_per_position
+        if positions_per_read < 1:
+            raise MemoryError("GEMM memory budget cannot fit one allele-count position.")
+        if dataset._matrix_dataset is None and positions_per_read < self.matrix_length:
+            if self.matrix_length * bytes_per_position > self.read_memory_limit_bytes:
+                raise MemoryError(
+                    "GEMM memory budget cannot fit one expanded sparse count row plus "
+                    "mask-conversion buffers. Increase --memory-limit-gb."
+                )
+            # Sparse rows expand as a whole. Permit one row above the preferred
+            # 128 MiB chunk size when it still fits the reserved workspace.
+            positions_per_read = self.matrix_length
+        batch_samples = max(1, positions_per_read // max(1, self.matrix_length))
+        batch_positions = max(1, min(self.matrix_length, positions_per_read))
+        masks = np.empty((stop - start, self.matrix_length), dtype=np.uint8)
+        for row_start in range(start, stop, batch_samples):
+            row_stop = min(row_start + batch_samples, stop)
+            for col_start in range(0, self.matrix_length, batch_positions):
+                col_stop = min(col_start + batch_positions, self.matrix_length)
+                if dataset._matrix_dataset is not None:
+                    raw = np.asarray(
+                        dataset._matrix_dataset[row_start:row_stop, col_start:col_stop, :],
+                        dtype=dataset.numpy_dtype,
+                    )
+                else:
+                    raw = dataset._load_batch_numpy(np.arange(row_start, row_stop, dtype=np.int64))
+                masks[row_start - start:row_stop - start, col_start:col_stop] = rows_to_allele_bitmask(
+                    raw, matrix_value_semantics=self.semantics, ani_kind=self.ani_kind,
+                )
+                del raw
+        return masks
 
     def block(self, start: int, stop: int) -> np.ndarray:
         if self._cache is not None:
@@ -567,6 +620,9 @@ def matrix_compare_gemm(
                 ani_kind=ani_kind,
                 sample_count=sample_count,
                 cache_all_rows=plan.cache_all_rows,
+                # The planner leaves 30% headroom; use at most 20% for raw
+                # count reads and conversion, normally in <=128 MiB chunks.
+                read_memory_limit_bytes=max(1, memory_limit_bytes // 5),
             )
             try:
                 informative, multi = _informative_positions(rows, plan.block_samples)
