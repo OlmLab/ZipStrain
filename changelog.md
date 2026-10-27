@@ -4,8 +4,13 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+## 1.2.3
+
+Compared with `1.2.2`:
+
 - Matrix comparison: added an opt-in GEMM kernel (`matrix_compare(..., compare_kernel="gemm")`, CLI `--compare-kernel gemm`) for genome-level popANI and conANI. It computes whole blocks of sample pairs with exact `float32` matrix products and writes the same rows and completion keys as the pairwise kernel, so runs stay resumable and interchangeable. It requires `--calculate ani`; IBS, gene ANI and cosANI still use the pairwise kernel.
 - GEMM count-store reads use bounded conversion batches when filling the allele-mask cache, avoiding a full raw-count allocation before packing. Dense count rows can be tiled across positions; sparse rows that exceed the conversion workspace fail before allocation.
+- Genome statistics: include trailing scaffold gaps in gap-uniformity estimates without inflating mapped-read counts.
 
 ## 1.2.2
 
