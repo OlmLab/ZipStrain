@@ -42,6 +42,29 @@ def _notify(callback: ProgressCallback | None, message: str) -> None:
         callback(message)
 
 
+def resolve_calculate(calculate: str | None, *, compare_genes: bool) -> str:
+    """Return the matrix ``calculate`` string, adding gene ANI for gene runs."""
+    calculate = calculate or "all"
+    if compare_genes:
+        calculate = f"{calculate}+gene"
+    # Validate early so a bad token fails before the matrix store is built.
+    mp.parse_matrix_calculations(calculate)
+    return calculate
+
+
+def block_kernel_hint(compare_kernel: str, *, calculate: str, ani_method: str) -> str | None:
+    """Suggest the block kernel when it supports the request but was not chosen."""
+    if compare_kernel != mp.MATRIX_COMPARE_KERNEL_ANCHOR:
+        return None
+    ani_kind, _threshold = mp.parse_matrix_ani_method(ani_method)
+    if mp.parse_matrix_calculations(calculate) == ("ani",) and ani_kind in ("popani", "conani"):
+        return (
+            "Tip: --compare-kernel block computes the same ANI values and is much "
+            "faster for ANI-only comparisons, especially on a GPU."
+        )
+    return None
+
+
 def discover_bed_file(profile_locations: list[str | pathlib.Path]) -> pathlib.Path | None:
     """Find ``profiling_assets/genomes_bed_file.bed`` near any profile."""
     return _discover_asset(profile_locations, "genomes_bed_file.bed")
@@ -80,6 +103,7 @@ def _validate_existing_matrix_run(
     scope: str,
     min_cov: int,
     ani_method: str,
+    calculate: str = "all",
 ) -> None:
     metadata = mp._load_matrix_hdf5_metadata(store)
     normalized_ani_method, _threshold = mp.parse_matrix_ani_method(ani_method)
@@ -118,7 +142,7 @@ def _validate_existing_matrix_run(
     compare_metadata.setdefault("matrix_input_format", "hdf5")
     gene_ranges = mp._load_matrix_hdf5_gene_ranges(store)
     calculations = mp.parse_matrix_calculations(
-        "all",
+        calculate,
         include_gene_from_all=bool(gene_ranges),
     )
     mp._validate_matrix_compare_db_metadata(
@@ -188,7 +212,10 @@ def run_matrix_compare(
     min_cov: int = mp.MATRIX_BUILD_MIN_COV,
     ani_method: str = "popani",
     compare_genes: bool = False,
+    calculate: str = "all",
+    compare_kernel: str = mp.MATRIX_COMPARE_KERNEL_ANCHOR,
     progress_callback: ProgressCallback | None = None,
+    compare_progress_callback: mp.CompareProgressCallback | None = None,
 ) -> pathlib.Path:
     """Build/extend a matrix store, run resumable compare, and export to parquet.
 
@@ -196,7 +223,16 @@ def run_matrix_compare(
     with a superset of profiles appends only the new samples to the existing
     store and computes only the new pairs, then re-exports the full table.
     Returns the path to the exported comparison parquet.
+
+    ``calculate`` selects the matrix metrics (``ani``, ``ibs``, ``gene``, or
+    ``all``); gene ANI is added automatically for ``compare_genes``.
+    ``compare_kernel`` is ``"anchor"`` (default, supports every metric) or
+    ``"block"`` (genome-level popANI/conANI only, much faster).
+    ``compare_progress_callback`` receives the raw progress events of the
+    all-vs-all compare step.
     """
+    calculate = resolve_calculate(calculate, compare_genes=compare_genes)
+    compare_kernel = mp.normalize_matrix_compare_kernel(compare_kernel)
     run_dir = pathlib.Path(run_dir)
     intermediate = run_dir / INTERMEDIATE_DIRNAME
     intermediate.mkdir(parents=True, exist_ok=True)
@@ -227,6 +263,7 @@ def run_matrix_compare(
             scope=scope,
             min_cov=min_cov,
             ani_method=ani_method,
+            calculate=calculate,
         )
     existing_names = _existing_store_sample_names(store)
     new_profiles = [(name, location) for name, location in profiles if name not in existing_names]
@@ -264,7 +301,10 @@ def run_matrix_compare(
     else:
         _notify(progress_callback, "Matrix store already contains all profiles; reusing it")
 
-    _notify(progress_callback, f"Comparing all-vs-all (backend={backend})")
+    _notify(
+        progress_callback,
+        f"Comparing all-vs-all (backend={backend}, kernel={compare_kernel}, calculate={calculate})",
+    )
     mp.matrix_compare(
         matrix_db_file=store,
         output_file=compare_db,
@@ -273,9 +313,10 @@ def run_matrix_compare(
         memory_limit_gb=memory_limit_gb,
         backend=backend,
         ani_method=ani_method,
-        calculate="all",
+        calculate=calculate,
         emit_writer_logs=False,
-        progress_callback=None,
+        progress_callback=compare_progress_callback,
+        compare_kernel=compare_kernel,
     )
 
     table = "gene" if compare_genes else "genome"

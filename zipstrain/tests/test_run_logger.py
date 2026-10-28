@@ -92,3 +92,21 @@ def test_reruns_append_rather_than_truncate(tmp_path):
     assert "run one" in log_text and "run two" in log_text
     # The second run's status overwrites the first (latest state wins).
     assert _status(out)["last_step"] == "run two"
+
+
+def test_progress_updates_status_without_advancing_steps(tmp_path):
+    out = tmp_path / "out"
+    with RunLogger(out, command="demo") as log:
+        log.step("comparing")
+        log.progress(25, 100, detail="genome=g1")
+        status = _status(out)
+        assert status["steps_completed"] == 1
+        assert status["last_step"] == "comparing"
+        assert status["progress"] == {
+            "completed": 25,
+            "total": 100,
+            "percent": 25.0,
+            "detail": "genome=g1",
+        }
+
+    assert "progress" not in (out / RUN_LOG_NAME).read_text()

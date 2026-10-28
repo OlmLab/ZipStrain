@@ -851,6 +851,28 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
     )
 
 
+def _normalize_compare_kernel_option(ctx, param, value):
+    """Accept the deprecated 'pairwise'/'gemm' names and map them to anchor/block."""
+    normalized = str(value).strip().lower()
+    if normalized in mp.MATRIX_COMPARE_KERNEL_ALIASES:
+        canonical = mp.MATRIX_COMPARE_KERNEL_ALIASES[normalized]
+        click.echo(
+            f"Warning: --compare-kernel {normalized} is deprecated; use --compare-kernel {canonical}.",
+            err=True,
+        )
+        return canonical
+    if normalized not in mp.MATRIX_COMPARE_KERNELS:
+        raise click.BadParameter(f"must be one of {', '.join(mp.MATRIX_COMPARE_KERNELS)}.")
+    return normalized
+
+
+_COMPARE_KERNEL_HELP = (
+    "Comparison kernel. 'anchor' compares one sample against blocks of others position by position "
+    "and supports every metric. 'block' computes genome-level popANI/conANI for whole blocks of "
+    "sample pairs with matrix multiplications (same values, much faster; requires --calculate ani)."
+)
+
+
 @utilities.command("matrix-compare")
 @click.option('--matrix-db-file', '-m', required=True, help="Input matrix store from build-matrix-db or matrix-db-to-hdf5.")
 @click.option('--output-file', '-o', required=True, help="Output DuckDB compare database. If it already exists, only remaining pairs are added.")
@@ -884,11 +906,11 @@ def append_matrix_db(profile_dir, matrix_db_file, memory_limit_gb, export_batch_
 )
 @click.option(
     '--compare-kernel',
-    type=click.Choice(mp.MATRIX_COMPARE_KERNELS),
-    default="pairwise",
+    default=mp.MATRIX_COMPARE_KERNEL_ANCHOR,
     show_default=True,
-    help="Comparison algorithm. 'gemm' computes genome-level popANI/conANI for whole sample blocks "
-    "with matrix multiplications (much faster; requires --calculate ani). 'pairwise' supports all metrics.",
+    metavar="[anchor|block]",
+    callback=_normalize_compare_kernel_option,
+    help=_COMPARE_KERNEL_HELP,
 )
 def matrix_compare(
     matrix_db_file,
@@ -1946,9 +1968,12 @@ def _run_matrix_compare_method(
     min_cov,
     compare_genes,
     ani_method,
+    calculate="all",
+    compare_kernel=mp.MATRIX_COMPARE_KERNEL_ANCHOR,
     no_csv=False,
     force_csv=False,
     run_log=None,
+    progress_interval_seconds=30.0,
 ):
     """Drive the matrix-store comparison route with progress + a summary panel."""
     profiles = [
@@ -1966,7 +1991,39 @@ def _run_matrix_compare_method(
         if run_log is not None:
             run_log.step(message)
 
+    # The all-vs-all step can run for hours; refresh the status file with its
+    # progress (throttled) so a long-running compare is distinguishable from a
+    # stalled one.
+    last_progress_write = {"t": float("-inf")}
+
+    def _on_compare_progress(event: dict) -> None:
+        if run_log is None:
+            return
+        now = time.monotonic()
+        phase = event.get("phase")
+        if phase == "advance" and now - last_progress_write["t"] < progress_interval_seconds:
+            return
+        last_progress_write["t"] = now
+        genome = event.get("genome")
+        run_log.progress(
+            int(event.get("completed", 0)),
+            int(event.get("total", 0)),
+            detail=f"genome={genome}" if genome else None,
+        )
+
     console.print(Panel.fit("[bold magenta]ZipStrain compare (matrix)[/]", border_style="magenta"))
+    try:
+        hint = matrix_workflow.block_kernel_hint(
+            compare_kernel,
+            calculate=matrix_workflow.resolve_calculate(calculate, compare_genes=compare_genes),
+            ani_method=ani_method,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if hint is not None:
+        console.print(f"[yellow]{hint}[/]")
+        if run_log is not None:
+            run_log.note(hint)
     try:
         output = matrix_workflow.run_matrix_compare(
             profiles=profiles,
@@ -1980,7 +2037,10 @@ def _run_matrix_compare_method(
             min_cov=min_cov,
             ani_method=ani_method,
             compare_genes=compare_genes,
+            calculate=calculate,
+            compare_kernel=compare_kernel,
             progress_callback=_on_step,
+            compare_progress_callback=_on_compare_progress,
         )
     except ModuleNotFoundError as exc:
         raise click.UsageError(
@@ -2026,11 +2086,12 @@ def _run_matrix_compare_method(
 @click.option("--allow-mismatch", is_flag=True, default=False, show_default=True, help="Skip profile contract validation when building the profile database from a CSV.")
 @click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for standard compare tasks.")
-@click.option("--calculate", default="all", show_default=True, help="Genome metrics to compute (genome mode only): ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option("--calculate", default="all", show_default=True, help="Metrics to compute. Standard method (genome mode only): ani, ibs, identical_genes. Matrix method: ani, ibs, gene. Combine with '+', or use all. Use 'ani' for ANI only with the selected --ani-method.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-range-table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
 @click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for --method matrix.")
+@click.option("--compare-kernel", default=mp.MATRIX_COMPARE_KERNEL_ANCHOR, show_default=True, metavar="[anchor|block]", callback=_normalize_compare_kernel_option, help=_COMPARE_KERNEL_HELP + " Applies to --method matrix.")
 @click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
 @click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
 @click.option("--max-concurrent-batches", "-m", default=5, show_default=True, help="Maximum number of concurrent batches to run.")
@@ -2042,7 +2103,7 @@ def _run_matrix_compare_method(
 @click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Write the companion .csv even when the estimated size exceeds 100 MB.")
-def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
+def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, compare_kernel, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
     """
     Compare profiled samples at the genome level (default) or gene level (--compare-genes).
 
@@ -2072,6 +2133,8 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                 min_cov=min_cov,
                 compare_genes=compare_genes,
                 ani_method=ani_method,
+                calculate=calculate,
+                compare_kernel=compare_kernel,
                 no_csv=no_csv,
                 force_csv=force_csv,
                 run_log=run_log,
@@ -2179,6 +2242,7 @@ compare.option_sections = {
         "gene_range_table",
         "backend",
         "memory_limit_gb",
+        "compare_kernel",
     ],
     "Output": [
         "no_csv",

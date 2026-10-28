@@ -4,6 +4,14 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+## 1.3.0
+
+Compared with `1.2.3`:
+
+- The main `zipstrain compare --method matrix` command now honors `--calculate` and accepts `--compare-kernel`, making ANI-only block comparisons available without the lower-level utilities command. Gene comparisons automatically include gene ANI, and resumed runs validate the selected calculations before appending samples.
+- Renamed comparison kernels to `anchor` (default, all metrics) and `block` (genome-level popANI/conANI only). The old `pairwise` and `gemm` names remain accepted with deprecation warnings; output values and schemas are unchanged.
+- Matrix comparison progress now refreshes `zipstrain_status.json` during the all-vs-all step without adding a log line for every progress event. Eligible ANI-only anchor runs display a tip about the block kernel.
+
 ## 1.2.3
 
 Compared with `1.2.2`:

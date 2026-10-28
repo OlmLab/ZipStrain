@@ -371,9 +371,9 @@ Major options:
 - `--profile-db`, `-r, --run-dir` (required)
 - `--method` (`standard`/`matrix`) and `--compare-genes` — pick the engine and genome vs. gene level
 - `--scope` (`all` for genomes, `all:all` for genes), `--min-cov` (5), `--min-gene-compare-len` (100)
-- `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`ani`/`ibs`/`identical_genes`/`all`)
+- `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`ani`/`ibs`/`identical_genes`/`all` for standard comparison; `ani`/`ibs`/`gene`/`all` for matrix comparison; combine metrics with `+`)
 - `--stb-file` — required for `--method matrix`
-- Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16)
+- Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16), `--compare-kernel` (`anchor`/`block`, default `anchor`)
 - Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
@@ -381,7 +381,14 @@ Major options:
 For matrix comparison, `popani` automatically uses the compact bitmask store;
 `conani` and `cosani_<threshold>` automatically use a count store. The selected
 ANI method and `--min-cov` become part of that run directory's persistent
-matrix/compare contract. To change either, use a new `--run-dir`.
+matrix/compare contract, along with the selected calculations. To change these,
+use a new `--run-dir`. The kernel can be changed while resuming compatible work.
+
+For genome-level ANI without IBS or gene metrics, use
+`--calculate ani --compare-kernel block` with `--method matrix`. This supports
+both `--ani-method popani` and `--ani-method conani`. The default `anchor`
+kernel supports all metrics and ANI methods. Matrix comparisons update
+`zipstrain_status.json` with completed/total comparison work during the compare step.
 
 <details>
 <summary><code>zipstrain compare --help</code></summary>
@@ -393,25 +400,25 @@ Usage: zipstrain compare [OPTIONS]
   (--compare-genes).
 
   ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
-  there is no need to run ``zipstrain utilities build-profile-db`` first; a
-  pre-built profile-database parquet is also accepted.
+  there is no need to run ``zipstrain utilities build-profile-db`` first; a pre-
+  built profile-database parquet is also accepted.
 
-  Both methods write ``<run-dir>/all_comparisons.parquet``. Re-running with
-  the same ``--run-dir`` and a profiles table that includes new samples
-  extends the existing comparison, computing only the new pairs.
+  Both methods write ``<run-dir>/all_comparisons.parquet``. Re-running with the
+  same ``--run-dir`` and a profiles table that includes new samples extends the
+  existing comparison, computing only the new pairs.
 
 Required inputs:
   --profile-db TEXT   Profiles to compare: either a CSV with
-                      'profile_name,profile_location' columns (built in
-                      memory, no build-profile-db needed) or a pre-built
-                      profile-database parquet.  [required]
+                      'profile_name,profile_location' columns (built in memory,
+                      no build-profile-db needed) or a pre-built profile-
+                      database parquet.  [required]
   -r, --run-dir TEXT  Directory to save the run data.  [required]
 
 Comparison parameters:
   --method [standard|matrix]      Comparison engine: 'standard' (direct
-                                  pairwise) or 'matrix' (reusable matrix
-                                  store, good for repeated all-vs-all).
-                                  [default: standard]
+                                  pairwise) or 'matrix' (reusable matrix store,
+                                  good for repeated all-vs-all).  [default:
+                                  standard]
   --compare-genes                 Compare genes instead of genomes.
   --scope TEXT                    Comparison scope. Defaults to 'all' for
                                   genomes and 'all:all' for genes.
@@ -419,40 +426,51 @@ Comparison parameters:
                                   [default: 5]
   --min-gene-compare-len INTEGER  Minimum gene length to consider for
                                   comparison.  [default: 100]
-  --stb-file TEXT                 Scaffold-to-genome mapping file. Required
-                                  for --method matrix.
+  --stb-file TEXT                 Scaffold-to-genome mapping file. Required for
+                                  --method matrix.
   -a, --ani-method TEXT           ANI calculation method (e.g., 'popani',
                                   'conani', 'cosani_0.4').  [default: popani]
-  --calculate TEXT                Genome metrics to compute (genome mode
-                                  only): ani, ibs, identical_genes. Combine
-                                  with '+', or use all.  [default: all]
+  --calculate TEXT                Metrics to compute. Standard method (genome
+                                  mode only): ani, ibs, identical_genes. Matrix
+                                  method: ani, ibs, gene. Combine with '+', or
+                                  use all. Use 'ani' for ANI only with the
+                                  selected --ani-method.  [default: all]
   --comp-db-file TEXT             Optional existing comparison parquet to
-                                  resume/extend (standard method). Auto-
-                                  detected from --run-dir if omitted.
-  --allow-mismatch                Skip profile contract validation when
-                                  building the profile database from a CSV.
+                                  resume/extend (standard method). Auto-detected
+                                  from --run-dir if omitted.
+  --allow-mismatch                Skip profile contract validation when building
+                                  the profile database from a CSV.
 
 Matrix method (--method matrix):
   --bed-file TEXT                 BED file for the matrix store (--method
-                                  matrix). Auto-discovered from
-                                  profiling_assets if omitted.
+                                  matrix). Auto-discovered from profiling_assets
+                                  if omitted.
   --gene-range-table TEXT         Gene range table for gene ANI (--method
-                                  matrix). Auto-discovered from
-                                  profiling_assets if omitted.
+                                  matrix). Auto-discovered from profiling_assets
+                                  if omitted.
   --backend [numpy|torch|torch-cpu|torch-cuda|torch-mps]
-                                  Compute backend for --method matrix (numpy,
-                                  or torch on CPU/CUDA/MPS).  [default: numpy]
-  --memory-limit-gb FLOAT         Approximate memory budget for --method
-                                  matrix.  [default: 16.0]
+                                  Compute backend for --method matrix (numpy, or
+                                  torch on CPU/CUDA/MPS).  [default: numpy]
+  --memory-limit-gb FLOAT         Approximate memory budget for --method matrix.
+                                  [default: 16.0]
+  --compare-kernel [anchor|block]
+                                  Comparison kernel. 'anchor' compares one
+                                  sample against blocks of others position by
+                                  position and supports every metric. 'block'
+                                  computes genome-level popANI/conANI for whole
+                                  blocks of sample pairs with matrix
+                                  multiplications (same values, much faster;
+                                  requires --calculate ani). Applies to --method
+                                  matrix.  [default: anchor]
 
 Output:
   --no-csv     Do not write a companion .csv next to the comparison parquet.
-  --force-csv  Write the companion .csv even when the estimated size exceeds
-               100 MB.
+  --force-csv  Write the companion .csv even when the estimated size exceeds 100
+               MB.
 
 Standard method / engine:
-  --engine [polars|duckdb]        Comparison engine for standard compare
-                                  tasks.  [default: polars]
+  --engine [polars|duckdb]        Comparison engine for standard compare tasks.
+                                  [default: polars]
   -d, --duckdb-memory-limit TEXT  DuckDB memory limit for compare tasks (e.g.,
                                   2GB).
   --duckdb-threads INTEGER        Number of DuckDB worker threads for compare
@@ -464,16 +482,15 @@ Standard method / engine:
                                   status of batches.  [default: 1]
   -t, --task-per-batch INTEGER    Number of tasks to include in each batch.
                                   [default: 10]
-  -e, --execution-mode TEXT       Execution mode: 'local' or 'slurm'.
-                                  [default: local]
+  -e, --execution-mode TEXT       Execution mode: 'local' or 'slurm'.  [default:
+                                  local]
   -s, --slurm-config TEXT         Path to the SLURM configuration file in json
-                                  format. Required if execution mode is
-                                  'slurm'.
-  -c, --container-engine TEXT     Container engine to use: 'local', 'docker'
-                                  or 'apptainer'.  [default: local]
+                                  format. Required if execution mode is 'slurm'.
+  -c, --container-engine TEXT     Container engine to use: 'local', 'docker' or
+                                  'apptainer'.  [default: local]
   --container-address TEXT        Optional container image/address override.
-                                  Defaults to the current ZipStrain version
-                                  tag for docker/apptainer.
+                                  Defaults to the current ZipStrain version tag
+                                  for docker/apptainer.
 
 Other options:
   -h, --help  Show this message and exit.
@@ -1128,31 +1145,32 @@ Important options:
   - `torch-cpu`
   - `torch-cuda`
   - `torch-mps`
-- `--compare-kernel` comparison algorithm (default: `pairwise`):
-  - `pairwise` compares one anchor sample against target blocks and supports every metric and ANI method
-  - `gemm` computes genome-level popANI or conANI for whole blocks of sample pairs with dense matrix multiplications; requires `--calculate ani`
+- `--compare-kernel` comparison algorithm (default: `anchor`):
+  - `anchor` compares one anchor sample against target blocks and supports every metric and ANI method
+  - `block` computes genome-level popANI or conANI for whole blocks of sample pairs with dense matrix multiplications; requires `--calculate ani`
+  - the old names `pairwise` and `gemm` remain accepted as deprecated aliases for `anchor` and `block`
 
-GEMM kernel (`--compare-kernel gemm`):
+Block kernel (`--compare-kernel block`):
 
 ```bash
 zipstrain utilities matrix-compare \
   --matrix-db-file matrix_db.h5 \
   --output-file matrix_compare.duckdb \
   --calculate ani \
-  --compare-kernel gemm \
+  --compare-kernel block \
   --backend torch-cuda \
   --memory-limit-gb 64
 ```
 
 - each stored row is reduced to a 4-bit allele mask per position (popANI: alleles present after the build-time coverage filter; conANI: consensus alleles, ties retained), so bitmask, count, legacy presence, dense and sparse stores are all supported
 - `total_positions` is one matrix product of the covered-position indicators; mismatches can only occur at positions where the covered samples of the whole store share no common allele, so `share_allele_pos` is corrected with a few additional products restricted to those positions (inclusion-exclusion over multi-allele masks)
-- products run in `float32`, which is exact for integer sums below `2**24`; partial sums are flushed to `int64` before that bound, so results are identical to `pairwise`, including `genome_ani`, zero-overlap handling and the completion table
+- products run in `float32`, which is exact for integer sums below `2**24`; partial sums are flushed to `int64` before that bound, so results are identical to `anchor`, including `genome_ani`, zero-overlap handling and the completion table
 - samples are processed in blocks sized from `--memory-limit-gb` (and free CUDA memory); the whole genome matrix is cached in RAM when it fits in a third of the budget
 - count rows are converted to packed masks in bounded batches, including when building the full RAM cache; dense rows can also be split across positions. An expanded sparse count row must fit the conversion workspace, otherwise the run reports a memory error before loading it
 - each sample-block pair is written in one transaction, so runs are resumable, and a compare DB started with one kernel can be finished with the other
 - when samples are appended, fully completed block pairs are skipped. Partially completed block pairs are recomputed, and only unfinished pair results are saved
 - `--anchor-queue-size`, `--target-queue-size`, `--result-transfer-batch-size` and the executor options are ignored
-- IBS (`max_consecutive_length`), gene ANI and cosANI are not available with `gemm`; use `pairwise`
+- IBS (`max_consecutive_length`), gene ANI and cosANI are not available with `block`; use `anchor`
 - on CUDA, TF32 is disabled for the duration of the run to keep products exact
 
 Notes:
@@ -1312,7 +1330,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:1.2.3`;
+- sets the default container to `parsaghadermazi/zipstrain:1.3.0`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 

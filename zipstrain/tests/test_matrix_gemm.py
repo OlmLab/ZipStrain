@@ -1,4 +1,4 @@
-"""Parity tests: compare_kernel='gemm' must match the pairwise numpy kernel exactly."""
+"""Parity tests: compare_kernel='block' must match the anchor numpy kernel exactly."""
 
 from pathlib import Path
 
@@ -162,7 +162,7 @@ def test_gemm_matches_pairwise(tmp_path, monkeypatch, storage_mode, ani_method, 
     out = tmp_path / "gemm.duckdb"
     summary = mp.matrix_compare(
         matrix, out, backend=backend, ani_method=ani_method, calculate="ani",
-        memory_limit_gb=1, compare_kernel="gemm",
+        memory_limit_gb=1, compare_kernel="block",
     )
     _assert_same(out, expected)
     assert summary.requested_pairs == 23 * 22 // 2
@@ -182,7 +182,7 @@ def test_gemm_matches_pairwise_on_accelerators(tmp_path, monkeypatch, backend):
         monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(6, 50))
         out = tmp_path / f"gemm_{ani_method}.duckdb"
         mp.matrix_compare(matrix, out, backend=backend, ani_method=ani_method, calculate="ani",
-                          memory_limit_gb=1, compare_kernel="gemm")
+                          memory_limit_gb=1, compare_kernel="block")
         _assert_same(out, expected)
 
 
@@ -190,7 +190,7 @@ def test_gemm_default_planner_matches_pairwise(tmp_path):
     matrix = _build_store(tmp_path, storage_mode="bitmask")
     expected = _reference(matrix, tmp_path)
     out = tmp_path / "gemm.duckdb"
-    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="gemm")
+    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
 
 
@@ -210,7 +210,7 @@ def test_gemm_exact_accumulator_flushes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mg._ExactAccumulator, "flush", counting_flush)
     out = tmp_path / "gemm.duckdb"
-    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="gemm")
+    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
     assert flushes > 100
 
@@ -238,16 +238,16 @@ def test_gemm_resumes_after_interruption(tmp_path, monkeypatch):
     monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(4, 50))
     out = tmp_path / "gemm.duckdb"
     with pytest.raises(_Interrupt):
-        mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="gemm",
+        mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block",
                           progress_callback=_interrupt_after(9))
     partial, partial_completed = _load(out)
     assert 0 < len(partial_completed) < len(_load(expected)[1])
-    summary = mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="gemm")
+    summary = mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
     assert summary.written_rows + partial.height == _load(expected)[0].height
     _assert_same(out, expected)
     # A third run has nothing left to do.
     assert mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1,
-                             compare_kernel="gemm").requested_pairs == 0
+                             compare_kernel="block").requested_pairs == 0
 
 
 def test_gemm_resumes_partial_pairwise_run(tmp_path, monkeypatch):
@@ -260,7 +260,7 @@ def test_gemm_resumes_partial_pairwise_run(tmp_path, monkeypatch):
                           progress_callback=_interrupt_after(7))
     assert 0 < len(_load(out)[1])
     monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(5, 30))
-    mp.matrix_compare(matrix, out, ani_method="conani", calculate="ani", memory_limit_gb=1, compare_kernel="gemm")
+    mp.matrix_compare(matrix, out, ani_method="conani", calculate="ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
 
 
@@ -269,7 +269,7 @@ def test_gemm_genome_scope(tmp_path):
     expected = tmp_path / "pairwise_g2.duckdb"
     mp.matrix_compare(matrix, expected, genome="genome2", calculate="ani", memory_limit_gb=1)
     out = tmp_path / "gemm_g2.duckdb"
-    mp.matrix_compare(matrix, out, genome="genome2", calculate="ani", memory_limit_gb=1, compare_kernel="gemm")
+    mp.matrix_compare(matrix, out, genome="genome2", calculate="ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
     assert set(_load(out)[0]["genome"].to_list()) == {"genome2"}
 
@@ -285,7 +285,7 @@ def test_gemm_genome_scope(tmp_path):
 )
 def test_gemm_rejects_unsupported_requests(tmp_path, kwargs, match):
     matrix = _build_store(tmp_path, storage_mode="counts", sample_count=4)
-    kwargs = {"compare_kernel": "gemm", **kwargs}
+    kwargs = {"compare_kernel": "block", **kwargs}
     out = tmp_path / "bad.duckdb"
     with pytest.raises(ValueError, match=match):
         mp.matrix_compare(matrix, out, memory_limit_gb=1, **kwargs)
@@ -303,7 +303,7 @@ def test_gemm_cli(tmp_path):
             "--output-file", str(out),
             "--memory-limit-gb", "1",
             "--calculate", "ani",
-            "--compare-kernel", "gemm",
+            "--compare-kernel", "block",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -467,7 +467,7 @@ def test_gemm_appends_only_new_comparisons(tmp_path, storage, ani_method):
     output = tmp_path / "incremental.duckdb"
     mp.matrix_compare(
         matrix, output, ani_method=ani_method, calculate="ani", memory_limit_gb=1,
-        compare_kernel="gemm",
+        compare_kernel="block",
     )
     before, completed_before = _load(output)
     extra = tmp_path / "extra"
@@ -477,7 +477,7 @@ def test_gemm_appends_only_new_comparisons(tmp_path, storage, ani_method):
     mp.append_matrix_hdf5(extra, matrix, memory_limit_gb=1)
     summary = mp.matrix_compare(
         matrix, output, ani_method=ani_method, calculate="ani", memory_limit_gb=1,
-        compare_kernel="gemm",
+        compare_kernel="block",
     )
     after, completed_after = _load(output)
     assert summary.requested_pairs == 9
@@ -488,7 +488,7 @@ def test_gemm_appends_only_new_comparisons(tmp_path, storage, ani_method):
     _assert_same(output, _reference(matrix, tmp_path, ani_method))
 
 
-@pytest.mark.parametrize("first_kernel", ["gemm", "pairwise"])
+@pytest.mark.parametrize("first_kernel", ["block", "anchor"])
 def test_gemm_resumes_after_matrix_reorder(tmp_path, monkeypatch, first_kernel):
     """Compare IDs differ from matrix rows after a reorder; GEMM must remap and canonicalize."""
     from .test_matrix_compare_identity import _reorder_matrix
@@ -503,7 +503,7 @@ def test_gemm_resumes_after_matrix_reorder(tmp_path, monkeypatch, first_kernel):
     assert 0 < len(before) < 506
     order = list(np.random.default_rng(7).permutation(23))
     _reorder_matrix(matrix, order, swap_genomes=True)
-    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="gemm")
+    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
     fresh = tmp_path / "fresh.duckdb"
     mp.matrix_compare(matrix, fresh, calculate="ani", memory_limit_gb=1)
     resumed, completed = _load(out)
@@ -527,3 +527,29 @@ def test_gemm_resumes_after_matrix_reorder(tmp_path, monkeypatch, first_kernel):
             WHERE a.sample_name IS DISTINCT FROM r.sample_1 OR b.sample_name IS DISTINCT FROM r.sample_2
                OR g.genome IS DISTINCT FROM r.genome OR r.sample_idx_1 >= r.sample_idx_2
         """).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(("alias", "canonical"), [("gemm", "block"), ("pairwise", "anchor")])
+def test_deprecated_kernel_names_still_work(alias, canonical):
+    with pytest.warns(FutureWarning, match=f"use '{canonical}'"):
+        assert mp.normalize_matrix_compare_kernel(alias) == canonical
+
+
+def test_gemm_cli_accepts_deprecated_name(tmp_path):
+    matrix = _build_store(tmp_path, storage_mode="bitmask")
+    expected = _reference(matrix, tmp_path)
+    out = tmp_path / "cli.duckdb"
+    result = CliRunner().invoke(
+        cli.cli,
+        [
+            "utilities", "matrix-compare",
+            "--matrix-db-file", str(matrix),
+            "--output-file", str(out),
+            "--memory-limit-gb", "1",
+            "--calculate", "ani",
+            "--compare-kernel", "gemm",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "deprecated; use --compare-kernel block" in result.output
+    _assert_same(out, expected)

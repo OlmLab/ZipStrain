@@ -1,6 +1,7 @@
 """Blocked-GEMM genome-level popANI / conANI for HDF5 matrix stores.
 
-The pairwise kernels in :mod:`zipstrain.matrix_pairs` compare one anchor
+This is the ``compare_kernel='block'`` kernel. The ``anchor`` kernel in
+:mod:`zipstrain.matrix_pairs` compares one anchor
 sample against blocks of targets position by position. That is bandwidth
 bound: every anchor/target pair re-reads both rows. For genome-level ANI the
 per-pair quantities are plain sums over positions, so a whole block of
@@ -24,11 +25,11 @@ filter; for conANI, when allele ``b`` is a consensus allele). With ``X`` the
 
 All GEMMs run in float32, which is exact for integer sums below ``2**24``;
 partial sums are flushed into int64 host accumulators before that bound
-can be reached. Results are bit-identical to the pairwise kernel.
+can be reached. Results are bit-identical to the anchor kernel.
 
 Only genome-level ANI is produced; IBS (``max_consecutive_length``) and
 gene-level ANI depend on position order or per-gene masks and must use the
-pairwise kernel.
+anchor kernel.
 """
 
 from __future__ import annotations
@@ -107,7 +108,7 @@ def rows_to_allele_bitmask(
             raise ValueError(f"Unsupported matrix value semantics {matrix_value_semantics!r}.")
         selected = rows > 0
     else:
-        raise ValueError(f"compare_kernel='gemm' does not support ani_method {ani_kind!r}.")
+        raise ValueError(f"compare_kernel='block' does not support ani_method {ani_kind!r}.")
     out = np.zeros(rows.shape[:2], dtype=np.uint8)
     for channel, bit in enumerate(_ALLELE_BITS):
         out |= selected[:, :, channel].astype(np.uint8) * np.uint8(bit)
@@ -583,7 +584,7 @@ def matrix_compare_gemm(
     ani_kind, _cos = mp.parse_matrix_ani_method(ani_method)
     if ani_kind not in GEMM_SUPPORTED_ANI_KINDS:
         raise ValueError(
-            f"compare_kernel='gemm' supports ani_method popani or conani, not {ani_method!r}."
+            f"compare_kernel='block' supports ani_method popani or conani, not {ani_method!r}."
         )
     dtype_name = mp._matrix_dtype_name_from_metadata(metadata)
     sample_count = len(samples)

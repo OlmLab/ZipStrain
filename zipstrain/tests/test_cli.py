@@ -1381,6 +1381,47 @@ def test_compare_method_matrix_forwards_non_popani_method(tmp_path, monkeypatch)
     assert captured["min_cov"] == 5
 
 
+def test_compare_method_matrix_forwards_calculate_and_kernel(tmp_path, monkeypatch):
+    csv_path = _write_profiles_csv_for_compare(tmp_path)
+    captured = {}
+
+    def _fake_run_matrix_compare(**kwargs):
+        captured.update(kwargs)
+        output = Path(kwargs["run_dir"]) / "all_comparisons.parquet"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"genome": ["g"], "genome_ani": [100.0]}).write_parquet(output)
+        return output
+
+    monkeypatch.setattr(cli.matrix_workflow, "run_matrix_compare", _fake_run_matrix_compare)
+    base_args = [
+        "compare", "--method", "matrix",
+        "--profile-db", str(csv_path),
+        "--stb-file", str(tmp_path / "ref.stb"),
+        "--run-dir", str(tmp_path / "run"),
+    ]
+
+    # Default is the anchor kernel; ANI-only runs get a hint about the block kernel.
+    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "ani"])
+    assert result.exit_code == 0, result.output
+    assert captured["calculate"] == "ani"
+    assert captured["compare_kernel"] == "anchor"
+    assert callable(captured["compare_progress_callback"])
+    assert "--compare-kernel block" in result.output
+
+    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "ani", "--compare-kernel", "block"])
+    assert result.exit_code == 0, result.output
+    assert captured["compare_kernel"] == "block"
+    assert "Tip:" not in result.output
+
+    # Deprecated names still work.
+    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "ani", "--compare-kernel", "gemm"])
+    assert result.exit_code == 0, result.output
+    assert captured["compare_kernel"] == "block"
+
+    result = CliRunner().invoke(cli.cli, [*base_args, "--compare-kernel", "fast"])
+    assert result.exit_code != 0
+
+
 def test_compare_default_scope_differs_by_mode(tmp_path, monkeypatch):
     csv_path = _write_profiles_csv_for_compare(tmp_path)
 

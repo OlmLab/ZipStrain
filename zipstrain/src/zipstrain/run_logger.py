@@ -161,6 +161,20 @@ class RunLogger:
         self._append_log(f"[{_ts(self.updated_at)}] NOTE: {message}")
         self._write_status()
 
+    def progress(self, completed: int, total: int, *, detail: str | None = None) -> None:
+        """Refresh the status file with progress inside the current step.
+
+        Unlike :meth:`step`, this neither advances the step counter nor writes a
+        log line, so it is safe to call often (callers should still throttle).
+        """
+        self.updated_at = _now()
+        progress: dict[str, Any] = {"completed": int(completed), "total": int(total)}
+        if total:
+            progress["percent"] = round(100.0 * completed / total, 2)
+        if detail:
+            progress["detail"] = detail
+        self._write_status(extra={"progress": progress})
+
     def as_callback(self, wrapped: Callable[[str], None] | None = None) -> Callable[[str], None]:
         """Return a progress callback that logs each message via :meth:`step`.
 

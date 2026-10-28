@@ -9,6 +9,7 @@ import importlib
 import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
@@ -52,7 +53,17 @@ CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT = "per_genome_sample_major_sparse_bitm
 MATRIX_HDF5_FILE_VERSION = "1"
 MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
 MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
-MATRIX_COMPARE_KERNELS = ("pairwise", "gemm")
+# "anchor" compares one anchor sample against blocks of targets position by
+# position (supports every metric); "block" computes genome-level popANI/conANI
+# for whole blocks of sample pairs with dense matrix multiplications.
+MATRIX_COMPARE_KERNEL_ANCHOR = "anchor"
+MATRIX_COMPARE_KERNEL_BLOCK = "block"
+MATRIX_COMPARE_KERNELS = (MATRIX_COMPARE_KERNEL_ANCHOR, MATRIX_COMPARE_KERNEL_BLOCK)
+# Deprecated names kept so existing scripts and configs keep working.
+MATRIX_COMPARE_KERNEL_ALIASES = {
+    "pairwise": MATRIX_COMPARE_KERNEL_ANCHOR,
+    "gemm": MATRIX_COMPARE_KERNEL_BLOCK,
+}
 MATRIX_COMPARE_PIPELINE_DEPTH = 2
 MATRIX_COMPARE_WRITE_MAX_ROWS = 250_000
 MATRIX_COMPARE_WRITE_MAX_BYTES = 32 * 1024 * 1024
@@ -176,6 +187,24 @@ def parse_matrix_calculations(
     if supported:
         return supported
     raise ValueError("Matrix compare requires at least one supported calculation.")
+
+
+def normalize_matrix_compare_kernel(compare_kernel: str) -> str:
+    """Return the canonical kernel name, mapping deprecated aliases with a warning."""
+    normalized = str(compare_kernel).strip().lower()
+    if normalized in MATRIX_COMPARE_KERNEL_ALIASES:
+        canonical = MATRIX_COMPARE_KERNEL_ALIASES[normalized]
+        warnings.warn(
+            f"compare_kernel={normalized!r} is deprecated; use {canonical!r}.",
+            FutureWarning,
+            stacklevel=3,
+        )
+        return canonical
+    if normalized not in MATRIX_COMPARE_KERNELS:
+        raise ValueError(
+            f"compare_kernel must be one of {', '.join(MATRIX_COMPARE_KERNELS)}"
+        )
+    return normalized
 
 
 def parse_matrix_ani_method(ani_method: str) -> tuple[str, Optional[float]]:
@@ -5772,7 +5801,7 @@ def matrix_compare(
     calculate: Optional[str] = "all",
     emit_writer_logs: bool = False,
     progress_callback: Optional[CompareProgressCallback] = None,
-    compare_kernel: str = "pairwise",
+    compare_kernel: str = MATRIX_COMPARE_KERNEL_ANCHOR,
 ) -> MatrixCompareSummary:
     """Run resumable all-vs-all matrix comparison on the current matrix store.
 
@@ -5780,14 +5809,15 @@ def matrix_compare(
     command against an existing compare database resumes from the remaining
     uncompleted pairs.
 
-    ``compare_kernel`` selects the comparison algorithm. ``"pairwise"`` (the
+    ``compare_kernel`` selects the comparison algorithm. ``"anchor"`` (the
     default) compares one anchor against target blocks and supports every
-    metric. ``"gemm"`` computes genome-level popANI/conANI for whole blocks
+    metric. ``"block"`` computes genome-level popANI/conANI for whole blocks
     of sample pairs with dense matrix multiplications (see
     :mod:`zipstrain.matrix_gemm`); it requires ``calculate="ani"`` and gives
     identical ``total_positions``/``share_allele_pos``/``genome_ani`` values.
     Anchor/target queue, transfer-batch and executor options are ignored by
-    the GEMM kernel.
+    the block kernel. The deprecated names ``"pairwise"`` and ``"gemm"`` are
+    still accepted.
     """
     if min_cov is not None and min_cov < 1:
         raise ValueError("min_cov must be >= 1")
@@ -5806,14 +5836,11 @@ def matrix_compare(
         raise ValueError(
             f"writer_executor_kind must be one of {', '.join(MATRIX_IO_EXECUTOR_KINDS)}"
         )
-    if compare_kernel not in MATRIX_COMPARE_KERNELS:
+    compare_kernel = normalize_matrix_compare_kernel(compare_kernel)
+    if compare_kernel == MATRIX_COMPARE_KERNEL_BLOCK and normalized_ani_method not in ("popani", "conani"):
         raise ValueError(
-            f"compare_kernel must be one of {', '.join(MATRIX_COMPARE_KERNELS)}"
-        )
-    if compare_kernel == "gemm" and normalized_ani_method not in ("popani", "conani"):
-        raise ValueError(
-            "compare_kernel='gemm' supports ani_method popani or conani; "
-            f"use compare_kernel='pairwise' for {normalized_ani_method}."
+            "compare_kernel='block' supports ani_method popani or conani; "
+            f"use compare_kernel='anchor' for {normalized_ani_method}."
         )
     matrix_db_file = matrix_db_file.resolve()
     output_file = output_file.resolve()
@@ -5880,10 +5907,10 @@ def matrix_compare(
                 "Gene ANI was requested, but this matrix store does not contain gene annotations. "
                 "Rebuild it with --gene-range-table."
             )
-        if compare_kernel == "gemm" and tuple(calculations) != ("ani",):
+        if compare_kernel == MATRIX_COMPARE_KERNEL_BLOCK and tuple(calculations) != ("ani",):
             raise ValueError(
-                "compare_kernel='gemm' computes genome-level ANI only; pass calculate='ani' "
-                f"(requested: {'+'.join(calculations)}). IBS and gene ANI need compare_kernel='pairwise'."
+                "compare_kernel='block' computes genome-level ANI only; pass calculate='ani' "
+                f"(requested: {'+'.join(calculations)}). IBS and gene ANI need compare_kernel='anchor'."
             )
         compare_conn, compare_ids = _prepare_matrix_compare_db(
             output_file=output_file,
@@ -5918,7 +5945,7 @@ def matrix_compare(
                 ani_method=normalized_ani_method,
             )
 
-        if compare_kernel == "gemm":
+        if compare_kernel == MATRIX_COMPARE_KERNEL_BLOCK:
             from zipstrain import matrix_gemm
 
             return matrix_gemm.matrix_compare_gemm(
