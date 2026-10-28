@@ -8,6 +8,8 @@ Entries are brief by design and describe changes relative to the previous releas
 
 Compared with `1.2.3`:
 
+- Comparison metric options now use the descriptive names `max_identical_stretch`, `gene_ani`, and `genome_ani` across the CLI, Python API, task manager, and Nextflow. The previous names remain accepted; existing output columns and resume contracts are preserved.
+
 - The main `zipstrain compare --method matrix` command now honors `--calculate` and accepts `--compare-kernel`, making ANI-only block comparisons available without the lower-level utilities command. Gene comparisons automatically include gene ANI, and resumed runs validate the selected calculations before appending samples.
 - Renamed comparison kernels to `anchor` (default, all metrics) and `block` (genome-level popANI/conANI only). The old `pairwise` and `gemm` names remain accepted with deprecation warnings; output values and schemas are unchanged.
 - Matrix comparison progress now refreshes `zipstrain_status.json` during the all-vs-all step without adding a log line for every progress event. Eligible ANI-only anchor runs display a tip about the block kernel.

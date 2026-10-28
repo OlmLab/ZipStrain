@@ -371,12 +371,26 @@ Major options:
 - `--profile-db`, `-r, --run-dir` (required)
 - `--method` (`standard`/`matrix`) and `--compare-genes` — pick the engine and genome vs. gene level
 - `--scope` (`all` for genomes, `all:all` for genes), `--min-cov` (5), `--min-gene-compare-len` (100)
-- `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`ani`/`ibs`/`identical_genes`/`all` for standard comparison; `ani`/`ibs`/`gene`/`all` for matrix comparison; combine metrics with `+`)
+- `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`max_identical_stretch`/`gene_ani`/`genome_ani`/`all`; combine metrics with `+`)
 - `--stb-file` — required for `--method matrix`
 - Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16), `--compare-kernel` (`anchor`/`block`, default `anchor`)
 - Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
+
+The calculation names select metrics; `--ani-method` selects how alleles match:
+
+| Calculation | Meaning |
+|---|---|
+| `genome_ani` | Genome-wide ANI under the selected ANI method |
+| `max_identical_stretch` | Longest consecutive stretch of matching positions; reported as `max_consecutive_length` |
+| `gene_ani` | Gene ANI calculations; use `--compare-genes` for per-gene output |
+
+In standard genome mode, `gene_ani` selects the existing shared/identical-gene
+summary columns. Matrix gene ANI also computes genome ANI; `--compare-genes`
+selects the per-gene result table. These names do not change output schemas.
+The earlier names `ani`, `ibs`, and `identical_genes` (standard) or `gene`
+(matrix) remain accepted as compatibility aliases. `all` remains the default.
 
 For matrix comparison, `popani` automatically uses the compact bitmask store;
 `conani` and `cosani_<threshold>` automatically use a count store. The selected
@@ -385,7 +399,7 @@ matrix/compare contract, along with the selected calculations. To change these,
 use a new `--run-dir`. The kernel can be changed while resuming compatible work.
 
 For genome-level ANI without IBS or gene metrics, use
-`--calculate ani --compare-kernel block` with `--method matrix`. This supports
+`--calculate genome_ani --compare-kernel block` with `--method matrix`. This supports
 both `--ani-method popani` and `--ani-method conani`. The default `anchor`
 kernel supports all metrics and ANI methods. Matrix comparisons update
 `zipstrain_status.json` with completed/total comparison work during the compare step.
@@ -430,11 +444,12 @@ Comparison parameters:
                                   --method matrix.
   -a, --ani-method TEXT           ANI calculation method (e.g., 'popani',
                                   'conani', 'cosani_0.4').  [default: popani]
-  --calculate TEXT                Metrics to compute. Standard method (genome
-                                  mode only): ani, ibs, identical_genes. Matrix
-                                  method: ani, ibs, gene. Combine with '+', or
-                                  use all. Use 'ani' for ANI only with the
-                                  selected --ani-method.  [default: all]
+  --calculate TEXT                Metrics to compute: max_identical_stretch,
+                                  gene_ani, genome_ani. Combine with '+', or use
+                                  all. Use genome_ani for ANI only with the
+                                  selected --ani-method. Use --compare-genes for
+                                  per-gene output; standard gene mode always
+                                  computes gene ANI.  [default: all]
   --comp-db-file TEXT             Optional existing comparison parquet to
                                   resume/extend (standard method). Auto-detected
                                   from --run-dir if omitted.
@@ -460,8 +475,8 @@ Matrix method (--method matrix):
                                   computes genome-level popANI/conANI for whole
                                   blocks of sample pairs with matrix
                                   multiplications (same values, much faster;
-                                  requires --calculate ani). Applies to --method
-                                  matrix.  [default: anchor]
+                                  requires --calculate genome_ani). Applies to
+                                  --method matrix.  [default: anchor]
 
 Output:
   --no-csv     Do not write a companion .csv next to the comparison parquet.
@@ -733,7 +748,7 @@ Options:
 - `-o, --output-file` (required)
 - `-g, --genome` (default: `all`)
 - `-a, --ani-method` (default: `popani`)
-- `--calculate` (default: `all`)
+- `--calculate` (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations; default: `all`)
 - `--engine` (`polars|duckdb`, default: `polars`)
 - `--duckdb-memory-limit`
 - `--duckdb-temp-directory`
@@ -793,7 +808,7 @@ Options:
 - `-l, --min-gene-compare-len` (default: `100`)
 - `-g, --genome` (default: `all`)
 - `-a, --ani-method` (default: `popani`)
-- `--calculate` (default: `all`)
+- `--calculate` (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations; default: `all`)
 - `--engine` (`polars|duckdb`, default: `polars`)
 - `--duckdb-memory-limit`
 - `--duckdb-temp-directory`
@@ -1093,7 +1108,7 @@ zipstrain utilities matrix-compare \
   --result-transfer-batch-size 1 \
   --loader-executor thread \
   --writer-executor thread \
-  --calculate ani+ibs \
+  --calculate genome_ani+max_identical_stretch \
   --backend numpy
 ```
 
@@ -1135,10 +1150,10 @@ Important options:
 - `--loader-executor` executor kind for torch loader prefetch work (`thread|process`, default: `thread`)
 - `--writer-executor` executor kind for torch result writing/checkpoint work (`thread|process`, default: `thread`)
 - `--calculate` matrix metrics to compute:
-  - `ani`
-  - `ani+ibs`
-  - `+gene` or `gene` for gene ANI
-  - `all` means `ani+ibs`, and also `gene` when the matrix store contains gene annotations
+  - `genome_ani` for genome-wide ANI
+  - `max_identical_stretch` for the longest consecutive stretch of matching positions (IBS)
+  - `gene_ani` for gene ANI (also computes genome ANI)
+  - `all` selects genome ANI and the longest identical stretch, plus gene ANI when the store has gene annotations
 - `--backend` compute backend:
   - `numpy`
   - `torch`
@@ -1147,7 +1162,7 @@ Important options:
   - `torch-mps`
 - `--compare-kernel` comparison algorithm (default: `anchor`):
   - `anchor` compares one anchor sample against target blocks and supports every metric and ANI method
-  - `block` computes genome-level popANI or conANI for whole blocks of sample pairs with dense matrix multiplications; requires `--calculate ani`
+  - `block` computes genome-level popANI or conANI for whole blocks of sample pairs with dense matrix multiplications; requires `--calculate genome_ani`
   - the old names `pairwise` and `gemm` remain accepted as deprecated aliases for `anchor` and `block`
 
 Block kernel (`--compare-kernel block`):
@@ -1156,7 +1171,7 @@ Block kernel (`--compare-kernel block`):
 zipstrain utilities matrix-compare \
   --matrix-db-file matrix_db.h5 \
   --output-file matrix_compare.duckdb \
-  --calculate ani \
+  --calculate genome_ani \
   --compare-kernel block \
   --backend torch-cuda \
   --memory-limit-gb 64
@@ -1377,7 +1392,7 @@ Conventions used by every example below:
 - `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
 - `--compare_engine` (`polars` | `duckdb`, default `polars`) and `--compare_duckdb_memory_limit` (DuckDB only). Without an explicit memory limit, each DuckDB pair receives 70% of its share of the Nextflow task memory; an explicit limit is per pair and should fit within that share.
-- `--compare_calculate`: genome metrics to compute (`ani`, `ibs`, `identical_genes`, `all`, or `+` combinations).
+- `--compare_calculate`: metrics to compute (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations). The same names work in single and batched mode with either Polars or DuckDB.
 
 Notes:
 
@@ -1507,7 +1522,7 @@ nextflow run OlmLab/ZipStrain \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
   --compare_genome_scope all \
-  --compare_calculate ani+ibs+identical_genes \
+  --compare_calculate genome_ani+max_identical_stretch+gene_ani \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 1 \

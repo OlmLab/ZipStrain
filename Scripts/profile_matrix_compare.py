@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--calculate",
         default="all",
-        help="Matrix metrics to compute: ani or ani+ibs. 'all' currently means ani+ibs.",
+        help="Metrics: max_identical_stretch, gene_ani, genome_ani. Join with '+' or use 'all' (gene ANI requires annotations).",
     )
     parser.add_argument(
         "--backend",

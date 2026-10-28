@@ -646,6 +646,10 @@ def test_parse_matrix_calculations_supports_all_and_gene_aliases():
     assert mp.parse_matrix_calculations("all", include_gene_from_all=True) == ("ani", "ibs", "gene")
     assert mp.parse_matrix_calculations("+gene") == ("ani", "gene")
     assert mp.parse_matrix_calculations("popani,max_block") == ("ani", "ibs")
+    assert mp.parse_matrix_calculations("genome_ani") == ("ani",)
+    assert mp.parse_matrix_calculations("max_identical_stretch") == ("ibs",)
+    assert mp.parse_matrix_calculations("gene_ani") == ("ani", "gene")
+    assert mp.parse_matrix_calculations("max_identical_stretch+gene_ani+genome_ani") == ("ani", "ibs", "gene")
 
 
 @pytest.mark.parametrize("ani_method", ["cosani_bad", "cosani_-0.1", "cosani_1.1", "other"])

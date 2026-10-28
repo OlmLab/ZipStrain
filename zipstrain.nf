@@ -8,6 +8,8 @@ params.min_gene_compare_len=200
 params.batch_size=10
 params.compare_duckdb_memory_limit=""
 params.compare_engine="polars"
+// Metrics: max_identical_stretch, gene_ani, genome_ani; join with '+' or use 'all'.
+// The Python comparison commands also accept the legacy ani/ibs/identical_genes names.
 params.compare_calculate="all"
 params.batch_compare_n_parallel=1
 params.publish_mode="symlink"

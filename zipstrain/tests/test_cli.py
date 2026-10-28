@@ -1401,20 +1401,20 @@ def test_compare_method_matrix_forwards_calculate_and_kernel(tmp_path, monkeypat
     ]
 
     # Default is the anchor kernel; ANI-only runs get a hint about the block kernel.
-    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "ani"])
+    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "genome_ani"])
     assert result.exit_code == 0, result.output
-    assert captured["calculate"] == "ani"
+    assert captured["calculate"] == "genome_ani"
     assert captured["compare_kernel"] == "anchor"
     assert callable(captured["compare_progress_callback"])
     assert "--compare-kernel block" in result.output
 
-    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "ani", "--compare-kernel", "block"])
+    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "genome_ani", "--compare-kernel", "block"])
     assert result.exit_code == 0, result.output
     assert captured["compare_kernel"] == "block"
     assert "Tip:" not in result.output
 
     # Deprecated names still work.
-    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "ani", "--compare-kernel", "gemm"])
+    result = CliRunner().invoke(cli.cli, [*base_args, "--calculate", "genome_ani", "--compare-kernel", "gemm"])
     assert result.exit_code == 0, result.output
     assert captured["compare_kernel"] == "block"
 

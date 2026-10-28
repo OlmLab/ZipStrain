@@ -312,6 +312,7 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode, compare_e
             "--stb", str(stb_path),
             "--parallel_mode", parallel_mode,
             "--compare_engine", compare_engine,
+            "--compare_calculate", "genome_ani+max_identical_stretch+gene_ani",
             "--batch_compare_n_parallel", "2",
             "--output_dir", str(output_dir),
         ],

@@ -565,7 +565,8 @@ def test_compare_task_generator_adds_duckdb_memory_and_threads_args(tmp_path):
     assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani"
 
 
-def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path):
+@pytest.mark.parametrize("selection", ["ani+ibs+identical_genes", "genome_ani+max_identical_stretch+gene_ani"])
+def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path, selection):
     # Regression: the batched standard-compare path used to reject any
     # --calculate value other than {"all", "ani"}, even though the per-pair
     # single_compare_genome subprocess understands '+'/','-joined combos.
@@ -593,7 +594,7 @@ def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path
         yield_size=1,
         container_engine=task_manager.LocalEngine(""),
         comp_config=config,
-        calculate="ani+ibs+identical_genes",
+        calculate=selection,
     )
 
     async def _collect():
@@ -604,7 +605,7 @@ def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path
 
     tasks = asyncio.run(_collect())
     assert len(tasks) == 1
-    assert tasks[0].inputs["calculate-arg"].get_value() == "--calculate ani+ibs+identical_genes"
+    assert tasks[0].inputs["calculate-arg"].get_value() == f"--calculate {selection}"
 
     with pytest.raises(ValueError):
         task_manager.CompareTaskGenerator(

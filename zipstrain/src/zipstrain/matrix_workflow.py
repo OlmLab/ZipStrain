@@ -46,7 +46,7 @@ def resolve_calculate(calculate: str | None, *, compare_genes: bool) -> str:
     """Return the matrix ``calculate`` string, adding gene ANI for gene runs."""
     calculate = calculate or "all"
     if compare_genes:
-        calculate = f"{calculate}+gene"
+        calculate = f"{calculate}+gene_ani"
     # Validate early so a bad token fails before the matrix store is built.
     mp.parse_matrix_calculations(calculate)
     return calculate
@@ -224,8 +224,8 @@ def run_matrix_compare(
     store and computes only the new pairs, then re-exports the full table.
     Returns the path to the exported comparison parquet.
 
-    ``calculate`` selects the matrix metrics (``ani``, ``ibs``, ``gene``, or
-    ``all``); gene ANI is added automatically for ``compare_genes``.
+    ``calculate`` selects ``genome_ani``, ``max_identical_stretch``,
+    ``gene_ani``, or ``all``; gene ANI is added for ``compare_genes``.
     ``compare_kernel`` is ``"anchor"`` (default, supports every metric) or
     ``"block"`` (genome-level popANI/conANI only, much faster).
     ``compare_progress_callback`` receives the raw progress events of the

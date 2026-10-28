@@ -161,7 +161,7 @@ def test_gemm_matches_pairwise(tmp_path, monkeypatch, storage_mode, ani_method, 
     monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(*plan))
     out = tmp_path / "gemm.duckdb"
     summary = mp.matrix_compare(
-        matrix, out, backend=backend, ani_method=ani_method, calculate="ani",
+        matrix, out, backend=backend, ani_method=ani_method, calculate="genome_ani",
         memory_limit_gb=1, compare_kernel="block",
     )
     _assert_same(out, expected)
@@ -277,8 +277,8 @@ def test_gemm_genome_scope(tmp_path):
 @pytest.mark.parametrize(
     "kwargs,match",
     [
-        ({"calculate": "all"}, "calculate='ani'"),
-        ({"calculate": "ani+ibs"}, "calculate='ani'"),
+        ({"calculate": "all"}, "calculate='genome_ani'"),
+        ({"calculate": "genome_ani+max_identical_stretch"}, "calculate='genome_ani'"),
         ({"calculate": "ani", "ani_method": "cosani_0.4"}, "popani or conani"),
         ({"calculate": "ani", "compare_kernel": "fast"}, "compare_kernel must be one of"),
     ],
@@ -302,7 +302,7 @@ def test_gemm_cli(tmp_path):
             "--matrix-db-file", str(matrix),
             "--output-file", str(out),
             "--memory-limit-gb", "1",
-            "--calculate", "ani",
+            "--calculate", "genome_ani",
             "--compare-kernel", "block",
         ],
     )

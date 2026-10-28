@@ -51,11 +51,15 @@ These power the CLI commands:
 `min_cov` is applied at build time and persisted in the store contract.
 `matrix_compare(..., ani_method=...)` accepts `popani`, `conani`, and
 `cosani_<threshold>`; the latter two require count storage.
-`matrix_compare(..., compare_kernel="block", calculate="ani")` selects the
+`matrix_compare(..., compare_kernel="block", calculate="genome_ani")` selects the
 blocked matrix-multiplication kernel in `zipstrain.matrix_gemm` for
 genome-level popANI/conANI; results are identical to the default
 `compare_kernel="anchor"`. The old names `gemm` and `pairwise` remain
 accepted as deprecated aliases for `block` and `anchor`, respectively.
+
+`calculate` accepts `max_identical_stretch`, `gene_ani`, `genome_ani`,
+`all`, or `+`/comma combinations. Legacy spellings remain accepted; stored
+comparison contracts and output columns are unchanged.
 
 `matrix_workflow.run_matrix_compare(...)` also accepts `calculate`,
 `compare_kernel`, and `compare_progress_callback`, exposing the same metric

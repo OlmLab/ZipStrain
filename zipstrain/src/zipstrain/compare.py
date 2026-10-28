@@ -20,8 +20,13 @@ PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
 
 
 GENOME_COMPARISON_CALCULATIONS = ("ani", "ibs", "identical_genes")
+# Public option names are explicit; internal tokens stay stable for existing callers.
+GENOME_COMPARISON_CALCULATION_NAMES = ("max_identical_stretch", "gene_ani", "genome_ani")
 GENOME_COMPARISON_DEFAULT_CALCULATIONS = GENOME_COMPARISON_CALCULATIONS
 GENOME_COMPARISON_CALCULATION_ALIASES = {
+    "genome_ani": "ani",
+    "max_identical_stretch": "ibs",
+    "gene_ani": "identical_genes",
     "ani": "ani",
     "popani": "ani",
     "ibs": "ibs",
@@ -36,8 +41,8 @@ def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = N
     """Parse and normalize genome metric selection tokens.
 
     Accepted input formats:
-      - None -> default ("ani", "ibs", "identical_genes")
-      - "ani+ibs+identical_genes"
+      - None -> all metrics
+      - "genome_ani+max_identical_stretch+gene_ani"
       - "all"
       - iterable of token strings
     """
@@ -63,7 +68,7 @@ def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = N
     for token in raw_tokens:
         mapped = GENOME_COMPARISON_CALCULATION_ALIASES.get(token)
         if mapped is None:
-            supported = "all," + ",".join(GENOME_COMPARISON_CALCULATIONS)
+            supported = "all," + ",".join(GENOME_COMPARISON_CALCULATION_NAMES)
             raise ValueError(f"Unsupported calculation '{token}'. Supported values: {supported}")
         normalized.add(mapped)
     return tuple(metric for metric in GENOME_COMPARISON_CALCULATIONS if metric in normalized)

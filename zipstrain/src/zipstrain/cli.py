@@ -560,7 +560,7 @@ def generate_sample_pair(profile_dir, output_file, write_batch_size):
 @click.option('--min-gene-compare-len', '-l', default=100, show_default=True, help="Minimum gene length to consider for comparison.")
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--ani-method', '-a', default="popani", show_default=True, help="ANI calculation method to use.")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all.")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (for scoped filtering or duckdb engine).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
@@ -869,7 +869,7 @@ def _normalize_compare_kernel_option(ctx, param, value):
 _COMPARE_KERNEL_HELP = (
     "Comparison kernel. 'anchor' compares one sample against blocks of others position by position "
     "and supports every metric. 'block' computes genome-level popANI/conANI for whole blocks of "
-    "sample pairs with matrix multiplications (same values, much faster; requires --calculate ani)."
+    "sample pairs with matrix multiplications (same values, much faster; requires --calculate genome_ani)."
 )
 
 
@@ -896,7 +896,7 @@ _COMPARE_KERNEL_HELP = (
     show_default=True,
     help="Executor used for torch result writing/checkpoint work.",
 )
-@click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: ani, ibs, gene. Combine with '+'. 'all' means ani+ibs, and also gene when the matrix store has gene annotations.")
+@click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all. All includes gene_ani when the matrix store has gene annotations.")
 @click.option(
     '--backend',
     type=click.Choice(mp.MATRIX_PAIR_BACKENDS),
@@ -1420,7 +1420,7 @@ def get_gene_range_table(gene_file, output_file):
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
 @click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: ani, ibs, identical_genes. Combine with '+', or use all.")
+@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all.")
 @click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
 @click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
 @click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
@@ -2086,7 +2086,7 @@ def _run_matrix_compare_method(
 @click.option("--allow-mismatch", is_flag=True, default=False, show_default=True, help="Skip profile contract validation when building the profile database from a CSV.")
 @click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
 @click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for standard compare tasks.")
-@click.option("--calculate", default="all", show_default=True, help="Metrics to compute. Standard method (genome mode only): ani, ibs, identical_genes. Matrix method: ani, ibs, gene. Combine with '+', or use all. Use 'ani' for ANI only with the selected --ani-method.")
+@click.option("--calculate", default="all", show_default=True, help="Metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all. Use genome_ani for ANI only with the selected --ani-method. Use --compare-genes for per-gene output; standard gene mode always computes gene ANI.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-range-table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")

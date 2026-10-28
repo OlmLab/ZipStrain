@@ -75,7 +75,11 @@ MATRIX_HDF5_CONTRACT_SCAFFOLDS_GROUP = "contract_genome_scaffolds"
 BuildProgressCallback = Callable[[dict[str, object]], None]
 CompareProgressCallback = Callable[[dict[str, object]], None]
 MATRIX_COMPARISON_SUPPORTED_CALCULATIONS = ("ani", "ibs", "gene")
+# Keep persisted calculation tokens stable so old compare databases can resume.
+MATRIX_COMPARISON_CALCULATION_NAMES = ("max_identical_stretch", "gene_ani", "genome_ani")
 MATRIX_COMPARISON_CALCULATION_ALIASES = {
+    "genome_ani": "ani",
+    "max_identical_stretch": "ibs",
     "ani": "ani",
     "popani": "ani",
     "ibs": "ibs",
@@ -138,11 +142,12 @@ def parse_matrix_calculations(
     Parameters
     ----------
     calculate:
-        User-facing metric selection string such as ``ani``, ``ani+ibs``,
-        ``+gene``, or ``all``. Commas and plus signs are both accepted as
+        User-facing metric selection string such as ``genome_ani``,
+        ``genome_ani+max_identical_stretch``, ``gene_ani``, or ``all``.
+        Legacy names remain accepted. Commas and plus signs are accepted as
         separators.
     include_gene_from_all:
-        When ``True``, interpret ``all`` as ``ani+ibs+gene``. This is used for
+        When ``True``, include gene ANI in ``all``. This is used for
         matrix stores that already contain gene annotations.
 
     Returns
@@ -176,7 +181,7 @@ def parse_matrix_calculations(
             continue
         mapped = MATRIX_COMPARISON_CALCULATION_ALIASES.get(token)
         if mapped is None:
-            supported = "all," + ",".join(MATRIX_COMPARISON_SUPPORTED_CALCULATIONS)
+            supported = "all," + ",".join(MATRIX_COMPARISON_CALCULATION_NAMES)
             raise ValueError(f"Unsupported matrix calculation '{token}'. Supported values: {supported}")
         normalized.add(mapped)
 
@@ -5813,7 +5818,7 @@ def matrix_compare(
     default) compares one anchor against target blocks and supports every
     metric. ``"block"`` computes genome-level popANI/conANI for whole blocks
     of sample pairs with dense matrix multiplications (see
-    :mod:`zipstrain.matrix_gemm`); it requires ``calculate="ani"`` and gives
+    :mod:`zipstrain.matrix_gemm`); it requires ``calculate="genome_ani"`` and gives
     identical ``total_positions``/``share_allele_pos``/``genome_ani`` values.
     Anchor/target queue, transfer-batch and executor options are ignored by
     the block kernel. The deprecated names ``"pairwise"`` and ``"gemm"`` are
@@ -5909,7 +5914,7 @@ def matrix_compare(
             )
         if compare_kernel == MATRIX_COMPARE_KERNEL_BLOCK and tuple(calculations) != ("ani",):
             raise ValueError(
-                "compare_kernel='block' computes genome-level ANI only; pass calculate='ani' "
+                "compare_kernel='block' computes genome-level ANI only; pass calculate='genome_ani' "
                 f"(requested: {'+'.join(calculations)}). IBS and gene ANI need compare_kernel='anchor'."
             )
         compare_conn, compare_ids = _prepare_matrix_compare_db(

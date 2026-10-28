@@ -615,7 +615,7 @@ class CompareTaskGenerator(TaskGenerator):
         yield_size (int): Number of tasks to yield at a time.
         comp_config (database.GenomeComparisonConfig): Configuration for genome comparison.
         ani_method (str): ANI method passed to single genome compare tasks.
-        calculate (str): Genome metric set passed to single genome compare tasks ("all", "ani", or a '+'/','-joined combo of ani/ibs/identical_genes).
+        calculate (str): Genome metric set passed to single genome compare tasks ("all", "genome_ani", or a '+'/','-joined combo of genome_ani/max_identical_stretch/gene_ani).
         duckdb_memory_limit (str | None): Optional DuckDB memory limit (for example "2GB").
         duckdb_threads (int | None): Optional DuckDB thread cap (for example 8).
         compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
@@ -645,8 +645,8 @@ class CompareTaskGenerator(TaskGenerator):
         if self.compare_engine not in {"polars", "duckdb"}:
             raise ValueError("compare_engine must be one of {'polars', 'duckdb'}.")
         # Accept any calculate spec that single_compare_genome understands
-        # ("all", "ani", or a '+'/','-joined combo of ani/ibs/
-        # identical_genes). The value is forwarded verbatim to the per-pair
+        # ("all", "genome_ani", or combinations of the descriptive metric names).
+        # The value is forwarded verbatim to the per-pair
         # subprocess, so validate it here with the same parser rather than a
         # hardcoded {"all", "ani"} allowlist.
         from . import compare as _compare
@@ -2074,7 +2074,7 @@ def lazy_run_compares(
         poll_interval (float): Time interval in seconds to poll for batch status updates. Default is 5.0.
         execution_mode (str): Execution mode, either "local" or "slurm". Default is "local".
         ani_method (str): ANI method passed to single genome compare tasks.
-        calculate (str): Genome metric set passed to single genome compare tasks ("all", "ani", or a '+'/','-joined combo of ani/ibs/identical_genes).
+        calculate (str): Genome metric set passed to single genome compare tasks ("all", "genome_ani", or a '+'/','-joined combo of genome_ani/max_identical_stretch/gene_ani).
         duckdb_threads (int | None): Optional DuckDB thread cap passed to compare tasks.
         compare_engine (str): Compare engine passed to single compare tasks ("polars" or "duckdb").
     """

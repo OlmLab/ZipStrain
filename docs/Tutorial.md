@@ -206,7 +206,7 @@ zipstrain compare \
 That's the whole command. By default it compares **genomes**; every profile in the table is compared against every other (all-vs-all).
 
 !!! tip "Comparing genes instead"
-    Add `--compare-genes` to the same command to compare at the gene level instead of the genome level. Other useful flags: `--min-cov` (minimum coverage to consider a position), `--ani-method` (`popani`, `conani`, `cosani_<t>`), and `--calculate` (trim to just `ani` for a smaller table). Run `zipstrain compare -h` for the full, grouped list.
+    Add `--compare-genes` to the same command to compare at the gene level instead of the genome level. Other useful flags: `--min-cov` (minimum coverage to consider a position), `--ani-method` (`popani`, `conani`, `cosani_<t>`), and `--calculate` (trim to just `genome_ani` for a smaller table). Run `zipstrain compare -h` for the full, grouped list.
 
 #### Two comparison methods
 
@@ -380,7 +380,7 @@ nextflow run zipstrain.nf \
   --input_type profile_table \
   --input_table profiles.csv \
   --compare_genome_scope all \
-  --compare_calculate ani \
+  --compare_calculate genome_ani \
   --compare_ani_method popani \
   --compare_engine duckdb \
   --output_dir out_sra_compare \

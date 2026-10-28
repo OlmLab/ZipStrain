@@ -5,6 +5,22 @@ import polars as pl
 from zipstrain import compare
 
 
+@pytest.mark.parametrize("engine", ["polars", "duckdb"])
+@pytest.mark.parametrize(("selection", "legacy"), [
+    ("genome_ani", "ani"),
+    ("max_identical_stretch", "ibs"),
+    ("gene_ani", "identical_genes"),
+    ("max_identical_stretch+gene_ani+genome_ani", "all"),
+])
+def test_descriptive_calculations_match_legacy_results(profile_1, profile_2, selection, legacy, engine):
+    options = dict(mpile_contig_1=profile_1, mpile_contig_2=profile_2,
+                   min_cov=5, min_gene_compare_len=3, engine=engine)
+    actual = compare.compare_genomes(calculate=selection, **options).collect().sort("genome")
+    expected = compare.compare_genomes(calculate=legacy, **options).collect().sort("genome")
+    assert actual.height > 0
+    assert actual.equals(expected)
+
+
 a_chr1=[ 1, 0, 1, 0, 0, 0, 4, 4, 2, 1]
 t_chr1=[ 0, 2, 3, 1, 0, 0, 1, 0, 0, 1]
 c_chr1=[10, 1, 2, 0, 0, 0, 1, 0, 0, 0]
@@ -486,7 +502,8 @@ def test_duckdb_compare_genomes_to_parquet_ani_only(profile_1, profile_2, stb, t
     }
 
 
-def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb, tmp_path):
+@pytest.mark.parametrize("selection", ["ani", "genome_ani"])
+def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb, tmp_path, selection):
     stb_path = tmp_path / "stb.tsv"
     stb.sink_csv(stb_path, separator="\t", include_header=False)
 
@@ -512,7 +529,7 @@ def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb,
             min_gene_compare_len=3,
             engine="polars",
             stb_file=stb_path,
-            calculate="ani",
+            calculate=selection,
         )
         .collect()
         .sort("genome")
@@ -595,7 +612,7 @@ def test_max_consecutive_length_breaks_at_coordinate_gap(engine):
         mpile_contig_2=profile,
         min_cov=1,
         engine=engine,
-        calculate="ani+ibs",
+        calculate="genome_ani+max_identical_stretch",
     ).collect().row(0, named=True)
 
     assert result["total_positions"] == 150

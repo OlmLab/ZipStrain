@@ -176,7 +176,7 @@ def test_block_kernel_hint(kernel, calculate, ani_method, expect_hint):
 
 
 def test_resolve_calculate_adds_gene_for_gene_runs():
-    assert matrix_workflow.resolve_calculate("ani", compare_genes=True) == "ani+gene"
+    assert matrix_workflow.resolve_calculate("genome_ani", compare_genes=True) == "genome_ani+gene_ani"
     assert matrix_workflow.resolve_calculate("ani", compare_genes=False) == "ani"
     with pytest.raises(ValueError, match="Unsupported matrix calculation"):
         matrix_workflow.resolve_calculate("identical_genes", compare_genes=False)
@@ -250,7 +250,7 @@ def test_ani_only_workflow_resumes_with_block_kernel_and_new_samples(tmp_path, a
     events = []
     resumed = matrix_workflow.run_matrix_compare(
         profiles=profiles, run_dir=run, compare_kernel="block",
-        compare_progress_callback=events.append, **options,
+        compare_progress_callback=events.append, **{**options, "calculate": "genome_ani"},
     )
     actual = pl.read_parquet(resumed).sort(["sample_1", "sample_2", "genome"])
     fresh = matrix_workflow.run_matrix_compare(profiles=profiles, run_dir=tmp_path / "fresh", **options)
