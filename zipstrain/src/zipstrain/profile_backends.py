@@ -1,6 +1,6 @@
 """Profiling backend boundary shared by the CLI and optional distributions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import entry_points
 from pathlib import Path
 
@@ -30,6 +30,8 @@ class ProfileRequest:
     min_freq: float = 0.01
     min_read_ani: float | None = None
     read_inclusion: str = "all-mapped"
+    collect_codons: bool = False
+    allele_integration: str = "consensus"
 
 
 def load_backend(name: str):
@@ -58,7 +60,25 @@ def load_backend(name: str):
 
 
 def run_profile(request: ProfileRequest, backend_name: str = "python") -> None:
+    """Run a selected profiler and normalize all outputs to the V2 file contract.
+
+    API-v1 native backends produce position counts without gene annotation;
+    ``finish_profile_outputs`` applies the authenticated catalog and optional
+    observed codon preparation consistently. The Python backend finalizes inside
+    its profiling function. Read and allele-integration settings are preserved.
+    """
     backend = load_backend(backend_name)
+    runtime_reference_id = None
+    if backend is not None and request.reference_fasta is not None:
+        from zipstrain import gene_info, profile
+        runtime_reference_id = gene_info.reference_identity(request.reference_fasta, profile.read_stb(request.stb_file))
+    if backend is not None and request.gene_range_table is not None:
+        from zipstrain import gene_info, profile
+        gene_info.read_gene_info(request.gene_range_table)
+        if request.reference_fasta is not None:
+            import polars as pl
+            if runtime_reference_id != pl.read_parquet_metadata(request.gene_range_table)[gene_info.REFERENCE_ID]:
+                raise ProfileBackendError("Profiling reference/STB do not match gene_info.parquet")
     request.output_dir.mkdir(parents=True, exist_ok=True)
     if backend is None:
         import polars as pl
@@ -86,15 +106,26 @@ def run_profile(request: ProfileRequest, backend_name: str = "python") -> None:
             min_freq=request.min_freq,
             min_read_ani=request.min_read_ani,
             read_inclusion=request.read_inclusion,
+            collect_codons=request.collect_codons,
+            allele_integration=request.allele_integration,
         )
         return
 
-    backend.run(request)
+    # V2 resolves all gene annotations in the shared finalizer. Passing no gene
+    # ranges also avoids redundant annotation work in older API-v1 plugins.
+    backend.run(replace(request, gene_range_table=None))
     stem = request.bam_file.stem
     missing = [
         str(request.output_dir / f"{stem}_{suffix}.parquet")
-        for suffix in ("profile", "gene_stats", "genome_stats")
+        for suffix in ("profile", "genome_stats")
         if not (request.output_dir / f"{stem}_{suffix}.parquet").is_file()
     ]
     if missing:
         raise ProfileBackendError(f"Profiling backend {backend_name!r} did not write: {', '.join(missing)}")
+    from zipstrain.profile import finish_profile_outputs
+    finish_profile_outputs(request.output_dir / f"{stem}_profile.parquet", request.gene_range_table,
+        bam_file=request.bam_file, collect_codons=request.collect_codons,
+        min_mapq=request.min_mapq, min_baseq=request.min_baseq,
+        min_read_ani=request.min_read_ani, read_inclusion=request.read_inclusion,
+        min_freq=request.min_freq, allele_integration=request.allele_integration,
+        reference_id=runtime_reference_id)

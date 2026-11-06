@@ -6,7 +6,6 @@ import duckdb
 import polars as pl
 import pytest
 
-from zipstrain import compare
 from zipstrain import matrix_pairs
 from zipstrain import resource_limits
 
@@ -87,7 +86,7 @@ def test_polars_pair_comparison_does_not_initialize_duckdb(tmp_path):
     frame.write_parquet(profile_2)
     args = [
         "utilities", "single_compare_genome", "--profile-location-1", str(profile_1),
-        "--profile-location-2", str(profile_2), "--engine", "polars",
+        "--profile-location-2", str(profile_2),
         "--calculate", "ani", "--output-file", str(output),
     ]
     code = (
@@ -124,17 +123,6 @@ def test_duckdb_connection_and_default_pool_are_bounded_at_creation():
     before, active, explicit_threads, default_threads = map(int, result.stdout.split())
     assert (explicit_threads, default_threads) == (2, 2)
     assert active < before + 8
-
-
-def test_duckdb_connection_uses_job_budget(monkeypatch):
-    monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "2")
-    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
-    conn = duckdb.connect()
-    try:
-        compare._duckdb_configure_connection(conn, threads=32)
-        assert conn.execute("SELECT current_setting('threads')").fetchone()[0] == 2
-    finally:
-        conn.close()
 
 
 def test_matrix_build_duckdb_connection_uses_job_budget(monkeypatch, tmp_path):

@@ -124,7 +124,7 @@ def _expected_profile_frame(sample_name: str) -> pl.DataFrame:
                     "ref_base_bitmask": 0,
                 }
             )
-    return pl.DataFrame(rows).sort(["chrom", "pos"])
+    return pl.DataFrame(rows).drop("gene").sort(["chrom", "pos"])
 
 
 def _workflow_input_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
@@ -203,7 +203,7 @@ def _profile_dir_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dic
                 "--profiling-contract",
                 str(paths["profiling_contract"]),
                 "--gene-range-table",
-                str(paths["prep_dir"] / "gene_range_table.tsv"),
+                str(paths["prep_dir"] / "gene_info.parquet"),
                 "--num-chunks",
                 "2",
                 "--max-concurrency",
@@ -222,12 +222,8 @@ def _profile_dir_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dic
 def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths = _profile_dir_fixture(tmp_path, monkeypatch)
 
-    gene_ranges = pl.read_csv(
-        paths["prep_dir"] / "gene_range_table.tsv",
-        separator="\t",
-        has_header=False,
-        new_columns=["gene", "scaffold", "start", "end"],
-    ).sort("gene")
+    gene_ranges = pl.read_parquet(paths["prep_dir"] / "gene_info.parquet").select(
+        "gene", pl.col("chrom").alias("scaffold"), "start", "end").sort("gene")
     assert gene_ranges.to_dicts() == [
         {"gene": "contigA_1", "scaffold": "contigA", "start": 1, "end": 10},
         {"gene": "contigB_1", "scaffold": "contigB", "start": 1, "end": 10},
@@ -255,8 +251,8 @@ def test_cli_profile_from_real_bams_matches_expected_counts(tmp_path: Path, monk
     for logical_name, metadata_key in cli_module.ut.PROFILE_CONTRACT_METADATA_KEYS.items():
         assert alpha_metadata[metadata_key] == contract[logical_name]
 
-    alpha_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_alpha_gene_stats.parquet").sort("gene")
-    beta_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_beta_gene_stats.parquet").sort("gene")
+    alpha_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_alpha_gene_stats.parquet").join(pl.read_parquet(paths["prep_dir"] / "gene_info.parquet").select("gene_id", "gene"), on="gene_id").sort("gene")
+    beta_gene_stats = pl.read_parquet(paths["profiles_dir"] / "sample_beta_gene_stats.parquet").join(pl.read_parquet(paths["prep_dir"] / "gene_info.parquet").select("gene_id", "gene"), on="gene_id").sort("gene")
     for gene_stats in (alpha_gene_stats, beta_gene_stats):
         assert gene_stats.select("gene", "length").to_dicts() == [
             {"gene": "contigA_1", "length": 10},
@@ -303,7 +299,7 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
             "--null-model",
             str(paths["null_model"]),
             "--gene-range-table",
-            str(paths["prep_dir"] / "gene_range_table.tsv"),
+            str(paths["prep_dir"] / "gene_info.parquet"),
             "--bed-file",
             str(paths["prep_dir"] / "genomes_bed_file.bed"),
             "--genome-length-file",
@@ -354,7 +350,7 @@ def test_cli_profile_workflow_from_real_bams(tmp_path: Path, monkeypatch: pytest
         assert by_genome["genome_a"]["coverage"] == pytest.approx(float(READ_DEPTH))
         assert by_genome["genome_b"]["coverage"] == pytest.approx(float(READ_DEPTH))
         assert "ref_ani" in genome_stats.columns
-        gene_stats = pl.read_parquet(sample_dir / f"{sample_name}_gene_stats.parquet").sort("gene")
+        gene_stats = pl.read_parquet(sample_dir / f"{sample_name}_gene_stats.parquet").sort("genome")
         assert gene_stats["breadth"].to_list() == pytest.approx([1.0, 1.0])
         assert "ref_ani" in gene_stats.columns
 
@@ -435,8 +431,7 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
             "1",
             "--calculate",
             "ani+ibs",
-            "--engine",
-            "polars",
+
         ],
     )
     assert compare_result.exit_code == 0, compare_result.output
@@ -462,6 +457,7 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         [
             "utilities",
             "single_compare_gene",
+            "--preprofile-dir", str(paths["prep_dir"]),
             "--profile-location-1",
             str(paths["sample_alpha_profile"]),
             "--profile-location-2",
@@ -476,19 +472,18 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
             "all:all",
             "--output-file",
             str(gene_compare_out),
-            "--engine",
-            "polars",
+
         ],
     )
     assert gene_result.exit_code == 0, gene_result.output
 
-    gene_compare = pl.read_parquet(gene_compare_out).sort(["genome", "gene"])
+    gene_compare = pl.read_parquet(gene_compare_out).join(pl.read_parquet(paths["prep_dir"] / "gene_info.parquet").select("gene_id", "gene"), on="gene_id").sort(["genome", "gene"])
     gene_by_name = gene_compare.rows_by_key("gene", unique=True, named=True)
     assert gene_by_name["contigA_1"]["genome"] == "genome_a"
-    assert gene_by_name["contigA_1"]["total_positions"] == 10
-    assert gene_by_name["contigA_1"]["share_allele_pos"] == 10
-    assert gene_by_name["contigA_1"]["ani"] == pytest.approx(100.0)
+    assert gene_by_name["contigA_1"]["gene_total_positions"] == 10
+    assert gene_by_name["contigA_1"]["gene_share_allele_pos"] == 10
+    assert gene_by_name["contigA_1"]["gene_ani"] == pytest.approx(100.0)
     assert gene_by_name["contigB_1"]["genome"] == "genome_b"
-    assert gene_by_name["contigB_1"]["total_positions"] == 10
-    assert gene_by_name["contigB_1"]["share_allele_pos"] == 9
-    assert gene_by_name["contigB_1"]["ani"] == pytest.approx(90.0)
+    assert gene_by_name["contigB_1"]["gene_total_positions"] == 10
+    assert gene_by_name["contigB_1"]["gene_share_allele_pos"] == 9
+    assert gene_by_name["contigB_1"]["gene_ani"] == pytest.approx(90.0)

@@ -43,7 +43,6 @@ class RustProfileBackend:
         ]
         for option, value in (
             ("--reference", request.reference_fasta),
-            ("--gene-range", request.gene_range_table),
             ("--profiling-contract", request.profiling_contract),
             ("--min-read-ani", request.min_read_ani),
         ):

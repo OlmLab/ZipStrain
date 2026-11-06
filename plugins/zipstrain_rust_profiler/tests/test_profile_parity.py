@@ -9,23 +9,62 @@ import pyarrow.parquet as pq
 import pytest
 
 from zipstrain.profile_backends import ProfileRequest, run_profile
+from zipstrain.gene_info import write_gene_info
+from zipstrain_rust_profiler import RustProfileBackend
 
 
 DATA = Path(__file__).parent / "data"
 
 
 @pytest.mark.skipif(
+    not shutil.which("zipstrain-rust-profiler"),
+    reason="The compiled Rust profiler executable is not installed",
+)
+def test_native_outputs_are_gene_free_before_finalization(tmp_path):
+    """The native executable must never materialize per-position gene labels."""
+    request = ProfileRequest(
+        bam_file=DATA / "small.bam",
+        bed_file=DATA / "small.bed",
+        stb_file=DATA / "small.stb",
+        null_model=DATA / "null_model.parquet",
+        # The adapter leaves gene assets to the shared V2 finalizer.
+        gene_range_table=tmp_path / "not_read_by_rust.parquet",
+        output_dir=tmp_path,
+        num_chunks=8,
+        max_concurrency=4,
+    )
+    RustProfileBackend().run(request)
+    actual = pl.read_parquet(tmp_path / "small_profile.parquet")
+    expected = pl.read_parquet(DATA / "expected" / "small_profile.parquet").drop("gene")
+    assert actual.columns == ["chrom", "genome", "pos", "A", "C", "G", "T"]
+    assert actual.equals(expected)
+    assert (tmp_path / "small_genome_stats.parquet").is_file()
+    assert not (tmp_path / "small_gene_stats.parquet").exists()
+
+
+@pytest.fixture
+def catalog(tmp_path):
+    """Adapt the legacy golden fixture's coordinates to a shared V2 catalog."""
+    reference = tmp_path / "reference.fna"
+    reference.write_text(">synthetic\n" + "N"*10000 + "\n")
+    genes = tmp_path / "genes.fna"
+    genes.write_text(">synthetic_1 # 1 # 5000 # 1 # partial=00\n" + "N"*5000 +
+                     "\n>synthetic_2 # 6000 # 9000 # 1 # partial=00\n" + "N"*3001 + "\n")
+    return write_gene_info(reference, genes, DATA / "small.stb", tmp_path / "gene_info.parquet")
+
+
+@pytest.mark.skipif(
     not entry_points(group="zipstrain.profile_backends", name="rust_profiler"),
     reason="The compiled Rust plugin wheel is not installed",
 )
-def test_installed_backend_matches_python_fixture(tmp_path):
+def test_installed_backend_matches_python_fixture(tmp_path, catalog):
     run_profile(
         ProfileRequest(
             bam_file=DATA / "small.bam",
             bed_file=DATA / "small.bed",
             stb_file=DATA / "small.stb",
             null_model=DATA / "null_model.parquet",
-            gene_range_table=DATA / "genes.tsv",
+            gene_range_table=catalog,
             output_dir=tmp_path,
             num_chunks=8,
             max_concurrency=4,
@@ -38,7 +77,7 @@ def test_installed_backend_matches_python_fixture(tmp_path):
     name = "small_profile.parquet"
     actual = pq.ParquetFile(tmp_path / name)
     expected = pq.ParquetFile(DATA / "expected" / name)
-    assert actual.schema_arrow.remove_metadata() == expected.schema_arrow.remove_metadata()
+    assert pl.read_parquet(tmp_path / name).schema == pl.read_parquet(DATA / "expected" / name).drop("gene").schema
     assert actual.metadata.num_rows == expected.metadata.num_rows == 9982
     for key in (
         b"zipstrain_sorted_by",
@@ -48,12 +87,16 @@ def test_installed_backend_matches_python_fixture(tmp_path):
         b"zipstrain_stb_hash",
     ):
         assert actual.metadata.metadata.get(key) == expected.metadata.metadata.get(key)
-    assert actual.read().equals(expected.read())
+    assert pl.read_parquet(tmp_path / name).equals(pl.read_parquet(DATA / "expected" / name).drop("gene"))
 
-    for suffix, keys in (("gene_stats", ["genome", "gene"]), ("genome_stats", ["genome"])):
+    for suffix, keys in (("gene_stats", ["genome", "length"]), ("genome_stats", ["genome"])):
         name = f"small_{suffix}.parquet"
-        got = pl.read_parquet(tmp_path / name).sort(keys)
-        want = pl.read_parquet(DATA / "expected" / name).sort(keys)
+        got = pl.read_parquet(tmp_path / name)
+        want = pl.read_parquet(DATA / "expected" / name)
+        if suffix == "gene_stats":
+            want = want.drop("gene")
+            got = got.select(want.columns)
+        got, want = got.sort(keys), want.sort(keys)
         assert got.columns == want.columns
         assert got.shape == want.shape
         for actual_row, expected_row in zip(got.iter_rows(named=True), want.iter_rows(named=True)):
@@ -69,7 +112,7 @@ def test_installed_backend_matches_python_fixture(tmp_path):
     not entry_points(group="zipstrain.profile_backends", name="rust_profiler"),
     reason="The compiled Rust plugin wheel is not installed",
 )
-def test_installed_backend_builds_missing_bam_index(tmp_path):
+def test_installed_backend_builds_missing_bam_index(tmp_path, catalog):
     bam = tmp_path / "unindexed.bam"
     shutil.copyfile(DATA / "small.bam", bam)
     run_profile(
@@ -78,7 +121,7 @@ def test_installed_backend_builds_missing_bam_index(tmp_path):
             bed_file=DATA / "small.bed",
             stb_file=DATA / "small.stb",
             null_model=DATA / "null_model.parquet",
-            gene_range_table=DATA / "genes.tsv",
+            gene_range_table=catalog,
             output_dir=tmp_path / "out",
             num_chunks=2,
             max_concurrency=2,

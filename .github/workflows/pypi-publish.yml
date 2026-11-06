@@ -59,8 +59,34 @@ jobs:
           name: pypi-dist
           path: zipstrain/dist/*
 
-  publish:
+  benchmark:
     needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist
+      - name: Install the release wheel
+        run: python -m pip install 'polars==1.41.0' 'h5py==3.16.0' dist/*.whl
+      - name: Measure whole comparisons and individual pairs
+        run: python Scripts/benchmark_compare.py --release --output benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: comparison-benchmark
+          path: benchmark.json
+          if-no-files-found: error
+
+  publish:
+    needs: [build, benchmark]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -78,3 +104,53 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  archive-benchmark:
+    needs: [benchmark, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: comparison-benchmark
+          path: ${{ runner.temp }}/comparison-benchmark
+      - run: python -m pip install matplotlib packaging
+      - name: Append release measurements and refresh charts
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/comparison-benchmark/benchmark.json"
+          history="$RUNNER_TEMP/benchmark-history"
+          series=$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["suite_version"]))' "$report")
+          git worktree add --detach "$history" HEAD
+          git -C "$history" config user.name 'github-actions[bot]'
+          git -C "$history" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          branch_ref=refs/heads/benchmark-results
+          for attempt in 1 2 3 4 5; do
+            if git ls-remote --exit-code --heads origin "$branch_ref" > /dev/null; then
+              git -C "$history" fetch --no-tags origin "$branch_ref"
+              git -C "$history" reset --hard FETCH_HEAD
+            else
+              status=$?
+              if [[ "$status" != 2 ]]; then exit "$status"; fi
+              git -C "$history" switch --detach "$GITHUB_SHA"
+              git -C "$history" switch --orphan "benchmark-initial-$attempt"
+            fi
+            target="$history/v$series"
+            mkdir -p "$target/releases"
+            record="$target/releases/$GITHUB_REF_NAME.json"
+            if [[ -f "$record" ]]; then exit 0; fi
+            cp "$report" "$record"
+            python Scripts/plot_compare_benchmarks.py --output-dir "$target/charts" "$target"/releases/*.json
+            git -C "$history" add -- "v$series"
+            git -C "$history" commit -m "Archive ZipStrain $GITHUB_REF_NAME comparison benchmarks"
+            if git -C "$history" push origin "HEAD:$branch_ref"; then exit 0; fi
+            if [[ "$attempt" == 5 ]]; then exit 1; fi
+            sleep "$attempt"
+          done

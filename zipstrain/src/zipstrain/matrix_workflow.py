@@ -5,19 +5,21 @@ High-level orchestration for the matrix route of ``zipstrain compare``.
 ``zipstrain compare --method matrix`` funnels through here: it builds (or
 incrementally appends to) a matrix store from a profile database, runs the
 resumable all-vs-all matrix compare, and exports a single
-``all_comparisons.parquet`` — the same top-level output the standard method
+``all_comparisons.parquet`` — the same top-level output the table method
 produces. All the heavy intermediates (the HDF5 store, the resumable DuckDB,
 staged profile symlinks) live under ``<run_dir>/intermediate_files``.
 """
 from __future__ import annotations
 
 import pathlib
+import json
 import shutil
+from tempfile import TemporaryDirectory
 from typing import Callable
 
 import polars as pl
 
-from zipstrain import matrix_pairs as mp
+from zipstrain import gene_info as gi, matrix_pairs as mp, utils
 from zipstrain.resource_limits import connect_duckdb
 
 
@@ -71,8 +73,9 @@ def discover_bed_file(profile_locations: list[str | pathlib.Path]) -> pathlib.Pa
 
 
 def discover_gene_range_table(profile_locations: list[str | pathlib.Path]) -> pathlib.Path | None:
-    """Find a non-empty ``profiling_assets/gene_range_table.tsv`` near any profile."""
-    return _discover_asset(profile_locations, "gene_range_table.tsv", require_nonempty=True)
+    """Find a shared V2 catalog, falling back to nonempty legacy TSV ranges."""
+    return (_discover_asset(profile_locations, "gene_info.parquet") or
+            _discover_asset(profile_locations, "gene_range_table.tsv", require_nonempty=True))
 
 
 def _discover_asset(
@@ -214,6 +217,9 @@ def run_matrix_compare(
     compare_genes: bool = False,
     calculate: str = "all",
     compare_kernel: str = mp.MATRIX_COMPARE_KERNEL_ANCHOR,
+    min_gene_compare_len: int = 1,
+    dnds: bool = False,
+    allele_integration: str = "consensus",
     progress_callback: ProgressCallback | None = None,
     compare_progress_callback: mp.CompareProgressCallback | None = None,
 ) -> pathlib.Path:
@@ -228,11 +234,17 @@ def run_matrix_compare(
     ``gene_ani``, or ``all``; gene ANI is added for ``compare_genes``.
     ``compare_kernel`` is ``"anchor"`` (default, supports every metric) or
     ``"block"`` (genome-level popANI/conANI only, much faster).
+    ``dnds`` uses the anchor kernel and sibling observed codon tables. Selection
+    pairs are cached independently and joined onto qualifying gene rows.
     ``compare_progress_callback`` receives the raw progress events of the
     all-vs-all compare step.
     """
     calculate = resolve_calculate(calculate, compare_genes=compare_genes)
     compare_kernel = mp.normalize_matrix_compare_kernel(compare_kernel)
+    if min_gene_compare_len < 1:
+        raise ValueError("min_gene_compare_len must be positive")
+    if dnds and compare_kernel == mp.MATRIX_COMPARE_KERNEL_BLOCK:
+        raise ValueError("Matrix --dnds requires --compare-kernel anchor for per-gene position counts")
     run_dir = pathlib.Path(run_dir)
     intermediate = run_dir / INTERMEDIATE_DIRNAME
     intermediate.mkdir(parents=True, exist_ok=True)
@@ -254,6 +266,36 @@ def run_matrix_compare(
     if gene_range_table is None:
         gene_range_table = discover_gene_range_table(profile_locations)
 
+    v2_metrics = None
+    v2_metadata = None
+    catalog = None
+    annotation_marker = intermediate / "v2_matrix_annotation_id"
+    if any(utils._read_custom_parquet_metadata(p).get(gi.SCHEMA_KEY) == "2" for p in profile_locations):
+        if gene_range_table is not None and pathlib.Path(gene_range_table).suffix == ".parquet":
+            catalog = pathlib.Path(gene_range_table)
+            v2_metadata = gi.validate_profile_assets(profile_locations, catalog)
+        v2_metrics = mp.parse_matrix_calculations(
+            calculate, include_gene_from_all=catalog is not None and gi.read_gene_info(catalog).height > 0,
+            include_ani_from_gene=False,
+        )
+        if "gene" in v2_metrics or dnds:
+            if catalog is None:
+                raise ValueError("V2 matrix gene ANI requires gene_info.parquet")
+            if store.exists() and (
+                not annotation_marker.exists() or annotation_marker.read_text() != v2_metadata[gi.ANNOTATION_ID]
+            ):
+                raise ValueError("Existing matrix store uses different or unknown gene annotations. Use a different --run-dir.")
+        calculate = "+".join(v2_metrics)
+    if dnds:
+        if catalog is None:
+            raise ValueError("Matrix --dnds requires V2 profiles and preprofile gene_info.parquet")
+        if len(profiles) < 2 or len({name for name, _ in profiles}) != len(profiles):
+            raise ValueError("At least two uniquely named samples are required")
+        # Compute gene coverage even when the selected metric is dN/dS without
+        # gene ANI. The exporter projects only the requested metrics.
+        if "gene" not in v2_metrics:
+            calculate += "+gene"
+
     cleaned_stb = _clean_stb(pathlib.Path(stb_file), intermediate / "reference_cleaned.stb")
 
     if store.exists():
@@ -266,6 +308,34 @@ def run_matrix_compare(
             calculate=calculate,
         )
     existing_names = _existing_store_sample_names(store)
+    selection_files = None
+    if dnds:
+        from zipstrain import codons, matrix_selection
+
+        fingerprints = {name: utils.sha256_file(path) for name, path in profiles}
+        manifest = intermediate / "matrix_selection_profiles.json"
+        if existing_names:
+            previous = json.loads(manifest.read_text()) if manifest.exists() else {}
+            if any(name not in fingerprints or previous.get(name) != fingerprints[name] for name in existing_names):
+                raise ValueError("Existing matrix store has changed or unverified selection inputs. Use a different --run-dir.")
+        _notify(progress_callback, "Computing pairwise selection from observed codon counts")
+        selection_files = matrix_selection.stage_selection_pairs(
+            profiles, fingerprints, catalog, intermediate / "matrix_selection",
+            min_cov=min_cov, genome=scope, allele_integration=allele_integration,
+            memory_limit_gb=memory_limit_gb,
+        )
+        # Record intended inputs before an append. On retry, only names that
+        # reached the matrix store need to match the manifest.
+        with TemporaryDirectory(dir=intermediate) as staging:
+            temporary = pathlib.Path(staging) / manifest.name
+            temporary.write_text(json.dumps(fingerprints, sort_keys=True))
+            temporary.replace(manifest)
+        v2_metadata.update({
+            "zipstrain_compare_selection_method": codons.METHOD,
+            "zipstrain_compare_allele_integration": allele_integration,
+            "zipstrain_selection_method": codons.METHOD,
+            "zipstrain_allele_integration": allele_integration,
+        })
     new_profiles = [(name, location) for name, location in profiles if name not in existing_names]
     stage_dir = intermediate / MATRIX_STAGE_DIRNAME
 
@@ -290,6 +360,8 @@ def run_matrix_compare(
             min_cov=min_cov,
             memory_limit_gb=memory_limit_gb,
         )
+        if catalog is not None:
+            annotation_marker.write_text(v2_metadata[gi.ANNOTATION_ID])
     elif new_profiles:
         _notify(progress_callback, f"Appending {len(new_profiles)} new profile(s) to the matrix store")
         _stage_profiles(new_profiles, stage_dir)
@@ -319,14 +391,21 @@ def run_matrix_compare(
         compare_kernel=compare_kernel,
     )
 
-    table = "gene" if compare_genes else "genome"
-    output = run_dir / (GENE_OUTPUT_NAME if compare_genes else GENOME_OUTPUT_NAME)
-    if output.exists():
-        output.unlink()
+    gene_output = compare_genes if v2_metrics is None else "gene" in v2_metrics or dnds
+    table = "gene" if gene_output else "genome"
+    output = run_dir / (GENE_OUTPUT_NAME if gene_output and v2_metrics is None else GENOME_OUTPUT_NAME)
     _notify(progress_callback, f"Exporting {table}-level results")
-    mp.export_matrix_compare_parquet(
-        matrix_compare_db_file=compare_db,
-        output_file=output,
-        table=table,
-    )
+    export_options = {}
+    if v2_metrics is not None:
+        export_options = {
+            "v2_metrics": v2_metrics, "gene_info_table": catalog, "v2_metadata": v2_metadata,
+            "min_gene_compare_len": min_gene_compare_len, "selection_files": selection_files,
+        }
+    with TemporaryDirectory(dir=run_dir) as staging:
+        temporary = pathlib.Path(staging) / output.name
+        mp.export_matrix_compare_parquet(
+            matrix_compare_db_file=compare_db, output_file=temporary, table=table,
+            **export_options,
+        )
+        temporary.replace(output)
     return output

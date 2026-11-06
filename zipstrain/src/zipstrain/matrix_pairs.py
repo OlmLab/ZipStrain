@@ -25,7 +25,9 @@ from zipstrain import compare as cp
 if TYPE_CHECKING:
     import duckdb
 
-PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+from zipstrain.gene_info import read_gene_ranges
+
+PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "genome", "A", "T", "C", "G"}
 COUNT_DTYPES = {
     "uint16": np.uint16,
     "uint32": np.uint32,
@@ -136,6 +138,7 @@ def parse_matrix_calculations(
     calculate: Optional[str] = None,
     *,
     include_gene_from_all: bool = False,
+    include_ani_from_gene: bool = True,
 ) -> tuple[str, ...]:
     """Normalize matrix compare metric selections into a stable tuple.
 
@@ -149,6 +152,9 @@ def parse_matrix_calculations(
     include_gene_from_all:
         When ``True``, include gene ANI in ``all``. This is used for
         matrix stores that already contain gene annotations.
+    include_ani_from_gene:
+        Add genome ANI to gene ANI for the matrix engine. Pass ``False``
+        to resolve only the metrics requested for an output table.
 
     Returns
     -------
@@ -185,7 +191,7 @@ def parse_matrix_calculations(
             raise ValueError(f"Unsupported matrix calculation '{token}'. Supported values: {supported}")
         normalized.add(mapped)
 
-    if "gene" in normalized:
+    if "gene" in normalized and include_ani_from_gene:
         normalized.add("ani")
 
     supported = tuple(metric for metric in MATRIX_COMPARISON_SUPPORTED_CALCULATIONS if metric in normalized)
@@ -292,6 +298,8 @@ def matrix_compare_gene_result_db_schema() -> pa.Schema:
             pa.field("genome", pa.string()),
             pa.field("gene", pa.string()),
             pa.field("gene_pop_ani", pa.float64()),
+            pa.field("gene_total_positions", pa.int64()),
+            pa.field("gene_share_allele_pos", pa.int64()),
         ]
     )
 
@@ -890,7 +898,7 @@ def discover_profile_parquets(profile_dir: Path) -> list[Path]:
     if not profiles:
         raise ValueError(
             f"No classic ZipStrain profile parquets were found in {profile_dir}. "
-            "Expected parquet files with columns chrom,pos,gene,genome,A,T,C,G."
+            "Expected parquet files with columns chrom,pos,genome,A,T,C,G."
         )
     sample_names = [path.stem for path in profiles]
     if len(sample_names) != len(set(sample_names)):
@@ -1253,12 +1261,7 @@ def _collect_gene_range_specs(
         )
 
     gene_ranges = (
-        pl.scan_csv(
-            gene_range_path,
-            has_header=False,
-            separator="\t",
-            new_columns=["gene", "scaffold", "start", "end"],
-        )
+        read_gene_ranges(gene_range_path)
         .select(
             pl.col("gene").cast(pl.Utf8),
             pl.col("scaffold").cast(pl.Utf8),
@@ -1341,12 +1344,7 @@ def _expand_scaffold_specs_with_gene_ranges(
         )
 
     gene_bounds = (
-        pl.scan_csv(
-            gene_range_path,
-            has_header=False,
-            separator="\t",
-            new_columns=["gene", "scaffold", "start", "end"],
-        )
+        read_gene_ranges(gene_range_path)
         .select(
             pl.col("scaffold").cast(pl.Utf8),
             pl.col("start").cast(pl.Int64),
@@ -1622,7 +1620,9 @@ def _init_matrix_compare_db_schema(conn: duckdb.DuckDBPyConnection) -> None:
           genome_idx INTEGER NOT NULL,
           genome VARCHAR NOT NULL,
           gene VARCHAR NOT NULL,
-          gene_pop_ani DOUBLE NOT NULL
+          gene_pop_ani DOUBLE NOT NULL,
+          gene_total_positions BIGINT,
+          gene_share_allele_pos BIGINT
         )
         """
     )
@@ -1714,8 +1714,34 @@ def _ensure_matrix_compare_completed_table(
 
 def _ensure_matrix_compare_gene_results_table(
     compare_conn: duckdb.DuckDBPyConnection,
+    *,
+    needs_counts: bool = False,
 ) -> None:
+    """Upgrade old gene result tables and requeue only pairs missing gene counts."""
     if _matrix_compare_table_exists(compare_conn, "matrix_compare_gene_results"):
+        if not needs_counts:
+            return
+        columns = {row[0] for row in compare_conn.execute(
+            "SELECT name FROM pragma_table_info('matrix_compare_gene_results')"
+        ).fetchall()}
+        missing = {"gene_total_positions", "gene_share_allele_pos"} - columns
+        if missing:
+            for column in sorted(missing):
+                compare_conn.execute(f"ALTER TABLE matrix_compare_gene_results ADD COLUMN {column} BIGINT")
+            compare_conn.execute("""
+                CREATE TEMP TABLE _pairs_missing_gene_counts AS
+                SELECT DISTINCT sample_idx_1, sample_idx_2, genome_idx
+                FROM matrix_compare_gene_results
+                WHERE gene_total_positions IS NULL OR gene_share_allele_pos IS NULL
+            """)
+            for table in ("matrix_compare_gene_results", "matrix_compare_results", "matrix_compare_completed_pair_genomes"):
+                compare_conn.execute(f"""
+                    DELETE FROM {table} AS target USING _pairs_missing_gene_counts AS stale
+                    WHERE target.sample_idx_1 = stale.sample_idx_1
+                      AND target.sample_idx_2 = stale.sample_idx_2
+                      AND target.genome_idx = stale.genome_idx
+                """)
+            compare_conn.execute("DROP TABLE _pairs_missing_gene_counts")
         return
     compare_conn.execute(
         """
@@ -1727,7 +1753,9 @@ def _ensure_matrix_compare_gene_results_table(
           genome_idx INTEGER NOT NULL,
           genome VARCHAR NOT NULL,
           gene VARCHAR NOT NULL,
-          gene_pop_ani DOUBLE NOT NULL
+          gene_pop_ani DOUBLE NOT NULL,
+          gene_total_positions BIGINT,
+          gene_share_allele_pos BIGINT
         )
         """
     )
@@ -1834,7 +1862,7 @@ def _prepare_matrix_compare_db(
                 ani_method=ani_method,
             )
             _ensure_matrix_compare_completed_table(compare_conn)
-            _ensure_matrix_compare_gene_results_table(compare_conn)
+            _ensure_matrix_compare_gene_results_table(compare_conn, needs_counts="gene" in calculations)
 
         sample_ids = _sync_matrix_compare_catalog(
             compare_conn,
@@ -1965,7 +1993,7 @@ def _insert_matrix_compare_gene_result_table(
     try:
         compare_conn.execute(
             """
-            INSERT INTO matrix_compare_gene_results
+            INSERT INTO matrix_compare_gene_results BY NAME
             SELECT
               sample_idx_1,
               sample_idx_2,
@@ -1974,7 +2002,9 @@ def _insert_matrix_compare_gene_result_table(
               genome_idx,
               genome,
               gene,
-              gene_pop_ani
+              gene_pop_ani,
+              gene_total_positions,
+              gene_share_allele_pos
             FROM _matrix_compare_gene_result_batch
             """
         )
@@ -4589,8 +4619,8 @@ def _make_gene_arrow_table_from_compare_payload(
         return None
 
     gene_idx_flat, target_idx_flat = np.nonzero(valid_mask)
-    total_positions = gene_total_all[gene_idx_flat, target_idx_flat].astype(np.float64, copy=False)
-    shared_positions = gene_shared_all[gene_idx_flat, target_idx_flat].astype(np.float64, copy=False)
+    total_positions = gene_total_all[gene_idx_flat, target_idx_flat]
+    shared_positions = gene_shared_all[gene_idx_flat, target_idx_flat]
     ani_values = (shared_positions / total_positions) * 100.0
 
     sample_2_idx_all = np.asarray(payload["sample_2_idx"], dtype=np.int64)
@@ -4622,6 +4652,8 @@ def _make_gene_arrow_table_from_compare_payload(
             pa.repeat(pa.scalar(genome), row_count),
             pc.take(pa.array(gene_names, type=pa.string()), pa.array(gene_idx_flat)),
             pa.array(ani_values, type=pa.float64()),
+            pa.array(total_positions, type=pa.int64()),
+            pa.array(shared_positions, type=pa.int64()),
         ],
         schema=matrix_compare_gene_result_db_schema(),
     )
@@ -6249,6 +6281,12 @@ def export_matrix_compare_parquet(
     matrix_compare_db_file: Path,
     output_file: Path,
     table: str = "genome",
+    *,
+    v2_metrics: tuple[str, ...] | None = None,
+    gene_info_table: Path | None = None,
+    v2_metadata: dict[str, str] | None = None,
+    min_gene_compare_len: int = 1,
+    selection_files: list[Path] | None = None,
 ) -> Path:
     """Export matrix compare results from DuckDB into parquet.
 
@@ -6261,6 +6299,15 @@ def export_matrix_compare_parquet(
     table:
         ``"genome"`` for genome-level comparison rows or ``"gene"`` for
         gene-level ANI rows.
+    v2_metrics:
+        Explicit output metrics. In V2 gene mode, use catalog IDs and join any
+        requested genome metrics onto each gene row.
+    gene_info_table, v2_metadata:
+        Validated V2 gene catalog and its reference and annotation identities.
+    min_gene_compare_len:
+        Minimum shared positions for a V2 gene row.
+    selection_files:
+        Completed pairwise selection tables to join onto V2 gene rows.
     """
     matrix_compare_db_file = Path(matrix_compare_db_file).resolve()
     output_file = Path(output_file).resolve()
@@ -6275,7 +6322,51 @@ def export_matrix_compare_parquet(
             str(k): str(v)
             for k, v in conn.execute("SELECT key, value FROM matrix_compare_metadata").fetchall()
         }
-        if table == "genome":
+        parameters = {"destination": str(output_file)}
+        if table == "gene" and v2_metrics is not None:
+            if gene_info_table is None:
+                raise ValueError("V2 matrix gene export requires a gene catalog")
+            genome_columns = []
+            if "ani" in v2_metrics:
+                genome_columns.extend(["total_positions", "share_allele_pos", "genome_ani"])
+            if "ibs" in v2_metrics:
+                genome_columns.append("max_consecutive_length")
+            metrics = "".join(f", genome_result.{name}" for name in genome_columns)
+            genome_join = """
+                LEFT JOIN matrix_compare_results AS genome_result
+                USING (sample_idx_1, sample_idx_2, genome_idx)
+            """ if genome_columns else ""
+            gene_metric = ", gene_result.gene_pop_ani AS gene_ani" if "gene" in v2_metrics else ""
+            selection_join, selection_metrics = "", ""
+            if selection_files:
+                from zipstrain.gene_info import SELECTION_COLUMNS
+
+                selection_metrics = "".join(f", selection.{name}" for name in SELECTION_COLUMNS)
+                selection_join = """
+                    LEFT JOIN read_parquet($selection) AS selection
+                      ON selection.sample_1 = least(gene_result.sample_1, gene_result.sample_2)
+                     AND selection.sample_2 = greatest(gene_result.sample_1, gene_result.sample_2)
+                     AND selection.gene_id = catalog.gene_id
+                """
+                parameters["selection"] = [str(path.resolve()) for path in selection_files]
+            query = f"""
+                SELECT least(gene_result.sample_1, gene_result.sample_2) AS sample_1,
+                       greatest(gene_result.sample_1, gene_result.sample_2) AS sample_2,
+                       gene_result.genome, catalog.gene_id,
+                       gene_result.gene_total_positions, gene_result.gene_share_allele_pos
+                       {gene_metric}{selection_metrics}{metrics}
+                FROM matrix_compare_gene_results AS gene_result
+                JOIN read_parquet($catalog) AS catalog ON catalog.genome = gene_result.genome
+                    AND catalog.gene = gene_result.gene
+                {genome_join}
+                {selection_join}
+                WHERE gene_result.gene_total_positions >= $min_gene_compare_len
+                ORDER BY gene_result.sample_idx_1, gene_result.sample_idx_2,
+                         gene_result.genome_idx, catalog.gene_id
+            """
+            parameters["catalog"] = str(gene_info_table.resolve())
+            parameters["min_gene_compare_len"] = min_gene_compare_len
+        elif table == "genome":
             calculate = compare_metadata.get("calculate", "ani")
             columns = matrix_metric_output_columns(calculate)
             query = f"""
@@ -6306,8 +6397,8 @@ def export_matrix_compare_parquet(
         else:
             raise ValueError(f"Unsupported export table '{table}'. Expected one of: genome, gene.")
         conn.execute(
-            f"COPY ({query}) TO ? (FORMAT PARQUET, COMPRESSION ZSTD)",
-            [str(output_file)],
+            f"COPY ({query}) TO $destination (FORMAT PARQUET, COMPRESSION ZSTD)",
+            parameters,
         )
     finally:
         conn.close()
@@ -6326,5 +6417,15 @@ def export_matrix_compare_parquet(
         ut.COMPARE_NULL_MODEL_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
         ut.COMPARE_STB_HASH_METADATA_KEY: ut.COMPARE_METADATA_MISSING_VALUE,
     }
+    if v2_metrics is not None:
+        parquet_metadata.update(v2_metadata or {})
+        parquet_metadata.update({
+            "zipstrain_profile_schema": "2",
+            "zipstrain_compare_calculate": "+".join(v2_metrics),
+            "zipstrain_compare_reference_id": parquet_metadata.get("zipstrain_reference_id", "NA"),
+            "zipstrain_compare_annotation_id": parquet_metadata.get("zipstrain_annotation_id", "NA"),
+        })
+        if table == "gene":
+            parquet_metadata[ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY] = str(min_gene_compare_len)
     ut.rewrite_parquet_with_metadata(output_file, parquet_metadata)
     return output_file

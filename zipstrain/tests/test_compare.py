@@ -5,16 +5,15 @@ import polars as pl
 from zipstrain import compare
 
 
-@pytest.mark.parametrize("engine", ["polars", "duckdb"])
 @pytest.mark.parametrize(("selection", "legacy"), [
     ("genome_ani", "ani"),
     ("max_identical_stretch", "ibs"),
     ("gene_ani", "identical_genes"),
     ("max_identical_stretch+gene_ani+genome_ani", "all"),
 ])
-def test_descriptive_calculations_match_legacy_results(profile_1, profile_2, selection, legacy, engine):
+def test_descriptive_calculations_match_legacy_results(profile_1, profile_2, selection, legacy):
     options = dict(mpile_contig_1=profile_1, mpile_contig_2=profile_2,
-                   min_cov=5, min_gene_compare_len=3, engine=engine)
+                   min_cov=5, min_gene_compare_len=3)
     actual = compare.compare_genomes(calculate=selection, **options).collect().sort("genome")
     expected = compare.compare_genomes(calculate=legacy, **options).collect().sort("genome")
     assert actual.height > 0
@@ -288,49 +287,6 @@ def test_cos_ani_expression(threshold1,threshold2):
     assert compare._shared_loci_polars(profile_1, profile_2, min_cov=1, ani_method=f"cosani_{threshold1}").select(pl.col("surr")).sum().collect()[0,0]>=compare._shared_loci_polars(profile_3, profile_2, min_cov=1, ani_method=f"cosani_{threshold2}").select(pl.col("surr")).sum().collect()[0,0]
 
 
-def test_duckdb_compare_genomes_to_parquet(profile_1, profile_2, stb, tmp_path):
-    p1 = tmp_path / "p1.parquet"
-    p2 = tmp_path / "p2.parquet"
-    stb_path = tmp_path / "stb.tsv"
-    out_path = tmp_path / "genome_comp.parquet"
-    profile_1.sink_parquet(p1)
-    profile_2.sink_parquet(p2)
-    stb.sink_csv(stb_path, separator="\t", include_header=False)
-
-    compare.duckdb_compare_genomes_to_parquet(
-        mpile1=p1,
-        mpile2=p2,
-        output_file=out_path,
-        stb_file=stb_path,
-        sample_1_name="s1",
-        sample_2_name="s2",
-        min_cov=5,
-        min_gene_compare_len=3,
-        genome_scope="all",
-        ani_method="popani",
-        calculate="all",
-        memory_limit="512MB",
-        temp_directory=tmp_path,
-    )
-
-    out = pl.read_parquet(out_path)
-    assert out.shape[0] == 2
-    assert set(out.columns) == {
-        "genome",
-        "total_positions",
-        "share_allele_pos",
-        "genome_ani",
-        "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
-        "sample_1",
-        "sample_2",
-    }
-    assert set(out["sample_1"].to_list()) == {"s1"}
-    assert set(out["sample_2"].to_list()) == {"s2"}
-
-
 def test_polars_prefilter_by_scope_filters_genome_and_gene(profile_1):
     p1, p2 = compare.polars_prefilter_by_scope(
         profile_1,
@@ -349,85 +305,13 @@ def test_polars_prefilter_by_scope_filters_genome_and_gene(profile_1):
     assert out2.get_column("gene").unique().to_list() == ["gene2"]
 
 
-def test_profile_is_coordinate_sorted_uses_parquet_metadata(tmp_path):
-    profile_df = pl.DataFrame(
-        {
-            "chrom": ["chr1", "chr1"],
-            "genome": ["genome1", "genome1"],
-            "pos": [1, 2],
-            "gene": ["gene1", "gene1"],
-            "A": [5, 0],
-            "T": [0, 5],
-            "C": [0, 0],
-            "G": [0, 0],
-        }
-    )
-    sorted_path = tmp_path / "sorted_profile.parquet"
-    legacy_path = tmp_path / "legacy_profile.parquet"
-
-    profile_df.lazy().sink_parquet(
-        sorted_path,
-        metadata={
-            compare.PROFILE_SORTED_METADATA_KEY: compare.PROFILE_SORTED_METADATA_VALUE,
-        },
-    )
-    profile_df.write_parquet(legacy_path)
-
-    assert compare._profile_is_coordinate_sorted(sorted_path) is True
-    assert compare._profile_is_coordinate_sorted(legacy_path) is False
-    assert compare._profile_is_coordinate_sorted(profile_df.lazy()) is False
-
-
-def test_shared_loci_polars_sets_sorted_only_when_both_inputs_are_marked(tmp_path, monkeypatch):
-    profile_df = pl.DataFrame(
-        {
-            "chrom": ["chr1", "chr1"],
-            "genome": ["genome1", "genome1"],
-            "pos": [1, 2],
-            "gene": ["gene1", "gene1"],
-            "A": [5, 0],
-            "T": [0, 5],
-            "C": [0, 0],
-            "G": [0, 0],
-        }
-    )
-    sorted_1 = tmp_path / "sorted_1.parquet"
-    sorted_2 = tmp_path / "sorted_2.parquet"
-    unmarked = tmp_path / "unmarked.parquet"
-    metadata = {
-        compare.PROFILE_SORTED_METADATA_KEY: compare.PROFILE_SORTED_METADATA_VALUE,
-    }
-    profile_df.lazy().sink_parquet(sorted_1, metadata=metadata)
-    profile_df.lazy().sink_parquet(sorted_2, metadata=metadata)
-    profile_df.write_parquet(unmarked)
-
-    original_set_sorted = pl.LazyFrame.set_sorted
-    calls: list[tuple[str, ...]] = []
-
-    def _wrapped_set_sorted(self, by, *args, **kwargs):
-        if isinstance(by, str):
-            calls.append((by,))
-        else:
-            calls.append(tuple(by))
-        return original_set_sorted(self, by, *args, **kwargs)
-
-    monkeypatch.setattr(pl.LazyFrame, "set_sorted", _wrapped_set_sorted)
-
-    compare._shared_loci_polars(sorted_1, sorted_2, min_cov=1).collect()
-    assert calls == [("chrom", "pos"), ("chrom", "pos")]
-
-    calls.clear()
-    compare._shared_loci_polars(sorted_1, unmarked, min_cov=1).collect()
-    assert calls == []
-
-
 def test_compare_genomes_polars_matches_between_sorted_marked_and_unsorted_unmarked(profile_1, profile_2, tmp_path):
     sorted_left = tmp_path / "sorted_left.parquet"
     sorted_right = tmp_path / "sorted_right.parquet"
     unsorted_left = tmp_path / "unsorted_left.parquet"
     unsorted_right = tmp_path / "unsorted_right.parquet"
     metadata = {
-        compare.PROFILE_SORTED_METADATA_KEY: compare.PROFILE_SORTED_METADATA_VALUE,
+        "zipstrain_sorted_by": "chrom,pos",
     }
 
     profile_1_df = profile_1.collect().sort(["chrom", "pos"])
@@ -444,7 +328,6 @@ def test_compare_genomes_polars_matches_between_sorted_marked_and_unsorted_unmar
             mpile_contig_2=sorted_right,
             min_cov=5,
             min_gene_compare_len=3,
-            engine="polars",
             calculate="all",
         )
         .collect()
@@ -456,7 +339,6 @@ def test_compare_genomes_polars_matches_between_sorted_marked_and_unsorted_unmar
             mpile_contig_2=unsorted_right,
             min_cov=5,
             min_gene_compare_len=3,
-            engine="polars",
             calculate="all",
         )
         .collect()
@@ -464,42 +346,6 @@ def test_compare_genomes_polars_matches_between_sorted_marked_and_unsorted_unmar
     )
 
     assert unsorted_result.equals(sorted_result)
-
-
-def test_duckdb_compare_genomes_to_parquet_ani_only(profile_1, profile_2, stb, tmp_path):
-    p1 = tmp_path / "p1.parquet"
-    p2 = tmp_path / "p2.parquet"
-    stb_path = tmp_path / "stb.tsv"
-    out_path = tmp_path / "genome_comp_ani.parquet"
-    profile_1.sink_parquet(p1)
-    profile_2.sink_parquet(p2)
-    stb.sink_csv(stb_path, separator="\t", include_header=False)
-
-    compare.duckdb_compare_genomes_to_parquet(
-        mpile1=p1,
-        mpile2=p2,
-        output_file=out_path,
-        stb_file=stb_path,
-        sample_1_name="s1",
-        sample_2_name="s2",
-        min_cov=5,
-        min_gene_compare_len=3,
-        genome_scope="all",
-        ani_method="popani",
-        calculate="ani",
-        memory_limit="512MB",
-        temp_directory=tmp_path,
-    )
-
-    out = pl.read_parquet(out_path)
-    assert set(out.columns) == {
-        "genome",
-        "total_positions",
-        "share_allele_pos",
-        "genome_ani",
-        "sample_1",
-        "sample_2",
-    }
 
 
 @pytest.mark.parametrize("selection", ["ani", "genome_ani"])
@@ -513,7 +359,6 @@ def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb,
             mpile_contig_2=profile_2,
             min_cov=5,
             min_gene_compare_len=3,
-            engine="polars",
             stb_file=stb_path,
             calculate="all",
         )
@@ -527,7 +372,6 @@ def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb,
             mpile_contig_2=profile_2,
             min_cov=5,
             min_gene_compare_len=3,
-            engine="polars",
             stb_file=stb_path,
             calculate=selection,
         )
@@ -550,7 +394,6 @@ def test_compare_genomes_default_calculate_is_all_metrics(profile_1, profile_2, 
         mpile_contig_2=profile_2,
         min_cov=5,
         min_gene_compare_len=3,
-        engine="polars",
         stb_file=stb_path,
     ).collect()
     assert set(out.columns) == {
@@ -565,34 +408,7 @@ def test_compare_genomes_default_calculate_is_all_metrics(profile_1, profile_2, 
     }
 
 
-def test_compare_genomes_calculate_all_matches_between_engines(profile_1, profile_2, tmp_path):
-    stb_path = tmp_path / "stb.tsv"
-    pl.DataFrame({"scaffold": ["chr1", "chr2", "chr3"], "genome": ["genome1", "genome1", "genome2"]}).write_csv(
-        stb_path, separator="\t", include_header=False
-    )
-    out_polars = compare.compare_genomes(
-        mpile_contig_1=profile_1,
-        mpile_contig_2=profile_2,
-        min_cov=5,
-        min_gene_compare_len=3,
-        engine="polars",
-        calculate="all",
-        stb_file=stb_path,
-    ).collect().sort("genome")
-    out_duckdb = compare.compare_genomes(
-        mpile_contig_1=profile_1,
-        mpile_contig_2=profile_2,
-        min_cov=5,
-        min_gene_compare_len=3,
-        engine="duckdb",
-        calculate="all",
-        stb_file=stb_path,
-    ).collect().sort("genome")
-    assert out_polars.equals(out_duckdb)
-
-
-@pytest.mark.parametrize("engine", ["polars", "duckdb"])
-def test_max_consecutive_length_breaks_at_coordinate_gap(engine):
+def test_max_consecutive_length_breaks_at_coordinate_gap():
     positions = list(range(1, 101)) + list(range(201, 251))
     profile = pl.DataFrame(
         {
@@ -611,7 +427,6 @@ def test_max_consecutive_length_breaks_at_coordinate_gap(engine):
         mpile_contig_1=profile,
         mpile_contig_2=profile,
         min_cov=1,
-        engine=engine,
         calculate="genome_ani+max_identical_stretch",
     ).collect().row(0, named=True)
 

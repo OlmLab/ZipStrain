@@ -5,7 +5,7 @@ The Rust profiler builds a missing BAM index beside the input before profiling. 
 A ZipStrain plugin that provides a native, multithreaded profiling backend. It
 can profile up to ~10x faster than the built-in Python profiler, with better
 memory management on large BAM files, while producing the same outputs. This
-package requires ZipStrain 1.2.0 or newer and is selected with `--backend rust_profiler`. Without that
+development package requires ZipStrain 2.0.0.dev0 or newer and is selected with `--backend rust_profiler`. Without that
 flag, ZipStrain continues to use its built-in Python profiler.
 
 ```bash
@@ -17,3 +17,16 @@ zipstrain profile --input-table mapped/samples.txt --reference-fasta ref.fna \
 See the [plugin guide](https://olmlab.github.io/ZipStrain/plugins/) for inputs,
 output files, filters, and Nextflow usage. Wheels contain a native executable;
 source installs require a Rust toolchain and native build prerequisites.
+
+For V2, Rust writes gene-free position Parquets directly: `chrom`, `genome`,
+`pos`, `A`, `C`, `G`, `T`, plus `ref_base_bitmask` when a reference is provided.
+Worker chunks use the same schema. Rust does not load gene annotations, assign
+per-position gene labels, or write a gene-statistics file. The native executable
+no longer accepts `--gene-range`.
+
+ZipStrain's shared V2 finalizer consumes `gene_info.parquet` and creates the
+15-column gene-statistics table after native profiling. With `--collect-codons`,
+it makes an additional BAM pass for observed codons and computes the six
+selection metrics using the requested `--allele-integration` mode. These steps
+run in Python/Polars; base-count and genome-statistics production runs in Rust.
+See [the V2 method documentation](../../docs/v2.md) for formulas and exclusions.

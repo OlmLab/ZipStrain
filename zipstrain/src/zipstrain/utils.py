@@ -32,7 +32,7 @@ NULL_MODEL_ERROR_RATE_DEFAULT = 0.001
 NULL_MODEL_MAX_COVERAGE_DEFAULT = 50_000
 NULL_MODEL_P_THRESHOLD_DEFAULT = 1e-6
 
-CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "genome", "A", "T", "C", "G"}
 REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
 REF_BASE_BIT_VALUES = {
     "A": 1,
@@ -1132,10 +1132,6 @@ def _run_genome_compare_pair(
     genome_scope: str,
     ani_method: str,
     calculate: str | tuple[str, ...],
-    engine: str,
-    duckdb_memory_limit: str | None,
-    duckdb_temp_directory: str | pathlib.Path | None,
-    duckdb_threads: int | None,
 ) -> tuple[pl.DataFrame, float]:
     from zipstrain import compare as cp
 
@@ -1148,7 +1144,7 @@ def _run_genome_compare_pair(
 
     profile_1_for_compare = profile_1
     profile_2_for_compare = profile_2
-    if engine == "polars" and genome_scope != "all":
+    if genome_scope != "all":
         profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
             mpile1=profile_1,
             mpile2=profile_2,
@@ -1163,10 +1159,6 @@ def _run_genome_compare_pair(
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
             ani_method=ani_method,
-            duckdb_memory_limit=duckdb_memory_limit,
-            duckdb_temp_directory=duckdb_temp_directory,
-            duckdb_threads=duckdb_threads,
-            engine=engine,
             stb_file=stb_file,
             calculate=calculate,
         )
@@ -1190,10 +1182,6 @@ def chunk_genome_compare(
     genome_scope: str = "all",
     ani_method: str = "popani",
     calculate: str | tuple[str, ...] = "all",
-    engine: str = "polars",
-    duckdb_memory_limit: str | None = None,
-    duckdb_temp_directory: str | pathlib.Path | None = None,
-    duckdb_threads: int | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Run classic genome compare on one pair table using in-process parallel workers."""
@@ -1202,8 +1190,6 @@ def chunk_genome_compare(
 
     if workers is not None and workers < 1:
         raise ValueError("workers must be >= 1")
-    if engine not in {"polars", "duckdb"}:
-        raise ValueError("engine must be one of: polars, duckdb")
 
     calculations = cp.parse_genome_calculations(calculate)
     pair_table_path = pathlib.Path(pair_table)
@@ -1214,7 +1200,7 @@ def chunk_genome_compare(
         COMPARE_SCOPE_METADATA_KEY: genome_scope,
         COMPARE_MIN_COV_METADATA_KEY: str(min_cov),
         COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
-        COMPARE_ENGINE_METADATA_KEY: engine,
+        COMPARE_ENGINE_METADATA_KEY: "polars",
         COMPARE_USES_STB_METADATA_KEY: "1" if stb_file is not None else "0",
         COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
         COMPARE_REFERENCE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
@@ -1237,14 +1223,11 @@ def chunk_genome_compare(
     budget = cpu_budget()
     available_cpus = budget or (os.cpu_count() or 1)
     resolved_workers = max(1, min(workers or available_cpus, available_cpus, max(total_pairs, 1)))
-    if engine == "duckdb" and budget is not None:
-        per_worker_threads = max(1, budget // resolved_workers)
-        duckdb_threads = min(duckdb_threads, per_worker_threads) if duckdb_threads is not None else per_worker_threads
     pair_batch_size = max(1024, resolved_workers * 8)
     start_time = time.perf_counter()
     emit(
         f"chunk_genome_compare: start pairs={total_pairs} "
-        f"workers={resolved_workers} engine={engine} genome={genome_scope}"
+        f"workers={resolved_workers} engine=polars genome={genome_scope}"
     )
 
     if total_pairs == 0:
@@ -1266,7 +1249,7 @@ def chunk_genome_compare(
             "avg_compute_seconds_per_pair": 0.0,
             "avg_seconds_per_genome_row": 0.0,
             "avg_genome_rows_per_pair": 0.0,
-            "engine": engine,
+            "engine": "polars",
             "genome_scope": genome_scope,
         }
 
@@ -1278,17 +1261,36 @@ def chunk_genome_compare(
     next_pair_index = 0
     next_write_index = 0
     pending_results: dict[int, tuple[pl.DataFrame, float]] = {}
-    if engine == "polars":
-        ordered_results: list[pl.DataFrame | None] = [None] * total_pairs
+    output_schema = empty_frame.to_arrow().schema.with_metadata(
+        {str(key).encode(): str(value).encode() for key, value in compare_metadata.items()}
+    )
+    empty_output_table = pa.Table.from_arrays(
+        [pa.array([], type=field.type) for field in output_schema],
+        schema=output_schema,
+    )
+    wrote_any_rows = False
+    with pq.ParquetWriter(output_path, output_schema, compression="zstd") as writer:
         with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
             in_flight: dict[object, int] = {}
+
+            def flush_ready_results() -> None:
+                nonlocal next_write_index, wrote_any_rows
+                while next_write_index in pending_results:
+                    frame, _pair_elapsed = pending_results.pop(next_write_index)
+                    if frame.height:
+                        table = frame.to_arrow()
+                        if table.schema != output_schema:
+                            table = table.cast(output_schema)
+                        writer.write_table(table)
+                        wrote_any_rows = True
+                    next_write_index += 1
 
             def record_completed_futures(done_futures) -> None:
                 nonlocal completed_pairs, total_rows, cumulative_pair_compute_seconds
                 for future in done_futures:
                     idx = in_flight.pop(future)
                     frame, pair_elapsed = future.result()
-                    ordered_results[idx] = frame
+                    pending_results[idx] = (frame, pair_elapsed)
                     completed_pairs += 1
                     total_rows += frame.height
                     cumulative_pair_compute_seconds += pair_elapsed
@@ -1296,11 +1298,12 @@ def chunk_genome_compare(
                         f"chunk_genome_compare: progress pairs={completed_pairs}/{total_pairs} "
                         f"rows={total_rows} elapsed={time.perf_counter() - start_time:.2f}s"
                     )
+                flush_ready_results()
 
             for raw_batch in _iter_pair_table_batches(pair_table_path, pair_batch_size):
                 pair_batch = _normalize_pair_batch(raw_batch)
                 for row in pair_batch.iter_rows(named=True):
-                    while len(in_flight) >= resolved_workers:
+                    while len(in_flight) + len(pending_results) >= resolved_workers:
                         done_futures, _pending = wait(
                             tuple(in_flight.keys()),
                             return_when=FIRST_COMPLETED,
@@ -1315,10 +1318,6 @@ def chunk_genome_compare(
                         genome_scope=genome_scope,
                         ani_method=ani_method,
                         calculate=calculations,
-                        engine=engine,
-                        duckdb_memory_limit=duckdb_memory_limit,
-                        duckdb_temp_directory=duckdb_temp_directory,
-                        duckdb_threads=duckdb_threads,
                     )
                     in_flight[future] = next_pair_index
                     next_pair_index += 1
@@ -1330,96 +1329,10 @@ def chunk_genome_compare(
                 )
                 record_completed_futures(done_futures)
 
-        result_frames = [frame for frame in ordered_results if frame is not None]
-        if result_frames:
-            pl.concat(result_frames, how="vertical_relaxed").write_parquet(
-                output_path,
-                compression="zstd",
-                metadata=compare_metadata,
-            )
-        else:
-            empty_frame.write_parquet(
-                output_path,
-                compression="zstd",
-                metadata=compare_metadata,
-            )
-    else:
-        output_schema = empty_frame.to_arrow().schema.with_metadata(
-            {str(key).encode(): str(value).encode() for key, value in compare_metadata.items()}
-        )
-        empty_output_table = pa.Table.from_arrays(
-            [pa.array([], type=field.type) for field in output_schema],
-            schema=output_schema,
-        )
-        wrote_any_rows = False
-        with pq.ParquetWriter(output_path, output_schema, compression="zstd") as writer:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                in_flight: dict[object, int] = {}
+            flush_ready_results()
 
-                def flush_ready_results() -> None:
-                    nonlocal next_write_index, wrote_any_rows
-                    while next_write_index in pending_results:
-                        frame, _pair_elapsed = pending_results.pop(next_write_index)
-                        if frame.height:
-                            table = frame.to_arrow()
-                            if table.schema != output_schema:
-                                table = table.cast(output_schema)
-                            writer.write_table(table)
-                            wrote_any_rows = True
-                        next_write_index += 1
-
-                def record_completed_futures(done_futures) -> None:
-                    nonlocal completed_pairs, total_rows, cumulative_pair_compute_seconds
-                    for future in done_futures:
-                        idx = in_flight.pop(future)
-                        frame, pair_elapsed = future.result()
-                        pending_results[idx] = (frame, pair_elapsed)
-                        completed_pairs += 1
-                        total_rows += frame.height
-                        cumulative_pair_compute_seconds += pair_elapsed
-                        emit(
-                            f"chunk_genome_compare: progress pairs={completed_pairs}/{total_pairs} "
-                            f"rows={total_rows} elapsed={time.perf_counter() - start_time:.2f}s"
-                        )
-                    flush_ready_results()
-
-                for raw_batch in _iter_pair_table_batches(pair_table_path, pair_batch_size):
-                    pair_batch = _normalize_pair_batch(raw_batch)
-                    for row in pair_batch.iter_rows(named=True):
-                        while len(in_flight) >= resolved_workers:
-                            done_futures, _pending = wait(
-                                tuple(in_flight.keys()),
-                                return_when=FIRST_COMPLETED,
-                            )
-                            record_completed_futures(done_futures)
-                        future = executor.submit(
-                            _run_genome_compare_pair,
-                            row,
-                            stb_file=stb_file,
-                            min_cov=min_cov,
-                            min_gene_compare_len=min_gene_compare_len,
-                            genome_scope=genome_scope,
-                            ani_method=ani_method,
-                            calculate=calculations,
-                            engine=engine,
-                            duckdb_memory_limit=duckdb_memory_limit,
-                            duckdb_temp_directory=duckdb_temp_directory,
-                            duckdb_threads=duckdb_threads,
-                        )
-                        in_flight[future] = next_pair_index
-                        next_pair_index += 1
-
-                while in_flight:
-                    done_futures, _pending = wait(
-                        tuple(in_flight.keys()),
-                        return_when=FIRST_COMPLETED,
-                    )
-                    record_completed_futures(done_futures)
-
-                flush_ready_results()
-
-            if not wrote_any_rows:
-                writer.write_table(empty_output_table)
+        if not wrote_any_rows:
+            writer.write_table(empty_output_table)
 
     elapsed_seconds = time.perf_counter() - start_time
     summary = {
@@ -1433,7 +1346,7 @@ def chunk_genome_compare(
         "avg_compute_seconds_per_pair": cumulative_pair_compute_seconds / max(completed_pairs, 1),
         "avg_seconds_per_genome_row": elapsed_seconds / max(total_rows, 1),
         "avg_genome_rows_per_pair": total_rows / max(completed_pairs, 1),
-        "engine": engine,
+        "engine": "polars",
         "genome_scope": genome_scope,
     }
     emit(
@@ -1801,6 +1714,11 @@ def get_gene_stats(
     stb: pl.LazyFrame,
     ref_ani_min_cov: int = 5,
 )->pl.LazyFrame:
+    """Summarize legacy profiles carrying a per-position gene label.
+
+    V2 producers use ``gene_info.gene_statistics`` with authenticated interval
+    annotations instead. This function remains for reading existing V1 data.
+    """
     include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
     profile_columns = [
         pl.col("genome").cast(pl.Utf8).alias("genome"),

@@ -106,7 +106,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install native build dependencies
-        run: sudo apt-get install -y libclang-dev
+        run: sudo apt-get install -y libclang-dev samtools
 
       - name: Install ZipStrain and Maturin
         working-directory: zipstrain
@@ -121,4 +121,6 @@ jobs:
           python -m pip install --no-deps "$RUNNER_TEMP"/rust-plugin-wheels/*.whl
 
       - name: Test Rust profiler and Python parity
-        run: python -m pytest plugins/zipstrain_rust_profiler/tests -q -rs
+        run: |
+          python -m pytest plugins/zipstrain_rust_profiler/tests -q -rs
+          python -m pytest zipstrain/tests/test_v2.py::test_real_bam_selection_cli_and_collection -q -rs

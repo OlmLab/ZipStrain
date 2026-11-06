@@ -1,5 +1,10 @@
 # User Manual
 
+The V2 development branch uses gene-free position profiles and shared Parquet
+annotations. The [V2 guide](v2.md) documents the new file schemas, observed codon
+preparation, selection formulas, and explicit comparison inputs. Use matching
+development software/containers for these files.
+
 ##  An overview of ZipStrain and the data it generates
 
 ZipStrain is a program for microbial metagenomic analysis. The primary use cases for ZipStrain are to accurately determine organism presence / absence in a community, and to perform detailed comparisons between organisms in different samples.
@@ -223,9 +228,8 @@ Usage: zipstrain profile [OPTIONS]
   Any profiling assets (null model, bed file, genome length table, gene range
   table, profiling contract) that are not supplied explicitly are generated
   automatically into a ``profiling_assets`` directory inside ``run-dir`` and
-  reused on subsequent runs when the inputs are unchanged. This means a
-  minimal run needs only ``--input-table``, ``--reference-fasta``, and
-  ``--stb-file``.
+  reused on subsequent runs when the inputs are unchanged. This means a minimal
+  run needs only ``--input-table``, ``--reference-fasta``, and ``--stb-file``.
 
 Required inputs:
   -i, --input-table TEXT      Path to the input table in TSV format containing
@@ -244,57 +248,72 @@ Optional inputs:
                      generated from it for gene-level profiling.
 
 Optional pre-built assets (auto-generated if omitted):
-  -u, --null-model TEXT          Pre-built null model parquet file. Auto-
-                                 generated into <run-dir>/profiling_assets if
-                                 not provided.
-  -g, --gene-range-table TEXT    Pre-built gene range table file. Overrides
-                                 --gene-fasta auto-generation.
-  --profiling-contract TEXT      Pre-built profiling_contract.json. When
-                                 provided, its hashes are written into each
-                                 profile parquet metadata. Auto-generated
-                                 otherwise.
-  -b, --bed-file TEXT            Pre-built BED file for profiling regions.
-                                 Auto-generated into <run-
-                                 dir>/profiling_assets if not provided.
-  -l, --genome-length-file TEXT  Pre-built genome length file. Auto-generated
-                                 into <run-dir>/profiling_assets if not
-                                 provided.
+  -u, --null-model TEXT           Pre-built null model parquet file. Auto-
+                                  generated into <run-dir>/profiling_assets if
+                                  not provided.
+  -g, --gene-info-table, --gene-range-table TEXT
+                                  Pre-built gene_info.parquet catalog. Overrides
+                                  --gene-fasta auto-generation.
+  --profiling-contract TEXT       Pre-built profiling_contract.json. When
+                                  provided, its hashes are written into each
+                                  profile parquet metadata. Auto-generated
+                                  otherwise.
+  -b, --bed-file TEXT             Pre-built BED file for profiling regions.
+                                  Auto-generated into <run-dir>/profiling_assets
+                                  if not provided.
+  -l, --genome-length-file TEXT   Pre-built genome length file. Auto-generated
+                                  into <run-dir>/profiling_assets if not
+                                  provided.
 
 Profiling parameters:
-  --error-rate FLOAT              Error rate used when auto-generating the
-                                  null model.  [default: 0.001]
+  --error-rate FLOAT              Error rate used when auto-generating the null
+                                  model.  [default: 0.001]
   --max-total-reads INTEGER       Maximum coverage considered when auto-
                                   generating the null model.  [default: 50000]
   --p-threshold FLOAT             Significance threshold used when auto-
                                   generating the null model.  [default: 1e-06]
-  --model-type [poisson]          Null model type used when auto-generating
-                                  the null model.  [default: poisson]
-  --force-prepare                 Regenerate all auto-generated profiling
-                                  assets even if valid cached copies exist.
-  --min-mapq INTEGER              Minimum mapping quality for a read to be
-                                  used during profiling.  [default: 0]
-  --min-baseq INTEGER             Minimum base quality for a base to be
-                                  counted during profiling.  [default: 13]
+  --model-type [poisson]          Null model type used when auto-generating the
+                                  null model.  [default: poisson]
+  --force-prepare                 Regenerate all auto-generated profiling assets
+                                  even if valid cached copies exist.
+  --min-mapq INTEGER              Minimum mapping quality for a read to be used
+                                  during profiling.  [default: 0]
+  --min-baseq INTEGER             Minimum base quality for a base to be counted
+                                  during profiling.  [default: 13]
   --min-freq FLOAT                Minimum within-position allele frequency to
-                                  retain after null-model filtering.
-                                  [default: 0.0]
+                                  retain after null-model filtering.  [default:
+                                  0.01]
   --min-read-ani FLOAT            Minimum read ANI (from the NM tag / aligned
                                   span) to use a read; filters low-identity/mis-
                                   mapped reads. Reads lacking an NM tag are
                                   kept. Pass 0 to disable.  [default: 0.95]
   --read-inclusion [proper-pairs|paired|all-mapped]
                                   Which mapped reads are eligible: 'paired'
-                                  keeps single-end reads and concordant pairs
-                                  but drops half-mapped orphans; 'proper-pairs'
-                                  keeps only proper pairs; 'all-mapped' keeps
-                                  every mapped read.  [default: paired]
+                                  (inStrain-style paired_only) keeps a paired
+                                  read only if its mate maps to the same
+                                  scaffold, dropping half-mapped orphans and
+                                  cross-scaffold pairs, while keeping genuinely
+                                  single-end reads; 'proper-pairs' keeps only
+                                  proper pairs; 'all-mapped' keeps every mapped
+                                  read.  [default: paired]
+  --backend TEXT                  Profiling backend: python or an installed
+                                  entry-point plugin (for example,
+                                  rust_profiler).  [default: python]
+  --collect-codons, --prepare-dnds
+                                  Write observed read-phased codon counts and
+                                  reference dN/dS and pN/pS in gene statistics.
+  --allele-integration [consensus|weighted]
+                                  SNS/SNV consequence integration: strongest
+                                  differing allele choice with ties averaged, or
+                                  frequency-weighted choices.  [default:
+                                  consensus]
 
 SNV calling and presence:
   --no-snvs                       Do not call SNVs/SNPs (per-sample
                                   <sample>_SNVs.parquet). SNV calling needs
                                   --reference-fasta.
-  --snv-min-cov INTEGER           Minimum coverage for a site to be eligible
-                                  as an SNV/SNP call.  [default: 5]
+  --snv-min-cov INTEGER           Minimum coverage for a site to be eligible as
+                                  an SNV/SNP call.  [default: 5]
   --presence-ber FLOAT            Breadth-error-ratio threshold for the genome
                                   present/absent call (the Metapresence paper
                                   recommends ~0.8).  [default: 0.5]
@@ -310,14 +329,13 @@ SNV calling and presence:
   --presence-min-coverage FLOAT   Minimum mean coverage required to call a
                                   genome present.  [default: 0.1]
   --genome-taxonomy TEXT          Optional genome->taxonomy TSV to add a
-                                  genome_taxonomy column to genome_stats.
-                                  Auto-discovered next to the reference/STB
-                                  when produced by `zipstrain map` (Sylph
-                                  route).
+                                  genome_taxonomy column to genome_stats. Auto-
+                                  discovered next to the reference/STB when
+                                  produced by `zipstrain map` (Sylph route).
 
 Running parameters:
-  -n, --num-procs INTEGER         Number of processors to use for each
-                                  profiling task.  [default: 8]
+  -n, --num-procs INTEGER         Number of processors to use for each profiling
+                                  task.  [default: 8]
   -m, --max-concurrent-batches INTEGER
                                   Maximum number of concurrent batches to run.
                                   [default: 5]
@@ -325,16 +343,15 @@ Running parameters:
                                   status of batches.  [default: 1]
   -t, --task-per-batch INTEGER    Number of tasks to include in each batch.
                                   [default: 10]
-  -e, --execution-mode TEXT       Execution mode: 'local' or 'slurm'.
-                                  [default: local]
+  -e, --execution-mode TEXT       Execution mode: 'local' or 'slurm'.  [default:
+                                  local]
   -c, --slurm-config TEXT         Path to the SLURM configuration file in json
-                                  format. Required if execution mode is
-                                  'slurm'.
-  -o, --container-engine TEXT     Container engine to use: 'local', 'docker'
-                                  or 'apptainer'.  [default: local]
+                                  format. Required if execution mode is 'slurm'.
+  -o, --container-engine TEXT     Container engine to use: 'local', 'docker' or
+                                  'apptainer'.  [default: local]
   --container-address TEXT        Optional container image/address override.
-                                  Defaults to the current ZipStrain version
-                                  tag for docker/apptainer.
+                                  Defaults to the current ZipStrain version tag
+                                  for docker/apptainer.
 
 Other options:
   -h, --help  Show this message and exit.
@@ -348,12 +365,12 @@ Other options:
 
 Compare profiled samples to each other, one row per genome per sample pair, and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). By default it compares at the genome level; add `--compare-genes` for gene-level comparison. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
 
-There are two engines. `--method standard` (default) does direct pairwise comparison and is simplest. `--method matrix` builds a reusable matrix store, which pays off for repeated all-vs-all comparison. Both are **resumable and extendable**: re-running with the same `--run-dir` and a profiles table that includes new samples computes only the new pairs. See the [Tutorial](./Tutorial.md) for a worked matrix walk-through and [Expected output](./expected_output.md) for the columns.
+`--method table` (default) compares Parquet profiles pairwise in Polars. `--method matrix` builds a reusable matrix store for vectorized all-vs-all comparison. With either method, rerunning in the same run directory after adding samples computes only the new pairs. See the [Tutorial](./Tutorial.md) and [Expected output](./expected_output.md).
 
-Standard comparison runs each pair in a separate ZipStrain process. The generated batch scripts limit its compute pools to the Slurm `--cpus-per-task` allocation, or one CPU per pair when no allocation is exposed. Set `ZIPSTRAIN_CPU_BUDGET` before running to specify a different explicit per-process cap; it cannot exceed an exposed Slurm allocation. `--duckdb-threads` is also bounded by that cap. Multiple concurrent local batches can still use more CPUs in aggregate, so tune `--max-concurrent-batches` to the resources available.
+The table method runs V2 comparisons in one process. For legacy profiles, batched comparison runs each pair in a separate process. Batch scripts use the Slurm `--cpus-per-task` allocation, or one CPU per pair when no allocation is exposed. Set `ZIPSTRAIN_CPU_BUDGET` to specify a per-process cap within that allocation. For concurrent local batches, use `--max-concurrent-batches` to control aggregate CPU use.
 
 ```bash
-# Standard genome comparison from a CSV of profiles
+# Table comparison from a CSV of profiles
 zipstrain compare \
   --profile-db profiles.csv \
   --run-dir out_compare
@@ -369,12 +386,12 @@ zipstrain compare \
 Major options:
 
 - `--profile-db`, `-r, --run-dir` (required)
-- `--method` (`standard`/`matrix`) and `--compare-genes` — pick the engine and genome vs. gene level
+- `--method` (`table`/`matrix`) selects the comparison method. In V2, `--calculate` selects the row level, and `--compare-genes` adds gene ANI to the request.
 - `--scope` (`all` for genomes, `all:all` for genes), `--min-cov` (5), `--min-gene-compare-len` (100)
 - `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`max_identical_stretch`/`gene_ani`/`genome_ani`/`all`; combine metrics with `+`)
 - `--stb-file` — required for `--method matrix`
 - Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16), `--compare-kernel` (`anchor`/`block`, default `anchor`)
-- Standard method: `--engine` (`polars`/`duckdb`), `-d, --duckdb-memory-limit`, `--duckdb-threads`, plus the same execution/container options as `profile`
+- Table method: V2 runs locally in Polars. Legacy profiles also support the batch execution and container options.
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
 
@@ -384,13 +401,18 @@ The calculation names select metrics; `--ani-method` selects how alleles match:
 |---|---|
 | `genome_ani` | Genome-wide ANI under the selected ANI method |
 | `max_identical_stretch` | Longest consecutive stretch of matching positions; reported as `max_consecutive_length` |
-| `gene_ani` | Gene ANI calculations; use `--compare-genes` for per-gene output |
+| `gene_ani` | Gene ANI. With V2 profiles, this selects gene rows. |
 
-In standard genome mode, `gene_ani` selects the existing shared/identical-gene
-summary columns. Matrix gene ANI also computes genome ANI; `--compare-genes`
-selects the per-gene result table. These names do not change output schemas.
-The earlier names `ani`, `ibs`, and `identical_genes` (standard) or `gene`
-(matrix) remain accepted as compatibility aliases. `all` remains the default.
+V2 writes one comparison Parquet. Requesting `gene_ani` or `--dnds` produces
+one row per qualifying gene and sample pair. Requested genome metrics repeat
+on each gene row. `all` includes gene ANI when the shared catalog contains
+genes. Both methods support `--dnds` with the observed codon tables from
+profiling. Matrix selection uses the default `anchor` kernel. See the
+[V2 comparison schema](v2.md#comparison-inputs-and-commands).
+
+With 1.x profiles, `--compare-genes` selects the per-gene result table. The
+earlier names `ani`, `ibs`, and `identical_genes` (table) or `gene` (matrix)
+remain accepted for legacy workflows.
 
 For matrix comparison, `popani` automatically uses the compact bitmask store;
 `conani` and `cosani_<threshold>` automatically use a count store. The selected
@@ -417,28 +439,31 @@ Usage: zipstrain compare [OPTIONS]
   there is no need to run ``zipstrain utilities build-profile-db`` first; a pre-
   built profile-database parquet is also accepted.
 
-  Both methods write ``<run-dir>/all_comparisons.parquet``. Re-running with the
+  V2 writes ``<run-dir>/all_comparisons.parquet`` with one row per genome or one
+  row per qualifying gene when any gene metric is requested. Re-running with the
   same ``--run-dir`` and a profiles table that includes new samples extends the
   existing comparison, computing only the new pairs.
 
 Required inputs:
-  --profile-db TEXT   Profiles to compare: either a CSV with
-                      'profile_name,profile_location' columns (built in memory,
-                      no build-profile-db needed) or a pre-built profile-
-                      database parquet.  [required]
-  -r, --run-dir TEXT  Directory to save the run data.  [required]
+  --profile-db TEXT           Profiles to compare: either a CSV with
+                              'profile_name,profile_location' columns (built in
+                              memory, no build-profile-db needed) or a pre-built
+                              profile-database parquet.  [required]
+  --preprofile-dir DIRECTORY  Shared V2 profiling_assets directory for gene and
+                              selection comparisons.
+  -r, --run-dir TEXT          Directory to save the run data.  [required]
 
 Comparison parameters:
-  --method [standard|matrix]      Comparison engine: 'standard' (direct
-                                  pairwise) or 'matrix' (reusable matrix store,
-                                  good for repeated all-vs-all).  [default:
-                                  standard]
-  --compare-genes                 Compare genes instead of genomes.
+  --method [table|matrix]         Comparison method: 'table' (direct pairwise in
+                                  Polars) or 'matrix' (reusable matrix store).
+                                  [default: table]
+  --compare-genes                 Request per-gene comparison rows. In V2 this
+                                  adds gene ANI to --calculate.
   --scope TEXT                    Comparison scope. Defaults to 'all' for
                                   genomes and 'all:all' for genes.
   --min-cov INTEGER               Minimum coverage to consider a position.
                                   [default: 5]
-  --min-gene-compare-len INTEGER  Minimum gene length to consider for
+  --min-gene-compare-len INTEGER  Minimum number of shared positions for a gene
                                   comparison.  [default: 100]
   --stb-file TEXT                 Scaffold-to-genome mapping file. Required for
                                   --method matrix.
@@ -446,12 +471,19 @@ Comparison parameters:
                                   'conani', 'cosani_0.4').  [default: popani]
   --calculate TEXT                Metrics to compute: max_identical_stretch,
                                   gene_ani, genome_ani. Combine with '+', or use
-                                  all. Use genome_ani for ANI only with the
-                                  selected --ani-method. Use --compare-genes for
-                                  per-gene output; standard gene mode always
-                                  computes gene ANI.  [default: all]
+                                  all. In V2, requesting gene ANI selects per-
+                                  gene rows, and all includes gene ANI when
+                                  genes are available.  [default: all]
+  --dnds                          Calculate gene dN/dS and pN/pS from sibling
+                                  observed codon tables. Matrix requires the
+                                  anchor kernel (V2).
+  --allele-integration [consensus|weighted]
+                                  SNS/SNV consequence integration: strongest
+                                  differing allele choice with ties averaged, or
+                                  frequency-weighted choices.  [default:
+                                  consensus]
   --comp-db-file TEXT             Optional existing comparison parquet to
-                                  resume/extend (standard method). Auto-detected
+                                  resume/extend (table method). Auto-detected
                                   from --run-dir if omitted.
   --allow-mismatch                Skip profile contract validation when building
                                   the profile database from a CSV.
@@ -460,7 +492,8 @@ Matrix method (--method matrix):
   --bed-file TEXT                 BED file for the matrix store (--method
                                   matrix). Auto-discovered from profiling_assets
                                   if omitted.
-  --gene-range-table TEXT         Gene range table for gene ANI (--method
+  --gene-info-table, --gene-range-table TEXT
+                                  Gene range table for gene ANI (--method
                                   matrix). Auto-discovered from profiling_assets
                                   if omitted.
   --backend [numpy|torch|torch-cpu|torch-cuda|torch-mps]
@@ -480,16 +513,9 @@ Matrix method (--method matrix):
 
 Output:
   --no-csv     Do not write a companion .csv next to the comparison parquet.
-  --force-csv  Write the companion .csv even when the estimated size exceeds 100
-               MB.
+  --force-csv  Also write a companion .csv. V2 exports Parquet by default.
 
-Standard method / engine:
-  --engine [polars|duckdb]        Comparison engine for standard compare tasks.
-                                  [default: polars]
-  -d, --duckdb-memory-limit TEXT  DuckDB memory limit for compare tasks (e.g.,
-                                  2GB).
-  --duckdb-threads INTEGER        Number of DuckDB worker threads for compare
-                                  tasks.
+Table method (--method table):
   -m, --max-concurrent-batches INTEGER
                                   Maximum number of concurrent batches to run.
                                   [default: 5]
@@ -635,7 +661,7 @@ Options:
 Outputs:
 
 - `genomes_bed_file.bed`
-- `gene_range_table.tsv`
+- `gene_info.parquet`
 - `genome_lengths.parquet`
 - `null_model.parquet`
 - `profiling_contract.json`
@@ -749,10 +775,6 @@ Options:
 - `-g, --genome` (default: `all`)
 - `-a, --ani-method` (default: `popani`)
 - `--calculate` (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations; default: `all`)
-- `--engine` (`polars|duckdb`, default: `polars`)
-- `--duckdb-memory-limit`
-- `--duckdb-temp-directory`
-- `--duckdb-threads`
 
 #### `zipstrain utilities generate-sample-pair`
 
@@ -782,11 +804,10 @@ zipstrain utilities chunk-genome-compare \
   --pair-table genome_pairs.parquet \
   --stb-file mapping.stb \
   --output-file chunk_compare.parquet \
-  --workers 8 \
-  --engine polars
+  --workers 8
 ```
 
-This command runs standard genome comparisons directly inside Python for one pair-table chunk.
+This command runs Polars genome comparisons directly inside Python for one pair-table chunk.
 It is intended as an experimental utility for benchmarking or ad hoc compare runs, and
 does not change the main workflow commands.
 
@@ -809,10 +830,6 @@ Options:
 - `-g, --genome` (default: `all`)
 - `-a, --ani-method` (default: `popani`)
 - `--calculate` (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations; default: `all`)
-- `--engine` (`polars|duckdb`, default: `polars`)
-- `--duckdb-memory-limit`
-- `--duckdb-temp-directory`
-- `--duckdb-threads`
 
 The final console summary includes:
 
@@ -844,10 +861,6 @@ Options:
 - `-o, --output-file` (required)
 - `-g, --scope` (default: `all:all`)
 - `-a, --ani-method` (default: `popani`)
-- `--engine` (`polars|duckdb`, default: `polars`)
-- `--duckdb-memory-limit`
-- `--duckdb-temp-directory`
-- `--duckdb-threads`
 
 #### `zipstrain utilities to-complete-table`
 
@@ -996,7 +1009,7 @@ zipstrain utilities build-matrix-db \
   --output-file matrix_db.h5 \
   --bed-file genomes_bed_file.bed \
   --stb-file reference.stb \
-  --gene-range-table gene_range_table.tsv \
+  --gene-info-table gene_info.parquet \
   --storage-mode bitmask \
   --min-cov 5 \
   --memory-limit-gb 16
@@ -1336,7 +1349,7 @@ The bundled `zipstrain.nf` pipeline runs the ZipStrain workflow end to end — r
 Use Nextflow when you are processing **many samples**, running on an **HPC cluster or scheduler**, or want a **reproducible, containerized, restartable** run of the whole chain from one command. Use the CLI when you are exploring, working on a handful of samples, or want the matrix comparison workflow. The two produce the same output tables — see [CLI vs. Nextflow](#an-overview-of-zipstrain-and-the-data-it-generates) at the top of this page for the full trade-off.
 
 !!! note "Scope"
-    The standard profile-based compare workflows are available in Nextflow. The newer **matrix-store** comparison workflow is currently CLI-only (`zipstrain compare --method matrix`); see the [Tutorial](./Tutorial.md) and the [`compare`](#zipstrain-compare) reference. For a worked standard example end to end, the [Tutorial](./Tutorial.md) has both a CLI route and a Nextflow route.
+    The profile-based Polars comparison workflows are available in Nextflow. The newer **matrix-store** comparison workflow is currently CLI-only (`zipstrain compare --method matrix`); see the [Tutorial](./Tutorial.md) and the [`compare`](#zipstrain-compare) reference. For a worked standard example end to end, the [Tutorial](./Tutorial.md) has both a CLI route and a Nextflow route.
 
 ### Setup
 
@@ -1391,8 +1404,7 @@ Conventions used by every example below:
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows. Batched mode defaults to one simultaneous pair per task; it divides `task.cpus` among simultaneous pairs and rejects a pair count above the task CPU allocation.
 - `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
-- `--compare_engine` (`polars` | `duckdb`, default `polars`) and `--compare_duckdb_memory_limit` (DuckDB only). Without an explicit memory limit, each DuckDB pair receives 70% of its share of the Nextflow task memory; an explicit limit is per pair and should fit within that share.
-- `--compare_calculate`: metrics to compute (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations). The same names work in single and batched mode with either Polars or DuckDB.
+- `--compare_calculate`: metrics to compute (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations). The same names work in single and batched Polars comparisons.
 
 Notes:
 

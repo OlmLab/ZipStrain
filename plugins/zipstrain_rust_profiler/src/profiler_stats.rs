@@ -23,20 +23,18 @@ struct Counts {
 }
 
 impl Counts {
-    fn add(&mut self, bases: [i32; 4], reference: Option<u8>, genome: bool) {
+    fn add(&mut self, bases: [i32; 4], reference: Option<u8>) {
         let depth: i32 = bases.iter().sum();
         self.sites += 1;
         self.bases += i64::from(depth);
-        if genome {
-            *self.depth_histogram.entry(depth).or_default() += 1;
-            if depth >= 5 {
-                self.deep_sites += 1;
-            }
-            if depth > 5 {
-                self.hetero_denominator += 1;
-                if (*bases.iter().max().unwrap_or(&0) as f64 / depth as f64) <= 0.8 {
-                    self.hetero_sites += 1;
-                }
+        *self.depth_histogram.entry(depth).or_default() += 1;
+        if depth >= 5 {
+            self.deep_sites += 1;
+        }
+        if depth > 5 {
+            self.hetero_denominator += 1;
+            if (*bases.iter().max().unwrap_or(&0) as f64 / depth as f64) <= 0.8 {
+                self.hetero_sites += 1;
             }
         }
         if let Some(mask) = reference {
@@ -55,14 +53,12 @@ impl Counts {
                 if bases[idx] == *bases.iter().max().unwrap_or(&0) {
                     self.ref_consensus_shared += 1;
                 }
-                if genome {
-                    let n = bases.iter().filter(|v| **v > 0).count();
-                    if n == 1 && bases[idx] == 0 {
-                        self.sns += 1;
-                    }
-                    if n >= 2 {
-                        self.snv += 1;
-                    }
+                let n = bases.iter().filter(|v| **v > 0).count();
+                if n == 1 && bases[idx] == 0 {
+                    self.sns += 1;
+                }
+                if n >= 2 {
+                    self.snv += 1;
                 }
             }
         }
@@ -106,7 +102,6 @@ impl Counts {
 #[derive(Default)]
 pub(super) struct Accumulator {
     genomes: HashMap<String, Counts>,
-    genes: HashMap<(String, String), Counts>,
 }
 
 impl Accumulator {
@@ -126,15 +121,14 @@ impl Accumulator {
                 .ok_or_else(|| "wrong integer column".into())
         };
         let genomes = strings(1)?;
-        let genes = strings(2)?;
-        let a = ints(4)?;
-        let c = ints(5)?;
-        let g = ints(6)?;
-        let t = ints(7)?;
+        let a = ints(3)?;
+        let c = ints(4)?;
+        let g = ints(5)?;
+        let t = ints(6)?;
         let reference = if with_ref {
             Some(
                 batch
-                    .column(8)
+                    .column(7)
                     .as_any()
                     .downcast_ref::<UInt8Array>()
                     .ok_or("wrong reference column")?,
@@ -148,13 +142,7 @@ impl Accumulator {
             self.genomes
                 .entry(genomes.value(i).to_owned())
                 .or_default()
-                .add(bases, mask, true);
-            if genes.value(i) != "NA" {
-                self.genes
-                    .entry((genomes.value(i).to_owned(), genes.value(i).to_owned()))
-                    .or_default()
-                    .add(bases, mask, false);
-            }
+                .add(bases, mask);
         }
         Ok(())
     }
@@ -165,63 +153,7 @@ impl Accumulator {
         inputs: &Inputs,
         stem: &str,
     ) -> AnyResult<()> {
-        self.write_gene_stats(args, inputs, stem)?;
         self.write_genome_stats(args, inputs, stem)?;
-        Ok(())
-    }
-
-    fn write_gene_stats(&self, args: &Args, inputs: &Inputs, stem: &str) -> AnyResult<()> {
-        let with_ref = args.reference.is_some();
-        let mut fields = vec![
-            Field::new("genome", DataType::LargeUtf8, true),
-            Field::new("gene", DataType::LargeUtf8, true),
-            Field::new("length", DataType::Int64, true),
-            Field::new("breadth", DataType::Float64, true),
-            Field::new("coverage", DataType::Float64, true),
-        ];
-        if with_ref {
-            fields.push(Field::new("ref_ani", DataType::Float64, true));
-        }
-        let schema = Arc::new(Schema::new(fields));
-        let mut seen = BTreeMap::new();
-        for (chrom, genes) in &inputs.genes {
-            let genome = inputs.genome.get(chrom).map(String::as_str).unwrap_or("NA");
-            for gene in genes {
-                seen.insert(
-                    (genome.to_owned(), gene.name.clone()),
-                    i64::from(gene.end - gene.start + 1),
-                );
-            }
-        }
-        let mut genome = Vec::new();
-        let mut gene = Vec::new();
-        let mut length = Vec::new();
-        let mut breadth = Vec::new();
-        let mut coverage = Vec::new();
-        let mut ref_ani = Vec::new();
-        for ((g, n), len) in seen {
-            let counts = self.genes.get(&(g.clone(), n.clone()));
-            genome.push(g);
-            gene.push(n);
-            length.push(len);
-            breadth.push(counts.map_or(0.0, |c| c.sites as f64 / len as f64));
-            coverage.push(counts.map_or(0.0, |c| c.bases as f64 / len as f64));
-            ref_ani.push(counts.and_then(Counts::ref_ani));
-        }
-        let mut arrays: Vec<ArrayRef> = vec![
-            Arc::new(LargeStringArray::from(genome)),
-            Arc::new(LargeStringArray::from(gene)),
-            Arc::new(Int64Array::from(length)),
-            Arc::new(Float64Array::from(breadth)),
-            Arc::new(Float64Array::from(coverage)),
-        ];
-        if with_ref {
-            arrays.push(Arc::new(Float64Array::from(ref_ani)));
-        }
-        let output = args.output_dir.join(format!("{stem}_gene_stats.parquet"));
-        let mut w = writer(&output, schema.clone(), vec![])?;
-        w.write(&RecordBatch::try_new(schema, arrays)?)?;
-        w.close()?;
         Ok(())
     }
 

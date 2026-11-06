@@ -124,14 +124,12 @@ def test_nextflow_calls_updated_profile_commands():
 
 def test_nextflow_compare_profile_tables_use_profiles_column_and_engine_param():
     text = NEXTFLOW_FILE.read_text()
-    assert 'params.compare_engine="polars"' in text
     assert "getProfilesTableColumn" in text
     assert "getProfileSampleNamesTableColumn" in text
     assert "input_table.containsKey('profiles')" in text
     assert "profile_location" in text
     assert "--profile-location-1" in text
     assert "--profile-location-2" in text
-    assert "--engine ${params.compare_engine}" in text
 
 
 def test_nextflow_requires_mode_and_defaults_to_batched_compare():
@@ -147,7 +145,6 @@ def test_nextflow_budgets_cpu_per_pair_and_profiles():
     assert "params.batch_compare_n_parallel=1" in text
     assert "def threads_per_pair = task.cpus.intdiv(parallel_pairs)" in text
     assert "export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}" in text
-    assert "--duckdb-threads ${threads_per_pair}" in text
     assert "--halt soon,fail=1" in text
     assert "export ZIPSTRAIN_CPU_BUDGET=${task.cpus}" in text
 
@@ -271,8 +268,7 @@ def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log:
     "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
 )
 @pytest.mark.parametrize("parallel_mode", ["single", "batched"])
-@pytest.mark.parametrize("compare_engine", ["polars", "duckdb"])
-def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode, compare_engine):
+def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode):
     """
     Actually compiles and executes zipstrain.nf, rather than grepping its text.
 
@@ -311,7 +307,6 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode, compare_e
             "--input_table", str(profiles_csv),
             "--stb", str(stb_path),
             "--parallel_mode", parallel_mode,
-            "--compare_engine", compare_engine,
             "--compare_calculate", "genome_ani+max_identical_stretch+gene_ani",
             "--batch_compare_n_parallel", "2",
             "--output_dir", str(output_dir),

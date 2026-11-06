@@ -41,7 +41,6 @@ struct Args {
     bed: PathBuf,
     stb: PathBuf,
     null_model: PathBuf,
-    gene_range: Option<PathBuf>,
     reference: Option<PathBuf>,
     contract: Option<PathBuf>,
     output_dir: PathBuf,
@@ -62,7 +61,6 @@ fn parse_args() -> AnyResult<Args> {
         "--bed",
         "--stb",
         "--null-model",
-        "--gene-range",
         "--reference",
         "--profiling-contract",
         "--output-dir",
@@ -107,7 +105,6 @@ fn parse_args() -> AnyResult<Args> {
         bed: required("--bed")?,
         stb: required("--stb")?,
         null_model: required("--null-model")?,
-        gene_range: a.get("--gene-range").map(PathBuf::from),
         reference: a.get("--reference").map(PathBuf::from),
         contract: a.get("--profiling-contract").map(PathBuf::from),
         output_dir: required("--output-dir")?,
@@ -138,17 +135,10 @@ struct Region {
     start: i64,
     end: i64,
 }
-#[derive(Clone)]
-struct Gene {
-    name: String,
-    start: i32,
-    end: i32,
-}
 struct Inputs {
     tasks: Vec<Vec<Region>>,
     regions: HashMap<String, Vec<Region>>,
     genome: HashMap<String, String>,
-    genes: HashMap<String, Vec<Gene>>,
     null: Vec<i64>,
     genome_lengths: HashMap<String, i64>,
 }
@@ -233,30 +223,6 @@ fn load_stb(path: &Path) -> AnyResult<HashMap<String, String>> {
     Ok(map)
 }
 
-fn load_genes(path: Option<&Path>) -> AnyResult<HashMap<String, Vec<Gene>>> {
-    let mut map: HashMap<String, Vec<Gene>> = HashMap::new();
-    let Some(path) = path else { return Ok(map) };
-    for line in BufReader::new(File::open(path)?).lines() {
-        let line = line?;
-        let cols: Vec<_> = line.split('\t').map(str::trim).collect();
-        if cols.len() < 4 {
-            continue;
-        }
-        let (Ok(start), Ok(end)) = (cols[2].parse::<i32>(), cols[3].parse::<i32>()) else {
-            continue;
-        };
-        map.entry(cols[1].to_owned()).or_default().push(Gene {
-            name: cols[0].to_owned(),
-            start,
-            end,
-        });
-    }
-    for rows in map.values_mut() {
-        rows.sort_by_key(|g| g.start);
-    }
-    Ok(map)
-}
-
 fn int_at(array: &dyn Array, i: usize) -> AnyResult<i64> {
     if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
         return Ok(a.value(i));
@@ -301,7 +267,6 @@ fn load_null(path: &Path) -> AnyResult<Vec<i64>> {
 fn load_inputs(args: &Args) -> AnyResult<Inputs> {
     let bed = read_bed(&args.bed)?;
     let genome = load_stb(&args.stb)?;
-    let genes = load_genes(args.gene_range.as_deref())?;
     let null = load_null(&args.null_model)?;
     let tasks = split_tasks(&bed, args.num_chunks);
     let mut regions: HashMap<String, Vec<Region>> = HashMap::new();
@@ -315,7 +280,6 @@ fn load_inputs(args: &Args) -> AnyResult<Inputs> {
         tasks,
         regions,
         genome,
-        genes,
         null,
         genome_lengths,
     })
@@ -380,7 +344,6 @@ fn profile_schema(with_ref: bool) -> Arc<Schema> {
     let mut fields = vec![
         Field::new("chrom", DataType::LargeUtf8, true),
         Field::new("genome", DataType::LargeUtf8, true),
-        Field::new("gene", DataType::LargeUtf8, true),
         Field::new("pos", DataType::Int32, true),
         Field::new("A", DataType::Int32, true),
         Field::new("C", DataType::Int32, true),
@@ -397,7 +360,6 @@ fn profile_schema(with_ref: bool) -> Arc<Schema> {
 struct ProfileBatch {
     chrom: Vec<String>,
     genome: Vec<String>,
-    gene: Vec<String>,
     pos: Vec<i32>,
     a: Vec<i32>,
     c: Vec<i32>,
@@ -421,7 +383,6 @@ impl ProfileBatch {
         let mut arrays: Vec<ArrayRef> = vec![
             Arc::new(LargeStringArray::from_iter_values(self.chrom.drain(..))),
             Arc::new(LargeStringArray::from_iter_values(self.genome.drain(..))),
-            Arc::new(LargeStringArray::from_iter_values(self.gene.drain(..))),
             Arc::new(Int32Array::from(std::mem::take(&mut self.pos))),
             Arc::new(Int32Array::from(std::mem::take(&mut self.a))),
             Arc::new(Int32Array::from(std::mem::take(&mut self.c))),
@@ -567,14 +528,6 @@ fn run_task(
                     *count = 0;
                 }
             }
-            let gene = inputs
-                .genes
-                .get(chrom)
-                .and_then(|genes| {
-                    let at = genes.partition_point(|g| g.start <= pos);
-                    (at > 0 && pos <= genes[at - 1].end).then(|| genes[at - 1].name.as_str())
-                })
-                .unwrap_or("NA");
             batch.chrom.push(chrom.to_owned());
             batch.genome.push(
                 inputs
@@ -584,7 +537,6 @@ fn run_task(
                     .unwrap_or("NA")
                     .to_owned(),
             );
-            batch.gene.push(gene.to_owned());
             batch.pos.push(pos);
             batch.a.push(counts[0]);
             batch.c.push(counts[1]);
@@ -690,7 +642,7 @@ fn merge_chunks(
                 .downcast_ref::<LargeStringArray>()
                 .ok_or("chrom type")?;
             let pos = batch
-                .column(3)
+                .column(2)
                 .as_any()
                 .downcast_ref::<Int32Array>()
                 .ok_or("pos type")?;
@@ -776,6 +728,67 @@ fn main() -> AnyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_batches_round_trip_without_gene_columns() -> AnyResult<()> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let tmp = env::temp_dir().join(format!("zipstrain-profile-{}-{stamp}", std::process::id()));
+        fs::create_dir(&tmp)?;
+        for with_ref in [false, true] {
+            let schema = profile_schema(with_ref);
+            let mut names = vec!["chrom", "genome", "pos", "A", "C", "G", "T"];
+            if with_ref {
+                names.push("ref_base_bitmask");
+            }
+            assert_eq!(
+                schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().as_str())
+                    .collect::<Vec<_>>(),
+                names
+            );
+            let path = tmp.join(format!("{with_ref}.parquet"));
+            let mut output = writer(&path, schema.clone(), vec![])?;
+            let mut batch = ProfileBatch {
+                chrom: vec!["chr1".into()],
+                genome: vec!["genome1".into()],
+                pos: vec![7],
+                a: vec![8],
+                c: vec![0],
+                g: vec![2],
+                t: vec![0],
+                reference: if with_ref { vec![1] } else { vec![] },
+            };
+            batch.flush(&mut output, &schema, with_ref)?;
+            assert_eq!(batch.len(), 0);
+            output.close()?;
+            let restored = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?
+                .build()?
+                .next()
+                .ok_or("missing position batch")??;
+            assert_eq!(restored.schema().fields(), schema.fields());
+            assert_eq!(int_at(restored.column(2).as_ref(), 0)?, 7);
+            assert_eq!(int_at(restored.column(3).as_ref(), 0)?, 8);
+            assert_eq!(int_at(restored.column(5).as_ref(), 0)?, 2);
+            if with_ref {
+                assert_eq!(
+                    restored
+                        .column(7)
+                        .as_any()
+                        .downcast_ref::<UInt8Array>()
+                        .ok_or("wrong reference type")?
+                        .value(0),
+                    1
+                );
+            }
+            stats::Accumulator::default().add_batch(&restored, with_ref)?;
+        }
+        fs::remove_dir_all(tmp)?;
+        Ok(())
+    }
 
     #[test]
     fn tasks_preserve_disjoint_lexicographic_intervals() {

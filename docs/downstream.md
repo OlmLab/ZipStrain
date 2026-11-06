@@ -16,6 +16,11 @@ Most comparison-driven functions expect a `pl.LazyFrame` with some or all of the
 - `identical_gene_count`
 - `perc_id_genes`
 
+When a V2 comparison includes both genome and gene metrics, genome values
+repeat across the gene rows. For a genome-level analysis, select the genome
+columns and keep one row per `sample_1`, `sample_2`, and `genome`. Use a
+genome-only comparison if the analysis needs genomes with no qualifying genes.
+
 Population-aware functions also expect a `sample_to_population` lazy frame with:
 
 - `sample`

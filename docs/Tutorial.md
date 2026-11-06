@@ -210,13 +210,13 @@ That's the whole command. By default it compares **genomes**; every profile in t
 
 #### Two comparison methods
 
-`zipstrain compare` has two engines, chosen with `--method`. They compute the **same values for the genome metrics supported by both** and write the result to the same `all_comparisons.parquet` filename. The standard table can include additional requested summary columns that are not emitted by the matrix method. The methods differ mainly in *how* they calculate the shared metrics, which changes how well each scales to repeated, growing analyses.
+`zipstrain compare` offers two methods, selected with `--method`. Both write `all_comparisons.parquet` and support genome metrics, gene metrics, and optional selection metrics for V2 profiles. Matrix selection uses the default `anchor` kernel and observed codon tables from profiling.
 
-**Standard (`--method standard`, the default)** compares profiles **directly and pairwise**. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.
+**Table (`--method table`, the default)** compares profiles **directly and pairwise in Polars**. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.
 
 **Matrix (`--method matrix`)** first turns your profiles into a reusable HDF5 **matrix store**, then performs vectorized all-vs-all comparisons. For default popANI, each covered position is packed into one byte: `A=1`, `T=2`, `C=4`, and `G=8`, with multiple observed alleles combined by bitwise OR (for example, `A+C=5`). For conANI or cosANI, ZipStrain instead stores the four `A,T,C,G` counts. The high-level command chooses the correct representation automatically. Comparison can run on a **GPU** (`--backend torch-mps` on Apple Silicon, `--backend torch-cuda` on NVIDIA), records completed pairs in a resumable DuckDB, and appends new samples without rebuilding existing rows. This approach is highly optimized when you have many samples but only one or a few genomes, because parallelization across sample pairs is efficient. It needs the matrix extra (`pip install "zipstrain[matrix]"`).
 
-| | Standard | Matrix |
+| | Table | Matrix |
 |---|----------|--------|
 | **How it compares** | Direct, pairwise from profiles | Vectorized math over a prebuilt matrix store |
 | **Persistent artifact** | None (recomputes each run) | Reusable HDF5 store + resumable compare DB |
@@ -226,7 +226,7 @@ That's the whole command. By default it compares **genomes**; every profile in t
 
 Both are invoked the same way — just add `--method matrix` to switch:
 
-=== "Standard (default)"
+=== "Table (default)"
 
     ```bash
     zipstrain compare \
@@ -263,7 +263,7 @@ zipstrain compare \
     --run-dir out_compare
 ```
 
-This works for both methods: the matrix method **appends** the new profiles to its store, and the standard method **resumes** from the existing `all_comparisons.parquet` — either way, previously computed pairs are not redone.
+This works for both methods: the matrix method **appends** the new profiles to its store, and the table method **resumes** from the existing `all_comparisons.parquet` — either way, previously computed pairs are not redone.
 
 #### Understanding the output
 
@@ -382,7 +382,6 @@ nextflow run zipstrain.nf \
   --compare_genome_scope all \
   --compare_calculate genome_ani \
   --compare_ani_method popani \
-  --compare_engine duckdb \
   --output_dir out_sra_compare \
   -c conf.config \
   -profile docker \

@@ -12,6 +12,8 @@ nav:
   - usermanual.md
   - installation.md
   - plugins.md
+  - V2 development: v2.md
+  - Performance benchmarks: benchmarks.md
   - Tutorial.md
   - expected_output.md
   - downstream.md
@@ -25,6 +27,7 @@ extra_css:
 
 extra_javascript:
   - assets/paramsel_tabs.js
+  - assets/benchmark_charts.js
 
 markdown_extensions:
   - toc:

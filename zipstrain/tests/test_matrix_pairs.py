@@ -790,7 +790,6 @@ def _expected_classic_pairwise_results(
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                engine="polars",
                 calculate=calculate,
                 stb_file=None,
             )
@@ -2026,7 +2025,6 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                engine="polars",
                 calculate="ani",
                 stb_file=None,
             )
@@ -2082,7 +2080,6 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                engine="polars",
                 calculate="ani+ibs",
                 stb_file=None,
             )
@@ -2776,7 +2773,6 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                engine="polars",
                 calculate="ani",
                 stb_file=None,
             )
@@ -2855,7 +2851,6 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                engine="polars",
                 calculate="ani",
                 stb_file=None,
             )
@@ -2909,7 +2904,6 @@ def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                engine="polars",
                 calculate="ani",
                 stb_file=None,
             )
@@ -3365,7 +3359,6 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             genome_scope="all",
             ani_method="popani",
-            engine="polars",
             calculate="ani+ibs",
             stb_file=None,
         )
@@ -3611,7 +3604,6 @@ def test_count_matrix_ani_methods_match_numpy_and_torch(
         min_cov=5,
         genome_scope="all",
         ani_method=ani_method,
-        engine="polars",
         calculate="ani",
         stb_file=None,
     ).collect(engine="streaming")

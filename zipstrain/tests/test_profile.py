@@ -1,3 +1,4 @@
+from zipstrain import gene_info as gi
 from zipstrain import profile
 from zipstrain import cli as cli_module
 from zipstrain import utils
@@ -353,8 +354,9 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
     reference_fasta.write_text(">chr1\nACG\n>chr2\nTAC\n")
     bed_file = tmp_path / "genomes.bed"
     bed_file.write_text("chr1\t0\t3\nchr2\t0\t3\n")
-    gene_range_table = tmp_path / "gene_ranges.tsv"
-    gene_range_table.write_text("geneA\tchr1\t1\t3\ngeneB\tchr2\t1\t3\n")
+    gene_range_table = tmp_path / "gene_info.parquet"
+    gene_fasta = tmp_path / "genes.fa"
+    gene_fasta.write_text(">chr1_1 # 1 # 3 # 1 # partial=00\nACG\n>chr2_1 # 1 # 3 # 1 # partial=00\nTAC\n")
     stb_file = tmp_path / "stb.tsv"
     stb_file.write_text("chr1\tgenome1\nchr2\tgenome2\n")
     null_model_file = tmp_path / "null_model.parquet"
@@ -365,6 +367,7 @@ def _write_profile_test_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, 
         }
     ).write_parquet(null_model_file)
     stb_lf = profile.read_stb(stb_file)
+    gi.write_gene_info(reference_fasta, gene_fasta, stb_file, gene_range_table)
     return bam_file, reference_fasta, bed_file, gene_range_table, stb_file, null_model_file, stb_lf
 
 
@@ -513,14 +516,14 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     assert not (tmp_path / "tmp").exists()
 
     prof = pl.read_parquet(profile_file)
-    assert prof.columns == ["chrom", "genome", "gene", "pos", "A", "C", "G", "T", "ref_base_bitmask"]
+    assert prof.columns == ["chrom", "genome", "pos", "A", "C", "G", "T", "ref_base_bitmask"]
     assert prof.height == 6
     assert prof.schema["chrom"] == pl.Utf8
     assert prof.schema["genome"] == pl.Utf8
     assert observed_limits
     assert observed_reference_flags
     assert all(observed_reference_flags)
-    assert prof.schema["gene"] == pl.Utf8
+    assert "gene" not in prof.columns
     assert prof.schema["ref_base_bitmask"] == pl.UInt8
     assert prof.to_dicts() == prof.sort(["chrom", "pos"]).to_dicts()
     assert prof["ref_base_bitmask"].to_list() == [1, 2, 4, 8, 1, 2]
@@ -530,8 +533,8 @@ def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.Monk
     )
 
     gene_stats = pl.read_parquet(gene_stats_file)
-    g1 = gene_stats.filter((pl.col("genome") == "genome1") & (pl.col("gene") == "geneA")).to_dicts()[0]
-    g2 = gene_stats.filter((pl.col("genome") == "genome2") & (pl.col("gene") == "geneB")).to_dicts()[0]
+    g1 = gene_stats.filter((pl.col("genome") == "genome1") & (pl.col("chrom") == "chr1")).to_dicts()[0]
+    g2 = gene_stats.filter((pl.col("genome") == "genome2") & (pl.col("chrom") == "chr2")).to_dicts()[0]
     assert g1["length"] == 3
     assert g1["breadth"] == pytest.approx(1.0)
     assert g1["coverage"] == pytest.approx(8.0)
@@ -617,7 +620,7 @@ def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monk
     assert genome_stats_file.exists()
 
     prof = pl.read_parquet(profile_file)
-    assert set(prof["gene"].unique().to_list()) == {"NA"}
+    assert "gene" not in prof.columns
     assert "ref_base_bitmask" in prof.columns
     assert (
         pl.read_parquet_metadata(profile_file)[profile.PROFILE_SORTED_METADATA_KEY]
@@ -625,7 +628,7 @@ def test_profile_bam_end_to_end_outputs_without_gene_ranges(tmp_path: Path, monk
     )
 
     gene_stats = pl.read_parquet(gene_stats_file)
-    assert gene_stats.columns == ["genome", "gene", "length", "breadth", "coverage", "ref_ani"]
+    assert gene_stats.columns == list(gi.GENE_STATS_COLUMNS)
     assert gene_stats.height == 0
 
     genome_stats = pl.read_parquet(genome_stats_file)
@@ -652,7 +655,7 @@ def test_profile_bam_end_to_end_outputs_without_reference_base_column(tmp_path: 
     assert "ref_base_bitmask" not in prof.columns
     gene_stats = pl.read_parquet(tmp_path / "sample_gene_stats.parquet")
     genome_stats = pl.read_parquet(tmp_path / "sample_genome_stats.parquet")
-    assert "ref_ani" not in gene_stats.columns
+    assert gene_stats["ref_ani"].null_count() == gene_stats.height
     assert "ref_ani" not in genome_stats.columns
     assert observed_reference_flags
     assert not any(observed_reference_flags)
@@ -726,7 +729,7 @@ def test_cli_profile_single_bam_outputs_without_gene_ranges(tmp_path: Path, monk
     )
     assert result.exit_code == 0, result.output
     prof = pl.read_parquet(out_dir / "sample_profile.parquet")
-    assert set(prof["gene"].unique().to_list()) == {"NA"}
+    assert "gene" not in prof.columns
     assert "ref_base_bitmask" in prof.columns
 
 

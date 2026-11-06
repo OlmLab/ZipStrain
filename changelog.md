@@ -4,6 +4,20 @@ Entries are brief by design and describe changes relative to the previous releas
 
 ## Unreleased
 
+V2 development (`2.0.0.dev0`):
+
+- Preprofile writes an authenticated `gene_info.parquet` catalog and reference-codon definitions. Content-derived gene IDs and reference/annotation fingerprints replace unscoped row numbering.
+- New position profiles omit gene labels; gene summaries use overlap-safe interval aggregation and the agreed 15-column schema.
+- The V2 Rust profiler writes gene-free worker chunks and final position tables directly, removing native gene-range loading and redundant gene summaries. Shared V2 code produces gene statistics and optional selection metrics.
+- Optional observed codon counts preserve read phasing, deduplicate overlapping mates, and feed SNS dN/dS and SNV pN/pS using the `gene-overlap` consensus/weighted integration definitions. Full-codon context fixes the shared-nonreference-background classification bug; formulas and exclusions are documented in the V2 guide.
+- Explicit-input Polars pair and collection comparisons use shared preprofile assets, validate source evidence, and retain content-addressed completed-pair results for resuming/appending samples. CLI, Nextflow, matrix readers, and the native-backend adapter understand the new files.
+- V2 compares into one Parquet. Genome-only requests use genome rows. Requesting gene metrics uses gene rows and includes any requested genome metrics on those rows.
+- Matrix comparison supports `--dnds` with weighted and consensus integration. It processes observed codons in NumPy batches, caches completed pairs, and applies the same gene position counts and comparable-length filter as table comparison.
+- Comparison offers `--method table` (the default) and `--method matrix`. The table method uses the profile's Parquet sort marker for a Polars streaming merge join. The former DuckDB table engine and its options have been removed.
+- The PyPI release workflow benchmarks whole comparisons and isolated pairs on synthetic single and multiple genome workloads, and updates the [performance charts](docs/benchmarks.md) with measured runtime and peak resident memory.
+- Release benchmarks compare matrix and table selection workloads in both weighted and consensus modes, and verify parity before recording the results.
+- Every new function has tests and documentation; see [V2 development](docs/v2.md).
+
 ## 1.3.0
 
 Compared with `1.2.3`:
