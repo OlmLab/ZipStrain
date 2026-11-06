@@ -238,7 +238,7 @@ def test_pair_alignment_genome_gene_comparison_and_annotation_guards(assets):
     aligned = compare.align_profiles(a, b).collect()
     assert aligned.height == 21 and "A_2" in aligned.columns and "gene" not in aligned.columns
     genome = compare.compare_profiles(a, b, preprofile_dir=root, calculate="genome_ani").collect()
-    assert "gene_id" not in genome.columns and "max_consecutive_length" not in genome.columns
+    assert "gene_id" not in genome.columns and "max_identical_stretch" not in genome.columns
     assert set(genome["genome"]) == {"genomeA", "genomeB"}
     assert genome.filter(pl.col("genome") == "genomeA")["total_positions"][0] == 21
     gene_only = compare.compare_profiles(a, b, preprofile_dir=root, calculate="gene_ani").collect()
@@ -248,13 +248,13 @@ def test_pair_alignment_genome_gene_comparison_and_annotation_guards(assets):
     assert gene.height == 3 and gene["gene_total_positions"].to_list() == [9]*3
     assert gene["total_positions"].to_list() == [21]*3
     assert gene["share_allele_pos"].to_list() == [20]*3
-    assert gene["max_consecutive_length"].to_list() == [15]*3
+    assert gene["max_identical_stretch"].to_list() == [15]*3
     assert gene.select("sample_1", "sample_2", "genome", "gene_id").n_unique() == 3
     assert gene["gene_ani"].to_list() == pytest.approx([100*8/9]*3)
     with pytest.raises(ValueError, match="requires"):
         compare.compare_profiles(a, b, calculate="gene_ani")
     with pytest.raises(ValueError, match="requires"):
-        compare.compare_profiles(a, b, preprofile_dir=root, dnds=True)
+        compare.compare_profiles(a, b, preprofile_dir=root, calculate="gene_selection")
     frame = pl.read_parquet(b)
     pl.concat([frame, frame.head(1)]).write_parquet(b, metadata=utils._read_custom_parquet_metadata(catalog))
     with pytest.raises(ValueError, match="Duplicate"):
@@ -284,7 +284,7 @@ def test_v2_matrix_compare_exports_one_gene_table(assets):
     assert frame.height == 3
     assert frame.select("sample_1", "sample_2", "genome", "gene_id").n_unique() == 3
     assert frame["gene_ani"].to_list() == frame["genome_ani"].to_list() == [100.0] * 3
-    assert frame["max_consecutive_length"].to_list() == [21] * 3
+    assert frame["max_identical_stretch"].to_list() == [21] * 3
     assert pl.read_parquet_metadata(output)["zipstrain_compare_kind"] == "gene"
 
 
@@ -307,7 +307,7 @@ def test_matrix_selection_matches_table_and_reuses_pairs(assets, integration, ca
     profiles = root / "profiles.csv"
     profiles.write_text(f"profile_name,profile_location\na,{a}\nb,{b}\n")
     common = ["compare", "--profile-db", str(profiles), "--preprofile-dir", str(root),
-              "--dnds", "--allele-integration", integration, "--calculate", calculate,
+              "--allele-integration", integration, "--calculate", f"{calculate}+gene_selection",
               "--min-gene-compare-len", "1"]
     matrix = root / "matrix"
     matrix_args = [*common, "--method", "matrix", "--stb-file", str(stb), "--bed-file", str(bed),
@@ -518,17 +518,18 @@ def test_real_bam_selection_cli_and_collection(assets, backend):
     pair = root / "pair_dnds"
     result = CliRunner().invoke(cli.cli,["utilities","compare-pair","--profile-1",str(positions),
         "--profile-2",str(b),"--preprofile-dir",str(root),"--output-dir",str(pair),
-        "--codon-counts-1",str(counts),"--codon-counts-2",str(b_counts),"--dnds",
+        "--codon-counts-1",str(counts),"--codon-counts-2",str(b_counts),"--calculate","gene_selection",
         "--allele-integration","weighted"])
     assert result.exit_code == 0,result.output+repr(result.exception)
     genes = pl.read_parquet(pair / "comparisons.parquet")
-    assert all(name in genes.columns for name in gi.SELECTION_COLUMNS)
+    assert all(name in genes.columns for name in gi.PAIR_SELECTION_COLUMNS)
+    assert "dN_dS" not in genes.columns and "pN_pS" not in genes.columns
     assert genes.filter(pl.col("gene_id") == gene_id)["pS"][0] > 0
     inputs = root / "profiles.csv"
     inputs.write_text(f"profile_name,profile_location\na,{positions}\nb,{b}\n")
     run = root / "collection"
     result = CliRunner().invoke(cli.cli,["compare","--profile-db",str(inputs),"--run-dir",str(run),
-        "--preprofile-dir",str(root),"--dnds","--min-gene-compare-len","1","--no-csv"])
+        "--preprofile-dir",str(root),"--calculate","gene_selection","--min-gene-compare-len","1","--no-csv"])
     assert result.exit_code == 0,result.output+repr(result.exception)
     assert pl.read_parquet(run / "all_comparisons.parquet").height == 3
 
@@ -619,13 +620,13 @@ def test_v2_stretches_exclude_mismatches_and_empty_intersections():
     target = source.with_columns(pl.when(pl.col("pos") == 1).then(0).otherwise(10).alias("A"),
                                  pl.when(pl.col("pos") == 1).then(10).otherwise(0).alias("T"))
     row = compare.compare_profiles(source,target).collect().row(0,named=True)
-    assert row["max_consecutive_length"] == 4 and row["genome_ani"] == 80
+    assert row["max_identical_stretch"] == 4 and row["genome_ani"] == 80
     mismatch = source.with_columns(pl.lit(0).alias("A"),pl.lit(10).alias("T"))
     row = compare.compare_profiles(source,mismatch).collect().row(0,named=True)
-    assert row["max_consecutive_length"] == 0 and row["genome_ani"] == 0
+    assert row["max_identical_stretch"] == 0 and row["genome_ani"] == 0
     no_overlap = source.with_columns((pl.col("pos")+100).alias("pos"))
     row = compare.compare_profiles(source,no_overlap).collect().row(0,named=True)
-    assert row["total_positions"] == row["max_consecutive_length"] == 0 and row["genome_ani"] is None
+    assert row["total_positions"] == row["max_identical_stretch"] == 0 and row["genome_ani"] is None
 
 
 def test_profile_validation_rejects_filter_and_reference_mismatches(assets):

@@ -363,7 +363,7 @@ Other options:
 
 #### `zipstrain compare`
 
-Compare profiled samples to each other, one row per genome per sample pair, and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). By default it compares at the genome level; add `--compare-genes` for gene-level comparison. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
+Compare profiled samples to each other, one row per genome per sample pair, and write `<run-dir>/all_comparisons.parquet` (+ a companion CSV). Requesting a gene metric with `--calculate` adds per-gene rows. `--profile-db` accepts a CSV of `profile_name,profile_location` rows directly (no need to run `build-profile-db` first) or a pre-built profile-database parquet.
 
 `--method table` (default) compares Parquet profiles pairwise in Polars. `--method matrix` builds a reusable matrix store for vectorized all-vs-all comparison. With either method, rerunning in the same run directory after adding samples computes only the new pairs. See the [Tutorial](./Tutorial.md) and [Expected output](./expected_output.md).
 
@@ -386,9 +386,9 @@ zipstrain compare \
 Major options:
 
 - `--profile-db`, `-r, --run-dir` (required)
-- `--method` (`table`/`matrix`) selects the comparison method. In V2, `--calculate` selects the row level, and `--compare-genes` adds gene ANI to the request.
-- `--scope` (`all` for genomes, `all:all` for genes), `--min-cov` (5), `--min-gene-compare-len` (100)
-- `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`max_identical_stretch`/`gene_ani`/`genome_ani`/`all`; combine metrics with `+`)
+- `--method` (`table`/`matrix`) selects the comparison method. `--calculate` selects the row level.
+- `--scope` (`all` for genomes, `all:all` for genes), `--min-cov` (5), `--min-gene-compare-len` (1)
+- `-a, --ani-method` (`popani`, `conani`, `cosani_<threshold>`), `--calculate` (`genome_ani`/`max_identical_stretch`/`gene_ani`/`gene_selection`/`all`; combine metrics with `+`)
 - `--stb-file` — required for `--method matrix`
 - Matrix method: `--bed-file`, `--gene-range-table` (both auto-discovered from `profiling_assets`), `--backend` (`numpy`/`torch…`), `--memory-limit-gb` (16), `--compare-kernel` (`anchor`/`block`, default `anchor`)
 - Table method: V2 runs locally in Polars. Legacy profiles also support the batch execution and container options.
@@ -400,19 +400,19 @@ The calculation names select metrics; `--ani-method` selects how alleles match:
 | Calculation | Meaning |
 |---|---|
 | `genome_ani` | Genome-wide ANI under the selected ANI method |
-| `max_identical_stretch` | Longest consecutive stretch of matching positions; reported as `max_consecutive_length` |
+| `max_identical_stretch` | Longest consecutive stretch of matching positions |
 | `gene_ani` | Gene ANI. With V2 profiles, this selects gene rows. |
+| `gene_selection` | dN, dS, dN/dS, pN, pS, pN/pS per gene (requires `--collect-codons`). This selects gene rows. |
 
-V2 writes one comparison Parquet. Requesting `gene_ani` or `--dnds` produces
+V2 writes one comparison Parquet. Requesting `gene_ani` or `gene_selection` produces
 one row per qualifying gene and sample pair. Requested genome metrics repeat
-on each gene row. `all` includes gene ANI when the shared catalog contains
-genes. Both methods support `--dnds` with the observed codon tables from
+on each gene row. `all` means every metric the inputs support and warns about any it
+skips. Both methods support `gene_selection` with the observed codon tables from
 profiling. Matrix selection uses the default `anchor` kernel. See the
 [V2 comparison schema](v2.md#comparison-inputs-and-commands).
 
-With 1.x profiles, `--compare-genes` selects the per-gene result table. The
-earlier names `ani`, `ibs`, and `identical_genes` (table) or `gene` (matrix)
-remain accepted for legacy workflows.
+With 1.x profiles, `all` calculates genome metrics, and `gene_ani` on its own selects
+the per-gene result table.
 
 For matrix comparison, `popani` automatically uses the compact bitmask store;
 `conani` and `cosani_<threshold>` automatically use a count store. The selected
@@ -432,8 +432,8 @@ kernel supports all metrics and ANI methods. Matrix comparisons update
 ```text
 Usage: zipstrain compare [OPTIONS]
 
-  Compare profiled samples at the genome level (default) or gene level
-  (--compare-genes).
+  Compare profiled samples at the genome level, or per gene when a gene metric
+  is requested.
 
   ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
   there is no need to run ``zipstrain utilities build-profile-db`` first; a pre-
@@ -457,26 +457,23 @@ Comparison parameters:
   --method [table|matrix]         Comparison method: 'table' (direct pairwise in
                                   Polars) or 'matrix' (reusable matrix store).
                                   [default: table]
-  --compare-genes                 Request per-gene comparison rows. In V2 this
-                                  adds gene ANI to --calculate.
   --scope TEXT                    Comparison scope. Defaults to 'all' for
                                   genomes and 'all:all' for genes.
   --min-cov INTEGER               Minimum coverage to consider a position.
                                   [default: 5]
-  --min-gene-compare-len INTEGER  Minimum number of shared positions for a gene
-                                  comparison.  [default: 100]
+  --min-gene-compare-len INTEGER  Minimum shared positions for a gene to get a
+                                  comparison row.  [default: 1]
   --stb-file TEXT                 Scaffold-to-genome mapping file. Required for
                                   --method matrix.
   -a, --ani-method TEXT           ANI calculation method (e.g., 'popani',
                                   'conani', 'cosani_0.4').  [default: popani]
-  --calculate TEXT                Metrics to compute: max_identical_stretch,
-                                  gene_ani, genome_ani. Combine with '+', or use
-                                  all. In V2, requesting gene ANI selects per-
-                                  gene rows, and all includes gene ANI when
-                                  genes are available.  [default: all]
-  --dnds                          Calculate gene dN/dS and pN/pS from sibling
-                                  observed codon tables. Matrix requires the
-                                  anchor kernel (V2).
+  --calculate TEXT                Metrics to compute, combined with '+':
+                                  genome_ani; max_identical_stretch; gene_ani;
+                                  gene_selection: dN, dS, dN/dS, pN, pS, pN/pS
+                                  per gene (requires --collect-codons); or all,
+                                  meaning every metric the inputs support. Any
+                                  gene metric selects per-gene rows.  [default:
+                                  all]
   --allele-integration [consensus|weighted]
                                   SNS/SNV consequence integration: strongest
                                   differing allele choice with ties averaged, or
@@ -770,11 +767,11 @@ Options:
 - `--profile-location-2` / `--profile-2` (required)
 - `-s, --stb-file` (required)
 - `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `100`)
+- `-l, --min-gene-compare-len` (default: `1`)
 - `-o, --output-file` (required)
 - `-g, --genome` (default: `all`)
 - `-a, --ani-method` (default: `popani`)
-- `--calculate` (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations; default: `all`)
+- `--calculate` (`genome_ani`, `max_identical_stretch`, `gene_ani` with `--preprofile-dir`, `all`, or `+` combinations; default: `all`)
 
 #### `zipstrain utilities generate-sample-pair`
 
@@ -826,10 +823,10 @@ Options:
 - `-o, --output-file` (required)
 - `-w, --workers` (defaults to CPU count capped by pair count)
 - `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `100`)
+- `-l, --min-gene-compare-len` (default: `1`)
 - `-g, --genome` (default: `all`)
 - `-a, --ani-method` (default: `popani`)
-- `--calculate` (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations; default: `all`)
+- `--calculate` (`genome_ani`, `max_identical_stretch`, `all`, or `+` combinations; default: `all`). This command calculates genome metrics only.
 
 The final console summary includes:
 
@@ -857,7 +854,7 @@ Options:
 - `--profile-location-2` / `--profile-2` (required)
 - `-s, --stb-file` (required)
 - `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `100`)
+- `-l, --min-gene-compare-len` (default: `1`)
 - `-o, --output-file` (required)
 - `-g, --scope` (default: `all:all`)
 - `-a, --ani-method` (default: `popani`)
@@ -1198,7 +1195,7 @@ zipstrain utilities matrix-compare \
 - each sample-block pair is written in one transaction, so runs are resumable, and a compare DB started with one kernel can be finished with the other
 - when samples are appended, fully completed block pairs are skipped. Partially completed block pairs are recomputed, and only unfinished pair results are saved
 - `--anchor-queue-size`, `--target-queue-size`, `--result-transfer-batch-size` and the executor options are ignored
-- IBS (`max_consecutive_length`), gene ANI and cosANI are not available with `block`; use `anchor`
+- IBS (`max_identical_stretch`), gene ANI and cosANI are not available with `block`; use `anchor`
 - on CUDA, TF32 is disabled for the duration of the run to keep products exact
 
 Notes:

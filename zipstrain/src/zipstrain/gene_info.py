@@ -22,6 +22,8 @@ GENE_SCHEMA = {
 }
 CODON_SCHEMA = {"gene_id": pl.UInt64, "codon_index": pl.UInt32, "reference_codon": pl.String}
 SELECTION_COLUMNS = ("dN", "dS", "dN_dS", "pN", "pS", "pN_pS")
+# Comparison tables store only the rates. ``with_selection_ratios`` derives the rest.
+PAIR_SELECTION_COLUMNS = ("dN", "dS", "pN", "pS")
 GENE_STATS_COLUMNS = ("gene_id", "genome", "chrom", "start", "end", "length",
                       "coverage", "breadth", "ref_ani", *SELECTION_COLUMNS)
 REFERENCE_ID = "zipstrain_reference_id"
@@ -259,6 +261,14 @@ def range_sums(loci: pl.LazyFrame, genes: pl.DataFrame, columns, *, coordinates_
         left_on="boundary", right_on="pos", by="chrom", strategy="backward",
         check_sortedness=False).group_by("gene_id").agg(
             [(pl.col(name).fill_null(0)*pl.col("sign")).sum().alias(name) for name in columns])
+
+
+def with_selection_ratios(frame):
+    """Add ``dN_dS`` and ``pN_pS`` to a comparison frame, null when the denominator is 0 or null."""
+    return frame.with_columns(
+        pl.when(pl.col(denominator) != 0).then(pl.col(numerator) / pl.col(denominator)).alias(name)
+        for name, numerator, denominator in (("dN_dS", "dN", "dS"), ("pN_pS", "pN", "pS"))
+    )
 
 
 def gene_statistics(profile: pl.LazyFrame, gene_info, *, min_cov=5, selection=None) -> pl.LazyFrame:

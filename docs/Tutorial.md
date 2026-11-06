@@ -206,7 +206,7 @@ zipstrain compare \
 That's the whole command. By default it compares **genomes**; every profile in the table is compared against every other (all-vs-all).
 
 !!! tip "Comparing genes instead"
-    Add `--compare-genes` to the same command to compare at the gene level instead of the genome level. Other useful flags: `--min-cov` (minimum coverage to consider a position), `--ani-method` (`popani`, `conani`, `cosani_<t>`), and `--calculate` (trim to just `genome_ani` for a smaller table). Run `zipstrain compare -h` for the full, grouped list.
+    Add `--calculate gene_ani` to the same command to compare at the gene level instead of the genome level. Other useful flags: `--min-cov` (minimum coverage to consider a position), `--ani-method` (`popani`, `conani`, `cosani_<t>`), and `--calculate` (trim to just `genome_ani` for a smaller table). Run `zipstrain compare -h` for the full, grouped list.
 
 #### Two comparison methods
 
@@ -303,7 +303,7 @@ Key columns:
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
 | `share_allele_pos` | Of those, how many matched under the selected ANI method |
 | `genome_ani` | Genome-wide ANI (%) between the two samples for this genome. The parquet metadata key `zipstrain_compare_ani_method` records the method (`popani`, `conani`, or `cosani_<threshold>`) |
-| `max_consecutive_length` | Longest run of shared alleles at adjacent coordinates on one scaffold; a mismatch or uncovered coordinate breaks the run |
+| `max_identical_stretch` | Longest run of shared alleles at adjacent coordinates on one scaffold; a mismatch or uncovered coordinate breaks the run |
 | `sample_1`, `sample_2` | The pair being compared |
 
 !!! info "Interpreting popANI"

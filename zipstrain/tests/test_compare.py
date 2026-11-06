@@ -5,21 +5,6 @@ import polars as pl
 from zipstrain import compare
 
 
-@pytest.mark.parametrize(("selection", "legacy"), [
-    ("genome_ani", "ani"),
-    ("max_identical_stretch", "ibs"),
-    ("gene_ani", "identical_genes"),
-    ("max_identical_stretch+gene_ani+genome_ani", "all"),
-])
-def test_descriptive_calculations_match_legacy_results(profile_1, profile_2, selection, legacy):
-    options = dict(mpile_contig_1=profile_1, mpile_contig_2=profile_2,
-                   min_cov=5, min_gene_compare_len=3)
-    actual = compare.compare_genomes(calculate=selection, **options).collect().sort("genome")
-    expected = compare.compare_genomes(calculate=legacy, **options).collect().sort("genome")
-    assert actual.height > 0
-    assert actual.equals(expected)
-
-
 a_chr1=[ 1, 0, 1, 0, 0, 0, 4, 4, 2, 1]
 t_chr1=[ 0, 2, 3, 1, 0, 0, 1, 0, 0, 1]
 c_chr1=[10, 1, 2, 0, 0, 0, 1, 0, 0, 0]
@@ -185,36 +170,16 @@ def test_compare_profiles_profile_1_2_mc_mgcl(profile_1,profile_2,min_cov,min_ge
     
     assert res_dict["genome2"]["genome_ani"]==100.0
 
-    assert res_dict["genome1"]["max_consecutive_length"] == max(
+    assert res_dict["genome1"]["max_identical_stretch"] == max(
         _longest_covered_run(a_chr1, t_chr1, c_chr1, g_chr1, min_cov),
         _longest_covered_run(a_chr2, t_chr2, c_chr2, g_chr2, min_cov),
     )
 
-    assert res_dict["genome2"]["max_consecutive_length"] == _longest_covered_run(
+    assert res_dict["genome2"]["max_identical_stretch"] == _longest_covered_run(
         a_chr3, t_chr3, c_chr3, g_chr3, min_cov
     )
 
 
-    covered_gene_counts=profile_1.filter((pl.col("A")+pl.col("T")+pl.col("C")+pl.col("G")>=min_cov) & (pl.col("gene")!="NA")).group_by(["gene","genome"]).agg(pl.len()).filter(pl.col("len")>=min_gene_compare_len).group_by("genome").agg(pl.len()).collect().rows_by_key(key="genome",unique=True,named=True)
-    
-    
-    if "genome1" in covered_gene_counts and "genome1" in res_dict:
-        assert res_dict["genome1"]["shared_genes_count"]==covered_gene_counts["genome1"]["len"]
-    
-    if "genome2" in covered_gene_counts and "genome2" in res_dict:
-        assert res_dict["genome2"]["shared_genes_count"]==covered_gene_counts["genome2"]["len"]
-
-    if "genome1" in res_dict and "genome1" in covered_gene_counts:
-        assert res_dict["genome1"]["identical_gene_count"]==covered_gene_counts["genome1"]["len"]
-
-    if "genome2" in res_dict and "genome2" in covered_gene_counts:
-        assert res_dict["genome2"]["identical_gene_count"]==covered_gene_counts["genome2"]["len"]
-
-    if "genome1" in res_dict:
-        assert res_dict["genome1"]["perc_id_genes"]==100.0 if "genome1" in covered_gene_counts else -1
-    
-    if "genome2" in res_dict:
-        assert res_dict["genome2"]["perc_id_genes"]==100.0 if "genome2" in covered_gene_counts else -1
 
 def test_con_ani_expression():
     profile_1=pl.DataFrame({
@@ -348,7 +313,7 @@ def test_compare_genomes_polars_matches_between_sorted_marked_and_unsorted_unmar
     assert unsorted_result.equals(sorted_result)
 
 
-@pytest.mark.parametrize("selection", ["ani", "genome_ani"])
+@pytest.mark.parametrize("selection", ["genome_ani"])
 def test_compare_genomes_ani_only_matches_full_subset(profile_1, profile_2, stb, tmp_path, selection):
     stb_path = tmp_path / "stb.tsv"
     stb.sink_csv(stb_path, separator="\t", include_header=False)
@@ -401,14 +366,11 @@ def test_compare_genomes_default_calculate_is_all_metrics(profile_1, profile_2, 
         "total_positions",
         "share_allele_pos",
         "genome_ani",
-        "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
+        "max_identical_stretch",
     }
 
 
-def test_max_consecutive_length_breaks_at_coordinate_gap():
+def test_max_identical_stretch_breaks_at_coordinate_gap():
     positions = list(range(1, 101)) + list(range(201, 251))
     profile = pl.DataFrame(
         {
@@ -433,4 +395,4 @@ def test_max_consecutive_length_breaks_at_coordinate_gap():
     assert result["total_positions"] == 150
     assert result["share_allele_pos"] == 150
     assert result["genome_ani"] == 100.0
-    assert result["max_consecutive_length"] == 100
+    assert result["max_identical_stretch"] == 100

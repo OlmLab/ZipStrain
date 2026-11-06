@@ -19,7 +19,7 @@ from typing import Callable
 
 import polars as pl
 
-from zipstrain import gene_info as gi, matrix_pairs as mp, utils
+from zipstrain import codons, compare as cp, gene_info as gi, matrix_pairs as mp, options, utils
 from zipstrain.resource_limits import connect_duckdb
 
 
@@ -42,16 +42,6 @@ GENE_OUTPUT_NAME = "all_gene_comparisons.parquet"
 def _notify(callback: ProgressCallback | None, message: str) -> None:
     if callback is not None:
         callback(message)
-
-
-def resolve_calculate(calculate: str | None, *, compare_genes: bool) -> str:
-    """Return the matrix ``calculate`` string, adding gene ANI for gene runs."""
-    calculate = calculate or "all"
-    if compare_genes:
-        calculate = f"{calculate}+gene_ani"
-    # Validate early so a bad token fails before the matrix store is built.
-    mp.parse_matrix_calculations(calculate)
-    return calculate
 
 
 def block_kernel_hint(compare_kernel: str, *, calculate: str, ani_method: str) -> str | None:
@@ -213,13 +203,11 @@ def run_matrix_compare(
     backend: str = "numpy",
     memory_limit_gb: float = 16.0,
     min_cov: int = mp.MATRIX_BUILD_MIN_COV,
-    ani_method: str = "popani",
-    compare_genes: bool = False,
-    calculate: str = "all",
+    ani_method: str = options.ANI_METHOD,
+    calculate: str = options.CALCULATE,
     compare_kernel: str = mp.MATRIX_COMPARE_KERNEL_ANCHOR,
-    min_gene_compare_len: int = 1,
-    dnds: bool = False,
-    allele_integration: str = "consensus",
+    min_gene_compare_len: int = options.MIN_GENE_COMPARE_LEN,
+    allele_integration: str = options.ALLELE_INTEGRATION,
     progress_callback: ProgressCallback | None = None,
     compare_progress_callback: mp.CompareProgressCallback | None = None,
 ) -> pathlib.Path:
@@ -230,21 +218,21 @@ def run_matrix_compare(
     store and computes only the new pairs, then re-exports the full table.
     Returns the path to the exported comparison parquet.
 
-    ``calculate`` selects ``genome_ani``, ``max_identical_stretch``,
-    ``gene_ani``, or ``all``; gene ANI is added for ``compare_genes``.
+    ``calculate`` follows :func:`zipstrain.options.resolve_metrics` for V2 profiles.
+    With 1.x profiles, naming ``gene_ani`` writes the per-gene table instead.
     ``compare_kernel`` is ``"anchor"`` (default, supports every metric) or
     ``"block"`` (genome-level popANI/conANI only, much faster).
-    ``dnds`` uses the anchor kernel and sibling observed codon tables. Selection
+    ``gene_selection`` uses the anchor kernel and sibling observed codon tables. Selection
     pairs are cached independently and joined onto qualifying gene rows.
     ``compare_progress_callback`` receives the raw progress events of the
     all-vs-all compare step.
     """
-    calculate = resolve_calculate(calculate, compare_genes=compare_genes)
+    calculate = calculate or options.CALCULATE
+    # Validate early so a bad token fails before the matrix store is built.
+    named_metrics = options.explicit_metrics(calculate)
     compare_kernel = mp.normalize_matrix_compare_kernel(compare_kernel)
     if min_gene_compare_len < 1:
         raise ValueError("min_gene_compare_len must be positive")
-    if dnds and compare_kernel == mp.MATRIX_COMPARE_KERNEL_BLOCK:
-        raise ValueError("Matrix --dnds requires --compare-kernel anchor for per-gene position counts")
     run_dir = pathlib.Path(run_dir)
     intermediate = run_dir / INTERMEDIATE_DIRNAME
     intermediate.mkdir(parents=True, exist_ok=True)
@@ -255,6 +243,7 @@ def run_matrix_compare(
         raise ValueError("--stb-file is required for --method matrix.")
 
     profile_locations = [location for _name, location in profiles]
+    cp.require_same_profile_generation(profile_locations)
     if bed_file is None:
         bed_file = discover_bed_file(profile_locations)
         if bed_file is None:
@@ -268,33 +257,40 @@ def run_matrix_compare(
 
     v2_metrics = None
     v2_metadata = None
+    selection = False
     catalog = None
     annotation_marker = intermediate / "v2_matrix_annotation_id"
     if any(utils._read_custom_parquet_metadata(p).get(gi.SCHEMA_KEY) == "2" for p in profile_locations):
         if gene_range_table is not None and pathlib.Path(gene_range_table).suffix == ".parquet":
             catalog = pathlib.Path(gene_range_table)
             v2_metadata = gi.validate_profile_assets(profile_locations, catalog)
-        v2_metrics = mp.parse_matrix_calculations(
-            calculate, include_gene_from_all=catalog is not None and gi.read_gene_info(catalog).height > 0,
-            include_ani_from_gene=False,
+        tables = {name: codons.sibling_codon_table(path) for name, path in profiles}
+        with_codons = [name for name, path in tables.items() if path is not None and path.exists()]
+        selected = options.resolve_metrics(
+            calculate, genes_available=catalog is not None and gi.read_gene_info(catalog).height > 0,
+            codon_tables_present=with_codons,
+            codon_tables_missing=[name for name, _path in profiles if name not in with_codons],
         )
-        if "gene" in v2_metrics or dnds:
-            if catalog is None:
-                raise ValueError("V2 matrix gene ANI requires gene_info.parquet")
+        selection = "gene_selection" in selected
+        if selection and compare_kernel == mp.MATRIX_COMPARE_KERNEL_BLOCK:
+            raise ValueError("gene_selection requires --compare-kernel anchor for per-gene position counts")
+        v2_metrics = tuple(mp.MATRIX_ENGINE_TOKENS[metric] for metric in selected if metric != "gene_selection")
+        if "gene" in v2_metrics or selection:
             if store.exists() and (
                 not annotation_marker.exists() or annotation_marker.read_text() != v2_metadata[gi.ANNOTATION_ID]
             ):
                 raise ValueError("Existing matrix store uses different or unknown gene annotations. Use a different --run-dir.")
-        calculate = "+".join(v2_metrics)
-    if dnds:
-        if catalog is None:
-            raise ValueError("Matrix --dnds requires V2 profiles and preprofile gene_info.parquet")
+        # Gene coverage is computed even for gene_selection without gene ANI.
+        # The exporter projects only the requested metrics.
+        engine_metrics = [metric for metric in selected if metric != "gene_selection"]
+        if selection and "gene_ani" not in engine_metrics:
+            engine_metrics.append("gene_ani")
+        calculate = "+".join(engine_metrics)
+    elif "gene_selection" in named_metrics:
+        raise ValueError("gene_selection requires V2 profiles and preprofile gene_info.parquet")
+    if selection:
         if len(profiles) < 2 or len({name for name, _ in profiles}) != len(profiles):
             raise ValueError("At least two uniquely named samples are required")
-        # Compute gene coverage even when the selected metric is dN/dS without
-        # gene ANI. The exporter projects only the requested metrics.
-        if "gene" not in v2_metrics:
-            calculate += "+gene"
 
     cleaned_stb = _clean_stb(pathlib.Path(stb_file), intermediate / "reference_cleaned.stb")
 
@@ -309,8 +305,8 @@ def run_matrix_compare(
         )
     existing_names = _existing_store_sample_names(store)
     selection_files = None
-    if dnds:
-        from zipstrain import codons, matrix_selection
+    if selection:
+        from zipstrain import matrix_selection
 
         fingerprints = {name: utils.sha256_file(path) for name, path in profiles}
         manifest = intermediate / "matrix_selection_profiles.json"
@@ -391,7 +387,7 @@ def run_matrix_compare(
         compare_kernel=compare_kernel,
     )
 
-    gene_output = compare_genes if v2_metrics is None else "gene" in v2_metrics or dnds
+    gene_output = "gene_ani" in named_metrics if v2_metrics is None else "gene" in v2_metrics or selection
     table = "gene" if gene_output else "genome"
     output = run_dir / (GENE_OUTPUT_NAME if gene_output and v2_metrics is None else GENOME_OUTPUT_NAME)
     _notify(progress_callback, f"Exporting {table}-level results")

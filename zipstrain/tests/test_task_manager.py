@@ -511,7 +511,7 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
     assert tasks[0].expected_outputs["output-file"]._expected_file_name == "s1_s2_comparison.parquet"
 
 
-@pytest.mark.parametrize("selection", ["ani+ibs+identical_genes", "genome_ani+max_identical_stretch+gene_ani"])
+@pytest.mark.parametrize("selection", ["genome_ani", "genome_ani+max_identical_stretch"])
 def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path, selection):
     # Regression: the batched standard-compare path used to reject any
     # --calculate value other than {"all", "ani"}, even though the per-pair
@@ -559,7 +559,7 @@ def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path
             yield_size=1,
             container_engine=task_manager.LocalEngine(""),
             comp_config=config,
-            calculate="ani+bogus",
+            calculate="genome_ani+bogus",
         )
 
 

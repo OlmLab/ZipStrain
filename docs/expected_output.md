@@ -131,7 +131,7 @@ Monomorphic reference matches are not emitted. The per-genome `SNS_count` and `S
 
 ## `zipstrain compare`
 
-Legacy comparison routes write a selected comparison table at the top of the run directory: `all_comparisons.parquet` (+ `.csv`), or `all_gene_comparisons.parquet` with `--compare-genes`.
+Legacy comparison routes write a selected comparison table at the top of the run directory: `all_comparisons.parquet` (+ `.csv`), or `all_gene_comparisons.parquet` with `--calculate gene_ani`.
 
 V2 writes one `all_comparisons.parquet`. Genome-only runs have one row per
 `(sample_1, sample_2, genome)`. Requesting a gene metric adds `gene_id` to the
@@ -150,9 +150,9 @@ In a genome-only run, each row represents one genome and sample pair.
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
 | `share_allele_pos` | Of those, positions that match under the selected ANI method |
 | `genome_ani` | Genome-wide ANI (%) = `share_allele_pos` / `total_positions` × 100. The parquet metadata key `zipstrain_compare_ani_method` records whether this is `popani`, `conani`, or `cosani_<threshold>` |
-| `max_consecutive_length` | Longest run of shared alleles at adjacent coordinates on one scaffold (an identical-by-state / IBS measure); a missing or uncovered coordinate breaks the run |
+| `max_identical_stretch` | Longest run of shared alleles at adjacent coordinates on one scaffold (an identical-by-state / IBS measure); a missing or uncovered coordinate breaks the run |
 
-In the table method with 1.x profiles, with gene ranges available, genome-level gene identity summary columns are also added by the default `--calculate all`: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
+Row order is not guaranteed, so join or sort by the key columns rather than relying on position.
 
 !!! note "ANI method is stored in the parquet header"
     `--ani-method conani` or `--ani-method cosani_<threshold>` changes how the ANI match indicator is computed, but it does not add method-specific output columns. Check `zipstrain_compare_ani_method` in the parquet metadata to know what `genome_ani` represents. Both standard and matrix comparison support `popani`, `conani`, and `cosani_<threshold>`.
@@ -160,7 +160,7 @@ In the table method with 1.x profiles, with gene ranges available, genome-level 
 Example (same-strain replicates → 100% popANI):
 
 ```text
-sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_consecutive_length
+sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_identical_stretch
 SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           100.0           768237
 ```
 

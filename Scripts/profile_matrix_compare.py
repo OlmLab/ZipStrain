@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--calculate",
         default="all",
-        help="Metrics: max_identical_stretch, gene_ani, genome_ani. Join with '+' or use 'all' (gene ANI requires annotations).",
+        help="Metrics: genome_ani, max_identical_stretch, gene_ani. Join with '+' or use 'all' (gene ANI requires annotations).",
     )
     parser.add_argument(
         "--backend",

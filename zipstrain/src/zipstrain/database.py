@@ -11,7 +11,7 @@ import pathlib
 import os
 import tempfile
 from pydantic import BaseModel, Field, field_validator,ConfigDict
-from zipstrain import utils as ut
+from zipstrain import options, utils as ut
 
 _PROFILE_DB_COLUMNS = ["profile_name", "profile_location"]
 
@@ -222,7 +222,7 @@ class GenomeComparisonConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scope: str =Field(description="Genome scope for comparison. Use 'all' to compare all available genomes.")
     min_cov: int =Field(description="Minimum coverage a base on the reference fasta that must have in order to be compared.")
-    min_gene_compare_len: int=Field(description="Minimum length of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
+    min_gene_compare_len: int=Field(description="Minimum shared positions of a gene that needs to be covered at min_cov to be considered for gene similarity calculations")
     stb_file_loc:str | None = Field(default=None, description="Optional location of the scaffold to bin file.")
 
     def is_compatible(self, other: GenomeComparisonConfig) -> bool:
@@ -279,13 +279,13 @@ class GeneComparisonConfig(BaseModel):
         scope (str): The scope of the comparison in format "GENOME:GENE" (e.g., "all:gene1" compares gene1 across all genomes, "genome1:gene1" compares gene1 only in genome1 across samples).
         stb_file_loc (str | None): Optional location of the scaffold-to-genome mapping file.
         min_cov (int): Minimum coverage threshold for considering a position.
-        min_gene_compare_len (int): Minimum gene length required for comparison.
+        min_gene_compare_len (int): Minimum shared positions required for a gene comparison.
     """
     model_config = ConfigDict(extra="forbid")
     scope: str = Field(description="Scope in format GENOME:GENE (e.g., 'all:gene1', 'genome1:gene1')")
     stb_file_loc: str | None = Field(default=None, description="Optional location of the scaffold-to-genome mapping file")
-    min_cov: int = Field(default=5, description="Minimum coverage threshold")
-    min_gene_compare_len: int = Field(default=100, description="Minimum gene length for comparison")
+    min_cov: int = Field(default=options.COMPARE_MIN_COV, description="Minimum coverage threshold")
+    min_gene_compare_len: int = Field(default=options.MIN_GENE_COMPARE_LEN, description="Minimum shared positions for a gene comparison")
     
     @field_validator("scope")
     @classmethod
@@ -375,11 +375,7 @@ class GenomeComparisonDatabase:
     
     - genome_ani
     
-    - max_consecutive_length
-    
-    - shared_genes_count
-    
-    - identical_gene_count
+    - max_identical_stretch
     
     - sample_1
     
@@ -399,10 +395,7 @@ class GenomeComparisonDatabase:
         "total_positions",
         "share_allele_pos",
         "genome_ani",
-        "max_consecutive_length",
-        "shared_genes_count",
-        "identical_gene_count",
-        "perc_id_genes",
+        "max_identical_stretch",
         "sample_1",
         "sample_2"
     ]
@@ -411,10 +404,7 @@ class GenomeComparisonDatabase:
         "total_positions": pl.Int64,
         "share_allele_pos": pl.Int64,
         "genome_ani": pl.Float64,
-        "max_consecutive_length": pl.Int64,
-        "shared_genes_count": pl.Int64,
-        "identical_gene_count": pl.Int64,
-        "perc_id_genes": pl.Float64,
+        "max_identical_stretch": pl.Int64,
         "sample_1": pl.Utf8,
         "sample_2": pl.Utf8,
     }
@@ -436,10 +426,7 @@ class GenomeComparisonDatabase:
                 "total_positions": [],
                 "share_allele_pos": [],
                 "genome_ani": [],
-                "max_consecutive_length": [],
-                "shared_genes_count": [],
-                "identical_gene_count": [],
-                "perc_id_genes": [],
+                "max_identical_stretch": [],
                 "sample_1": [],
                 "sample_2": []
             }, schema=self.COLUMN_DTYPES)
@@ -451,6 +438,10 @@ class GenomeComparisonDatabase:
 
     def _normalize_comp_db_columns(self, comp_db: pl.LazyFrame) -> pl.LazyFrame:
         schema = comp_db.collect_schema()
+        # 1.x tables used an earlier stretch column name and stored gene summaries.
+        if "max_consecutive_length" in schema and "max_identical_stretch" not in schema:
+            comp_db = comp_db.rename({"max_consecutive_length": "max_identical_stretch"})
+            schema = comp_db.collect_schema()
         casts = [
             pl.col(col_name).cast(dtype, strict=False)
             for col_name, dtype in self.COLUMN_DTYPES.items()

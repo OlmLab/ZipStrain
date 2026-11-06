@@ -4,6 +4,7 @@ This module provides statistical analysis and visualization functions for profil
 """
 
 from dataclasses import dataclass
+import pathlib
 import warnings
 import polars as pl
 import plotly.graph_objects as go
@@ -14,6 +15,8 @@ from collections import defaultdict
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import pandas as pd
+
+from zipstrain import options
 from matplotlib import colormaps
 from matplotlib.lines import Line2D
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -447,23 +450,85 @@ def calculate_strainsharing(
         strainsharingrates[row["population_2"]+"_"+ row["population_1"]].append(row["shared_strain_count"] / row["num_genomes_2"])
     return strainsharingrates
 
+_GENOME_COLUMN_METRICS = {
+    "total_positions": "genome_ani",
+    "genome_ani": "genome_ani",
+    "max_identical_stretch": "max_identical_stretch",
+}
+
+
+def _comparison_rows(comps, required: dict[str, str]) -> pl.LazyFrame:
+    """Return a comparison table as a LazyFrame after checking it holds the needed metrics.
+
+    ``required`` maps each needed column to the ``--calculate`` metric that writes it.
+    """
+    frame = pl.scan_parquet(comps) if isinstance(comps, (str, pathlib.Path)) else comps
+    columns = frame.collect_schema().names()
+    missing = sorted({metric for column, metric in required.items() if column not in columns})
+    if missing:
+        raise ValueError(
+            f"This comparison table has no {', '.join(missing)} results. "
+            f"Recalculate it with --calculate {'+'.join(missing)}."
+        )
+    return frame
+
+
+def _summarize_gene_rows(
+    comps,
+    min_gene_positions: int = options.ANALYSIS_MIN_GENE_POSITIONS,
+    genome_columns: tuple[str, ...] = (),
+) -> pl.LazyFrame:
+    """Collapse gene rows to one row per sample pair and genome.
+
+    Keep genes with at least ``min_gene_positions`` shared positions and report
+    ``shared_genes_count``, ``identical_gene_count``, and ``perc_id_genes``. Genome
+    metrics repeat on gene rows, so this step also stops a genome with many genes from
+    counting many times. A table given by path is checked against the threshold it was
+    written with. A LazyFrame has no readable file metadata, so that check is skipped.
+    """
+    required = {"gene_total_positions": "gene_ani", "gene_share_allele_pos": "gene_ani"}
+    frame = _comparison_rows(comps, {**required, **{column: _GENOME_COLUMN_METRICS[column] for column in genome_columns}})
+    if isinstance(comps, (str, pathlib.Path)):
+        written_with = pl.read_parquet_metadata(comps).get("zipstrain_compare_min_gene_compare_len", "")
+        if written_with.isdigit() and min_gene_positions < int(written_with):
+            raise ValueError(
+                f"min_gene_positions={min_gene_positions} is below the threshold this table was "
+                f"written with ({written_with}), so the genes it would need are not in the table."
+            )
+    return frame.filter(pl.col("gene_total_positions") >= min_gene_positions).group_by(
+        "sample_1", "sample_2", "genome"
+    ).agg(
+        pl.len().alias("shared_genes_count"),
+        (pl.col("gene_share_allele_pos") == pl.col("gene_total_positions")).sum().alias("identical_gene_count"),
+        *[pl.col(column).first() for column in genome_columns],
+    ).with_columns(
+        (100 * pl.col("identical_gene_count") / pl.col("shared_genes_count")).alias("perc_id_genes")
+    )
+
+
 def calculate_ibs(
-    sample_to_population:pl.LazyFrame, 
-    comps_lf:pl.LazyFrame,
+    sample_to_population:pl.LazyFrame,
+    comps_lf:pl.LazyFrame|str|pathlib.Path,
     max_perc_id_genes:float=15,
     min_total_positions:int=10000,
+    min_gene_positions:int=options.ANALYSIS_MIN_GENE_POSITIONS,
 )->pl.DataFrame:
     """
-    Calculate the Identity By State (IBS) between two populations for a given genome.
-    The IBS is defined as the percentage of genes that are identical between two populations for a given genome.
+    Collect the longest identical stretch per genome and population comparison, keeping
+    only sample pairs whose percentage of identical genes shows they are not the same strain.
     Args:
         sample_to_population (pl.LazyFrame): LazyFrame containing the sample to population mapping.
-        comps_lf (pl.LazyFrame): LazyFrame containing the gene profiles of the samples.
-        max_perc_id_genes (float, optional): Maximum percentage of identical genes to consider. Defaults to 0.15.
+        comps_lf (pl.LazyFrame | str | Path): Comparison table with gene rows, calculated with
+            --calculate gene_ani+genome_ani+max_identical_stretch.
+        max_perc_id_genes (float, optional): Maximum percentage of identical genes to keep a pair. Defaults to 15.
+        min_total_positions (int, optional): Keep pairs sharing more genome positions than this. Defaults to 10000.
+        min_gene_positions (int, optional): Minimum shared positions for a gene to count. Defaults to 100.
     Returns:
-        pl.LazyFrame: LazyFrame containing the IBS information for the given genome and populations.
+        pl.DataFrame: One row per genome with a list of stretch lengths per comparison type.
     """
-    comps_lf_filtered = comps_lf.filter(
+    comps_lf_filtered = _summarize_gene_rows(
+        comps_lf, min_gene_positions, ("total_positions", "max_identical_stretch"),
+    ).filter(
         (pl.col('perc_id_genes') <= max_perc_id_genes) &
         (pl.col('total_positions')>min_total_positions)
     )
@@ -509,11 +574,11 @@ def calculate_ibs(
     ).fill_null(-1)
 
     return comps_lf_filtered.group_by(["genome","comparison_type"]).agg(
-        pl.col("max_consecutive_length"),
+        pl.col("max_identical_stretch"),
     ).collect(engine="streaming").pivot(
         index="genome",
         columns="comparison_type",
-        values="max_consecutive_length",
+        values="max_identical_stretch",
     ).with_columns(
         pl.col("*").exclude("genome").fill_null([-1])
     )
@@ -710,22 +775,29 @@ def calculate_identical_frac_vs_popani(
     population_1:str,
     population_2:str,
     sample_to_population:pl.LazyFrame,
-    comps_lf:pl.LazyFrame,
+    comps_lf:pl.LazyFrame|str|pathlib.Path,
     min_shared_genes_count:int=100,
-    min_total_positions:int=10000
+    min_total_positions:int=10000,
+    min_gene_positions:int=options.ANALYSIS_MIN_GENE_POSITIONS,
     ):
     """
-    Calculate the fraction of identical genes vs genome ANI for a given genome and two samples in any possible combination of populations.
+    Calculate the percentage of identical genes vs genome ANI for a given genome and two samples in any possible combination of populations.
     Args:
-        genome (str): The genome to calculate the fraction of identical genes vs genome ANI for.
+        genome (str): The genome to calculate the percentage of identical genes vs genome ANI for.
         population_1 (str): The first population to compare.
         population_2 (str): The second population to compare.
         sample_to_population (pl.LazyFrame): LazyFrame containing the sample to population mapping.
-        comps_lf (pl.LazyFrame): LazyFrame containing the gene profiles of the samples
+        comps_lf (pl.LazyFrame | str | Path): Comparison table with gene rows, calculated with
+            --calculate gene_ani+genome_ani.
+        min_shared_genes_count (int, optional): Keep pairs sharing more qualifying genes than this. Defaults to 100.
+        min_total_positions (int, optional): Keep pairs sharing more genome positions than this. Defaults to 10000.
+        min_gene_positions (int, optional): Minimum shared positions for a gene to count. Defaults to 100.
     Returns:
-        pl.LazyFrame: LazyFrame containing the fraction of identical genes vs genome ANI information for
+        pl.DataFrame: One row per relationship with lists of ``perc_id_genes`` and ``genome_ani``.
     """
-    comps_lf_filtered=comps_lf.filter(
+    comps_lf_filtered=_summarize_gene_rows(
+        comps_lf, min_gene_positions, ("total_positions", "genome_ani"),
+    ).filter(
         (pl.col('genome') == genome) &
         (pl.col("shared_genes_count")>min_shared_genes_count) &
         (pl.col("total_positions")>min_total_positions)

@@ -4,10 +4,11 @@ params.p_threshold=0.000001
 params.mode = null
 params.parallel_mode="batched"
 params.min_cov=5
-params.min_gene_compare_len=200
+params.min_gene_compare_len=1
 params.batch_size=10
-// Metrics: max_identical_stretch, gene_ani, genome_ani; join with '+' or use 'all'.
-// The Python comparison commands also accept the legacy ani/ibs/identical_genes names.
+// Metrics: genome_ani, max_identical_stretch, gene_ani; join with '+' or use 'all'.
+// gene_ani on V2 profiles requires --preprofile_dir. gene_selection is not available here yet
+// because compare jobs do not receive codon tables; use `zipstrain compare` for it.
 params.compare_calculate="all"
 params.batch_compare_n_parallel=1
 params.publish_mode="symlink"
@@ -647,6 +648,15 @@ workflow
 {
     if (!params.mode) {
         error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+    }
+
+    if (params.mode in ['compare_genomes', 'compare_genes']) {
+        if (params.compare_calculate?.toString()?.contains('gene_selection')) {
+            error "--compare_calculate gene_selection is not available in Nextflow yet: compare jobs do not receive codon tables. Use `zipstrain compare` instead."
+        }
+        if (!params.preprofile_dir) {
+            log.warn "No --preprofile_dir was given. With V2 profiles, compare_genomes calculates genome metrics only (explicit gene_ani fails), and compare_genes fails."
+        }
     }
 
     if (params.mode == 'map_reads') {

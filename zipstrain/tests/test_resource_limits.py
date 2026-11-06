@@ -87,7 +87,7 @@ def test_polars_pair_comparison_does_not_initialize_duckdb(tmp_path):
     args = [
         "utilities", "single_compare_genome", "--profile-location-1", str(profile_1),
         "--profile-location-2", str(profile_2),
-        "--calculate", "ani", "--output-file", str(output),
+        "--calculate", "genome_ani", "--output-file", str(output),
     ]
     code = (
         "import sys; from zipstrain.cli import cli; "

@@ -11,10 +11,12 @@ Most comparison-driven functions expect a `pl.LazyFrame` with some or all of the
 - `sample_2`
 - `genome_ani`
 - `total_positions`
-- `max_consecutive_length`
-- `shared_genes_count`
-- `identical_gene_count`
-- `perc_id_genes`
+- `max_identical_stretch`
+
+Identical-gene analyses also need the gene rows written by `--calculate gene_ani`
+(`gene_total_positions` and `gene_share_allele_pos`). `calculate_ibs` and
+`calculate_identical_frac_vs_popani` read those rows directly and raise an error
+naming any metric the table lacks.
 
 When a V2 comparison includes both genome and gene metrics, genome values
 repeat across the gene rows. For a genome-level analysis, select the genome
@@ -189,10 +191,13 @@ fig.write_html("strainsharing.html")
   - `comps_lf`
   - `max_perc_id_genes`
   - `min_total_positions`
+  - `min_gene_positions` (default 100)
 - Output:
   - `pl.DataFrame`
 - Notes:
   - Produces one row per genome and comparison type.
+  - Needs `--calculate gene_ani+genome_ani+max_identical_stretch`.
+  - Counts each sample pair once, using genes with at least `min_gene_positions` shared positions. Pass a table's path to also check that this is not below the threshold the table was written with.
 
 What it does:
 
@@ -292,8 +297,11 @@ fig.write_html("ibs_heatmap.html")
   - `comps_lf`
   - `min_shared_genes_count`
   - `min_total_positions`
+  - `min_gene_positions` (default 100)
 - Output:
   - `pl.DataFrame`
+- Notes:
+  - Needs `--calculate gene_ani+genome_ani`.
 
 What it does:
 

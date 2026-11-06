@@ -146,7 +146,7 @@ def test_torch_pipeline_matches_numpy_across_blocks(tmp_path, monkeypatch, ani_m
     monkeypatch.setattr(mp, "MATRIX_COMPARE_WRITE_MAX_ROWS", 4)
     for backend in ("numpy", torch_backend):
         mp.matrix_compare(matrix, tmp_path / f"{backend}.duckdb", backend=backend, ani_method=ani_method,
-                          calculate="ani+ibs+gene", target_queue_size=2, anchor_queue_size=2,
+                          calculate="genome_ani+max_identical_stretch+gene_ani", target_queue_size=2, anchor_queue_size=2,
                           result_transfer_batch_size=transfer_batch, memory_limit_gb=1)
     _, completed, actual = _load_matrix_compare_db(tmp_path / f"{torch_backend}.duckdb")
     _, expected_completed, expected = _load_matrix_compare_db(tmp_path / "numpy.duckdb")
@@ -185,7 +185,7 @@ def test_ibs_cpu_work_overlaps_next_device_comparison(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mp, "_finish_torch_result_batch", finish)
     monkeypatch.setattr(mp, "_compare_anchor_against_target_chunk_torch_device", compare)
-    mp.matrix_compare(matrix, tmp_path / "compare.duckdb", backend="torch-cpu", calculate="ani+ibs")
+    mp.matrix_compare(matrix, tmp_path / "compare.duckdb", backend="torch-cpu", calculate="genome_ani+max_identical_stretch")
     assert calls == 4
 
 
@@ -198,10 +198,10 @@ def test_persistent_writer_with_executor_and_resume(tmp_path, monkeypatch, execu
     monkeypatch.setattr(mp, "MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS", 1)
     monkeypatch.setattr(mp, "_plan_chunk_sizes", lambda vector_length, remaining_targets, **kwargs: (min(2, remaining_targets), vector_length))
     output = tmp_path / "compare.duckdb"
-    summary = mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs",
+    summary = mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="genome_ani+max_identical_stretch",
                                writer_executor_kind=executor_kind, loader_executor_kind=executor_kind, target_queue_size=2)
     assert summary.written_rows == 10
-    summary = mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs",
+    summary = mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="genome_ani+max_identical_stretch",
                                writer_executor_kind=executor_kind, loader_executor_kind=executor_kind)
     assert summary.written_rows == 0
 
@@ -257,7 +257,7 @@ def test_writer_reuses_connection_and_bounds_queued_batches(tmp_path, monkeypatc
     monkeypatch.setattr(mp, "ThreadPoolExecutor", TrackingExecutor)
     monkeypatch.setattr(mp, "_write_matrix_compare_payload_batch", write)
     monkeypatch.setattr(mp, "MATRIX_COMPARE_WRITE_MAX_BYTES", 1024)
-    mp.matrix_compare(matrix, tmp_path / "compare.duckdb", backend="torch-cpu", calculate="ani+ibs")
+    mp.matrix_compare(matrix, tmp_path / "compare.duckdb", backend="torch-cpu", calculate="genome_ani+max_identical_stretch")
     assert len(connections) > 1
     assert connections[0] is not None
     assert all(conn is connections[0] for conn in connections)
@@ -278,11 +278,11 @@ def test_cpu_failure_leaves_results_resumable(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mp, "_finish_torch_result_batch", fail)
     with pytest.raises(RuntimeError, match="simulated IBS failure"):
-        mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs")
+        mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="genome_ani+max_identical_stretch")
     _, completed, _ = _load_matrix_compare_db(output)
     assert not completed
     monkeypatch.setattr(mp, "_finish_torch_result_batch", original)
-    assert mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="ani+ibs").written_rows == 10
+    assert mp.matrix_compare(matrix, output, backend="torch-cpu", calculate="genome_ani+max_identical_stretch").written_rows == 10
 
 
 def test_writer_setup_failure_stops_queued_batches_and_closes(tmp_path, monkeypatch):
@@ -641,11 +641,13 @@ def _build_matrix_db_with_contract(profile_dir: Path, output_file: Path, **kwarg
     )
 
 
-def test_parse_matrix_calculations_supports_all_and_gene_aliases():
+def test_parse_matrix_calculations_maps_metrics_to_engine_tokens():
     assert mp.parse_matrix_calculations("all") == ("ani", "ibs")
     assert mp.parse_matrix_calculations("all", include_gene_from_all=True) == ("ani", "ibs", "gene")
-    assert mp.parse_matrix_calculations("+gene") == ("ani", "gene")
-    assert mp.parse_matrix_calculations("popani,max_block") == ("ani", "ibs")
+    assert mp.parse_matrix_calculations("gene_selection") == ("ani", "gene")
+    assert mp.parse_matrix_calculations(("ani", "ibs")) == ("ani", "ibs")
+    with pytest.raises(ValueError, match="Did you mean 'max_identical_stretch'"):
+        mp.parse_matrix_calculations("max_block")
     assert mp.parse_matrix_calculations("genome_ani") == ("ani",)
     assert mp.parse_matrix_calculations("max_identical_stretch") == ("ibs",)
     assert mp.parse_matrix_calculations("gene_ani") == ("ani", "gene")
@@ -674,7 +676,7 @@ def _load_matrix_compare_db(compare_db: Path):
                 conn.execute(
                     """
                     SELECT sample_idx_1, sample_idx_2, sample_1, sample_2, genome_idx, genome,
-                           total_positions, share_allele_pos, genome_ani, max_consecutive_length
+                           total_positions, share_allele_pos, genome_ani, max_identical_stretch
                     FROM matrix_compare_results
                     ORDER BY sample_idx_1, sample_idx_2, genome_idx
                     """
@@ -778,8 +780,8 @@ def _expected_classic_pairwise_results(
         "share_allele_pos",
         "genome_ani",
     ]
-    if "ibs" in calculate:
-        selected_columns.append("max_consecutive_length")
+    if "max_identical_stretch" in calculate:
+        selected_columns.append("max_identical_stretch")
 
     expected_frames = []
     for sample_1, sample_2 in combinations(sample_names, 2):
@@ -1156,7 +1158,7 @@ def test_matrix_compare_rejects_legacy_duckdb_matrix_input(tmp_path):
             output_file=compare_db,
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             backend="numpy",
-            calculate="ani",
+            calculate="genome_ani",
         )
 
 
@@ -1227,7 +1229,7 @@ def test_matrix_compare_hdf5_gene_results_match_classic_compare_multiscaffold(tm
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="+gene",
+        calculate="gene_ani",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -1359,7 +1361,7 @@ def test_matrix_compare_hdf5_explicit_gene_results_match_classic_compare(tmp_pat
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="+gene",
+        calculate="gene_ani",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -1397,7 +1399,7 @@ def test_matrix_compare_gene_requires_gene_annotations(tmp_path):
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             memory_limit_gb=1.0,
             backend="torch-cpu",
-            calculate="+gene",
+            calculate="gene_ani",
             loader_executor_kind="thread",
             writer_executor_kind="thread",
         )
@@ -1417,7 +1419,7 @@ def test_matrix_compare_torch_cpu_matches_classic_compare(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="ani",
+        calculate="genome_ani",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -1427,7 +1429,7 @@ def test_matrix_compare_torch_cpu_matches_classic_compare(tmp_path):
     actual = results.select(
         ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani"]
     ).sort(["sample_1", "sample_2", "genome"])
-    expected = _expected_classic_pairwise_results(profile_dir, calculate="ani")
+    expected = _expected_classic_pairwise_results(profile_dir, calculate="genome_ani")
 
     assert actual.equals(expected)
 
@@ -1446,7 +1448,7 @@ def test_matrix_compare_torch_cpu_with_ibs_matches_classic_compare(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="ani+ibs",
+        calculate="genome_ani+max_identical_stretch",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -1454,9 +1456,9 @@ def test_matrix_compare_torch_cpu_with_ibs_matches_classic_compare(tmp_path):
     assert summary.requested_pairs == 3
     _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_identical_stretch"]
     ).sort(["sample_1", "sample_2", "genome"])
-    expected = _expected_classic_pairwise_results(profile_dir, calculate="ani+ibs")
+    expected = _expected_classic_pairwise_results(profile_dir, calculate="genome_ani+max_identical_stretch")
 
     assert actual.equals(expected)
 
@@ -1480,7 +1482,7 @@ def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="ani+ibs",
+        calculate="genome_ani+max_identical_stretch",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -1488,9 +1490,9 @@ def test_matrix_compare_direct_hdf5_torch_cpu_matches_classic_compare(tmp_path):
     assert summary.requested_pairs == 3
     _metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_identical_stretch"]
     ).sort(["sample_1", "sample_2", "genome"])
-    expected = _expected_classic_pairwise_results(profile_dir, calculate="ani+ibs")
+    expected = _expected_classic_pairwise_results(profile_dir, calculate="genome_ani+max_identical_stretch")
 
     assert actual.equals(expected)
 
@@ -1997,7 +1999,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani",
+        calculate="genome_ani",
         progress_callback=progress_events.append,
     )
 
@@ -2025,7 +2027,7 @@ def test_matrix_compare_matches_pairwise_compare(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                calculate="ani",
+                calculate="genome_ani",
                 stb_file=None,
             )
             .collect(engine="streaming")
@@ -2061,14 +2063,14 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani+ibs",
+        calculate="genome_ani+max_identical_stretch",
     )
 
     assert summary.requested_pairs == 3
     metadata, _completed_pairs, results = _load_matrix_compare_db(output_file)
     assert metadata["calculate"] == "ani+ibs"
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_identical_stretch"]
     ).sort(["sample_1", "sample_2", "genome"])
 
     expected_frames = []
@@ -2080,7 +2082,7 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                calculate="ani+ibs",
+                calculate="genome_ani+max_identical_stretch",
                 stb_file=None,
             )
             .collect(engine="streaming")
@@ -2095,7 +2097,7 @@ def test_matrix_compare_with_ibs_matches_pairwise_compare(tmp_path):
                 "total_positions",
                 "share_allele_pos",
                 "genome_ani",
-                "max_consecutive_length",
+                "max_identical_stretch",
             ])
         )
         expected_frames.append(pair)
@@ -2136,7 +2138,7 @@ def test_matrix_compare_loads_targets_in_batches(tmp_path, monkeypatch):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani",
+        calculate="genome_ani",
     )
 
     assert call_sizes
@@ -2198,7 +2200,7 @@ def test_cli_matrix_build_and_compare(tmp_path):
             "--backend",
             "torch-cpu",
             "--calculate",
-            "ani",
+            "genome_ani",
         ],
     )
     assert compare_result.exit_code == 0
@@ -2223,7 +2225,7 @@ def test_cli_matrix_build_and_compare(tmp_path):
     )
     assert export_result.exit_code == 0
     out = pl.read_parquet(export_file)
-    assert "max_consecutive_length" not in out.columns
+    assert "max_identical_stretch" not in out.columns
 
     missing_gene_export = runner.invoke(
         cli.cli,
@@ -2297,7 +2299,7 @@ def test_cli_matrix_build_sparse_and_compare(tmp_path):
             "--backend",
             "torch-cpu",
             "--calculate",
-            "ani",
+            "genome_ani",
         ],
     )
     assert compare_result.exit_code == 0
@@ -2360,7 +2362,7 @@ def test_cli_matrix_compare_export_gene_table(tmp_path):
             "--backend",
             "torch-cpu",
             "--calculate",
-            "+gene",
+            "gene_ani",
         ],
     )
     assert compare_result.exit_code == 0
@@ -2466,7 +2468,7 @@ def test_export_matrix_compare_parquet_gene_requires_gene_rows(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="ani",
+        calculate="genome_ani",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -2739,7 +2741,7 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani",
+        calculate="genome_ani",
     )
     assert first_summary.requested_pairs == 1
 
@@ -2754,7 +2756,7 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani",
+        calculate="genome_ani",
     )
     assert second_summary.requested_pairs == 2
 
@@ -2773,7 +2775,7 @@ def test_matrix_compare_resumes_after_matrix_append(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                calculate="ani",
+                calculate="genome_ani",
                 stb_file=None,
             )
             .collect(engine="streaming")
@@ -2813,7 +2815,7 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="ani",
+        calculate="genome_ani",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -2830,7 +2832,7 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch-cpu",
-        calculate="ani",
+        calculate="genome_ani",
         loader_executor_kind="thread",
         writer_executor_kind="thread",
     )
@@ -2851,7 +2853,7 @@ def test_matrix_compare_resumes_after_matrix_hdf5_append(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                calculate="ani",
+                calculate="genome_ani",
                 stb_file=None,
             )
             .collect(engine="streaming")
@@ -2876,7 +2878,7 @@ def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani",
+        calculate="genome_ani",
     )
     second_summary = mp.matrix_compare(
         matrix_db_file=matrix_db,
@@ -2884,7 +2886,7 @@ def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani",
+        calculate="genome_ani",
     )
 
     assert first_summary.requested_pairs == 3
@@ -2904,7 +2906,7 @@ def test_matrix_compare_skips_work_when_everything_is_already_done(tmp_path):
                 min_cov=mp.MATRIX_BUILD_MIN_COV,
                 genome_scope="all",
                 ani_method="popani",
-                calculate="ani",
+                calculate="genome_ani",
                 stb_file=None,
             )
             .collect(engine="streaming")
@@ -2998,7 +3000,7 @@ def test_matrix_compare_torch_backend_requires_torch(tmp_path, monkeypatch):
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             backend="torch",
             memory_limit_gb=1.0,
-            calculate="ani",
+            calculate="genome_ani",
         )
 
 
@@ -3016,7 +3018,7 @@ def test_matrix_compare_rejects_requested_min_cov_different_from_store(tmp_path)
             min_cov=1,
             memory_limit_gb=1.0,
             backend="numpy",
-            calculate="ani",
+            calculate="genome_ani",
         )
 
 
@@ -3037,7 +3039,7 @@ def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
             memory_limit_gb=1.0,
             loader_executor_kind="bad",
             backend="numpy",
-            calculate="ani",
+            calculate="genome_ani",
         )
 
     with pytest.raises(ValueError, match="writer_executor_kind must be one of"):
@@ -3048,7 +3050,7 @@ def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
             memory_limit_gb=1.0,
             writer_executor_kind="bad",
             backend="numpy",
-            calculate="ani",
+            calculate="genome_ani",
         )
 
     with pytest.raises(ValueError, match="result_transfer_batch_size must be >= 1"):
@@ -3059,7 +3061,7 @@ def test_matrix_compare_rejects_unknown_io_executor_kind(tmp_path):
             memory_limit_gb=1.0,
             result_transfer_batch_size=0,
             backend="numpy",
-            calculate="ani",
+            calculate="genome_ani",
         )
 
 
@@ -3108,7 +3110,7 @@ def test_matrix_compare_torch_reuses_target_chunks_across_anchors(tmp_path, monk
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch",
-        calculate="ani",
+        calculate="genome_ani",
     )
 
     assert summary.target_chunks == 3
@@ -3161,7 +3163,7 @@ def test_matrix_compare_torch_anchor_queue_batches_host_loads(tmp_path, monkeypa
         memory_limit_gb=1.0,
         anchor_queue_size=2,
         backend="torch",
-        calculate="ani",
+        calculate="genome_ani",
     )
 
     assert summary.target_chunks == 3
@@ -3214,7 +3216,7 @@ def test_matrix_compare_torch_target_queue_prefetches_blocks(tmp_path, monkeypat
         memory_limit_gb=1.0,
         target_queue_size=2,
         backend="torch",
-        calculate="ani",
+        calculate="genome_ani",
     )
 
     assert summary.target_chunks == 3
@@ -3268,7 +3270,7 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             memory_limit_gb=1.0,
             backend="torch",
-            calculate="ani",
+            calculate="genome_ani",
         )
 
     _metadata, completed_pairs_partial, _partial_results = _load_matrix_compare_db(output_file)
@@ -3281,7 +3283,7 @@ def test_matrix_compare_torch_resumes_after_interruption(tmp_path, monkeypatch):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="torch",
-        calculate="ani",
+        calculate="genome_ani",
     )
 
     assert summary.requested_pairs == 9
@@ -3343,14 +3345,14 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
         min_cov=mp.MATRIX_BUILD_MIN_COV,
         memory_limit_gb=1.0,
         backend="numpy",
-        calculate="ani+ibs",
+        calculate="genome_ani+max_identical_stretch",
     )
 
     assert summary.requested_pairs == 1
     _metadata, completed_pairs, results = _load_matrix_compare_db(output_file)
     assert completed_pairs == [(0, 1)]
     actual = results.select(
-        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_consecutive_length"]
+        ["sample_1", "sample_2", "genome", "total_positions", "share_allele_pos", "genome_ani", "max_identical_stretch"]
     ).sort(["sample_1", "sample_2", "genome"])
     expected = (
         cp.compare_genomes(
@@ -3359,7 +3361,7 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
             min_cov=mp.MATRIX_BUILD_MIN_COV,
             genome_scope="all",
             ani_method="popani",
-            calculate="ani+ibs",
+            calculate="genome_ani+max_identical_stretch",
             stb_file=None,
         )
         .collect(engine="streaming")
@@ -3375,14 +3377,14 @@ def test_matrix_compare_ibs_resets_at_separator_rows(tmp_path):
                 "total_positions",
                 "share_allele_pos",
                 "genome_ani",
-                "max_consecutive_length",
+                "max_identical_stretch",
             ]
         )
         .sort(["sample_1", "sample_2", "genome"])
     )
 
     assert actual.equals(expected)
-    assert actual.get_column("max_consecutive_length").to_list() == [2]
+    assert actual.get_column("max_identical_stretch").to_list() == [2]
 
 
 def _write_count_metric_profiles(profile_dir: Path, *, high_count: bool = False) -> None:
@@ -3586,7 +3588,7 @@ def test_count_matrix_ani_methods_match_numpy_and_torch(
         output_file=output_file,
         backend=backend,
         ani_method=ani_method,
-        calculate="ani+ibs",
+        calculate="genome_ani+max_identical_stretch",
         memory_limit_gb=1.0,
     )
 
@@ -3597,14 +3599,14 @@ def test_count_matrix_ani_methods_match_numpy_and_torch(
     assert results["total_positions"].to_list() == [4]
     assert results["share_allele_pos"].to_list() == [expected_shared]
     assert results["genome_ani"].to_list() == [expected_shared / 4 * 100.0]
-    assert results["max_consecutive_length"].to_list() == [expected_ibs]
+    assert results["max_identical_stretch"].to_list() == [expected_ibs]
     classic = cp.compare_genomes(
         mpile_contig_1=profile_dir / "sample_a.parquet",
         mpile_contig_2=profile_dir / "sample_b.parquet",
         min_cov=5,
         genome_scope="all",
         ani_method=ani_method,
-        calculate="ani",
+        calculate="genome_ani",
         stb_file=None,
     ).collect(engine="streaming")
     assert classic["total_positions"].to_list() == [4]
@@ -3679,7 +3681,7 @@ def test_torch_conani_keeps_uint32_counts_exact_through_hdf5_loading(tmp_path):
         output_file=output_file,
         backend="torch-cpu",
         ani_method="conani",
-        calculate="ani",
+        calculate="genome_ani",
         memory_limit_gb=1.0,
     )
 
@@ -3710,7 +3712,7 @@ def test_count_matrix_numpy_gene_results_use_selected_ani_method(tmp_path):
         output_file=output_file,
         backend="numpy",
         ani_method="conani",
-        calculate="gene",
+        calculate="gene_ani",
         memory_limit_gb=1.0,
     )
 
@@ -3734,7 +3736,7 @@ def test_bitmask_matrix_rejects_non_popani(tmp_path):
             matrix_db_file=matrix_file,
             output_file=output_file,
             ani_method="conani",
-            calculate="ani",
+            calculate="genome_ani",
             memory_limit_gb=1.0,
         )
 
@@ -3755,7 +3757,7 @@ def test_matrix_compare_resume_rejects_different_ani_method(tmp_path):
         matrix_db_file=matrix_file,
         output_file=output_file,
         ani_method="popani",
-        calculate="ani",
+        calculate="genome_ani",
         memory_limit_gb=1.0,
     )
 
@@ -3764,7 +3766,7 @@ def test_matrix_compare_resume_rejects_different_ani_method(tmp_path):
             matrix_db_file=matrix_file,
             output_file=output_file,
             ani_method="conani",
-            calculate="ani",
+            calculate="genome_ani",
             memory_limit_gb=1.0,
         )
 
@@ -3816,7 +3818,7 @@ def test_cli_builds_count_matrix_and_compares_conani(tmp_path):
             "--ani-method",
             "conani",
             "--calculate",
-            "ani",
+            "genome_ani",
             "--memory-limit-gb",
             "1",
         ],

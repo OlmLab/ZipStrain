@@ -17,7 +17,7 @@ import subprocess
 
 import polars as pl
 
-from zipstrain import gene_info as gi
+from zipstrain import gene_info as gi, options
 
 
 # NCBI tables 1 and 11 have identical internal amino-acid assignments.
@@ -141,8 +141,8 @@ def read_codon_observations(bases: dict, gene: dict, min_baseq: int = 13):
 
 
 def write_codon_counts(bam_file, profile_file, gene_info, output_file, *,
-                       min_baseq=13, min_mapq=0, min_read_ani=None,
-                       read_inclusion="all-mapped") -> Path:
+                       min_baseq=13, min_mapq=0, min_read_ani=options.PROFILE_MIN_READ_ANI,
+                       read_inclusion=options.PROFILE_READ_INCLUSION) -> Path:
     """Collect actual full-read triplets from a coordinate-sorted BAM via samtools.
 
     Counts are per fragment: overlapping mates with the same QNAME/RG contribute
@@ -393,6 +393,14 @@ def allele_events(left: Counter, right: Counter | None, reference_base: str,
         candidates = [(a,b,n) for a,b,n in candidates if n == maximum]
         return category, [(a,b,1/len(candidates)) for a,b,_ in candidates]
     return category, [(a,b,n/denominator) for a,b,n in candidates]
+
+
+def sibling_codon_table(profile_path) -> Path | None:
+    """Return where a profile's codon table sits by naming convention, if it has one."""
+    path = Path(profile_path)
+    if not path.name.endswith("_profile.parquet"):
+        return None
+    return path.with_name(path.name.replace("_profile.parquet", "_codon_counts.parquet"))
 
 
 def selection_frame(totals: dict) -> pl.LazyFrame:

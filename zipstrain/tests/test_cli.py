@@ -70,10 +70,7 @@ def _write_genome_compare_table_for_config_tests(compare_path: Path) -> None:
             "total_positions": [10],
             "share_allele_pos": [10],
             "genome_ani": [100.0],
-            "max_consecutive_length": [10],
-            "shared_genes_count": [0],
-            "identical_gene_count": [0],
-            "perc_id_genes": [0.0],
+            "max_identical_stretch": [10],
             "sample_1": ["sample_a"],
             "sample_2": ["sample_b"],
         }
@@ -293,22 +290,13 @@ def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profi
     assert output_path.exists()
 
 
-def test_single_compare_genome_polars_scope_uses_polars_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+def test_single_compare_genome_scope_limits_rows(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     stb_path = tmp_path / "stb.tsv"
     profile_1.sink_parquet(profile_1_dir)
     profile_2.sink_parquet(profile_2_dir)
     stb.sink_csv(stb_path, separator="\t", include_header=False)
-
-    calls = {"polars": 0}
-    original_polars_prefilter = cp.polars_prefilter_by_scope
-
-    def _polars_prefilter(*args, **kwargs):
-        calls["polars"] += 1
-        return original_polars_prefilter(*args, **kwargs)
-
-    monkeypatch.setattr(cli.cp, "polars_prefilter_by_scope", _polars_prefilter)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -330,7 +318,7 @@ def test_single_compare_genome_polars_scope_uses_polars_prefilter(profile_1: pl.
         ],
     )
     assert result.exit_code == 0
-    assert calls["polars"] == 1
+    assert set(pl.read_parquet(tmp_path / "scoped_polars.parquet")["genome"]) == {"genome1"}
 
 
 def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
@@ -395,14 +383,14 @@ def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.L
             "--stb-file",
             str(stb_path),
             "--calculate",
-            "ibs",
+            "max_identical_stretch",
             "--output-file",
             str(out_path),
         ],
     )
     assert result.exit_code == 0
     out = pl.read_parquet(out_path)
-    assert set(out.columns) == {"genome", "max_consecutive_length", "sample_1", "sample_2"}
+    assert set(out.columns) == {"genome", "max_identical_stretch", "sample_1", "sample_2"}
 
 
 def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_polars(profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
@@ -757,7 +745,7 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
     assert metadata[cli.ut.COMPARE_KIND_METADATA_KEY] == "genome"
     assert metadata[cli.ut.COMPARE_SCOPE_METADATA_KEY] == "all"
     assert metadata[cli.ut.COMPARE_MIN_COV_METADATA_KEY] == "5"
-    assert metadata[cli.ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY] == "100"
+    assert metadata[cli.ut.COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY] == "1"
     assert metadata[cli.ut.COMPARE_ENGINE_METADATA_KEY] == "polars"
     assert metadata[cli.ut.COMPARE_USES_STB_METADATA_KEY] == "1"
     assert metadata[cli.ut.COMPARE_ANI_METHOD_METADATA_KEY] == "conani"
@@ -859,7 +847,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
             "--workers",
             "9",
             "--calculate",
-            "ani",
+            "genome_ani",
 
         ],
     )
@@ -888,7 +876,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
                 genome_scope="all",
                 ani_method="popani",
                 stb_file=stb_path,
-                calculate="ani",
+                calculate="genome_ani",
             )
             .with_columns(
                 sample_1=pl.lit(sample_1),
@@ -935,7 +923,7 @@ def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1
             "--workers",
             "1",
             "--calculate",
-            "ani",
+            "genome_ani",
 
         ],
     )
@@ -957,7 +945,7 @@ def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1
                 genome_scope="all",
                 ani_method="popani",
                 stb_file=None,
-                calculate="ani",
+                calculate="genome_ani",
             )
             .with_columns(
                 sample_1=pl.lit(sample_1),
@@ -1041,7 +1029,8 @@ def test_compare_genes_honors_apptainer_container_address_override(tmp_path, mon
         cli.cli,
         [
             "compare",
-            "--compare-genes",
+            "--calculate",
+            "gene_ani",
             "--profile-db",
             str(profile_db),
             "--run-dir",
@@ -1082,7 +1071,7 @@ def test_compare_accepts_profiles_csv_without_build_profile_db(tmp_path, monkeyp
     assert isinstance(captured["comps_db"], cli.db.GenomeComparisonDatabase)
 
 
-def test_compare_genes_flag_routes_to_gene_compare(tmp_path, monkeypatch):
+def test_calculate_gene_ani_routes_1x_profiles_to_gene_compare(tmp_path, monkeypatch):
     csv_path = _write_profiles_csv_for_compare(tmp_path)
     captured = {}
     monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", lambda **kwargs: captured.update(kwargs))
@@ -1095,7 +1084,7 @@ def test_compare_genes_flag_routes_to_gene_compare(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(
         cli.cli,
-        ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
+        ["compare", "--calculate", "gene_ani", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "run")],
     )
     assert result.exit_code == 0, result.output
     assert isinstance(captured["comps_db"], cli.db.GeneComparisonDatabase)
@@ -1133,7 +1122,7 @@ def test_compare_method_matrix_routes_to_matrix_workflow(tmp_path, monkeypatch):
     # Profiles were passed as (name, location) pairs, and matrix knobs propagated.
     assert [name for name, _loc in captured["profiles"]] == ["sample_a", "sample_b", "sample_c"]
     assert captured["backend"] == "numpy"
-    assert captured["compare_genes"] is False
+    assert captured["calculate"] == "all"
 
 
 def test_compare_method_matrix_forwards_non_popani_method(tmp_path, monkeypatch):
@@ -1217,7 +1206,7 @@ def test_compare_default_scope_differs_by_mode(tmp_path, monkeypatch):
 
     gene_db = {}
     monkeypatch.setattr(cli.tm, "lazy_run_gene_compares", lambda **kwargs: gene_db.update(comps_db=kwargs["comps_db"]))
-    assert runner.invoke(cli.cli, ["compare", "--compare-genes", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "gene")]).exit_code == 0
+    assert runner.invoke(cli.cli, ["compare", "--calculate", "gene_ani", "--profile-db", str(csv_path), "--run-dir", str(tmp_path / "gene")]).exit_code == 0
     assert gene_db["comps_db"].config.scope == "all:all"
 
 

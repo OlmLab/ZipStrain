@@ -4,6 +4,8 @@ from dataclasses import dataclass, replace
 from importlib.metadata import entry_points
 from pathlib import Path
 
+from zipstrain import options
+
 
 PROFILE_BACKEND_API_VERSION = 1
 PROFILE_BACKEND_GROUP = "zipstrain.profile_backends"
@@ -28,8 +30,8 @@ class ProfileRequest:
     min_mapq: int = 0
     min_baseq: int = 13
     min_freq: float = 0.01
-    min_read_ani: float | None = None
-    read_inclusion: str = "all-mapped"
+    min_read_ani: float | None = options.PROFILE_MIN_READ_ANI
+    read_inclusion: str = options.PROFILE_READ_INCLUSION
     collect_codons: bool = False
     allele_integration: str = "consensus"
 

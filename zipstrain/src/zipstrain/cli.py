@@ -8,7 +8,7 @@ from zipstrain.resource_limits import configure_cli_threads
 configure_cli_threads()
 
 import click as click
-from zipstrain import __version__
+from zipstrain import __version__, options
 import zipstrain.utils as ut
 import zipstrain.compare as cp
 import zipstrain.profile as pf
@@ -557,29 +557,32 @@ def generate_sample_pair(profile_dir, output_file, write_batch_size):
 @click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
 @click.option('--output-file', '-o', required=True, help="Path to save the merged genome comparison parquet.")
 @click.option('--workers', '-w', type=int, default=None, help="Parallel workers inside this compare chunk. Defaults to CPU count capped by pair count.")
-@click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=100, show_default=True, help="Minimum gene length to consider for comparison.")
+@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
-@click.option('--ani-method', '-a', default="popani", show_default=True, help="ANI calculation method to use.")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all.")
+@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method to use.")
+@click.option('--calculate', default=options.CALCULATE, show_default=True, help="Genome metrics to compute: genome_ani, max_identical_stretch. Combine with '+', or use all.")
 def chunk_genome_compare(pair_table, stb_file, output_file, workers, min_cov, min_gene_compare_len, genome, ani_method, calculate):
     """Run classic genome compare over one pair-table chunk using Python-side parallel workers."""
     def _emit_progress(message: str) -> None:
         click.echo(message, err=True)
         sys.stderr.flush()
 
-    summary = ut.chunk_genome_compare(
-        pair_table=pair_table,
-        output_file=output_file,
-        stb_file=stb_file,
-        workers=workers,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        genome_scope=genome,
-        ani_method=ani_method,
-        calculate=calculate,
-        progress_callback=_emit_progress,
-    )
+    try:
+        summary = ut.chunk_genome_compare(
+            pair_table=pair_table,
+            output_file=output_file,
+            stb_file=stb_file,
+            workers=workers,
+            min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
+            genome_scope=genome,
+            ani_method=ani_method,
+            calculate=calculate,
+            progress_callback=_emit_progress,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     click.echo(
         f"wrote={summary['output_file']} "
         f"pairs={summary['pairs']} "
@@ -1296,8 +1299,8 @@ def to_complete_table(profile_db, comp_db_file, output_file):
         profile_db=db.ProfileDatabase(pathlib.Path(profile_db)),
         config=db.GenomeComparisonConfig(
             scope="all",
-            min_cov=5,
-            min_gene_compare_len=100,
+            min_cov=options.COMPARE_MIN_COV,
+            min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
             stb_file_loc=None,
         ),
         comp_db_loc=comp_db_file,
@@ -1394,37 +1397,43 @@ def generate_stb(genomes_dir_file, output_file, extension):
 @click.option('--profile-2', required=True, type=click.Path(exists=True))
 @click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False))
 @click.option('--output-dir', required=True, type=click.Path(file_okay=False))
-@click.option('--calculate', default='all', show_default=True, help='max_identical_stretch, gene_ani, genome_ani; combine with +.')
-@click.option('--ani-method', default='popani', show_default=True)
-@click.option('--min-cov', default=5, show_default=True, type=click.IntRange(min=1))
-@click.option('--min-gene-compare-len', default=1, show_default=True, type=click.IntRange(min=1))
+@click.option('--calculate', default=options.CALCULATE, show_default=True, help=options.CALCULATE_HELP)
+@click.option('--ani-method', default=options.ANI_METHOD, show_default=True)
+@click.option('--min-cov', default=options.COMPARE_MIN_COV, show_default=True, type=click.IntRange(min=1))
+@click.option('--min-gene-compare-len', default=options.MIN_GENE_COMPARE_LEN, show_default=True, type=click.IntRange(min=1), help=options.MIN_GENE_COMPARE_LEN_HELP)
 @click.option('--codon-counts-1', default=None, type=click.Path(exists=True))
 @click.option('--codon-counts-2', default=None, type=click.Path(exists=True))
-@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default='consensus', show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
-@click.option('--dnds', is_flag=True, help='Calculate pairwise dN/dS from observed codon evidence.')
+@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
 def compare_pair(profile_1, profile_2, preprofile_dir, output_dir, calculate, ani_method,
-                 min_cov, min_gene_compare_len, codon_counts_1, codon_counts_2, dnds, allele_integration):
+                 min_cov, min_gene_compare_len, codon_counts_1, codon_counts_2, allele_integration):
     """Write one comparison Parquet for a V2 sample pair.
 
     Each row represents a genome, or a qualifying gene when any gene metric
     is requested. See the V2 guide for schemas and command examples.
     """
     from zipstrain import codons, gene_info as gi
-    result = cp.compare_profiles(profile_1, profile_2, preprofile_dir=preprofile_dir,
-        calculate=calculate, ani_method=ani_method, min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len, codon_counts_1=codon_counts_1,
-        codon_counts_2=codon_counts_2, dnds=dnds, allele_integration=allele_integration)
+    try:
+        result = cp.compare_profiles(profile_1, profile_2, preprofile_dir=preprofile_dir,
+            calculate=calculate, ani_method=ani_method, min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len, codon_counts_1=codon_counts_1,
+            codon_counts_2=codon_counts_2, allele_integration=allele_integration)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    calculated = cp.metrics_in_frame(result)
+    selection_method = codons.METHOD if "gene_selection" in calculated else "not_calculated"
+    gene_rows = "gene_id" in result.collect_schema()
     metadata = {gi.SCHEMA_KEY: "2", "zipstrain_compare_ani_method": ani_method,
-                "zipstrain_allele_integration": allele_integration, "zipstrain_selection_method": codons.METHOD if dnds else "not_calculated"}
+                "zipstrain_allele_integration": allele_integration, "zipstrain_selection_method": selection_method}
     if preprofile_dir is not None:
         metadata.update(gi.validate_profile_assets([profile_1, profile_2], pathlib.Path(preprofile_dir)/"gene_info.parquet"))
     metadata.update({"zipstrain_compare_reference_id": metadata.get(gi.REFERENCE_ID, "NA"),
                      "zipstrain_compare_annotation_id": metadata.get(gi.ANNOTATION_ID, "NA"),
                      "zipstrain_compare_min_cov": str(min_cov),
-                     "zipstrain_compare_min_gene_compare_len": str(min_gene_compare_len),
+                     "zipstrain_compare_min_gene_compare_len": str(min_gene_compare_len) if gene_rows else "NA",
                      "zipstrain_compare_allele_integration": allele_integration,
-                     "zipstrain_compare_selection_method": codons.METHOD if dnds else "not_calculated"})
-    metadata["zipstrain_compare_kind"] = "gene" if "gene_id" in result.collect_schema() else "genome"
+                     "zipstrain_compare_selection_method": selection_method,
+                     "zipstrain_compare_calculate": "+".join(calculated)})
+    metadata["zipstrain_compare_kind"] = "gene" if gene_rows else "genome"
     output = pathlib.Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as staging:
@@ -1452,12 +1461,12 @@ def get_gene_range_table(gene_file, output_file):
 @click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
 @click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
 @click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
+@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
-@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all.")
+@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option('--calculate', default=options.CALCULATE, show_default=True, help="Metrics to compute: genome_ani, max_identical_stretch, and, with --preprofile-dir, gene_ani. Combine with '+', or use all. This command takes no codon tables, so gene_selection needs compare or compare-pair.")
 @click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="V2 shared profiling_assets directory for interval-based comparisons.")
 def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, preprofile_dir):
     """
@@ -1467,27 +1476,29 @@ def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_
     profile_location_1 (str): Path to the first profile parquet.
     profile_location_2 (str): Path to the second profile parquet.
     min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum gene length to consider for comparison.
+    min_gene_compare_len (int): Minimum shared positions for a gene comparison.
     output_file (str): Path to save the parquet file.
     genome (str): If provided, do the comparison only for the specified genome.
     stb_file (str): Optional path to the scaffold to genome mapping file.
     """
     if preprofile_dir is not None:
-        frame = cp.compare_profiles(profile_location_1, profile_location_2,
-            preprofile_dir=preprofile_dir, calculate=calculate, ani_method=ani_method,
-            min_cov=min_cov, min_gene_compare_len=min_gene_compare_len)
+        try:
+            frame = cp.compare_profiles(profile_location_1, profile_location_2,
+                preprofile_dir=preprofile_dir, calculate=calculate, ani_method=ani_method,
+                min_cov=min_cov, min_gene_compare_len=min_gene_compare_len)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
         if genome != "all":
             frame = frame.filter(pl.col("genome") == genome)
         from zipstrain.gene_info import validate_profile_assets
         metadata = validate_profile_assets([profile_location_1, profile_location_2], pathlib.Path(preprofile_dir)/"gene_info.parquet")
         metadata["zipstrain_compare_ani_method"] = ani_method
         metadata["zipstrain_compare_kind"] = "gene" if "gene_id" in frame.collect_schema() else "genome"
+        metadata["zipstrain_compare_calculate"] = "+".join(cp.metrics_in_frame(frame))
         frame.sink_parquet(output_file, engine="streaming", compression="zstd", metadata=metadata)
         return
     profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
     profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
-    calculations = cp.parse_genome_calculations(calculate)
-    output_cols = cp.genome_metric_output_columns(calculations)
     compare_metadata = ut.build_single_compare_metadata(
         profile_location_1,
         profile_location_2,
@@ -1500,40 +1511,33 @@ def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_
         ani_method=ani_method,
     )
 
-    profile_1_for_compare = profile_location_1
-    profile_2_for_compare = profile_location_2
-    if genome != "all":
-        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
+    try:
+        comp = cp.compare_genomes(
+            mpile_contig_1=profile_location_1,
+            mpile_contig_2=profile_location_2,
+            min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome,
+            ani_method=ani_method,
+            stb_file=stb_file,
+            calculate=calculate,
+        ).with_columns(
+            sample_1=pl.lit(profile_1_name),
+            sample_2=pl.lit(profile_2_name),
         )
-
-
-    comp = cp.compare_genomes(
-        mpile_contig_1=profile_1_for_compare,
-        mpile_contig_2=profile_2_for_compare,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        genome_scope=genome,
-        ani_method=ani_method,
-        stb_file=stb_file,
-        calculate=calculations,
-    ).with_columns(
-        sample_1=pl.lit(profile_1_name),
-        sample_2=pl.lit(profile_2_name),
-    ).select(output_cols + ["sample_1", "sample_2"])
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     comp.sink_parquet(output_file, engine="streaming", compression='zstd', metadata=compare_metadata)
 
 @utilities.command("single_compare_gene")
 @click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
 @click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
 @click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. Currently unused for gene compare, and accepted for workflow consistency.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
+@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
 @click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
 @click.option('--scope', '-g', default="all:all", help="If provided, do the comparison only for the specified genome-gene pair.")
-@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
 @click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="V2 shared profiling_assets directory for interval-based comparisons.")
 def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, preprofile_dir):
     """
@@ -1544,7 +1548,7 @@ def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_co
     profile_location_2 (str): Path to the second profile parquet.
     stb_file (str | None): Optional path to the scaffold to genome mapping file.
     min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum gene length to consider for comparison.
+    min_gene_compare_len (int): Minimum shared positions for a gene comparison.
     output_file (str): Path to save the parquet file.
     scope (str): If provided, do the comparison only for the specified genome-gene pair.
     ani_method (str): ANI calculation method to use.
@@ -1568,7 +1572,11 @@ def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_co
         metadata["zipstrain_compare_kind"] = "gene"
         frame.sink_parquet(output_file, engine="streaming", compression="zstd", metadata=metadata)
         return
-    if "gene" not in pl.scan_parquet(profile_location_1).collect_schema().names():
+    try:
+        cp.require_same_profile_generation((profile_location_1, profile_location_2))
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if cp.profile_is_gene_free(profile_location_1):
         raise click.UsageError("V2 gene comparisons require --preprofile-dir")
     profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
     profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
@@ -1990,13 +1998,11 @@ def _run_matrix_compare_method(
     backend,
     memory_limit_gb,
     min_cov,
-    compare_genes,
     ani_method,
-    calculate="all",
+    calculate=options.CALCULATE,
     compare_kernel=mp.MATRIX_COMPARE_KERNEL_ANCHOR,
-    min_gene_compare_len=100,
-    dnds=False,
-    allele_integration="consensus",
+    min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
+    allele_integration=options.ALLELE_INTEGRATION,
     no_csv=False,
     force_csv=False,
     run_log=None,
@@ -2042,12 +2048,12 @@ def _run_matrix_compare_method(
     try:
         hint = matrix_workflow.block_kernel_hint(
             compare_kernel,
-            calculate=matrix_workflow.resolve_calculate(calculate, compare_genes=compare_genes),
+            calculate=calculate,
             ani_method=ani_method,
         )
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
-    if hint is not None and not dnds:
+    if hint is not None:
         console.print(f"[yellow]{hint}[/]")
         if run_log is not None:
             run_log.note(hint)
@@ -2063,11 +2069,9 @@ def _run_matrix_compare_method(
             memory_limit_gb=memory_limit_gb,
             min_cov=min_cov,
             ani_method=ani_method,
-            compare_genes=compare_genes,
             calculate=calculate,
             compare_kernel=compare_kernel,
             min_gene_compare_len=min_gene_compare_len,
-            dnds=dnds,
             allele_integration=allele_integration,
             progress_callback=_on_step,
             compare_progress_callback=_on_compare_progress,
@@ -2108,15 +2112,14 @@ def _run_matrix_compare_method(
 @click.option("--profile-db", required=True, help="Profiles to compare: either a CSV with 'profile_name,profile_location' columns (built in memory, no build-profile-db needed) or a pre-built profile-database parquet.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--method", type=click.Choice(["table", "matrix"]), default="table", show_default=True, help="Comparison method: 'table' (direct pairwise in Polars) or 'matrix' (reusable matrix store).")
-@click.option("--compare-genes", is_flag=True, default=False, show_default=True, help="Request per-gene comparison rows. In V2 this adds gene ANI to --calculate.")
 @click.option("--scope", default=None, help="Comparison scope. Defaults to 'all' for genomes and 'all:all' for genes.")
-@click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
-@click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum number of shared positions for a gene comparison.")
+@click.option("--min-cov", default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
+@click.option("--min-gene-compare-len", default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
 @click.option("--stb-file", default=None, help="Scaffold-to-genome mapping file. Required for --method matrix.")
 @click.option("--comp-db-file", default=None, help="Optional existing comparison parquet to resume/extend (table method). Auto-detected from --run-dir if omitted.")
 @click.option("--allow-mismatch", is_flag=True, default=False, show_default=True, help="Skip profile contract validation when building the profile database from a CSV.")
-@click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option("--calculate", default="all", show_default=True, help="Metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all. In V2, requesting gene ANI selects per-gene rows, and all includes gene ANI when genes are available.")
+@click.option("--ani-method", "-a", default=options.ANI_METHOD, show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option("--calculate", default=options.CALCULATE, show_default=True, help=options.CALCULATE_HELP + " Any gene metric selects per-gene rows.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-info-table", "--gene-range-table", "gene_range_table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
@@ -2132,11 +2135,10 @@ def _run_matrix_compare_method(
 @click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Also write a companion .csv. V2 exports Parquet by default.")
 @click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="Shared V2 profiling_assets directory for gene and selection comparisons.")
-@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default='consensus', show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
-@click.option('--dnds', is_flag=True, default=False, help="Calculate gene dN/dS and pN/pS from sibling observed codon tables. Matrix requires the anchor kernel (V2).")
-def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, calculate, bed_file, gene_range_table, backend, memory_limit_gb, compare_kernel, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv, preprofile_dir, dnds, allele_integration):
+@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
+def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, calculate, bed_file, gene_range_table, backend, memory_limit_gb, compare_kernel, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv, preprofile_dir, allele_integration):
     """
-    Compare profiled samples at the genome level (default) or gene level (--compare-genes).
+    Compare profiled samples at the genome level, or per gene when a gene metric is requested.
 
     ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
     there is no need to run ``zipstrain utilities build-profile-db`` first; a
@@ -2147,6 +2149,10 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
     same ``--run-dir`` and a profiles table that includes new samples extends the
     existing comparison, computing only the new pairs.
     """
+    try:
+        named_metrics = options.explicit_metrics(calculate)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     run_dir = pathlib.Path(run_dir)
     with RunLogger(run_dir, command="compare", argv=sys.argv) as run_log:
         run_log.step("Loading profile database")
@@ -2163,13 +2169,12 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                 raise click.UsageError("V2 explicit-asset comparison currently requires local execution. Use compare-pair inside external job schedulers.")
             if scope not in (None, "all", "all:all") or comp_db_file is not None:
                 raise click.UsageError("V2 collection comparison currently uses all genomes/genes and its own per-pair cache; use a separate run directory.")
-            selection = f"{calculate}+gene_ani" if compare_genes else calculate
             try:
                 output = cp.compare_profile_collection(
                     [(row["profile_name"], row["profile_location"]) for row in rows],
-                    run_dir, preprofile_dir=preprofile_dir, calculate=selection,
+                    run_dir, preprofile_dir=preprofile_dir, calculate=calculate,
                     ani_method=ani_method, min_cov=min_cov,
-                    min_gene_compare_len=min_gene_compare_len, dnds=dnds, allele_integration=allele_integration,
+                    min_gene_compare_len=min_gene_compare_len, allele_integration=allele_integration,
                 )
             except (ValueError, FileNotFoundError) as exc:
                 raise click.UsageError(str(exc)) from exc
@@ -2189,12 +2194,10 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                 backend=backend,
                 memory_limit_gb=memory_limit_gb,
                 min_cov=min_cov,
-                compare_genes=compare_genes,
                 ani_method=ani_method,
                 calculate=calculate,
                 compare_kernel=compare_kernel,
                 min_gene_compare_len=min_gene_compare_len,
-                dnds=dnds,
                 allele_integration=allele_integration,
                 no_csv=no_csv,
                 force_csv=force_csv,
@@ -2202,8 +2205,11 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
             )
             return
 
-        if dnds:
-            raise click.UsageError("--dnds requires V2 profiles with preprofile gene annotations")
+        if "gene_selection" in named_metrics:
+            raise click.UsageError("gene_selection requires V2 profiles with preprofile gene annotations")
+        if "gene_ani" in named_metrics and len(named_metrics) > 1:
+            raise click.UsageError("With 1.x profiles, gene_ani writes a separate per-gene table. Request it on its own.")
+        compare_genes = "gene_ani" in named_metrics
 
         slurm_conf = None
         if execution_mode == "slurm":
@@ -2284,14 +2290,12 @@ compare.option_sections = {
     ],
     "Comparison parameters": [
         "method",
-        "compare_genes",
         "scope",
         "min_cov",
         "min_gene_compare_len",
         "stb_file",
         "ani_method",
         "calculate",
-        "dnds",
         "allele_integration",
         "comp_db_file",
         "allow_mismatch",

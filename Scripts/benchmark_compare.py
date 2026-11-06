@@ -169,11 +169,11 @@ def timed_compare(args: list[str], output: Path, expected_pairs: set[tuple[str, 
         raise ValueError("The OS did not report a positive peak RSS")
     table = pl.read_parquet(output)
     keys = ["sample_1", "sample_2", "genome"] + (["gene_id"] if mixed else [])
-    required = {*keys, "genome_ani", "max_consecutive_length"}
+    required = {*keys, "genome_ani", "max_identical_stretch"}
     if mixed:
         required.add("gene_ani")
     if selection:
-        required.update(gene_info.SELECTION_COLUMNS)
+        required.update(gene_info.PAIR_SELECTION_COLUMNS)
     if not required.issubset(table.columns) or ("gene_id" in table.columns) != mixed:
         raise ValueError(f"Unexpected columns in {output}: {table.columns}")
     if selection and not table.select(pl.any_horizontal(pl.col("pN", "pS") > 0).any()).item():
@@ -218,7 +218,8 @@ def run_suite(root: Path, repetitions: int, quick: bool) -> list[dict]:
             common = ["--preprofile-dir", str(inputs), "--calculate", calculate,
                       "--min-cov", "5", "--min-gene-compare-len", "100"]
             if selection:
-                common += ["--dnds", "--allele-integration", integration]
+                common[common.index(calculate)] = f"{calculate}+gene_selection"
+                common += ["--allele-integration", integration]
             if method == "matrix":
                 common += ["--stb-file", str(inputs / "reference.stb"),
                            "--bed-file", str(inputs / "regions.bed"), "--backend", "numpy",

@@ -160,12 +160,12 @@ def test_run_matrix_compare_validates_existing_contract_before_append(tmp_path):
 @pytest.mark.parametrize(
     ("kernel", "calculate", "ani_method", "expect_hint"),
     [
-        ("anchor", "ani", "popani", True),
-        ("anchor", "ani", "conani", True),
+        ("anchor", "genome_ani", "popani", True),
+        ("anchor", "genome_ani", "conani", True),
         ("anchor", "all", "popani", False),
-        ("anchor", "ani+ibs", "popani", False),
-        ("anchor", "ani", "cosani_0.4", False),
-        ("block", "ani", "popani", False),
+        ("anchor", "genome_ani+max_identical_stretch", "popani", False),
+        ("anchor", "genome_ani", "cosani_0.4", False),
+        ("block", "genome_ani", "popani", False),
     ],
 )
 def test_block_kernel_hint(kernel, calculate, ani_method, expect_hint):
@@ -173,13 +173,6 @@ def test_block_kernel_hint(kernel, calculate, ani_method, expect_hint):
     assert (hint is not None) == expect_hint
     if expect_hint:
         assert "--compare-kernel block" in hint
-
-
-def test_resolve_calculate_adds_gene_for_gene_runs():
-    assert matrix_workflow.resolve_calculate("genome_ani", compare_genes=True) == "genome_ani+gene_ani"
-    assert matrix_workflow.resolve_calculate("ani", compare_genes=False) == "ani"
-    with pytest.raises(ValueError, match="Unsupported matrix calculation"):
-        matrix_workflow.resolve_calculate("identical_genes", compare_genes=False)
 
 
 def test_run_matrix_compare_forwards_calculate_kernel_and_progress(tmp_path, monkeypatch):
@@ -213,12 +206,12 @@ def test_run_matrix_compare_forwards_calculate_kernel_and_progress(tmp_path, mon
         run_dir=tmp_path / "run",
         stb_file=stb,
         bed_file=bed,
-        calculate="ani",
+        calculate="genome_ani",
         compare_kernel="block",
         compare_progress_callback=on_progress,
     )
 
-    assert captured["calculate"] == "ani"
+    assert captured["calculate"] == "genome_ani"
     assert captured["compare_kernel"] == "block"
     assert captured["progress_callback"] is on_progress
 
@@ -242,7 +235,7 @@ def test_ani_only_workflow_resumes_with_block_kernel_and_new_samples(tmp_path, a
             "A": a, "T": t, "C": [0] * 4, "G": [0] * 4,
         }).write_parquet(path)
         profiles.append((name, path))
-    options = dict(stb_file=stb, bed_file=bed, calculate="ani", ani_method=ani_method,
+    options = dict(stb_file=stb, bed_file=bed, calculate="genome_ani", ani_method=ani_method,
                    memory_limit_gb=1)
     run = tmp_path / "incremental"
     initial = matrix_workflow.run_matrix_compare(profiles=profiles[:2], run_dir=run, **options)

@@ -52,7 +52,7 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.align import Align
-from zipstrain import database
+from zipstrain import database, options
 from rich.columns import Columns
 import polars as pl
 import psutil
@@ -508,8 +508,8 @@ class ProfileTaskGenerator(TaskGenerator):
         min_mapq: int = 0,
         min_baseq: int = 13,
         min_freq: float = 0.01,
-        min_read_ani: float | None = None,
-        read_inclusion: str = "all-mapped",
+        min_read_ani: float | None = options.PROFILE_MIN_READ_ANI,
+        read_inclusion: str = options.PROFILE_READ_INCLUSION,
         backend: str = "python",
         collect_codons: bool = False,
         allele_integration: str = "consensus",
@@ -1977,8 +1977,8 @@ def lazy_run_profile(
     min_mapq: int = 0,
     min_baseq: int = 13,
     min_freq: float = 0.01,
-    min_read_ani: float | None = None,
-    read_inclusion: str = "all-mapped",
+    min_read_ani: float | None = options.PROFILE_MIN_READ_ANI,
+    read_inclusion: str = options.PROFILE_READ_INCLUSION,
     tasks_per_batch: int = 10,
     max_concurrent_batches: int = 1,
     poll_interval: float = 5.0,

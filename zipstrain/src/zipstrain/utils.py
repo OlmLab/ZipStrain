@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import time
+import warnings
 from tempfile import TemporaryDirectory
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -23,6 +24,7 @@ from scipy.stats import poisson
 import subprocess
 import numpy as np
 from typing import TYPE_CHECKING
+from zipstrain import options
 from zipstrain.resource_limits import connect_duckdb
 
 if TYPE_CHECKING:
@@ -55,10 +57,7 @@ GENOME_COMPARE_OUTPUT_DTYPES = {
     "total_positions": pl.Int64,
     "share_allele_pos": pl.Int64,
     "genome_ani": pl.Float64,
-    "max_consecutive_length": pl.Int64,
-    "shared_genes_count": pl.Int64,
-    "identical_gene_count": pl.Int64,
-    "perc_id_genes": pl.Float64,
+    "max_identical_stretch": pl.Int64,
     "sample_1": pl.Utf8,
     "sample_2": pl.Utf8,
 }
@@ -1142,19 +1141,10 @@ def _run_genome_compare_pair(
     sample_2 = row["sample_name_2"]
     output_columns = cp.genome_metric_output_columns(calculate) + ["sample_1", "sample_2"]
 
-    profile_1_for_compare = profile_1
-    profile_2_for_compare = profile_2
-    if genome_scope != "all":
-        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=profile_1,
-            mpile2=profile_2,
-            genome_scope=genome_scope,
-        )
-
     frame = (
         cp.compare_genomes(
-            mpile_contig_1=profile_1_for_compare,
-            mpile_contig_2=profile_2_for_compare,
+            mpile_contig_1=profile_1,
+            mpile_contig_2=profile_2,
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
@@ -1177,11 +1167,11 @@ def chunk_genome_compare(
     output_file: str | pathlib.Path,
     stb_file: str | pathlib.Path | None,
     workers: int | None = None,
-    min_cov: int = 5,
-    min_gene_compare_len: int = 100,
+    min_cov: int = options.COMPARE_MIN_COV,
+    min_gene_compare_len: int = options.MIN_GENE_COMPARE_LEN,
     genome_scope: str = "all",
-    ani_method: str = "popani",
-    calculate: str | tuple[str, ...] = "all",
+    ani_method: str = options.ANI_METHOD,
+    calculate: str | tuple[str, ...] = options.CALCULATE,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Run classic genome compare on one pair table using in-process parallel workers."""
@@ -1192,6 +1182,8 @@ def chunk_genome_compare(
         raise ValueError("workers must be >= 1")
 
     calculations = cp.parse_genome_calculations(calculate)
+    if options.requests_all(calculate):
+        warnings.warn("chunk-genome-compare calculates genome metrics only; skipping gene metrics in 'all'.", stacklevel=2)
     pair_table_path = pathlib.Path(pair_table)
     output_path = pathlib.Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)

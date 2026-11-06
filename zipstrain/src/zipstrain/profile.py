@@ -8,7 +8,7 @@ import pathlib
 import polars as pl
 from typing import Generator, Optional
 from dataclasses import dataclass
-from zipstrain import utils
+from zipstrain import options, utils
 import asyncio
 import json
 import os
@@ -33,7 +33,7 @@ PROFILE_MIN_BASEQ_DEFAULT = 13
 PROFILE_MIN_FREQ_DEFAULT = 0.01
 # Read-ANI floor applied by default so low-identity (typically mis-mapped) reads
 # do not inflate SNV calls; matches inStrain's default of 0.95.
-PROFILE_MIN_READ_ANI_DEFAULT = 0.95
+PROFILE_MIN_READ_ANI_DEFAULT = options.PROFILE_MIN_READ_ANI
 READ_INCLUSION_ALL_MAPPED = "all-mapped"
 READ_INCLUSION_PAIRED = "paired"
 READ_INCLUSION_PROPER_PAIRS = "proper-pairs"
@@ -45,7 +45,7 @@ PROFILE_READ_INCLUSION_CHOICES = (
 # Default eligibility: for paired reads keep only those whose mate maps to the same
 # scaffold (matching inStrain's default "paired_only": drops half-mapped orphans and
 # cross-scaffold pairs), while keeping genuinely single-end reads.
-PROFILE_READ_INCLUSION_DEFAULT = READ_INCLUSION_PAIRED
+PROFILE_READ_INCLUSION_DEFAULT = options.PROFILE_READ_INCLUSION
 SAM_FLAG_PAIRED = 0x1
 SAM_FLAG_PROPER_PAIR = 0x2
 SAM_FLAG_UNMAP = 0x4
@@ -1269,7 +1269,7 @@ def _ensure_faidx(reference_fasta: pathlib.Path) -> None:
 
 def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
                            collect_codons=False, min_mapq=0, min_baseq=13,
-                           min_read_ani=None, read_inclusion="all-mapped", min_freq=0.01,
+                           min_read_ani=PROFILE_MIN_READ_ANI_DEFAULT, read_inclusion=PROFILE_READ_INCLUSION_DEFAULT, min_freq=0.01,
                            allele_integration="consensus", reference_id=None):
     """Finalize V2 profile identity, gene statistics, and optional codon evidence.
 
@@ -1336,8 +1336,8 @@ def profile_bam_in_chunks(
     profile_contract: Optional[dict[str, str]] = None,
     min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
     min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
-    min_read_ani: float | None = None,
-    read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
+    min_read_ani: float | None = PROFILE_MIN_READ_ANI_DEFAULT,
+    read_inclusion: str = PROFILE_READ_INCLUSION_DEFAULT,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
     collect_codons: bool = False,
     allele_integration: str = "consensus",
@@ -1512,8 +1512,8 @@ def profile_bam(
     profile_contract: Optional[dict[str, str]] = None,
     min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
     min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
-    min_read_ani: float | None = None,
-    read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
+    min_read_ani: float | None = PROFILE_MIN_READ_ANI_DEFAULT,
+    read_inclusion: str = PROFILE_READ_INCLUSION_DEFAULT,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
     collect_codons: bool = False,
     allele_integration: str = "consensus",
