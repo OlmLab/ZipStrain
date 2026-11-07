@@ -306,7 +306,7 @@ def run_matrix_compare(
     existing_names = _existing_store_sample_names(store)
     selection_files = None
     if selection:
-        from zipstrain import matrix_selection
+        from zipstrain import pair_selection
 
         fingerprints = {name: utils.sha256_file(path) for name, path in profiles}
         manifest = intermediate / "matrix_selection_profiles.json"
@@ -315,7 +315,7 @@ def run_matrix_compare(
             if any(name not in fingerprints or previous.get(name) != fingerprints[name] for name in existing_names):
                 raise ValueError("Existing matrix store has changed or unverified selection inputs. Use a different --run-dir.")
         _notify(progress_callback, "Computing pairwise selection from observed codon counts")
-        selection_files = matrix_selection.stage_selection_pairs(
+        selection_files = pair_selection.stage_selection_pairs(
             profiles, fingerprints, catalog, intermediate / "matrix_selection",
             min_cov=min_cov, genome=scope, allele_integration=allele_integration,
             memory_limit_gb=memory_limit_gb,

@@ -110,10 +110,15 @@ def test_from_sra_to_profile_build_db_process_emits_gene_stats_and_sylph_output(
     assert 'path "${sra_id}_sylph_abundance.tsv", emit: sylph_abundance' in output_section
 
 
-def test_nextflow_calls_utilities_single_compare_commands():
+def test_nextflow_compares_through_one_mode_and_command():
     text = NEXTFLOW_FILE.read_text()
-    assert "zipstrain utilities single_compare_genome" in text
-    assert "zipstrain utilities single_compare_gene" in text
+    assert text.count("zipstrain utilities compare-pair") == 2
+    assert text.count("--calculate ${params.compare_calculate}") == 2
+    assert text.count("--scope ${params.compare_scope}") == 2
+    assert text.count("--ani-method ${params.compare_ani_method}") == 2
+    for retired in ("single_compare_genome", "single_compare_gene", "compare_genome_scope", "compare_gene_scope"):
+        assert retired not in text
+    assert "was replaced by --mode compare" in text
 
 
 def test_nextflow_calls_updated_profile_commands():
@@ -128,8 +133,8 @@ def test_nextflow_compare_profile_tables_use_profiles_column_and_engine_param():
     assert "getProfileSampleNamesTableColumn" in text
     assert "input_table.containsKey('profiles')" in text
     assert "profile_location" in text
-    assert "--profile-location-1" in text
-    assert "--profile-location-2" in text
+    assert "--profile-1" in text
+    assert "--profile-2" in text
 
 
 def test_nextflow_requires_mode_and_defaults_to_batched_compare():
@@ -220,7 +225,7 @@ def test_nextflow_processes_match_conf_config():
 
 def _write_compare_genomes_fixtures(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
     """Writes two tiny, identical profile parquets + an stb file and returns
-    (profiles_csv, stb_path) for a `mode=compare_genomes input_type=profile_table` run."""
+    (profiles_csv, stb_path) for a `mode=compare input_type=profile_table` run."""
     profile_schema = {
         "chrom": ["chr1", "chr1", "chr1"],
         "genome": ["genome1", "genome1", "genome1"],
@@ -268,11 +273,11 @@ def _assert_merged_comparison_is_correct(output_dir: pathlib.Path, nextflow_log:
     "(e.g. `conda install -c bioconda nextflow openjdk`) to run the pipeline for real.",
 )
 @pytest.mark.parametrize("parallel_mode", ["single", "batched"])
-def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode):
+def test_compare_mode_runs_end_to_end(tmp_path, parallel_mode):
     """
     Actually compiles and executes zipstrain.nf, rather than grepping its text.
 
-    This uses `mode=compare_genomes` with `input_type=profile_table` because it is
+    This uses `mode=compare` with `input_type=profile_table` because it is
     the only mode that needs no containers, no samtools/bowtie2/sylph, and no
     network access: it just calls the `zipstrain` CLI (already on PATH in this
     environment) on two tiny profile parquets and merges the result.
@@ -290,8 +295,8 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode):
     override.write_text(
         "docker { enabled = false }\n"
         "process {\n"
-        "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
-        "    withName: 'compare_genome_batched' { cpus = 2; memory = '1 GB' }\n"
+        "    withName: 'compare_pairs_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'compare_pairs_batched' { cpus = 2; memory = '1 GB' }\n"
         "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
         "}\n"
     )
@@ -302,7 +307,7 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode):
             "run",
             str(NEXTFLOW_FILE),
             "-c", str(override),
-            "--mode", "compare_genomes",
+            "--mode", "compare",
             "--input_type", "profile_table",
             "--input_table", str(profiles_csv),
             "--stb", str(stb_path),
@@ -339,10 +344,10 @@ def test_compare_genomes_mode_runs_end_to_end(tmp_path, parallel_mode):
         "lag branch CLI changes. Set ZIPSTRAIN_RUN_DOCKER_E2E=1 to run it explicitly."
     ),
 )
-def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
+def test_compare_mode_runs_end_to_end_via_docker(tmp_path):
     """
-    Same scenario as test_compare_genomes_mode_runs_end_to_end, but run under
-    `-profile docker` so every process (including compare_genome_fast_profiles_single)
+    Same scenario as test_compare_mode_runs_end_to_end, but run under
+    `-profile docker` so every process (including compare_pairs_single)
     executes inside the published parsaghadermazi/zipstrain image. This is the
     cheapest way to catch a broken/stale published image (missing tools, wrong
     zipstrain version, wrong CPU architecture) without the slow/flaky SRA + Sylph
@@ -351,14 +356,14 @@ def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
     profiles_csv, stb_path = _write_compare_genomes_fixtures(tmp_path)
     output_dir = tmp_path / "out"
 
-    # conf.config requests 8 cpus / 40 GB for compare_genome_fast_profiles_single,
+    # conf.config requests 8 cpus / 40 GB for compare_pairs_single,
     # sized for cluster nodes. Override to something any laptop's Docker Desktop
     # allocation can satisfy, since this test only cares whether the container
     # itself works, not real-world throughput.
     resource_override = tmp_path / "test_docker_resources.config"
     resource_override.write_text(
         "process {\n"
-        "    withName: 'compare_genome_fast_profiles_single' { cpus = 1; memory = '512 MB' }\n"
+        "    withName: 'compare_pairs_single' { cpus = 1; memory = '512 MB' }\n"
         "    withName: 'merge_comparison_tables' { cpus = 1; memory = '512 MB' }\n"
         "}\n"
     )
@@ -371,7 +376,7 @@ def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
             "-c", str(CONF_FILE),
             "-c", str(resource_override),
             "-profile", "docker",
-            "--mode", "compare_genomes",
+            "--mode", "compare",
             "--input_type", "profile_table",
             "--input_table", str(profiles_csv),
             "--stb", str(stb_path),
@@ -388,3 +393,60 @@ def test_compare_genomes_mode_runs_end_to_end_via_docker(tmp_path):
         f"nextflow run failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     _assert_merged_comparison_is_correct(output_dir, result.stdout)
+
+
+@pytest.mark.skipif(not _NEXTFLOW_AVAILABLE, reason="nextflow and a JVM are required to run the pipeline.")
+@pytest.mark.parametrize("parallel_mode", ["single", "batched"])
+def test_compare_stages_codon_tables_for_gene_selection(tmp_path, parallel_mode):
+    """A V2 Nextflow comparison gives the same table as `zipstrain compare`, gene_selection included."""
+    import polars as pl
+    from click.testing import CliRunner
+    from polars.testing import assert_frame_equal
+
+    from zipstrain import cli, gene_info as gi, utils
+
+    if parallel_mode == "batched" and shutil.which("parallel") is None:
+        pytest.skip("GNU parallel is required for the batched comparison path")
+    (tmp_path/"ref.fa").write_text(">chr1\nAAAGGATTTCCCAAAGGTTAA\n")
+    (tmp_path/"genes.fa").write_text(">chr1_1 # 1 # 9 # 1 # partial=00\nAAAGGATTT\n")
+    (tmp_path/"ref.stb").write_text("chr1\tgenomeA\n")
+    catalog = gi.write_gene_info(tmp_path/"ref.fa", tmp_path/"genes.fa", tmp_path/"ref.stb", tmp_path/"gene_info.parquet")
+    gene_id = pl.read_parquet(catalog)["gene_id"][0]
+    identity = utils._read_custom_parquet_metadata(catalog)
+    identity.pop("zipstrain_reference_codons_sha256", None)
+    lines = ["sample_name,profiles"]
+    for name, sequence, codon in (("a", "AAAGGATTTCCCAAAGGTTAA", "GGA"), ("b", "AAAGGTTTTCCCAAAGGTTAA", "GGT"), ("c", "AAAGGATTTCCCAAAGGTTAA", "GGA")):
+        rows = [("chr1", "genomeA", i + 1, *[10 if base == b else 0 for b in "ACGT"]) for i, base in enumerate(sequence)]
+        profile = tmp_path/f"{name}_profile.parquet"
+        pl.DataFrame(rows, schema=["chrom", "genome", "pos", "A", "C", "G", "T"], orient="row").write_parquet(
+            profile, metadata={**identity, "zipstrain_sorted_by": "chrom,pos"})
+        pl.DataFrame({"gene_id": [gene_id, gene_id], "codon_index": [0, 1], "codon": ["AAA", codon], "count": [10, 10]},
+                     schema={"gene_id": pl.UInt64, "codon_index": pl.UInt32, "codon": pl.String, "count": pl.UInt64}).write_parquet(
+            tmp_path/f"{name}_codon_counts.parquet",
+            metadata={**identity, "zipstrain_codon_evidence": "read_phased_v1", "zipstrain_source_profile_sha256": utils.sha256_file(profile)})
+        lines.append(f"{name},{profile}")
+    table = tmp_path/"profiles.csv"
+    table.write_text("\n".join(lines) + "\n")
+    override = tmp_path/"local.config"
+    override.write_text("docker { enabled = false }\nprocess {\n"
+                        "  withName: 'compare_pairs_single' { cpus = 1; memory = '1 GB' }\n"
+                        "  withName: 'compare_pairs_batched' { cpus = 2; memory = '1 GB' }\n"
+                        "  withName: 'merge_comparison_tables' { cpus = 1; memory = '1 GB' }\n}\n")
+    result = subprocess.run(
+        [str(_NEXTFLOW_BIN), "run", str(NEXTFLOW_FILE), "-c", str(override), "--mode", "compare",
+         "--input_type", "profile_table", "--input_table", str(table), "--stb", str(tmp_path/"ref.stb"),
+         "--parallel_mode", parallel_mode, "--preprofile_dir", str(tmp_path), "--compare_calculate", "gene_ani+gene_selection",
+         "--batch_compare_n_parallel", "2", "--batch_size", "2", "--output_dir", str(tmp_path/"out")],
+        cwd=tmp_path, env=_nextflow_subprocess_env(), capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    csv = tmp_path/"local.csv"
+    csv.write_text("profile_name,profile_location\n" + "".join(f"{n},{tmp_path/(n + '_profile.parquet')}\n" for n in "abc"))
+    local = CliRunner().invoke(cli.cli, ["compare", "--profile-db", str(csv), "--preprofile-dir", str(tmp_path), "--no-csv",
+                                         "--calculate", "gene_ani+gene_selection", "--run-dir", str(tmp_path/"local")])
+    assert local.exit_code == 0, local.output + repr(local.exception)
+    keys = ["sample_1", "sample_2", "gene_id"]
+    merged = pl.read_parquet(tmp_path/"out"/"merged_comparisons.parquet").sort(keys)
+    expected = pl.read_parquet(tmp_path/"local"/"all_comparisons.parquet").sort(keys)
+    assert_frame_equal(merged, expected)
+    assert merged["dS"].drop_nulls().max() > 0

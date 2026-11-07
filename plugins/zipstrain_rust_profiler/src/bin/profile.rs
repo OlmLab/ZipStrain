@@ -21,6 +21,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+#[path = "../codons.rs"]
+mod codons;
 #[path = "../profiler_baq.rs"]
 mod baq;
 #[path = "../profiler_stats.rs"]
@@ -94,12 +96,7 @@ fn parse_args() -> AnyResult<Args> {
     let parse = |key: &str, default: &str| -> AnyResult<String> {
         Ok(a.get(key).cloned().unwrap_or_else(|| default.to_owned()))
     };
-    let read_inclusion = match parse("--read-inclusion", "all-mapped")?.as_str() {
-        "all-mapped" => Inclusion::AllMapped,
-        "paired" => Inclusion::Paired,
-        "proper-pairs" => Inclusion::ProperPairs,
-        v => return Err(format!("invalid --read-inclusion: {v}").into()),
-    };
+    let read_inclusion = parse_inclusion(&parse("--read-inclusion", "all-mapped")?)?;
     let args = Args {
         bam: required("--bam")?,
         bed: required("--bed")?,
@@ -286,10 +283,14 @@ fn load_inputs(args: &Args) -> AnyResult<Inputs> {
 }
 
 fn allowed(record: &bam::Record, args: &Args) -> bool {
-    if record.is_unmapped() || record.mapq() < args.min_mapq {
+    read_passes(record, args.min_mapq, args.read_inclusion, args.min_read_ani)
+}
+
+fn read_passes(record: &bam::Record, min_mapq: u8, read_inclusion: Inclusion, min_read_ani: Option<f64>) -> bool {
+    if record.is_unmapped() || record.mapq() < min_mapq {
         return false;
     }
-    match args.read_inclusion {
+    match read_inclusion {
         Inclusion::AllMapped => (),
         Inclusion::Paired if record.is_paired() => {
             if record.is_mate_unmapped() || record.mtid() != record.tid() {
@@ -303,7 +304,7 @@ fn allowed(record: &bam::Record, args: &Args) -> bool {
         }
         _ => (),
     }
-    if let Some(min_ani) = args.min_read_ani {
+    if let Some(min_ani) = min_read_ani {
         let nm = match record.aux(b"NM") {
             Ok(Aux::I8(v)) => Some(v as i64),
             Ok(Aux::U8(v)) => Some(v as i64),
@@ -680,7 +681,46 @@ fn ensure_bam_index(bam_path: &Path) -> AnyResult<()> {
     Ok(())
 }
 
+fn parse_inclusion(value: &str) -> AnyResult<Inclusion> {
+    match value {
+        "all-mapped" => Ok(Inclusion::AllMapped),
+        "paired" => Ok(Inclusion::Paired),
+        "proper-pairs" => Ok(Inclusion::ProperPairs),
+        v => Err(format!("invalid --read-inclusion: {v}").into()),
+    }
+}
+
+/// `codons --bam B --genes TSV --output P --threads N --min-baseq Q --min-mapq Q
+/// --read-inclusion I [--min-read-ani F]`
+fn run_codons() -> AnyResult<()> {
+    let mut options = HashMap::new();
+    let mut it = env::args().skip(2);
+    while let Some(key) = it.next() {
+        if !["--bam", "--genes", "--output", "--threads", "--min-baseq", "--min-mapq", "--read-inclusion", "--min-read-ani"]
+            .contains(&key.as_str())
+        {
+            return Err(format!("unknown option: {key}").into());
+        }
+        options.insert(key.clone(), it.next().ok_or_else(|| format!("missing value for {key}"))?);
+    }
+    let required = |key: &str| -> AnyResult<&String> { Ok(options.get(key).ok_or_else(|| format!("missing {key}"))?) };
+    let min_mapq: u8 = required("--min-mapq")?.parse()?;
+    let inclusion = parse_inclusion(required("--read-inclusion")?)?;
+    let min_read_ani: Option<f64> = options.get("--min-read-ani").map(|v| v.parse()).transpose()?;
+    codons::extract(
+        &PathBuf::from(required("--bam")?),
+        &PathBuf::from(required("--genes")?),
+        &PathBuf::from(required("--output")?),
+        required("--threads")?.parse()?,
+        required("--min-baseq")?.parse()?,
+        |record| read_passes(record, min_mapq, inclusion, min_read_ani),
+    )
+}
+
 fn main() -> AnyResult<()> {
+    if env::args().nth(1).as_deref() == Some("codons") {
+        return run_codons();
+    }
     let start = Instant::now();
     let args = parse_args()?;
     ensure_bam_index(&args.bam)?;

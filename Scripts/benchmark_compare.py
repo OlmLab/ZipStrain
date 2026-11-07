@@ -261,7 +261,7 @@ def run_suite(root: Path, repetitions: int, quick: bool) -> list[dict]:
                         pair_output = pair_dir / "all_comparisons.parquet"
                     else:
                         pair_args = ["utilities", "compare-pair", "--profile-1", str(profile_a),
-                                     "--profile-2", str(profile_b), "--output-dir", str(pair_dir), *common]
+                                     "--profile-2", str(profile_b), "-o", str(pair_dir / "comparisons.parquet"), *common]
                         pair_output = pair_dir / "comparisons.parquet"
                     observation = timed_compare(pair_args, pair_output, {(a, b)}, rows, mixed, selection=selection)
                     isolated.append({"sample_1": a, "sample_2": b, **observation})

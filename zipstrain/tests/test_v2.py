@@ -13,6 +13,8 @@ from polars.testing import assert_frame_equal
 
 from zipstrain import cli, codons, compare, gene_info as gi, profile, utils
 
+from .selection_oracle import allele_events, codon_groups
+
 
 @pytest.fixture
 def assets(tmp_path):
@@ -175,7 +177,7 @@ def test_reference_identity_and_resumable_collection(assets):
     with pytest.raises(ValueError, match="two"):
         compare.compare_profile_collection([("a", a)], run)
     result = CliRunner().invoke(cli.cli, ["utilities", "compare-pair", "--profile-1", str(a), "--profile-2", str(b),
-        "--preprofile-dir", str(root), "--output-dir", str(root / "pair")])
+        "--preprofile-dir", str(root), "-o", str(root / "pair" / "comparisons.parquet")])
     assert result.exit_code == 0, result.output + repr(result.exception)
     assert list((root / "pair").glob("*.parquet")) == [root / "pair" / "comparisons.parquet"]
     assert pl.read_parquet(root / "pair" / "comparisons.parquet").height == 3
@@ -409,17 +411,17 @@ def test_selection_evidence_and_pairwise_regression(assets):
 
 def test_branch_allele_integration_defaults_ties_and_frequencies():
     source = Counter({"A": 7, "G": 2, "C": 1})
-    category, events = codons.allele_events(source, None, "A")
+    category, events = allele_events(source, None, "A")
     assert category == "snv" and events == [("A", "G", 1.0)]
-    assert codons.allele_events(source, None, "A", "weighted")[1] == [("A", "G", .2), ("A", "C", .1)]
-    assert codons.allele_events(Counter({"G":5,"C":5}), None, "A")[1] == [("A", "G", .5), ("A", "C", .5)]
-    assert codons.allele_events(Counter({"G":10}), None, "A")[0] == "sns"
-    assert codons.allele_events(Counter({"A":10}), None, "A")[1] == []
+    assert allele_events(source, None, "A", "weighted")[1] == [("A", "G", .2), ("A", "C", .1)]
+    assert allele_events(Counter({"G":5,"C":5}), None, "A")[1] == [("A", "G", .5), ("A", "C", .5)]
+    assert allele_events(Counter({"G":10}), None, "A")[0] == "sns"
+    assert allele_events(Counter({"A":10}), None, "A")[1] == []
     a, b = Counter({"A":8,"G":2}), Counter({"A":5,"C":5})
-    assert codons.allele_events(a,b,"A")[1] == [("A","C",1.0)]
-    assert codons.allele_events(a,b,"A","weighted")[1] == [("A","C",.4),("G","A",.1),("G","C",.1)]
+    assert allele_events(a,b,"A")[1] == [("A","C",1.0)]
+    assert allele_events(a,b,"A","weighted")[1] == [("A","C",.4),("G","A",.1),("G","C",.1)]
     with pytest.raises(ValueError):
-        codons.allele_events(a,b,"A","unknown")
+        allele_events(a,b,"A","unknown")
 
 
 def test_site_path_effects_and_selection_frame():
@@ -454,9 +456,9 @@ def test_reference_and_pairwise_branch_integration_modes(assets):
     b = write_counts(root,catalog,"ggt",[(gene_id,0,"GGT",10)])
     result = codons.pairwise_selection(a,b,catalog).collect()
     assert result["dN"][0] == 0 and result["dS"][0] == pytest.approx(3.)
-    groups = list(codons.codon_groups(variants,catalog,min_cov=5))
+    groups = list(codon_groups(variants,catalog,min_cov=5))
     assert groups == [((gene_id,0),"AAA",Counter({"AAG":8,"AAC":2}))]
-    assert list(codons.codon_groups(variants,catalog,min_cov=100)) == []
+    assert list(codon_groups(variants,catalog,min_cov=100)) == []
 
 
 def test_observed_evidence_rejects_bad_rows_and_reference_mixups(assets):
@@ -517,7 +519,7 @@ def test_real_bam_selection_cli_and_collection(assets, backend):
     shutil.copyfile(counts,b_counts)
     pair = root / "pair_dnds"
     result = CliRunner().invoke(cli.cli,["utilities","compare-pair","--profile-1",str(positions),
-        "--profile-2",str(b),"--preprofile-dir",str(root),"--output-dir",str(pair),
+        "--profile-2",str(b),"--preprofile-dir",str(root),"-o",str(pair / "comparisons.parquet"),
         "--codon-counts-1",str(counts),"--codon-counts-2",str(b_counts),"--calculate","gene_selection",
         "--allele-integration","weighted"])
     assert result.exit_code == 0,result.output+repr(result.exception)
@@ -538,7 +540,7 @@ def test_new_function_docstrings_and_guide_entries():
     import ast
     root = Path(__file__).resolve().parents[2]
     guide = (root / "docs" / "v2.md").read_text()
-    modules = {"gene_info":None, "codons":None, "matrix_selection":None,
+    modules = {"gene_info":None, "codons":None, "pair_selection":None,
                "profile":{"finish_profile_outputs"},
                "compare":{"align_profiles","compare_profiles","compare_profile_collection"},
                "cli":{"compare_pair"}}
@@ -647,3 +649,138 @@ def test_profile_validation_rejects_filter_and_reference_mismatches(assets):
         compare.align_profiles(pl.scan_parquet(a).with_columns(pl.col("A").cast(pl.Float64)),pl.scan_parquet(a))
     with pytest.raises(ValueError,match="positive"):
         compare.align_profiles(a,b,min_cov=0)
+
+
+def _random_codon_table(root, catalog, name, rng, *, stop_rate):
+    """Write random phased evidence with reference neighbours, stops, and multi-codon sites."""
+    references = pl.read_parquet(catalog.with_name("reference_codons.parquet"))
+    stops = [codon for codon, acid in codons.GENETIC_CODE.items() if acid == "*"]
+    everything = list(codons.GENETIC_CODE)
+    rows = {}
+    for gene_id, index, reference in references.iter_rows():
+        for _ in range(int(rng.integers(1, 7))):
+            draw = rng.random()
+            if draw < stop_rate:
+                codon = stops[int(rng.integers(len(stops)))]
+            elif draw < .7:
+                offset = int(rng.integers(3))
+                codon = reference[:offset]+"ACGT"[int(rng.integers(4))]+reference[offset+1:]
+            else:
+                codon = everything[int(rng.integers(64))]
+            rows[gene_id, index, codon] = rows.get((gene_id, index, codon), 0) + int(rng.integers(1, 40))
+    return write_counts(root, catalog, name, [(*key, count) for key, count in rows.items()])
+
+
+@pytest.mark.parametrize("integration", ["consensus", "weighted"])
+@pytest.mark.parametrize(("stop_rate", "min_freq"), [(0.0, 0.0), (0.25, 0.0), (0.05, 0.3)])
+def test_selection_kernel_matches_python_oracle(assets, integration, stop_rate, min_freq):
+    import numpy as np
+    from . import selection_oracle as oracle
+
+    root, _, _, _, catalog = assets
+    rng = np.random.default_rng(7)
+    options = dict(allele_integration=integration, min_freq=min_freq, min_cov=2)
+    a = _random_codon_table(root, catalog, "a", rng, stop_rate=stop_rate)
+    b = _random_codon_table(root, catalog, "b", rng, stop_rate=stop_rate)
+    for kernel, expected in (
+        (codons.pairwise_selection(a, b, catalog, **options), oracle.pairwise_selection(a, b, catalog, **options)),
+        (codons.reference_selection(a, catalog, **options), oracle.reference_selection(a, catalog, **options)),
+    ):
+        assert_frame_equal(kernel.collect().sort("gene_id"), expected.collect().sort("gene_id"), abs_tol=1e-9)
+
+
+def test_selection_results_do_not_depend_on_batch_size(assets):
+    import numpy as np
+
+    root, _, _, _, catalog = assets
+    rng = np.random.default_rng(11)
+    a = _random_codon_table(root, catalog, "a", rng, stop_rate=.05)
+    b = _random_codon_table(root, catalog, "b", rng, stop_rate=.05)
+    for integration in codons.ALLELE_INTEGRATION_MODES:
+        results = [codons.pairwise_selection(a, b, catalog, allele_integration=integration, batch_size=size).collect()
+                   for size in (1, 2, 3, 1024)]
+        assert all(result.equals(results[0]) for result in results[1:])
+    with pytest.raises(ValueError, match="batch size"):
+        codons.pairwise_selection(a, b, catalog, batch_size=0)
+
+
+def test_shared_position_scan_is_independent_of_chunks_and_matches_brute_force(assets):
+    """Stretches and gene counts must survive batch edges, scaffold changes, and coordinate gaps."""
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    rows = []
+    for chrom, genome, length in (("c1", "g1", 700), ("c2", "g1", 300), ("c3", "g2", 500)):
+        for pos in np.flatnonzero(rng.random(length) < .96) + 1:
+            rows.append((chrom, genome, int(pos), bool(rng.random() < .93)))
+    shared = pl.DataFrame(rows, schema={"chrom": pl.String, "genome": pl.String, "pos": pl.Int64, "match": pl.Boolean},
+                          orient="row")
+    genes = pl.DataFrame(
+        {"gene_id": [1, 2, 3, 4], "genome": ["g1", "g1", "g1", "g2"], "chrom": ["c1", "c1", "c2", "c3"],
+         "start": [10, 50, 1, 100], "end": [120, 400, 300, 90_000]},
+        schema_overrides={"gene_id": pl.UInt64},
+    )
+
+    expected_genome = {}
+    for genome in ("g1", "g2"):
+        total = share = best = 0
+        for chrom in shared.filter(pl.col("genome") == genome)["chrom"].unique():
+            run, previous = 0, None
+            for pos, match in shared.filter(pl.col("chrom") == chrom).select("pos", "match").iter_rows():
+                total += 1
+                share += match
+                run = (run + 1 if previous == pos - 1 else 1) if match else 0
+                best, previous = max(best, run), pos
+        expected_genome[genome] = (total, share, best)
+    expected_gene = {}
+    for gene_id, _, chrom, start, end in genes.iter_rows():
+        inside = shared.filter((pl.col("chrom") == chrom) & pl.col("pos").is_between(start, end))
+        expected_gene[gene_id] = (inside.height, int(inside["match"].sum()))
+
+    for chunk_size in (1, 2, 3, 17, 256, 1 << 20):
+        genome, gene = compare._scan_shared_positions(shared.lazy(), genes, stretches=True, chunk_size=chunk_size)
+        assert {row[0]: row[1:] for row in genome.iter_rows()} == expected_genome, chunk_size
+        assert {row[0]: (row[2], row[3]) for row in gene.iter_rows()} == expected_gene, chunk_size
+
+
+def test_collection_validates_each_sample_once_and_parallel_pairs_match(assets, monkeypatch):
+    root, _, _, _, catalog = assets
+    profiles = []
+    for name, sequence in (("a", "AAAGGATTTCCCAAAGGTTAA"), ("b", "AAAGGTTTTCCCAAAGGTTAA"), ("c", "AAAGGATTTCCTAAAGGTTAA")):
+        path = write_sample(root, catalog, name, sequence)
+        gene_id = gi.read_gene_info(catalog).filter(pl.col("gene") == "chr1_1")["gene_id"][0]
+        write_counts(root, catalog, name, [(gene_id, 0, sequence[:3], 10), (gene_id, 1, sequence[3:6], 10)], source_profile=path)
+        profiles.append((name, path))
+
+    real, calls = codons.read_codon_counts, []
+    monkeypatch.setattr(codons, "read_codon_counts", lambda path, info: calls.append(path) or real(path, info))
+    keys = ["sample_1", "sample_2", "gene_id"]
+    serial = pl.read_parquet(compare.compare_profile_collection(profiles, root/"serial", preprofile_dir=root, workers=1)).sort(keys)
+    assert len(calls) == 3
+    # Spawned workers re-import the test module, so this exercises the real process path.
+    parallel = pl.read_parquet(compare.compare_profile_collection(profiles, root/"parallel", preprofile_dir=root, workers=2)).sort(keys)
+    assert serial.equals(parallel)
+    assert not list((root/"serial").glob("intermediate_files/pair_selection/sample-*"))
+    assert len(list((root/"serial").glob("intermediate_files/pair_selection/pair-*"))) == 3
+    assert serial.height > 0 and serial["dN"].null_count() < serial.height
+    for pair in ("a", "b"), ("a", "c"), ("b", "c"):
+        single = compare.compare_profiles(root/f"{pair[0]}_profile.parquet", root/f"{pair[1]}_profile.parquet", preprofile_dir=root,
+            codon_counts_1=root/f"{pair[0]}_codon_counts.parquet", codon_counts_2=root/f"{pair[1]}_codon_counts.parquet",
+            sample_1=pair[0], sample_2=pair[1]).collect().sort(keys)
+        assert_frame_equal(serial.filter((pl.col("sample_1") == pair[0]) & (pl.col("sample_2") == pair[1])), single)
+    with pytest.raises(ValueError, match="workers"):
+        compare.compare_profile_collection(profiles, root/"bad", preprofile_dir=root, workers=0, calculate="gene_ani")
+
+
+def test_pair_workers_respect_cpu_and_memory(monkeypatch):
+    monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "8")
+    assert compare._pair_workers("auto", 100, 16.0, 1_000_000) == (4, 2)
+    assert compare._pair_workers("auto", 2, 16.0, 30_000_000) == (2, 4)
+    assert compare._pair_workers(16, 100, 16.0, 1000) == (16, 1)
+    # Too little work to repay starting processes.
+    assert compare._pair_workers("auto", 3, 16.0, 1000) == (1, 8)
+    # A pair of 40 M rows holds about 5 GiB, so 16 GiB fits three.
+    assert compare._pair_workers("auto", 100, 16.0, 40_000_000) == (3, 2)
+    assert compare._pair_workers("auto", 100, 1.0, 40_000_000) == (1, 8)
+    monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "1")
+    assert compare._pair_workers("auto", 100, 16.0, 1_000_000) == (1, 1)

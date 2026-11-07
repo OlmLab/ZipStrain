@@ -10,11 +10,13 @@ from collections import Counter
 from functools import lru_cache
 from itertools import permutations, product
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import heapq
 import json
 import re
 import subprocess
 
+import numpy as np
 import polars as pl
 
 from zipstrain import gene_info as gi, options
@@ -28,6 +30,10 @@ COUNT_SCHEMA = {"gene_id": pl.UInt64, "codon_index": pl.UInt32,
                 "codon": pl.String, "count": pl.UInt64}
 METHOD = "sns_snv_reference_opportunities_v2"
 ALLELE_INTEGRATION_MODES = ("consensus", "weighted")
+# Matched codons reduced at a time. The worst case of 4,096 observed codon pairs per locus
+# needs about 1 MiB per row, so this bounds a pathological batch near 8 GiB and a typical one
+# (a few pairs per locus) near 10 MiB. Results do not depend on it.
+SELECTION_BATCH_ROWS = 8192
 
 
 @lru_cache(maxsize=64)
@@ -140,42 +146,17 @@ def read_codon_observations(bases: dict, gene: dict, min_baseq: int = 13):
         yield index, codon, min(q for _, q, _ in calls)
 
 
-def write_codon_counts(bam_file, profile_file, gene_info, output_file, *,
-                       min_baseq=13, min_mapq=0, min_read_ani=options.PROFILE_MIN_READ_ANI,
-                       read_inclusion=options.PROFILE_READ_INCLUSION) -> Path:
-    """Collect actual full-read triplets from a coordinate-sorted BAM via samtools.
-
-    Counts are per fragment: overlapping mates with the same QNAME/RG contribute
-    once per gene/codon. Choose the higher minimum-quality triplet; equal-quality
-    disagreement discards that observation. Never bridge an unobserved mate gap.
-    The active mate cache expires as reference coordinates advance. Observations
-    are flushed per scaffold, then gated against alleles retained in the position
-    profile. Base qualities here are original SAM qualities, not BAQ-adjusted;
-    the retained-position gate also applies the profiler's error/frequency policy.
-    Secondary, supplementary, duplicate, QC-failed and unmapped reads are excluded.
-    """
+def _extract_raw_codons(bam_file, genes: pl.DataFrame, raw, *, min_baseq, min_mapq, min_read_ani,
+                        read_inclusion) -> None:
+    """Write per-fragment codon counts for a coordinate-sorted BAM, read through samtools."""
     import pyarrow as pa
     import pyarrow.parquet as pq
     from zipstrain.profile import _sam_alignment_passes_profile_filters
-    from zipstrain.utils import sha256_file
 
-    if min_baseq < 0 or min_mapq < 0:
-        raise ValueError("Quality thresholds must be nonnegative")
-    metadata = gi.validate_profile_assets([profile_file], gene_info)
-    genes = gi.read_gene_info(gene_info)
     bins = {}
     for gene in genes.iter_rows(named=True):
         for bucket in range(gene["start"]//16384, gene["end"]//16384+1):
             bins.setdefault((gene["chrom"], bucket), []).append(gene)
-    metadata.update({"zipstrain_codon_evidence": "read_phased_v1",
-                     "zipstrain_source_profile_sha256": sha256_file(profile_file),
-                     "zipstrain_codon_quality": "original_phred_then_retained_position_gate",
-                     "zipstrain_codon_filters": json.dumps({"min_baseq": min_baseq, "min_mapq": min_mapq,
-                         "min_read_ani": min_read_ani, "read_inclusion": read_inclusion}, sort_keys=True),
-                     "zipstrain_selection_method": METHOD})
-    output = Path(output_file)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    raw = output.with_suffix(".raw.parquet")
     schema = pa.schema([("gene_id", pa.uint64()), ("codon_index", pa.uint32()),
                         ("codon", pa.string()), ("count", pa.uint64())])
     counts, active, expiry = Counter(), {}, []
@@ -241,8 +222,50 @@ def write_codon_counts(bam_file, profile_file, gene_info, output_file, *,
                     for (g, i, c), n in counts.items() if n > 0], schema=schema))
         if process.wait() != 0:
             raise RuntimeError("samtools view failed during codon profiling")
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        process.stdout.close()
+
+
+def write_codon_counts(bam_file, profile_file, gene_info, output_file, *,
+                       min_baseq=13, min_mapq=0, min_read_ani=options.PROFILE_MIN_READ_ANI,
+                       read_inclusion=options.PROFILE_READ_INCLUSION, extractor=None) -> Path:
+    """Collect actual full-read triplets from a coordinate-sorted BAM.
+
+    Counts are per fragment: overlapping mates with the same QNAME/RG contribute
+    once per gene/codon. Choose the higher minimum-quality triplet; equal-quality
+    disagreement discards that observation. Never bridge an unobserved mate gap.
+    The active mate cache expires as reference coordinates advance. Observations
+    are flushed per scaffold, then gated against alleles retained in the position
+    profile. Base qualities here are original SAM qualities, not BAQ-adjusted;
+    the retained-position gate also applies the profiler's error/frequency policy.
+    Secondary, supplementary, duplicate, QC-failed and unmapped reads are excluded.
+
+    ``extractor`` replaces the Python extraction with a faster equivalent: a callable taking
+    ``(bam_file, genes, raw_path)`` and the keyword filters. The gate and file are shared.
+    """
+    from zipstrain.utils import sha256_file
+
+    if min_baseq < 0 or min_mapq < 0:
+        raise ValueError("Quality thresholds must be nonnegative")
+    metadata = gi.validate_profile_assets([profile_file], gene_info)
+    genes = gi.read_gene_info(gene_info)
+    metadata.update({"zipstrain_codon_evidence": "read_phased_v1",
+                     "zipstrain_source_profile_sha256": sha256_file(profile_file),
+                     "zipstrain_codon_quality": "original_phred_then_retained_position_gate",
+                     "zipstrain_codon_filters": json.dumps({"min_baseq": min_baseq, "min_mapq": min_mapq,
+                         "min_read_ani": min_read_ani, "read_inclusion": read_inclusion}, sort_keys=True),
+                     "zipstrain_selection_method": METHOD})
+    output = Path(output_file)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    raw = output.with_suffix(".raw.parquet")
+    try:
+        (extractor or _extract_raw_codons)(bam_file, genes, raw, min_baseq=min_baseq, min_mapq=min_mapq,
+                                           min_read_ani=min_read_ani, read_inclusion=read_inclusion)
         # A triplet must consist entirely of alleles retained by the profiler.
-        observed = pl.scan_parquet(raw).join(genes.lazy(), on="gene_id", how="left")
+        observed = pl.scan_parquet(raw).cast(COUNT_SCHEMA).join(genes.lazy(), on="gene_id", how="left")
         valid = observed
         for offset in range(3):
             pos = pl.when(pl.col("strand") == 1).then(pl.col("start")+pl.col("phase")+3*pl.col("codon_index")+offset).otherwise(
@@ -256,10 +279,6 @@ def write_codon_counts(bam_file, profile_file, gene_info, output_file, *,
         valid.select(list(COUNT_SCHEMA)).sort(["gene_id", "codon_index", "codon"]).sink_parquet(
             output, compression="zstd", metadata=metadata)
     finally:
-        if process.poll() is None:
-            process.kill()
-        process.wait()
-        process.stdout.close()
         raw.unlink(missing_ok=True)
     return output
 
@@ -325,76 +344,6 @@ def site_changes(source: str, target: str, offset: int) -> tuple[float, float]:
     return s, 1.0-s
 
 
-def codon_groups(path, gene_info, *, min_cov=5, min_freq=0.0):
-    """Yield sorted callable ``(key, reference_codon, Counter)`` groups in batches.
-
-    Authenticate observed counts and reference definitions. Stage the lazy
-    join/sort to a temporary Parquet and iterate Arrow batches, retaining at most
-    one 64-haplotype codon group in Python. ``min_freq`` is an optional additional
-    *codon* frequency floor, default zero; position-level allele filtering has
-    already occurred and is not applied again at joint frequency.
-    """
-    import tempfile
-    import pyarrow.parquet as pq
-
-    if min_cov < 1 or not 0 <= min_freq <= 1:
-        raise ValueError("Invalid codon coverage or frequency threshold")
-    counts = read_codon_counts(path, gene_info)
-    references = pl.scan_parquet(Path(gene_info).resolve().with_name("reference_codons.parquet"))
-    with tempfile.TemporaryDirectory(prefix="zipstrain_codon_groups_") as tmp:
-        staged = Path(tmp)/"groups.parquet"
-        counts.join(references, on=["gene_id", "codon_index"], how="inner").sort(
-            ["gene_id", "codon_index", "codon"]).sink_parquet(staged, compression="zstd")
-        key, reference, observed = None, None, Counter()
-        for batch in pq.ParquetFile(staged).iter_batches(batch_size=65536):
-            for row in batch.to_pylist():
-                new_key = row["gene_id"], row["codon_index"]
-                if key is not None and new_key != key:
-                    depth = sum(observed.values())
-                    retained = Counter({c:n for c,n in observed.items() if n >= depth*min_freq})
-                    if sum(retained.values()) >= min_cov and GENETIC_CODE.get(reference, "*") != "*":
-                        yield key, reference, retained
-                    observed = Counter()
-                key, reference = new_key, row["reference_codon"]
-                observed[row["codon"]] += row["count"]
-        if key is not None:
-            depth = sum(observed.values())
-            retained = Counter({c:n for c,n in observed.items() if n >= depth*min_freq})
-            if sum(retained.values()) >= min_cov and GENETIC_CODE.get(reference, "*") != "*":
-                yield key, reference, retained
-
-
-def allele_events(left: Counter, right: Counter | None, reference_base: str,
-                  integration="consensus") -> tuple[str, list]:
-    """Return SNS/SNV category and weighted differing allele choices for one site.
-
-    Preserve ``gene-overlap`` semantics exactly: reference SNSs have one retained
-    nonreference allele; pair SNSs have one allele on each side and differ.
-    Polymorphic sites are SNVs. Consensus chooses the strongest differing choice,
-    splitting exact ties equally. Weighted mode uses base frequency, or the
-    product of independent sample frequencies, without renormalizing away matches.
-    """
-    if integration not in ALLELE_INTEGRATION_MODES:
-        raise ValueError("allele_integration must be consensus or weighted")
-    if right is None:
-        category = "sns" if len(left) == 1 else "snv"
-        candidates = [(reference_base, base, n) for base, n in left.items() if base != reference_base]
-        denominator = sum(left.values())
-    else:
-        category = "sns" if len(left) == len(right) == 1 else "snv"
-        candidates = [(a,b,n*m) for a,n in left.items() for b,m in right.items() if a != b]
-        denominator = sum(left.values())*sum(right.values())
-    if not candidates:
-        return category, []
-    if category == "sns":
-        return category, [(a,b,1.0) for a,b,_ in candidates]
-    if integration == "consensus":
-        maximum = max(n for _,_,n in candidates)
-        candidates = [(a,b,n) for a,b,n in candidates if n == maximum]
-        return category, [(a,b,1/len(candidates)) for a,b,_ in candidates]
-    return category, [(a,b,n/denominator) for a,b,n in candidates]
-
-
 def sibling_codon_table(profile_path) -> Path | None:
     """Return where a profile's codon table sits by naming convention, if it has one."""
     path = Path(profile_path)
@@ -419,8 +368,160 @@ def selection_frame(totals: dict) -> pl.LazyFrame:
     return pl.DataFrame(rows, schema={"gene_id": pl.UInt64, **{c: pl.Float64 for c in gi.SELECTION_COLUMNS}}, orient="row").lazy()
 
 
-def reference_selection(codon_counts, gene_info, *, min_cov=5, min_freq=0.0,
-                        allele_integration="consensus") -> pl.LazyFrame:
+_CODON_IDS = {codon: index for index, codon in enumerate(GENETIC_CODE)}
+_BASES = np.array([["ACGT".index(base) for base in codon] for codon in _CODON_IDS], dtype=np.uint8)
+_OPPORTUNITIES = {codon: synonymous_sites(codon) for codon, amino_acid in GENETIC_CODE.items() if amino_acid != "*"}
+_KEYS = ["gene_id", "codon_index"]
+_NO_TOTALS = (0.0,) * 6
+
+
+def _selection_arguments(min_cov, min_freq, allele_integration, batch_size=1) -> None:
+    """Reject selection settings that have no defined meaning."""
+    if allele_integration not in ALLELE_INTEGRATION_MODES:
+        raise ValueError("allele_integration must be consensus or weighted")
+    if min_cov < 1 or not 0 <= min_freq <= 1:
+        raise ValueError("Invalid codon coverage or frequency threshold")
+    if batch_size < 1:
+        raise ValueError("Selection batch size must be positive")
+
+
+@lru_cache(maxsize=1)
+def _consequence_lookup() -> np.ndarray:
+    """Return nonsynonymous and synonymous effects by offset and ordered codon pair."""
+    effects = np.zeros((3, 64, 64, 2), dtype=np.float64)
+    for source in _OPPORTUNITIES:
+        for target in _OPPORTUNITIES:
+            for offset in range(3):
+                if source[offset] != target[offset]:
+                    try:
+                        synonymous, nonsynonymous = site_changes(source, target, offset)
+                    except ValueError:
+                        continue
+                    effects[offset, _CODON_IDS[source], _CODON_IDS[target]] = nonsynonymous, synonymous
+    return effects
+
+
+def _pack_callable_codons(source, catalog, destination, min_cov: int, genome: str = "all",
+                          metadata: dict[str, str] | None = None, min_freq: float = 0.0) -> None:
+    """Stage one sample as sorted sparse codon groups after validating its evidence.
+
+    Each row is one callable codon: its observed codon IDs and counts, retained depth, and
+    the reference codon's synonymous opportunities. ``min_freq`` is an optional additional
+    *codon* frequency floor; position-level allele filtering has already occurred, so it is
+    zero by default. Reference stop or ambiguous codons are excluded.
+    """
+    catalog = Path(catalog)
+    counts = read_codon_counts(source, catalog)
+    if genome != "all":
+        genes = gi.read_gene_info(catalog).lazy().filter(pl.col("genome") == genome).select("gene_id")
+        counts = counts.join(genes, on="gene_id", how="semi")
+    if min_freq > 0:
+        reads = pl.col("count").cast(pl.Float64)
+        counts = counts.filter(reads >= reads.sum().over(_KEYS) * min_freq)
+    references = pl.scan_parquet(catalog.resolve().with_name("reference_codons.parquet")).with_columns(
+        pl.col("reference_codon").replace_strict(_OPPORTUNITIES, default=None, return_dtype=pl.Float64).alias("s_sites")
+    ).filter(pl.col("s_sites").is_not_null()).select(*_KEYS, "s_sites")
+    packed = (
+        counts.with_columns(pl.col("codon").replace_strict(_CODON_IDS, return_dtype=pl.UInt8))
+        .group_by(_KEYS)
+        .agg(pl.col("codon"), pl.col("count"), pl.col("count").cast(pl.Int128).sum().alias("depth"))
+        .filter(pl.col("depth") >= min_cov)
+        .with_columns(pl.col("depth").cast(pl.UInt64))
+        .join(references, on=_KEYS)
+        .sort(_KEYS)
+    )
+    packed.sink_parquet(destination, engine="streaming", compression="zstd", metadata=metadata or {})
+
+
+def _batch_totals(batch: pl.DataFrame, integration: str) -> np.ndarray:
+    """Reduce a block of matched codons to six numerator and opportunity totals per codon."""
+    left = batch["codon"].explode().to_numpy()
+    right = batch["codon_2"].explode().to_numpy()
+    reads_a = batch["count"].explode().to_numpy()
+    reads_b = batch["count_2"].explode().to_numpy()
+    n_a = batch["codon"].list.len().cast(pl.Int64).to_numpy()
+    n_b = batch["codon_2"].list.len().cast(pl.Int64).to_numpy()
+    depth_a = batch["depth"].to_numpy()
+    depth_b = batch["depth_2"].to_numpy()
+    n = batch.height
+    rows = np.arange(n, dtype=np.intp)
+    row_a, row_b = np.repeat(rows, n_a), np.repeat(rows, n_b)
+    combinations_per_row = n_a * n_b
+    row_pair = np.repeat(rows, combinations_per_row)
+    local = np.arange(len(row_pair)) - np.repeat(
+        np.cumsum(combinations_per_row) - combinations_per_row, combinations_per_row
+    )
+    index_a = (np.cumsum(n_a) - n_a)[row_pair] + local // n_b[row_pair]
+    index_b = (np.cumsum(n_b) - n_b)[row_pair] + local % n_b[row_pair]
+    codon_a, codon_b = left[index_a], right[index_b]
+
+    counts_product = reads_a[index_a].astype(np.float64) * reads_b[index_b]
+    if integration == "weighted":
+        weights = counts_product / (depth_a[row_pair].astype(np.float64) * depth_b[row_pair])
+
+    totals = np.zeros((n, 6), dtype=np.float64)
+    totals[:, 4] = batch["s_sites"].to_numpy()
+    totals[:, 5] = 3 - totals[:, 4]
+    effects = _consequence_lookup()
+    for offset in range(3):
+        a = np.zeros((n, 4), dtype=np.uint64)
+        b = np.zeros_like(a)
+        np.add.at(a, (row_a, _BASES[left, offset]), reads_a)
+        np.add.at(b, (row_b, _BASES[right, offset]), reads_b)
+        fixed = ((a > 0).sum(axis=1) == 1) & ((b > 0).sum(axis=1) == 1)
+        if integration == "consensus":
+            # Support is the exact product of two integer allele counts. Use
+            # Python integers only for unusual inputs that can overflow UInt64.
+            if int(a.max()) * int(b.max()) > np.iinfo(np.uint64).max:
+                support = a.astype(object)[:, :, None] * b.astype(object)[:, None, :]
+            else:
+                support = a[:, :, None] * b[:, None, :]
+            support[:, np.arange(4), np.arange(4)] = 0
+            top = support.max(axis=(1, 2), keepdims=True)
+            best = (support == top) & (support > 0)
+            ties = best.sum(axis=(1, 2))
+            index = (row_pair, _BASES[codon_a, offset], _BASES[codon_b, offset])
+            chosen = best[index]
+            denominator = support[index].astype(np.float64) * ties[row_pair]
+            weights = np.divide(counts_product, denominator, out=np.zeros_like(counts_product), where=chosen)
+        for effect in range(2):
+            sums = np.bincount(row_pair, weights=weights * effects[offset, codon_a, codon_b, effect], minlength=n)
+            totals[:, effect] += np.where(fixed, sums, 0)
+            totals[:, effect + 2] += np.where(fixed, 0, sums)
+    return totals
+
+
+def _sum_selection_batches(aligned: pl.LazyFrame, integration: str, batch_size: int) -> pl.LazyFrame:
+    """Reduce aligned codons, in order, to one row of selection metrics per gene.
+
+    Codons are added to their gene's running total one at a time, in row order, so the
+    floating-point sums do not depend on ``batch_size``.
+    """
+    totals = {}
+    for batch in aligned.collect_batches(chunk_size=batch_size, engine="streaming"):
+        if not batch.height:
+            continue
+        values = _batch_totals(batch, integration)
+        gene_ids, index = np.unique(batch["gene_id"].to_numpy(), return_inverse=True)
+        running = np.array([totals.get(int(gene), _NO_TOTALS) for gene in gene_ids], dtype=np.float64)
+        np.add.at(running, index, values)
+        totals.update(zip(map(int, gene_ids), running, strict=True))
+    return selection_frame(totals)
+
+
+def vectorized_pair_selection(left, right, *, allele_integration: str = options.ALLELE_INTEGRATION,
+                              batch_size: int = SELECTION_BATCH_ROWS) -> pl.LazyFrame:
+    """Compare two packed samples in bounded batches. Results do not depend on ``batch_size``."""
+    _selection_arguments(1, 0.0, allele_integration, batch_size)
+    a = pl.scan_parquet(left).set_sorted(_KEYS)
+    b = pl.scan_parquet(right).drop("s_sites").set_sorted(_KEYS)
+    aligned = a.join(b, on=_KEYS, suffix="_2", maintain_order="left")
+    return _sum_selection_batches(aligned, allele_integration, batch_size)
+
+
+def reference_selection(codon_counts, gene_info, *, min_cov=options.COMPARE_MIN_COV, min_freq=0.0,
+                        allele_integration=options.ALLELE_INTEGRATION,
+                        batch_size=SELECTION_BATCH_ROWS) -> pl.LazyFrame:
     """Compute reference-relative SNS dN/dS and SNV pN/pS using the branch method.
 
     Callability and opportunities are per complete reference codon. Classification
@@ -431,36 +532,31 @@ def reference_selection(codon_counts, gene_info, *, min_cov=5, min_freq=0.0,
     paths conditional on the chosen allele, with contexts weighted by support.
     Invalid/stop consequences are excluded from change counts. Reference stop or
     ambiguous codons are excluded from opportunities. No Jukes–Cantor correction.
+
+    This is the pair estimator with the reference as a sample holding one read of
+    its own codon at every locus.
     """
-    if allele_integration not in ALLELE_INTEGRATION_MODES:
-        raise ValueError("allele_integration must be consensus or weighted")
-    totals = {}
-    for key, reference, observed in codon_groups(codon_counts, gene_info, min_cov=min_cov, min_freq=min_freq):
-        total = totals.setdefault(key[0], [0.0]*6)
-        sites = synonymous_sites(reference)
-        total[4] += sites
-        total[5] += 3-sites
-        for offset in range(3):
-            marginal = Counter()
-            for haplotype, count in observed.items():
-                marginal[haplotype[offset]] += count
-            category, events = allele_events(marginal, None, reference[offset], allele_integration)
-            for source_base, target_base, weight in events:
-                for haplotype, count in observed.items():
-                    if haplotype[offset] != target_base:
-                        continue
-                    try:
-                        s,n = site_changes(reference, haplotype, offset)
-                    except ValueError:
-                        continue
-                    event_weight = weight*count/marginal[target_base]
-                    total[0 if category == "sns" else 2] += n*event_weight
-                    total[1 if category == "sns" else 3] += s*event_weight
-    return selection_frame(totals)
+    _selection_arguments(min_cov, min_freq, allele_integration, batch_size)
+    reference_file = Path(gene_info).resolve().with_name("reference_codons.parquet")
+    with TemporaryDirectory(prefix="zipstrain_reference_selection_") as staging:
+        packed = Path(staging)/"sample.parquet"
+        _pack_callable_codons(codon_counts, gene_info, packed, min_cov, min_freq=min_freq)
+        references = pl.scan_parquet(reference_file).select(*_KEYS, pl.col("reference_codon").replace_strict(
+            _CODON_IDS, default=None, return_dtype=pl.UInt8).alias("reference_id"))
+        aligned = (
+            pl.scan_parquet(packed).set_sorted(_KEYS)
+            .rename({"codon": "codon_2", "count": "count_2", "depth": "depth_2"})
+            .join(references, on=_KEYS, maintain_order="left")
+            .with_columns(pl.concat_list("reference_id").alias("codon"),
+                          pl.concat_list(pl.lit(1, dtype=pl.UInt64)).alias("count"),
+                          pl.lit(1, dtype=pl.UInt64).alias("depth"))
+        )
+        return _sum_selection_batches(aligned, allele_integration, batch_size)
 
 
-def pairwise_selection(codon_counts_1, codon_counts_2, gene_info, *, min_cov=5,
-                       min_freq=0.0, allele_integration="consensus") -> pl.LazyFrame:
+def pairwise_selection(codon_counts_1, codon_counts_2, gene_info, *, min_cov=options.COMPARE_MIN_COV,
+                       min_freq=0.0, allele_integration=options.ALLELE_INTEGRATION,
+                       batch_size=SELECTION_BATCH_ROWS) -> pl.LazyFrame:
     """Compute pairwise SNS dN/dS and SNV pN/pS with the branch's integration rules.
 
     Merge sorted callable codons from both samples. Use reference opportunities
@@ -473,46 +569,9 @@ def pairwise_selection(codon_counts_1, codon_counts_2, gene_info, *, min_cov=5,
     consequences, not only substitutions separating populations. Raw proportions,
     no Jukes–Cantor correction; six output metrics, undefined ratios null.
     """
-    if allele_integration not in ALLELE_INTEGRATION_MODES:
-        raise ValueError("allele_integration must be consensus or weighted")
-    left = iter(codon_groups(codon_counts_1, gene_info, min_cov=min_cov, min_freq=min_freq))
-    right = iter(codon_groups(codon_counts_2, gene_info, min_cov=min_cov, min_freq=min_freq))
-    a, b, totals = next(left, None), next(right, None), {}
-    while a is not None and b is not None:
-        if a[0] < b[0]:
-            a = next(left, None)
-            continue
-        if b[0] < a[0]:
-            b = next(right, None)
-            continue
-        key, reference, observed_a = a
-        if reference != b[1]:
-            raise ValueError("Reference codons do not match")
-        observed_b = b[2]
-        total = totals.setdefault(key[0], [0.0]*6)
-        sites = synonymous_sites(reference)
-        total[4] += sites
-        total[5] += 3-sites
-        for offset in range(3):
-            marginal_a, marginal_b = Counter(), Counter()
-            for haplotype, count in observed_a.items():
-                marginal_a[haplotype[offset]] += count
-            for haplotype, count in observed_b.items():
-                marginal_b[haplotype[offset]] += count
-            category, events = allele_events(marginal_a, marginal_b, reference[offset], allele_integration)
-            for source_base, target_base, weight in events:
-                for source, count_a in observed_a.items():
-                    if source[offset] != source_base:
-                        continue
-                    for target, count_b in observed_b.items():
-                        if target[offset] != target_base:
-                            continue
-                        try:
-                            s,n = site_changes(source, target, offset)
-                        except ValueError:
-                            continue
-                        event_weight = weight*count_a*count_b/(marginal_a[source_base]*marginal_b[target_base])
-                        total[0 if category == "sns" else 2] += n*event_weight
-                        total[1 if category == "sns" else 3] += s*event_weight
-        a, b = next(left, None), next(right, None)
-    return selection_frame(totals)
+    _selection_arguments(min_cov, min_freq, allele_integration, batch_size)
+    with TemporaryDirectory(prefix="zipstrain_pair_selection_") as staging:
+        left, right = Path(staging)/"left.parquet", Path(staging)/"right.parquet"
+        _pack_callable_codons(codon_counts_1, gene_info, left, min_cov, min_freq=min_freq)
+        _pack_callable_codons(codon_counts_2, gene_info, right, min_cov, min_freq=min_freq)
+        return vectorized_pair_selection(left, right, allele_integration=allele_integration, batch_size=batch_size)

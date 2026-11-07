@@ -145,8 +145,7 @@ def test_gene_threshold_default_is_shared(function):
     assert inspect.signature(function).parameters["min_gene_compare_len"].default == options.MIN_GENE_COMPARE_LEN == 1
 
 
-@pytest.mark.parametrize("command", ["compare", "utilities single_compare_genome", "utilities single_compare_gene",
-                                     "utilities compare-pair", "utilities chunk-genome-compare"])
+@pytest.mark.parametrize("command", ["compare", "utilities compare-pair"])
 def test_gene_threshold_cli_default_and_help_are_shared(command):
     group = cli.cli
     for name in command.split():
@@ -179,11 +178,11 @@ def test_python_api_read_filters_match_cli_defaults():
 
 
 # Routes that used to write zeros for V2 profiles.
-def test_single_compare_genome_all_writes_genome_metrics_and_warns(pair, tmp_path):
+def test_compare_pair_all_without_assets_writes_genome_metrics_and_warns(pair, tmp_path):
     _, _, _, a, b = pair
     output = tmp_path / "out.parquet"
     with pytest.warns(UserWarning, match="genome metrics only"):
-        result = invoke("utilities", "single_compare_genome", "--profile-1", a, "--profile-2", b, "-o", output)
+        result = invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b, "-o", output)
     assert result.exit_code == 0, result.output
     frame = pl.read_parquet(output)
     assert not SUMMARY_COLUMNS & set(frame.columns)
@@ -192,20 +191,20 @@ def test_single_compare_genome_all_writes_genome_metrics_and_warns(pair, tmp_pat
 
 
 @pytest.mark.parametrize("extra", [(), ("-s", "STB")])
-def test_single_compare_genome_explicit_gene_ani_without_assets_fails(pair, tmp_path, extra):
+def test_compare_pair_explicit_gene_ani_on_v2_without_assets_fails(pair, tmp_path, extra):
     _, stb, _, a, b = pair
     output = tmp_path / "out.parquet"
     extra = [stb if value == "STB" else value for value in extra]
-    result = invoke("utilities", "single_compare_genome", "--profile-1", a, "--profile-2", b,
+    result = invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b,
                     "--calculate", "gene_ani", *extra, "-o", output)
     assert result.exit_code != 0 and "--preprofile-dir" in result.output
     assert not output.exists()
 
 
-def test_single_compare_genome_scope_and_stb_on_v2(pair, tmp_path):
+def test_compare_pair_scope_and_stb_on_v2(pair, tmp_path):
     _, stb, _, a, b = pair
     output = tmp_path / "out.parquet"
-    result = invoke("utilities", "single_compare_genome", "--profile-1", a, "--profile-2", b, "-s", stb,
+    result = invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b, "-s", stb,
                     "--calculate", "genome_ani", "-g", "genomeB", "-o", output)
     assert result.exit_code == 0, result.output
     frame = pl.read_parquet(output)
@@ -213,16 +212,68 @@ def test_single_compare_genome_scope_and_stb_on_v2(pair, tmp_path):
     assert frame["total_positions"].to_list() == [0] and frame["genome_ani"].to_list() == [None]
 
 
-def test_single_compare_genome_v2_matches_compare_pair(pair, tmp_path):
-    _, _, _, a, b = pair
+def test_compare_pair_genome_values_match_with_and_without_assets(pair, tmp_path):
+    root, _, _, a, b = pair
     selection = "genome_ani+max_identical_stretch"
-    single, double = tmp_path / "single.parquet", tmp_path / "pair"
-    assert invoke("utilities", "single_compare_genome", "--profile-1", a, "--profile-2", b,
-                  "--calculate", selection, "-o", single).exit_code == 0
+    bare, assets = tmp_path / "bare.parquet", tmp_path / "assets.parquet"
     assert invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b,
-                  "--calculate", selection, "--output-dir", double).exit_code == 0
+                  "--calculate", selection, "-o", bare).exit_code == 0
+    assert invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b, "--preprofile-dir", root,
+                  "--calculate", selection, "-o", assets).exit_code == 0
     columns = ["genome", "total_positions", "share_allele_pos", "genome_ani", "max_identical_stretch"]
-    assert pl.read_parquet(single).select(columns).equals(pl.read_parquet(double / "comparisons.parquet").select(columns))
+    with_assets = pl.read_parquet(assets).select(columns).sort("genome")
+    assert with_assets["genome"].to_list() == ["genomeA", "genomeB"]  # the catalog lists every genome
+    assert pl.read_parquet(bare).select(columns).equals(with_assets.head(1))
+
+
+def test_compare_pair_gene_scope_limits_v2_gene_rows(pair, tmp_path):
+    root, _, catalog, a, b = pair
+    output = tmp_path / "out.parquet"
+    result = invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b, "--preprofile-dir", root,
+                    "--calculate", "gene_ani", "--scope", "genomeA:chr1_2", "-o", output)
+    assert result.exit_code == 0, result.output
+    expected = gi.read_gene_info(catalog).filter(pl.col("gene") == "chr1_2")["gene_id"].to_list()
+    assert pl.read_parquet(output)["gene_id"].to_list() == expected
+    assert utils._read_custom_parquet_metadata(output)["zipstrain_compare_kind"] == "gene"
+    result = invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b, "--preprofile-dir", root,
+                    "--calculate", "genome_ani", "--scope", "genomeA:chr1_2", "-o", tmp_path / "genome.parquet")
+    assert result.exit_code != 0 and "needs a gene metric" in result.output
+
+
+def test_compare_pair_v1_gene_ani_writes_the_legacy_gene_table(pair, tmp_path):
+    _, _, _, a, b = pair
+    v1_a, v1_b = write_v1_copy(a, "v1a"), write_v1_copy(b, "v1b")
+    output = tmp_path / "genes.parquet"
+    result = invoke("utilities", "compare-pair", "--profile-1", v1_a, "--profile-2", v1_b,
+                    "--calculate", "gene_ani", "-o", output)
+    assert result.exit_code == 0, result.output
+    frame = pl.read_parquet(output)
+    assert frame.columns == ["genome", "gene", "total_positions", "share_allele_pos", "ani", "sample_1", "sample_2"]
+    assert frame["gene"].to_list() == ["chr1_1"] and frame["sample_1"].to_list() == ["v1a"]
+    assert utils._read_custom_parquet_metadata(output)["zipstrain_compare_kind"] == "gene"
+    for selection, message in (("gene_ani+genome_ani", "on its own"), ("gene_selection", "on its own")):
+        result = invoke("utilities", "compare-pair", "--profile-1", v1_a, "--profile-2", v1_b,
+                        "--calculate", selection, "-o", tmp_path / "bad.parquet")
+        assert result.exit_code != 0 and message in result.output
+
+
+@pytest.mark.parametrize("args, message", [
+    ((), "Give --profile-1 and --profile-2, or --pair-table"),
+    (("--pair-table", "TABLE", "--profile-1", "A"), "--profile-1 cannot be combined with --pair-table"),
+    (("--pair-table", "TABLE", "--preprofile-dir", "ROOT"), "--preprofile-dir cannot be combined with --pair-table"),
+    (("--pair-table", "TABLE", "--scope", "all:chr1_1"), "not GENOME:GENE"),
+    (("--profile-1", "A", "--profile-2", "B", "--workers", "2"), "--pair-table only"),
+])
+def test_compare_pair_takes_one_pair_or_a_pair_table(pair, tmp_path, args, message):
+    root, _, _, a, b = pair
+    values = {"TABLE": chunk_table(tmp_path, a, b), "A": a, "B": b, "ROOT": root}
+    result = invoke("utilities", "compare-pair", *[values.get(arg, arg) for arg in args], "-o", tmp_path / "out.parquet")
+    assert result.exit_code != 0 and message in result.output
+
+
+@pytest.mark.parametrize("command", ["single_compare_genome", "single_compare_gene", "chunk-genome-compare"])
+def test_retired_pair_commands_are_gone(command):
+    assert command not in cli.utilities.commands
 
 
 def chunk_table(tmp_path, a, b):
@@ -232,11 +283,11 @@ def chunk_table(tmp_path, a, b):
     return table
 
 
-def test_chunk_genome_compare_all_on_v2_writes_genome_metrics(pair, tmp_path):
+def test_pair_table_all_on_v2_writes_genome_metrics(pair, tmp_path):
     _, _, _, a, b = pair
     output = tmp_path / "chunk.parquet"
     with pytest.warns(UserWarning, match="genome metrics only"):
-        result = invoke("utilities", "chunk-genome-compare", "--pair-table", chunk_table(tmp_path, a, b),
+        result = invoke("utilities", "compare-pair", "--pair-table", chunk_table(tmp_path, a, b),
                         "--output-file", output)
     assert result.exit_code == 0, result.output
     frame = pl.read_parquet(output)
@@ -244,16 +295,17 @@ def test_chunk_genome_compare_all_on_v2_writes_genome_metrics(pair, tmp_path):
     assert frame["share_allele_pos"].to_list() == [20] and frame["max_identical_stretch"].to_list() == [15]
 
 
-def test_chunk_genome_compare_rejects_gene_metrics(pair, tmp_path):
+def test_pair_table_rejects_gene_metrics(pair, tmp_path):
     _, _, _, a, b = pair
-    result = invoke("utilities", "chunk-genome-compare", "--pair-table", chunk_table(tmp_path, a, b),
+    result = invoke("utilities", "compare-pair", "--pair-table", chunk_table(tmp_path, a, b),
                     "--calculate", "gene_ani", "--output-file", tmp_path / "chunk.parquet")
     assert result.exit_code != 0 and "per gene" in result.output
 
 
-def test_single_compare_gene_v2_without_assets_fails(pair, tmp_path):
+def test_compare_pair_gene_ani_on_v2_without_assets_fails(pair, tmp_path):
     _, _, _, a, b = pair
-    result = invoke("utilities", "single_compare_gene", "--profile-1", a, "--profile-2", b, "-o", tmp_path / "out.parquet")
+    result = invoke("utilities", "compare-pair", "--profile-1", a, "--profile-2", b, "--calculate", "gene_ani",
+                    "-o", tmp_path / "out.parquet")
     assert result.exit_code != 0 and "--preprofile-dir" in result.output
 
 
@@ -264,7 +316,7 @@ def test_no_route_adds_a_fake_gene_column(pair):
 
 
 @pytest.mark.parametrize("v1_first", [True, False])
-@pytest.mark.parametrize("route", ["single_genome", "single_gene", "pair", "chunk", "collection", "matrix"])
+@pytest.mark.parametrize("route", ["pair_genome", "pair_gene", "pair_table", "collection", "matrix"])
 def test_mixed_generations_are_rejected_in_both_orders(pair, tmp_path, v1_first, route):
     _, stb, _, a, b = pair
     v1 = write_v1_copy(b, "v1")
@@ -278,25 +330,24 @@ def test_mixed_generations_are_rejected_in_both_orders(pair, tmp_path, v1_first,
         with pytest.raises(ValueError, match="same version"):
             compare.compare_profile_collection([("x", first), ("y", second)], tmp_path / "run")
         return
-    if route == "chunk":
-        args = ["chunk-genome-compare", "--pair-table", chunk_table(tmp_path, first, second), "--calculate", "genome_ani",
+    if route == "pair_table":
+        args = ["compare-pair", "--pair-table", chunk_table(tmp_path, first, second), "--calculate", "genome_ani",
                 "--output-file", tmp_path / "out.parquet"]
-    elif route == "pair":
-        args = ["compare-pair", "--profile-1", first, "--profile-2", second, "--calculate", "genome_ani", "--output-dir", tmp_path / "out"]
     else:
-        command = "single_compare_genome" if route == "single_genome" else "single_compare_gene"
-        args = [command, "--profile-1", first, "--profile-2", second, "-o", tmp_path / "out.parquet"]
+        calculate = "genome_ani" if route == "pair_genome" else "gene_ani"
+        args = ["compare-pair", "--profile-1", first, "--profile-2", second, "--calculate", calculate,
+                "-o", tmp_path / "out.parquet"]
     result = invoke("utilities", *args)
     assert result.exit_code != 0
     assert "same version" in result.output
 
 
-def test_v1_all_means_genome_metrics_and_gene_ani_needs_the_gene_route(pair):
+def test_v1_all_means_genome_metrics_and_gene_ani_is_requested_alone(pair):
     _, _, _, a, b = pair
     v1_a, v1_b = write_v1_copy(a, "v1a"), write_v1_copy(b, "v1b")
     assert compare.compare_genomes(v1_a, v1_b, calculate="all").collect_schema().names() == [
         "genome", "total_positions", "share_allele_pos", "genome_ani", "max_identical_stretch"]
-    with pytest.raises(ValueError, match="single_compare_gene"):
+    with pytest.raises(ValueError, match="gene_ani on its own"):
         compare.compare_genomes(v1_a, v1_b, calculate="gene_ani")
 
 

@@ -515,7 +515,7 @@ def test_compare_task_generator_creates_tasks_from_profile_locations(tmp_path):
 def test_compare_task_generator_accepts_calculate_combo_and_forwards_it(tmp_path, selection):
     # Regression: the batched standard-compare path used to reject any
     # --calculate value other than {"all", "ani"}, even though the per-pair
-    # single_compare_genome subprocess understands '+'/','-joined combos.
+    # compare-pair subprocess understands '+'/','-joined combos.
     profile_1 = tmp_path / "sample_1.parquet"
     profile_2 = tmp_path / "sample_2.parquet"
     profile_1.write_text("dummy")
@@ -666,9 +666,10 @@ def test_gene_compare_task_generator_omits_stb_arg_when_not_configured(tmp_path)
     assert tasks[0].inputs["stb-file-arg"].get_value() == ""
 
 
-def test_fast_compare_templates_call_utilities_single_compare():
-    assert "zipstrain utilities single_compare_genome" in task_manager.FastCompareTask.TEMPLATE_CMD
-    assert "zipstrain utilities single_compare_gene" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
+def test_fast_compare_templates_call_utilities_compare_pair():
+    assert "zipstrain utilities compare-pair" in task_manager.FastCompareTask.TEMPLATE_CMD
+    assert "zipstrain utilities compare-pair --calculate gene_ani" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
+    assert "--scope <scope>" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
     assert "<stb-file-arg>" in task_manager.FastCompareTask.TEMPLATE_CMD
     assert "<stb-file-arg>" in task_manager.FastGeneCompareTask.TEMPLATE_CMD
 

@@ -277,18 +277,42 @@ struct GapStats {
 struct GapScan {
     rn: i64,
     n_gaps: i64,
+    scaffolds: i64,
     sum: f64,
     sum_sq: f64,
     excess: f64,
 }
 
+impl GapScan {
+    /// Reads plus one end-of-scaffold position for each covered scaffold share the genome.
+    fn expected_gap(&self, genome_length: f64) -> f64 {
+        (genome_length / (self.rn + self.scaffolds) as f64).round()
+    }
+
+    fn add_gap(&mut self, pass: usize, gap: i64, genome_length: i64) {
+        let gap = gap as f64;
+        if pass == 0 {
+            self.n_gaps += 1;
+            self.sum += gap;
+            self.sum_sq += gap.powi(2);
+        } else {
+            let delta = self.expected_gap(genome_length as f64);
+            if gap > delta {
+                self.excess += gap - delta;
+            }
+        }
+    }
+}
+
 fn scan_read_gaps(args: &Args, inputs: &Inputs) -> AnyResult<HashMap<String, GapStats>> {
-    // Two scans avoid retaining every read start or gap in memory.
+    // Two scans avoid retaining every read start or gap in memory. Each covered scaffold also
+    // gains a final gap from its last read to its end, so a trailing uncovered region counts.
     let mut scans: HashMap<String, GapScan> = HashMap::new();
-    for pass in 0..2 {
+    for pass in 0..2_usize {
         let mut reader = bam::Reader::from_path(&args.bam)?;
         let header = reader.header().to_owned();
         let mut previous: HashMap<String, i64> = HashMap::new();
+        let mut scaffold_ends: HashMap<String, i64> = HashMap::new();
         for rec in reader.records() {
             let rec = rec?;
             if rec.flags() & 0x84 != 0 || !allowed(&rec, args) {
@@ -305,30 +329,32 @@ fn scan_read_gaps(args: &Args, inputs: &Inputs) -> AnyResult<HashMap<String, Gap
                 continue;
             }
             let genome = inputs.genome.get(chrom).map(String::as_str).unwrap_or("NA");
+            scaffold_ends.entry(chrom.to_owned()).or_insert_with(|| regions.iter().map(|r| r.end - r.start).sum());
             let gap = previous
                 .insert(chrom.to_owned(), left + 1)
                 .map(|p| left + 1 - p);
             let scan = scans.entry(genome.to_owned()).or_default();
             if pass == 0 {
                 scan.rn += 1;
-                if let Some(g) = gap {
-                    scan.n_gaps += 1;
-                    scan.sum += g as f64;
-                    scan.sum_sq += (g as f64).powi(2);
-                }
-            } else if let Some(g) = gap {
-                let len = *inputs.genome_lengths.get(genome).unwrap_or(&0) as f64;
-                let delta = (len / scan.rn as f64).round();
-                if (g as f64) > delta {
-                    scan.excess += g as f64 - delta;
-                }
             }
+            if let Some(g) = gap {
+                scan.add_gap(pass, g, *inputs.genome_lengths.get(genome).unwrap_or(&0));
+            }
+        }
+        for (chrom, last) in previous {
+            let genome = inputs.genome.get(&chrom).map(String::as_str).unwrap_or("NA");
+            let scan = scans.entry(genome.to_owned()).or_default();
+            if pass == 0 {
+                scan.scaffolds += 1;
+            }
+            let end = scaffold_ends[&chrom];
+            scan.add_gap(pass, end - last, *inputs.genome_lengths.get(genome).unwrap_or(&0));
         }
     }
     let mut out = HashMap::new();
     for (genome, scan) in scans {
         let length = *inputs.genome_lengths.get(&genome).unwrap_or(&0) as f64;
-        let delta = (length / scan.rn as f64).round();
+        let delta = scan.expected_gap(length);
         let mean = (scan.n_gaps > 0).then(|| scan.sum / scan.n_gaps as f64);
         let std = if scan.n_gaps > 1 {
             let variance =
@@ -337,8 +363,8 @@ fn scan_read_gaps(args: &Args, inputs: &Inputs) -> AnyResult<HashMap<String, Gap
         } else {
             None
         };
-        let fug = if scan.excess > 0.0 && scan.rn > 1 && delta > 0.0 {
-            Some(1.0 - scan.excess / (scan.rn - 1) as f64 / delta)
+        let fug = if scan.excess > 0.0 && delta > 0.0 {
+            Some(1.0 - scan.excess / scan.n_gaps as f64 / delta)
         } else {
             None
         };

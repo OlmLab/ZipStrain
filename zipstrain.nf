@@ -6,14 +6,15 @@ params.parallel_mode="batched"
 params.min_cov=5
 params.min_gene_compare_len=1
 params.batch_size=10
-// Metrics: genome_ani, max_identical_stretch, gene_ani; join with '+' or use 'all'.
-// gene_ani on V2 profiles requires --preprofile_dir. gene_selection is not available here yet
-// because compare jobs do not receive codon tables; use `zipstrain compare` for it.
+// --mode compare metrics: genome_ani, max_identical_stretch, gene_ani, gene_selection; join
+// with '+' or use 'all'. Any gene metric gives one row per gene. V2 gene metrics require
+// --preprofile_dir; with 1.x profiles, request gene_ani on its own.
+// --compare_scope: 'all', one genome, or GENOME:GENE for gene rows. gene_selection also requires each sample's
+// <sample>_codon_counts.parquet beside its profile, which is staged with it.
 params.compare_calculate="all"
 params.batch_compare_n_parallel=1
 params.publish_mode="symlink"
-params.compare_genome_scope="all"
-params.compare_gene_scope="all:all"
+params.compare_scope="all"
 params.compare_ani_method="popani"
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
@@ -319,10 +320,9 @@ process profile_bam {
     """
 }
 
-process compare_genome_fast_profiles_single {
+process compare_pairs_single {
     /*
-    * This process compares fast profiles.
-    * It takes in profile parquets and outputs the comparison results.
+    * Compares one profile pair. --compare_calculate decides genome or gene rows.
     */
     input:
     path profile_location_1
@@ -330,62 +330,34 @@ process compare_genome_fast_profiles_single {
     path stb
     val pair_name
     path preprofile_assets
+    path codon_tables
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
-    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets}" : ""
-    def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
+    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets} --allele-integration ${params.allele_integration}" : ""
     """
     export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
-    zipstrain utilities single_compare_genome ${preprofile_arg}  \
-                        --profile-location-1 ${profile_location_1} \
-                        --profile-location-2 ${profile_location_2} \
-                        -s ${stb} \
-                        -c ${params.min_cov} \
-                        -l ${params.min_gene_compare_len} \
-                        ${add_calculate} \
-                        ${add_genome_scope} \
-                        -o ${pair_name}_comparison.parquet
-
-    """
-}
-process compare_gene_fast_profiles_single {
-    /*
-    * This process compares fast profiles.
-    * It takes in profile parquets and outputs the comparison results.
-    */
-    input:
-    path profile_location_1
-    path profile_location_2
-    path stb
-    val pair_name
-    path preprofile_assets
-    output:
-    path "${pair_name}_comparison.parquet", emit: comparison_results
-    script:
-    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets}" : ""
-    """
-    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
-    zipstrain utilities single_compare_gene ${preprofile_arg}  \
-                        --profile-location-1 ${profile_location_1} \
-                        --profile-location-2 ${profile_location_2} \
+    zipstrain utilities compare-pair ${preprofile_arg} \
+                        --profile-1 ${profile_location_1} \
+                        --profile-2 ${profile_location_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
                         --ani-method ${params.compare_ani_method} \
-                        --scope ${params.compare_gene_scope} \
+                        --calculate ${params.compare_calculate} \
+                        --scope ${params.compare_scope} \
                         -o ${pair_name}_comparison.parquet
 
     """
 }
 
 
-process compare_genome_batched {
+process compare_pairs_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
     rm -f ${profile_locations.collect{t->t.join(' ')}}
+    rm -f ${codon_tables}
     rm -f ${stb}
     """
     input:
@@ -393,13 +365,14 @@ process compare_genome_batched {
     val pairs
     path stb
     path preprofile_assets
+    path codon_tables
 
 
     output:
     path "Batch_*_comparisons.parquet", emit: comparison_results
 
     script:
-    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets}" : ""
+    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets} --allele-integration ${params.allele_integration}" : ""
     def parallel_pairs = params.batch_compare_n_parallel as int
     if (parallel_pairs < 1 || parallel_pairs > task.cpus) {
         error "batch_compare_n_parallel must be between 1 and the compare task CPU allocation (${task.cpus})"
@@ -407,21 +380,21 @@ process compare_genome_batched {
     def threads_per_pair = task.cpus.intdiv(parallel_pairs)
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
     remove_profile_locations = profile_locations.join(' ')
-    def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
     """
     export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities single_compare_genome ${preprofile_arg} \
-                        --profile-location-1 {1} \
-                        --profile-location-2 {2} \
+    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities compare-pair ${preprofile_arg} \
+                        --profile-1 {1} \
+                        --profile-2 {2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
-                        ${add_calculate} \
-                        -o {1}_{2}_comparison.parquet' ${add_genome_scope}
+                        --ani-method ${params.compare_ani_method} \
+                        --calculate ${params.compare_calculate} \
+                        --scope ${params.compare_scope} \
+                        -o {1}_{2}_comparison.parquet'
     mkdir comps
-    hash=\$(sha1sum pairs.txt | awk '{print \$1}')
+    hash=\$( (sha1sum pairs.txt 2>/dev/null || shasum pairs.txt) | awk '{print \$1}')
     mv *_comparison.parquet comps/
     export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
@@ -432,53 +405,6 @@ process compare_genome_batched {
     """
 
 
-}
-
-process compare_gene_batched {
-    publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
-    afterScript """
-    rm -rf comps pairs.txt
-    rm -f ${profile_locations.collect{t->t.join(' ')}}
-    rm -f ${stb}
-    """
-    input:
-    path profile_locations
-    val pairs
-    path stb
-    path preprofile_assets
-    output:
-    path "Batch_*_comparisons.parquet", emit: comparison_results
-    script:
-    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets}" : ""
-    def parallel_pairs = params.batch_compare_n_parallel as int
-    if (parallel_pairs < 1 || parallel_pairs > task.cpus) {
-        error "batch_compare_n_parallel must be between 1 and the compare task CPU allocation (${task.cpus})"
-    }
-    def threads_per_pair = task.cpus.intdiv(parallel_pairs)
-    pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
-    remove_profile_locations = profile_locations.join(' ')
-    def add_gene_scope= (params.compare_gene_scope=="all") ? "" : "--scope ${params.compare_gene_scope}"
-    """
-    export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}
-    echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities single_compare_gene ${preprofile_arg} \
-                        --profile-location-1 {1} \
-                        --profile-location-2 {2} \
-                        -s ${stb} \
-                        -c ${params.min_cov} \
-                        -l ${params.min_gene_compare_len} \
-                        --ani-method ${params.compare_ani_method} \
-                        -o {1}_{2}_comparison.parquet' ${add_gene_scope}
-    mkdir comps
-    hash=\$(sha1sum pairs.txt | awk '{print \$1}')
-    mv *_comparison.parquet comps/
-    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
-    zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
-    rm -rf comps
-    rm -f pairs.txt
-    rm -f ${remove_profile_locations}
-
-    """ 
 }
 
 
@@ -647,16 +573,15 @@ process fromSRAtoProfileBuildDb{
 workflow
 {
     if (!params.mode) {
-        error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+        error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare"
     }
 
     if (params.mode in ['compare_genomes', 'compare_genes']) {
-        if (params.compare_calculate?.toString()?.contains('gene_selection')) {
-            error "--compare_calculate gene_selection is not available in Nextflow yet: compare jobs do not receive codon tables. Use `zipstrain compare` instead."
-        }
-        if (!params.preprofile_dir) {
-            log.warn "No --preprofile_dir was given. With V2 profiles, compare_genomes calculates genome metrics only (explicit gene_ani fails), and compare_genes fails."
-        }
+        error "--mode ${params.mode} was replaced by --mode compare. Choose genome or gene metrics with --compare_calculate, and limit rows with --compare_scope."
+    }
+
+    if (params.mode == 'compare' && !params.preprofile_dir) {
+        log.warn "No --preprofile_dir was given. With V2 profiles, compare calculates genome metrics only, and an explicit gene metric fails."
     }
 
     if (params.mode == 'map_reads') {
@@ -767,38 +692,7 @@ workflow
         profile(bamfiles, sample_names, gene_file, reference_genome)
     }
     
-    else if (params.mode =="compare_genes")
-    {
-        input_table = tableToDict(file(params.input_table))
-        
-        if (params.input_type=="profile_table"){
-            profile_locations_list = getProfilesTableColumn(input_table).collect{t->file(t)}
-            sample_names_list = getProfileSampleNamesTableColumn(input_table)
-            profiles=[profile_locations_list,sample_names_list].transpose()
-            def profile_pairs = []
-            (0..<profiles.size()).each { i ->
-                (i+1..<profiles.size()).each { j ->
-                    profile_pairs << (profiles[i] + profiles[j])
-                }
-            }
-            pair_channel=Channel.from(profile_pairs)
-        }
-        else if (params.input_type=="pair_table")
-        {
-            sample_1=input_table['sample_name_1']
-            sample_2=input_table['sample_name_2']
-            profile_1=input_table["profile_location_1"].collect{t->file(t)}
-            profile_2=input_table["profile_location_2"].collect{t->file(t)}
-            profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
-            pair_channel=Channel.from(profile_pairs)
-
-        }
-        stb = file(params.stb)
-        compare_genes(pair_channel, stb)
-    }
-    
-    
-    else if (params.mode =='compare_genomes') {
+    else if (params.mode == 'compare') {
         input_table = tableToDict(file(params.input_table))
         
         if (params.input_type=="profile_table"){
@@ -824,11 +718,11 @@ workflow
 
         }
         stb = file(params.stb)
-        compare_genomes(pair_channel, stb)
+        compare_pairs(pair_channel, stb)
 
     }
     else if (!(params.mode in ['map_reads', 'from_sra_to_profile'])) {
-        error "Unknown --mode '${params.mode}'. Choose one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+        error "Unknown --mode '${params.mode}'. Choose one of: map_reads, profile, from_sra_to_profile, compare"
     }
 }
 
@@ -857,7 +751,17 @@ workflow profile{
 }
 
 
-workflow compare_genomes
+def siblingCodonTables(profiles) {
+    // A sample's codon table sits beside its profile. Stage those that exist, so
+    // `--compare_calculate all` uses them and an explicit gene_selection can report any gap.
+    if (!params.preprofile_dir) {
+        return []
+    }
+    return profiles.collect { profile -> profile.resolveSibling(profile.name.replaceAll(/_profile\.parquet$/, '_codon_counts.parquet')) }
+                   .findAll { table -> table.name.endsWith('_codon_counts.parquet') && table.exists() }
+}
+
+workflow compare_pairs
 {
     take:
     profile_pairs
@@ -869,9 +773,10 @@ workflow compare_genomes
         profile_1: v[0]
         profile_2: v[2]
         pair_name: v[1]+"_" + v[3]
+        codon_tables: siblingCodonTables([v[0], v[2]])
     }.set{profile_pairs}
-    compare_genome_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name, params.preprofile_dir ? file(params.preprofile_dir) : [])
-    merge_comparison_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
+    compare_pairs_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name, params.preprofile_dir ? file(params.preprofile_dir) : [], profile_pairs.codon_tables)
+    merge_comparison_tables(compare_pairs_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
@@ -879,47 +784,15 @@ workflow compare_genomes
     batch_t.multiMap{ v ->
         unique_profiles: (v[0]+v[2]).unique().sort()
         pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
+        codon_tables: siblingCodonTables((v[0]+v[2]).unique().sort())
     }.set{batch_pairs}
 
-    compare_genome_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, params.preprofile_dir ? file(params.preprofile_dir) : [])
-    merge_comparison_tables(compare_genome_batched.out.comparison_results.collect() )
+    compare_pairs_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, params.preprofile_dir ? file(params.preprofile_dir) : [], batch_pairs.codon_tables)
+    merge_comparison_tables(compare_pairs_batched.out.comparison_results.collect() )
     }
     else {
         error "Set --parallel_mode to either single or batched"
     }
 
-
-}
-
-
-workflow compare_genes{
-    take:
-    profile_pairs
-    stb
-    main:
-    if (params.parallel_mode=="single") {
-
-    profile_pairs.multiMap{ v ->
-        profile_1: v[0]
-        profile_2: v[2]
-        pair_name: v[1]+"_" + v[3]
-    }.set{profile_pairs}
-    compare_gene_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name, params.preprofile_dir ? file(params.preprofile_dir) : [])
-    merge_comparison_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
-    }
-    else if (params.parallel_mode=="batched") {
-    batch = profile_pairs.collate(params.batch_size)
-    batch.map{t->t.transpose()}.set{batch_t}
-    batch_t.multiMap{ v ->
-        unique_profiles: (v[0]+v[2]).unique().sort()
-        pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
-    }.set{batch_pairs}
-
-    compare_gene_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, params.preprofile_dir ? file(params.preprofile_dir) : [])
-    merge_comparison_tables(compare_gene_batched.out.comparison_results.collect() )
-    }
-    else {
-        error "Set --parallel_mode to either single or batched"
-    }
 
 }

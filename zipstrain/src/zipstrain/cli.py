@@ -534,7 +534,7 @@ def merge_stat_tables(stat_table, output_file):
 @click.option('--output-file', '-o', required=True, help="Output parquet file with all non-redundant profile pairs.")
 @click.option('--write-batch-size', type=int, default=100000, show_default=True, help="How many pairs to buffer before writing a parquet row group.")
 def generate_sample_pair(profile_dir, output_file, write_batch_size):
-    """Generate a sample-pair table ready for chunk-genome-compare or other compare utilities."""
+    """Generate a sample-pair table ready for `utilities compare-pair --pair-table`."""
     def _emit_progress(message: str) -> None:
         click.echo(message, err=True)
         sys.stderr.flush()
@@ -552,48 +552,6 @@ def generate_sample_pair(profile_dir, output_file, write_batch_size):
     )
 
 
-@utilities.command("chunk-genome-compare")
-@click.option('--pair-table', '-p', required=True, help="Pair table parquet/csv/tsv with profile locations.")
-@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
-@click.option('--output-file', '-o', required=True, help="Path to save the merged genome comparison parquet.")
-@click.option('--workers', '-w', type=int, default=None, help="Parallel workers inside this compare chunk. Defaults to CPU count capped by pair count.")
-@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
-@click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
-@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method to use.")
-@click.option('--calculate', default=options.CALCULATE, show_default=True, help="Genome metrics to compute: genome_ani, max_identical_stretch. Combine with '+', or use all.")
-def chunk_genome_compare(pair_table, stb_file, output_file, workers, min_cov, min_gene_compare_len, genome, ani_method, calculate):
-    """Run classic genome compare over one pair-table chunk using Python-side parallel workers."""
-    def _emit_progress(message: str) -> None:
-        click.echo(message, err=True)
-        sys.stderr.flush()
-
-    try:
-        summary = ut.chunk_genome_compare(
-            pair_table=pair_table,
-            output_file=output_file,
-            stb_file=stb_file,
-            workers=workers,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            genome_scope=genome,
-            ani_method=ani_method,
-            calculate=calculate,
-            progress_callback=_emit_progress,
-        )
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
-    click.echo(
-        f"wrote={summary['output_file']} "
-        f"pairs={summary['pairs']} "
-        f"rows={summary['rows']} "
-        f"workers={summary['workers']} "
-        f"elapsed_s={summary['elapsed_seconds']:.2f} "
-        f"avg_wall_s_per_pair={summary['avg_wall_seconds_per_pair']:.4f} "
-        f"avg_compute_s_per_pair={summary['avg_compute_seconds_per_pair']:.4f} "
-        f"avg_s_per_genome_row={summary['avg_seconds_per_genome_row']:.4f} "
-        f"avg_genome_rows_per_pair={summary['avg_genome_rows_per_pair']:.2f}"
-    )
 @utilities.command("get-snp-reference")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
 @click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage required for a site to contribute.")
@@ -1392,36 +1350,43 @@ def generate_stb(genomes_dir_file, output_file, extension):
     
 
 
-@utilities.command("compare-pair")
-@click.option('--profile-1', required=True, type=click.Path(exists=True))
-@click.option('--profile-2', required=True, type=click.Path(exists=True))
-@click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False))
-@click.option('--output-dir', required=True, type=click.Path(file_okay=False))
-@click.option('--calculate', default=options.CALCULATE, show_default=True, help=options.CALCULATE_HELP)
-@click.option('--ani-method', default=options.ANI_METHOD, show_default=True)
-@click.option('--min-cov', default=options.COMPARE_MIN_COV, show_default=True, type=click.IntRange(min=1))
-@click.option('--min-gene-compare-len', default=options.MIN_GENE_COMPARE_LEN, show_default=True, type=click.IntRange(min=1), help=options.MIN_GENE_COMPARE_LEN_HELP)
-@click.option('--codon-counts-1', default=None, type=click.Path(exists=True))
-@click.option('--codon-counts-2', default=None, type=click.Path(exists=True))
-@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
-def compare_pair(profile_1, profile_2, preprofile_dir, output_dir, calculate, ani_method,
-                 min_cov, min_gene_compare_len, codon_counts_1, codon_counts_2, allele_integration):
-    """Write one comparison Parquet for a V2 sample pair.
+def _write_v2_pair(profile_1, profile_2, preprofile_dir, output_file, *, calculate, ani_method, min_cov,
+                   min_gene_compare_len, codon_counts_1=None, codon_counts_2=None,
+                   allele_integration=options.ALLELE_INTEGRATION, sample_1=None, sample_2=None,
+                   genome="all", gene="all"):
+    """Compare one V2 pair and write its table atomically, for every command that runs a pair.
 
-    Each row represents a genome, or a qualifying gene when any gene metric
-    is requested. See the V2 guide for schemas and command examples.
+    Codon tables default to the ``<sample>_codon_counts.parquet`` beside each profile.
+    ``gene`` limits gene rows to one gene name or ID.
     """
     from zipstrain import codons, gene_info as gi
+
+    def codon_table(explicit, profile):
+        if explicit is not None:
+            return explicit
+        sibling = codons.sibling_codon_table(profile)
+        return sibling if sibling is not None and sibling.exists() else None
+
     try:
         result = cp.compare_profiles(profile_1, profile_2, preprofile_dir=preprofile_dir,
             calculate=calculate, ani_method=ani_method, min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len, codon_counts_1=codon_counts_1,
-            codon_counts_2=codon_counts_2, allele_integration=allele_integration)
+            min_gene_compare_len=min_gene_compare_len,
+            codon_counts_1=codon_table(codon_counts_1, profile_1),
+            codon_counts_2=codon_table(codon_counts_2, profile_2),
+            sample_1=sample_1, sample_2=sample_2, allele_integration=allele_integration)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
+    if genome != "all":
+        result = result.filter(pl.col("genome") == genome)
+    gene_rows = "gene_id" in result.collect_schema()
+    if gene != "all":
+        if not gene_rows:
+            raise click.UsageError("A GENOME:GENE scope needs a gene metric in --calculate.")
+        ids = gi.read_gene_info(pathlib.Path(preprofile_dir)/"gene_info.parquet").filter(
+            (pl.col("gene") == gene) | (pl.col("gene_id").cast(pl.String) == gene))["gene_id"]
+        result = result.filter(pl.col("gene_id").is_in(ids.implode()))
     calculated = cp.metrics_in_frame(result)
     selection_method = codons.METHOD if "gene_selection" in calculated else "not_calculated"
-    gene_rows = "gene_id" in result.collect_schema()
     metadata = {gi.SCHEMA_KEY: "2", "zipstrain_compare_ani_method": ani_method,
                 "zipstrain_allele_integration": allele_integration, "zipstrain_selection_method": selection_method}
     if preprofile_dir is not None:
@@ -1432,14 +1397,153 @@ def compare_pair(profile_1, profile_2, preprofile_dir, output_dir, calculate, an
                      "zipstrain_compare_min_gene_compare_len": str(min_gene_compare_len) if gene_rows else "NA",
                      "zipstrain_compare_allele_integration": allele_integration,
                      "zipstrain_compare_selection_method": selection_method,
-                     "zipstrain_compare_calculate": "+".join(calculated)})
-    metadata["zipstrain_compare_kind"] = "gene" if gene_rows else "genome"
-    output = pathlib.Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=output) as staging:
-        temporary = pathlib.Path(staging) / "comparisons.parquet"
+                     "zipstrain_compare_calculate": "+".join(calculated),
+                     ut.COMPARE_ENGINE_METADATA_KEY: "table",
+                     "zipstrain_compare_kind": "gene" if gene_rows else "genome"})
+    output = pathlib.Path(output_file)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output.parent) as staging:
+        temporary = pathlib.Path(staging) / output.name
         result.sink_parquet(temporary, engine="streaming", compression="zstd", metadata=metadata)
-        temporary.replace(output / temporary.name)
+        temporary.replace(output)
+
+
+def _split_scope(scope):
+    """Return ``(genome, gene)`` from 'all', 'GENOME', or 'GENOME:GENE'."""
+    genome, _, gene = scope.partition(":")
+    return genome or "all", gene or "all"
+
+
+def _write_v1_pair(profile_1, profile_2, output_file, *, calculate, scope, stb_file, min_cov,
+                   min_gene_compare_len, ani_method, sample_1=None, sample_2=None):
+    """Compare one pair of 1.x profiles, or V2 profiles without shared assets (genome rows only).
+
+    With 1.x profiles, ``gene_ani`` on its own gives the legacy per-gene table.
+    """
+    try:
+        cp.require_same_profile_generation((profile_1, profile_2))
+        named = options.explicit_metrics(calculate)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    genome_scope, gene_scope = _split_scope(scope)
+    names = (sample_1 or ut.infer_sample_name_from_profile(profile_1),
+             sample_2 or ut.infer_sample_name_from_profile(profile_2))
+    gene_route = bool(set(named) & set(options.GENE_METRICS)) and not cp.profile_is_gene_free(profile_1)
+    if gene_route:
+        if named != ("gene_ani",):
+            raise click.UsageError("With 1.x profiles, gene_ani writes a separate per-gene table. "
+                                   "Request it on its own; gene_selection needs V2 profiles and --preprofile-dir.")
+        first, second = profile_1, profile_2
+        if genome_scope != "all" or gene_scope != "all":
+            first, second = cp.polars_prefilter_by_scope(mpile1=profile_1, mpile2=profile_2,
+                                                         genome_scope=genome_scope, gene_scope=gene_scope)
+        frame = cp.compare_genes(mpile_contig_1=first, mpile_contig_2=second, min_cov=min_cov,
+                                 min_gene_compare_len=min_gene_compare_len, genome_scope=genome_scope,
+                                 gene_scope=gene_scope, ani_method=ani_method,
+        ).with_columns(sample_1=pl.lit(names[0]), sample_2=pl.lit(names[1])).select(
+            "genome", "gene", "total_positions", "share_allele_pos", "ani", "sample_1", "sample_2")
+        kind, recorded_scope = "gene", f"{genome_scope}:{gene_scope}"
+    else:
+        if gene_scope != "all":
+            raise click.UsageError("A GENOME:GENE scope needs a gene metric in --calculate.")
+        try:
+            frame = cp.compare_genomes(mpile_contig_1=profile_1, mpile_contig_2=profile_2, min_cov=min_cov,
+                                       min_gene_compare_len=min_gene_compare_len, genome_scope=genome_scope,
+                                       ani_method=ani_method, stb_file=stb_file, calculate=calculate,
+            ).with_columns(sample_1=pl.lit(names[0]), sample_2=pl.lit(names[1]))
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+        kind, recorded_scope = "genome", genome_scope
+    metadata = ut.build_single_compare_metadata(
+        profile_1, profile_2, compare_kind=kind, scope=recorded_scope, min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len, engine="polars", uses_stb=stb_file is not None,
+        ani_method=ani_method)
+    frame.sink_parquet(output_file, engine="streaming", compression="zstd", metadata=metadata)
+
+
+def _write_pair_table(pair_table, output_file, *, calculate, scope, stb_file, workers, min_cov,
+                      min_gene_compare_len, ani_method):
+    """Compare every pair in a table in one process, with Python-side workers (genome rows only)."""
+    def _emit_progress(message: str) -> None:
+        click.echo(message, err=True)
+        sys.stderr.flush()
+
+    genome_scope, gene_scope = _split_scope(scope)
+    if gene_scope != "all":
+        raise click.UsageError("--pair-table compares genomes, so --scope takes a genome, not GENOME:GENE.")
+    try:
+        summary = ut.chunk_genome_compare(
+            pair_table=pair_table, output_file=output_file, stb_file=stb_file, workers=workers,
+            min_cov=min_cov, min_gene_compare_len=min_gene_compare_len, genome_scope=genome_scope,
+            ani_method=ani_method, calculate=calculate, progress_callback=_emit_progress)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    click.echo(
+        f"wrote={summary['output_file']} "
+        f"pairs={summary['pairs']} "
+        f"rows={summary['rows']} "
+        f"workers={summary['workers']} "
+        f"elapsed_s={summary['elapsed_seconds']:.2f} "
+        f"avg_wall_s_per_pair={summary['avg_wall_seconds_per_pair']:.4f} "
+        f"avg_compute_s_per_pair={summary['avg_compute_seconds_per_pair']:.4f} "
+        f"avg_s_per_genome_row={summary['avg_seconds_per_genome_row']:.4f} "
+        f"avg_genome_rows_per_pair={summary['avg_genome_rows_per_pair']:.2f}"
+    )
+
+
+@utilities.command("compare-pair")
+@click.option('--profile-1', '--profile-location-1', 'profile_1', default=None, type=click.Path(exists=True), help="First profile parquet.")
+@click.option('--profile-2', '--profile-location-2', 'profile_2', default=None, type=click.Path(exists=True), help="Second profile parquet.")
+@click.option('--pair-table', '-p', default=None, type=click.Path(exists=True), help="Instead of one pair, compare every pair in this parquet/csv/tsv (sample_name_1, sample_name_2, profile_location_1, profile_location_2) in one process. Genome metrics only.")
+@click.option('--output-file', '-o', required=True, help="Comparison parquet to write.")
+@click.option('--calculate', default=options.CALCULATE, show_default=True, help=options.CALCULATE_HELP + " Any gene metric gives one row per gene.")
+@click.option('--scope', '-g', default="all", show_default=True, help="'all', one genome, or GENOME:GENE to limit gene rows (for example genomeA:all).")
+@click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="V2 shared profiling_assets directory. Required for V2 gene metrics.")
+@click.option('--stb-file', '-s', default=None, help="Scaffold-to-genome mapping, used without --preprofile-dir: every genome in it gets a row, where otherwise only genomes with comparable loci do. With --preprofile-dir the catalog lists the genomes.")
+@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, type=click.IntRange(min=1), help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, type=click.IntRange(min=1), help=options.MIN_GENE_COMPARE_LEN_HELP)
+@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option('--codon-counts-1', default=None, type=click.Path(exists=True), help="V2 codon table for the first sample. Defaults to the <sample>_codon_counts.parquet beside the profile.")
+@click.option('--codon-counts-2', default=None, type=click.Path(exists=True), help="V2 codon table for the second sample. Defaults to the <sample>_codon_counts.parquet beside the profile.")
+@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
+@click.option('--sample-name-1', default=None, help="Sample label. Defaults to the name in the first profile's filename.")
+@click.option('--sample-name-2', default=None, help="Sample label. Defaults to the name in the second profile's filename.")
+@click.option('--workers', '-w', type=int, default=None, help="With --pair-table: parallel workers. Defaults to CPU count capped by pair count.")
+def compare_pair(profile_1, profile_2, pair_table, output_file, calculate, scope, preprofile_dir, stb_file,
+                 min_cov, min_gene_compare_len, ani_method, codon_counts_1, codon_counts_2, allele_integration,
+                 sample_name_1, sample_name_2, workers):
+    """Compare one sample pair and write its comparison Parquet.
+
+    This is the unit ``zipstrain compare``, Slurm, and Nextflow schedule.
+    ``--calculate`` decides the rows: one per genome, or one per qualifying
+    gene when any gene metric is requested. V2 profiles use ``--preprofile-dir``
+    for gene metrics; 1.x profiles take ``gene_ani`` on its own.
+    """
+    if pair_table is not None:
+        single_only = {"--profile-1": profile_1, "--profile-2": profile_2, "--preprofile-dir": preprofile_dir,
+                       "--codon-counts-1": codon_counts_1, "--codon-counts-2": codon_counts_2,
+                       "--sample-name-1": sample_name_1, "--sample-name-2": sample_name_2}
+        if given := [name for name, value in single_only.items() if value is not None]:
+            raise click.UsageError(f"{', '.join(given)} cannot be combined with --pair-table.")
+        _write_pair_table(pair_table, output_file, calculate=calculate, scope=scope, stb_file=stb_file,
+                          workers=workers, min_cov=min_cov, min_gene_compare_len=min_gene_compare_len,
+                          ani_method=ani_method)
+        return
+    if profile_1 is None or profile_2 is None:
+        raise click.UsageError("Give --profile-1 and --profile-2, or --pair-table.")
+    if workers is not None:
+        raise click.UsageError("--workers applies to --pair-table only.")
+    if preprofile_dir is not None:
+        genome_scope, gene_scope = _split_scope(scope)
+        _write_v2_pair(profile_1, profile_2, preprofile_dir, output_file, calculate=calculate,
+                       ani_method=ani_method, min_cov=min_cov, min_gene_compare_len=min_gene_compare_len,
+                       codon_counts_1=codon_counts_1, codon_counts_2=codon_counts_2,
+                       allele_integration=allele_integration, sample_1=sample_name_1, sample_2=sample_name_2,
+                       genome=genome_scope, gene=gene_scope)
+        return
+    _write_v1_pair(profile_1, profile_2, output_file, calculate=calculate, scope=scope, stb_file=stb_file,
+                   min_cov=min_cov, min_gene_compare_len=min_gene_compare_len, ani_method=ani_method,
+                   sample_1=sample_name_1, sample_2=sample_name_2)
 
 
 @utilities.command("gene-range-table")
@@ -1456,179 +1560,6 @@ def get_gene_range_table(gene_file, output_file):
     gene_locs=pf.build_gene_range_table(pathlib.Path(gene_file))
     gene_locs.write_csv(pathlib.Path(output_file), separator="\t", include_header=False)
 
-
-@utilities.command("single_compare_genome")
-@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
-@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
-@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
-@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
-@click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
-@click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
-@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--calculate', default=options.CALCULATE, show_default=True, help="Metrics to compute: genome_ani, max_identical_stretch, and, with --preprofile-dir, gene_ani. Combine with '+', or use all. This command takes no codon tables, so gene_selection needs compare or compare-pair.")
-@click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="V2 shared profiling_assets directory for interval-based comparisons.")
-def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, preprofile_dir):
-    """
-    Compare two profile parquets and calculate genome-level comparison statistics.
-    
-    Args:
-    profile_location_1 (str): Path to the first profile parquet.
-    profile_location_2 (str): Path to the second profile parquet.
-    min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum shared positions for a gene comparison.
-    output_file (str): Path to save the parquet file.
-    genome (str): If provided, do the comparison only for the specified genome.
-    stb_file (str): Optional path to the scaffold to genome mapping file.
-    """
-    if preprofile_dir is not None:
-        try:
-            frame = cp.compare_profiles(profile_location_1, profile_location_2,
-                preprofile_dir=preprofile_dir, calculate=calculate, ani_method=ani_method,
-                min_cov=min_cov, min_gene_compare_len=min_gene_compare_len)
-        except ValueError as exc:
-            raise click.UsageError(str(exc)) from exc
-        if genome != "all":
-            frame = frame.filter(pl.col("genome") == genome)
-        from zipstrain.gene_info import validate_profile_assets
-        metadata = validate_profile_assets([profile_location_1, profile_location_2], pathlib.Path(preprofile_dir)/"gene_info.parquet")
-        metadata["zipstrain_compare_ani_method"] = ani_method
-        metadata["zipstrain_compare_kind"] = "gene" if "gene_id" in frame.collect_schema() else "genome"
-        metadata["zipstrain_compare_calculate"] = "+".join(cp.metrics_in_frame(frame))
-        frame.sink_parquet(output_file, engine="streaming", compression="zstd", metadata=metadata)
-        return
-    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
-    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
-    compare_metadata = ut.build_single_compare_metadata(
-        profile_location_1,
-        profile_location_2,
-        compare_kind="genome",
-        scope=genome,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        engine="polars",
-        uses_stb=stb_file is not None,
-        ani_method=ani_method,
-    )
-
-    try:
-        comp = cp.compare_genomes(
-            mpile_contig_1=profile_location_1,
-            mpile_contig_2=profile_location_2,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            genome_scope=genome,
-            ani_method=ani_method,
-            stb_file=stb_file,
-            calculate=calculate,
-        ).with_columns(
-            sample_1=pl.lit(profile_1_name),
-            sample_2=pl.lit(profile_2_name),
-        )
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
-    comp.sink_parquet(output_file, engine="streaming", compression='zstd', metadata=compare_metadata)
-
-@utilities.command("single_compare_gene")
-@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
-@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
-@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. Currently unused for gene compare, and accepted for workflow consistency.")
-@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
-@click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
-@click.option('--scope', '-g', default="all:all", help="If provided, do the comparison only for the specified genome-gene pair.")
-@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="V2 shared profiling_assets directory for interval-based comparisons.")
-def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, preprofile_dir):
-    """
-    Compare two profile parquets and calculate gene-level comparison statistics.
-    
-    Args:
-    profile_location_1 (str): Path to the first profile parquet.
-    profile_location_2 (str): Path to the second profile parquet.
-    stb_file (str | None): Optional path to the scaffold to genome mapping file.
-    min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum shared positions for a gene comparison.
-    output_file (str): Path to save the parquet file.
-    scope (str): If provided, do the comparison only for the specified genome-gene pair.
-    ani_method (str): ANI calculation method to use.
-    """
-
-    if preprofile_dir is not None:
-        frame = cp.compare_profiles(profile_location_1, profile_location_2,
-            preprofile_dir=preprofile_dir, calculate="gene_ani", ani_method=ani_method,
-            min_cov=min_cov, min_gene_compare_len=min_gene_compare_len)
-        genome_scope, gene_scope = scope.split(":", 1)
-        if genome_scope != "all":
-            frame = frame.filter(pl.col("genome") == genome_scope)
-        if gene_scope != "all":
-            from zipstrain.gene_info import read_gene_info
-            ids = read_gene_info(pathlib.Path(preprofile_dir)/"gene_info.parquet").filter(
-                (pl.col("gene") == gene_scope) | (pl.col("gene_id").cast(pl.String) == gene_scope))["gene_id"]
-            frame = frame.filter(pl.col("gene_id").is_in(ids.implode()))
-        from zipstrain.gene_info import validate_profile_assets
-        metadata = validate_profile_assets([profile_location_1, profile_location_2], pathlib.Path(preprofile_dir)/"gene_info.parquet")
-        metadata["zipstrain_compare_ani_method"] = ani_method
-        metadata["zipstrain_compare_kind"] = "gene"
-        frame.sink_parquet(output_file, engine="streaming", compression="zstd", metadata=metadata)
-        return
-    try:
-        cp.require_same_profile_generation((profile_location_1, profile_location_2))
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
-    if cp.profile_is_gene_free(profile_location_1):
-        raise click.UsageError("V2 gene comparisons require --preprofile-dir")
-    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
-    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
-
-    _ = stb_file
-    if ":" not in scope:
-        raise ValueError("scope must be in 'GENOME:GENE' format (e.g., all:all).")
-    genome_scope, gene_scope = scope.split(":", 1)
-    compare_metadata = ut.build_single_compare_metadata(
-        profile_location_1,
-        profile_location_2,
-        compare_kind="gene",
-        scope=scope,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        engine="polars",
-        uses_stb=stb_file is not None,
-        ani_method=ani_method,
-    )
-
-    profile_1_for_compare = profile_location_1
-    profile_2_for_compare = profile_location_2
-    if (genome_scope != "all" or gene_scope != "all"):
-        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-        )
-
-
-    gene_comp = cp.compare_genes(
-        mpile_contig_1=profile_1_for_compare,
-        mpile_contig_2=profile_2_for_compare,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        genome_scope=genome_scope,
-        gene_scope=gene_scope,
-        ani_method=ani_method,
-    ).with_columns(
-        sample_1=pl.lit(profile_1_name),
-        sample_2=pl.lit(profile_2_name),
-    ).select(
-        "genome",
-        "gene",
-        "total_positions",
-        "share_allele_pos",
-        "ani",
-        "sample_1",
-        "sample_2",
-    )
-    gene_comp.sink_parquet(output_file, engine="streaming", compression='zstd', metadata=compare_metadata)
 
 @utilities.command("prepare_profiling", help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
@@ -2108,6 +2039,54 @@ def _run_matrix_compare_method(
     )
 
 
+def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *, calculate, ani_method, min_cov,
+                              min_gene_compare_len, allele_integration, execution_mode, slurm_config,
+                              container_engine, container_address, max_concurrent_batches, poll_interval,
+                              task_per_batch):
+    """Run V2 pairs as scheduled jobs. Every job gets the same resolved metrics and inputs."""
+    try:
+        plan = cp.resolve_collection_metrics(
+            [(row["profile_name"], pathlib.Path(row["profile_location"])) for row in rows], preprofile_dir, calculate)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    calculations, codon_paths = plan[1], plan[2]
+    slurm_conf = None
+    if execution_mode == "slurm":
+        if slurm_config is None:
+            raise click.UsageError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+    # A finished run with these exact inputs and settings is reused, and any other is refused.
+    # Extending a table across scheduled jobs is not supported, because nothing here can prove
+    # earlier rows came from the same inputs.
+    from zipstrain import gene_info as gi
+    identity = gi.content_digest({
+        "profiles": {row["profile_name"]: ut.sha256_file(row["profile_location"]) for row in rows},
+        "codons": {name: ut.sha256_file(path) for name, path in codon_paths.items()} if "gene_selection" in calculations else {},
+        "calculate": calculations, "ani_method": ani_method, "min_cov": min_cov,
+        "min_gene_compare_len": min_gene_compare_len, "allele_integration": allele_integration,
+        "annotation": pl.read_parquet_metadata(pathlib.Path(preprofile_dir)/"gene_info.parquet")[gi.ANNOTATION_ID],
+    })
+    finished = run_dir / ".v2_scheduled_run_id"
+    if (run_dir / "all_comparisons.parquet").exists():
+        if finished.exists() and finished.read_text() == identity:
+            return
+        raise click.UsageError("This --run-dir holds a comparison from other inputs or settings. Use a new --run-dir.")
+    comparisons = db.GenomeComparisonDatabase(
+        profile_db=profile_database,
+        config=db.GenomeComparisonConfig(scope="all", min_cov=min_cov, min_gene_compare_len=min_gene_compare_len),
+    )
+    tm.lazy_run_compares(
+        comps_db=comparisons, container_engine=_build_container_engine(container_engine, container_address),
+        run_dir=run_dir, max_concurrent_batches=max_concurrent_batches, execution_mode=execution_mode,
+        slurm_config=slurm_conf, ani_method=ani_method, calculate="+".join(calculations),
+        tasks_per_batch=task_per_batch, poll_interval=poll_interval, preprofile_dir=preprofile_dir,
+        allele_integration=allele_integration, codon_tables=codon_paths if "gene_selection" in calculations else None,
+    )
+    if (run_dir / "all_comparisons.parquet").exists():
+        finished.write_text(identity)
+
+
+
 @cli.command("compare", cls=SectionedCommand, short_help="Compare samples (genomes or genes).")
 @click.option("--profile-db", required=True, help="Profiles to compare: either a CSV with 'profile_name,profile_location' columns (built in memory, no build-profile-db needed) or a pre-built profile-database parquet.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
@@ -2123,7 +2102,7 @@ def _run_matrix_compare_method(
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-info-table", "--gene-range-table", "gene_range_table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
-@click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for --method matrix.")
+@click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for the comparison.")
 @click.option("--compare-kernel", default=mp.MATRIX_COMPARE_KERNEL_ANCHOR, show_default=True, metavar="[anchor|block]", callback=_normalize_compare_kernel_option, help=_COMPARE_KERNEL_HELP + " Applies to --method matrix.")
 @click.option("--max-concurrent-batches", "-m", default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option("--poll-interval", "-p", default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
@@ -2165,16 +2144,27 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
             if catalog is not None and catalog.suffix == ".parquet":
                 preprofile_dir = catalog.parent
         if (preprofile_dir is not None or is_v2) and method == "table":
-            if execution_mode != "local" or container_engine != "local":
-                raise click.UsageError("V2 explicit-asset comparison currently requires local execution. Use compare-pair inside external job schedulers.")
             if scope not in (None, "all", "all:all") or comp_db_file is not None:
                 raise click.UsageError("V2 collection comparison currently uses all genomes/genes and its own per-pair cache; use a separate run directory.")
+            if execution_mode != "local" or container_engine != "local":
+                _run_scheduled_v2_compare(
+                    profile_database, rows, run_dir, preprofile_dir, calculate=calculate, ani_method=ani_method,
+                    min_cov=min_cov, min_gene_compare_len=min_gene_compare_len,
+                    allele_integration=allele_integration, execution_mode=execution_mode,
+                    slurm_config=slurm_config, container_engine=container_engine,
+                    container_address=container_address, max_concurrent_batches=max_concurrent_batches,
+                    poll_interval=poll_interval, task_per_batch=task_per_batch,
+                )
+                _maybe_write_csv(run_dir / "all_comparisons.parquet", no_csv=no_csv or not force_csv, force_csv=force_csv)
+                run_log.step("Exported V2 comparison table")
+                return
             try:
                 output = cp.compare_profile_collection(
                     [(row["profile_name"], row["profile_location"]) for row in rows],
                     run_dir, preprofile_dir=preprofile_dir, calculate=calculate,
                     ani_method=ani_method, min_cov=min_cov,
                     min_gene_compare_len=min_gene_compare_len, allele_integration=allele_integration,
+                    memory_limit_gb=memory_limit_gb, workers="auto",
                 )
             except (ValueError, FileNotFoundError) as exc:
                 raise click.UsageError(str(exc)) from exc

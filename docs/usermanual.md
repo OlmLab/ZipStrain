@@ -367,7 +367,7 @@ Compare profiled samples to each other, one row per genome per sample pair, and 
 
 `--method table` (default) compares Parquet profiles pairwise in Polars. `--method matrix` builds a reusable matrix store for vectorized all-vs-all comparison. With either method, rerunning in the same run directory after adding samples computes only the new pairs. See the [Tutorial](./Tutorial.md) and [Expected output](./expected_output.md).
 
-The table method runs V2 comparisons in one process. For legacy profiles, batched comparison runs each pair in a separate process. Batch scripts use the Slurm `--cpus-per-task` allocation, or one CPU per pair when no allocation is exposed. Set `ZIPSTRAIN_CPU_BUDGET` to specify a per-process cap within that allocation. For concurrent local batches, use `--max-concurrent-batches` to control aggregate CPU use.
+In local mode, the table method runs V2 pairs in worker processes, as many as the CPU budget and `--memory-limit-gb` allow. In Slurm and container modes, each V2 pair runs through the same pair command as Nextflow. For legacy profiles, batched comparison runs each pair in a separate process. Batch scripts use the Slurm `--cpus-per-task` allocation, or one CPU per pair when no allocation is exposed. Set `ZIPSTRAIN_CPU_BUDGET` to specify a per-process cap within that allocation. For concurrent local batches, use `--max-concurrent-batches` to control aggregate CPU use.
 
 ```bash
 # Table comparison from a CSV of profiles
@@ -583,7 +583,7 @@ Commands:
   build-matrix-db         Build a matrix store directly from classic...
   build-null-model        Build a null model for sequencing errors based...
   build-profile-db        Build a profile database from the given CSV file.
-  chunk-genome-compare    Run classic genome compare over one pair-table...
+  compare-pair            Compare one sample pair and write its...
   gene-range-table        Main function to build and save the gene...
   generate-sample-pair    Generate a sample-pair table ready for...
   generate_stb            Generate a scaffold-to-genome mapping file from...
@@ -599,8 +599,6 @@ Commands:
   process-read-locs       Process read locations and save them to a...
   process_mpileup         Process an mpileup stream and save the results in...
   profile-single          Profile a single BAM file using the provided...
-  single_compare_gene     Compare two profile parquets and calculate...
-  single_compare_genome   Compare two profile parquets and...
   sort-profile            Sort a classic profile parquet in place and...
   to-complete-table       Generate the not-yet-completed...
 ```
@@ -616,7 +614,7 @@ Commands:
 | `zipstrain utilities merge-stat-tables` | Merge gene/genome stat parquet files with sample labels |
 | `zipstrain utilities process_mpileup` | Convert mpileup stream to parquet |
 | `zipstrain utilities generate-sample-pair` | Create all non-redundant standard-profile sample pairs |
-| `zipstrain utilities chunk-genome-compare` | Compare many genome-level pairs in Python-side parallel batches |
+| `zipstrain utilities compare-pair` | Compare one pair, or a pair table in one process; the unit `compare`, Slurm and Nextflow schedule |
 | `zipstrain utilities build-profile-db` | Build profile DB parquet |
 | `zipstrain utilities build-matrix-db` | Build the current per-sample genome matrix store directly from profile parquets |
 | `zipstrain utilities append-matrix-db` | Append new profiles into an existing matrix store |
@@ -751,27 +749,55 @@ The output preserves the input profile-like columns and includes only positions 
 
 This uses the same reference-sharing logic used to populate `ref_ani` in the gene and genome stat tables.
 
-#### `zipstrain utilities single_compare_genome`
+#### `zipstrain utilities compare-pair`
 
 ```bash
-zipstrain utilities single_compare_genome \
-  --profile-location-1 sample_a.parquet \
-  --profile-location-2 sample_b.parquet \
-  --stb-file mapping.stb \
+zipstrain utilities compare-pair \
+  --profile-1 sample_a_profile.parquet \
+  --profile-2 sample_b_profile.parquet \
+  --preprofile-dir profiling_assets \
+  --calculate all \
   --output-file out.parquet
 ```
 
+This is the one pair-level comparison command. `zipstrain compare`, Slurm
+batches, and Nextflow all run it per pair. As with `zipstrain compare`,
+`--calculate` decides the rows: one per genome for genome metrics, or one per
+qualifying gene when any gene metric is requested.
+
+- V2 profiles: pass `--preprofile-dir` for `gene_ani` and `gene_selection`.
+  Without it, only genome metrics are calculated.
+- 1.x profiles: request `gene_ani` on its own to get the legacy per-gene table
+  (`genome`, `gene`, `total_positions`, `share_allele_pos`, `ani`, `sample_1`,
+  `sample_2`).
+
 Options:
 
-- `--profile-location-1` / `--profile-1` (required)
-- `--profile-location-2` / `--profile-2` (required)
-- `-s, --stb-file` (required)
+- `--profile-1` / `--profile-location-1`, `--profile-2` / `--profile-location-2` (one pair)
+- `-p, --pair-table` (instead of one pair: compare every pair in a table in one process; genome metrics only)
+- `-o, --output-file` (required)
+- `--calculate` (`genome_ani`, `max_identical_stretch`, `gene_ani`, `gene_selection`, `all`, or `+` combinations; default: `all`)
+- `-g, --scope` (`all`, one genome, or `GENOME:GENE` to limit gene rows; default: `all`)
+- `--preprofile-dir` (V2 shared `profiling_assets`)
+- `-s, --stb-file` (without `--preprofile-dir`, every genome in it gets a row)
 - `-c, --min-cov` (default: `5`)
 - `-l, --min-gene-compare-len` (default: `1`)
-- `-o, --output-file` (required)
-- `-g, --genome` (default: `all`)
 - `-a, --ani-method` (default: `popani`)
-- `--calculate` (`genome_ani`, `max_identical_stretch`, `gene_ani` with `--preprofile-dir`, `all`, or `+` combinations; default: `all`)
+- `--codon-counts-1`, `--codon-counts-2` (codon tables for `gene_selection`; by default, `<sample>_codon_counts.parquet` beside each profile)
+- `--allele-integration` (`consensus`/`weighted`; used by `gene_selection`; default: `consensus`)
+- `--sample-name-1`, `--sample-name-2` (names written to the output; by default, taken from the profile file names)
+- `-w, --workers` (with `--pair-table`; defaults to CPU count capped by pair count)
+
+Accepted pair-table schemas:
+
+- `sample_name_1`, `sample_name_2`, `profile_location_1`, `profile_location_2`
+- `sample_name_1`, `sample_name_2`, `profile_1`, `profile_2`
+- `sample_1`, `sample_2`, `profile_1`, `profile_2`
+- `profile_location_1`, `profile_location_2`
+- `profile_1`, `profile_2`
+
+With `--pair-table`, the final console summary reports pairs processed, rows
+written, elapsed time, and average time per pair and per genome row.
 
 #### `zipstrain utilities generate-sample-pair`
 
@@ -793,71 +819,6 @@ Options:
 - `-p, --profile-dir` (required)
 - `-o, --output-file` (required)
 - `--write-batch-size` (default: `100000`)
-
-#### `zipstrain utilities chunk-genome-compare`
-
-```bash
-zipstrain utilities chunk-genome-compare \
-  --pair-table genome_pairs.parquet \
-  --stb-file mapping.stb \
-  --output-file chunk_compare.parquet \
-  --workers 8
-```
-
-This command runs Polars genome comparisons directly inside Python for one pair-table chunk.
-It is intended as an experimental utility for benchmarking or ad hoc compare runs, and
-does not change the main workflow commands.
-
-Accepted pair-table schemas:
-
-- `sample_name_1`, `sample_name_2`, `profile_location_1`, `profile_location_2`
-- `sample_name_1`, `sample_name_2`, `profile_1`, `profile_2`
-- `sample_1`, `sample_2`, `profile_1`, `profile_2`
-- `profile_location_1`, `profile_location_2`
-- `profile_1`, `profile_2`
-
-Options:
-
-- `-p, --pair-table` (required)
-- `-s, --stb-file` (required)
-- `-o, --output-file` (required)
-- `-w, --workers` (defaults to CPU count capped by pair count)
-- `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `1`)
-- `-g, --genome` (default: `all`)
-- `-a, --ani-method` (default: `popani`)
-- `--calculate` (`genome_ani`, `max_identical_stretch`, `all`, or `+` combinations; default: `all`). This command calculates genome metrics only.
-
-The final console summary includes:
-
-- total pairs processed
-- total genome-level output rows written
-- total elapsed time
-- average wall time per pair
-- average compute time per pair
-- average time per genome-level output row
-
-#### `zipstrain utilities single_compare_gene`
-
-```bash
-zipstrain utilities single_compare_gene \
-  --profile-location-1 sample_a.parquet \
-  --profile-location-2 sample_b.parquet \
-  --stb-file mapping.stb \
-  --scope all:all \
-  --output-file out.parquet
-```
-
-Options:
-
-- `--profile-location-1` / `--profile-1` (required)
-- `--profile-location-2` / `--profile-2` (required)
-- `-s, --stb-file` (required)
-- `-c, --min-cov` (default: `5`)
-- `-l, --min-gene-compare-len` (default: `1`)
-- `-o, --output-file` (required)
-- `-g, --scope` (default: `all:all`)
-- `-a, --ani-method` (default: `popani`)
 
 #### `zipstrain utilities to-complete-table`
 
@@ -1324,7 +1285,7 @@ zipstrain utilities build-null-model --help
 zipstrain utilities merge_parquet --help
 zipstrain utilities process_mpileup --help
 zipstrain utilities generate-sample-pair --help
-zipstrain utilities chunk-genome-compare --help
+zipstrain utilities compare-pair --help
 zipstrain utilities merge-stat-tables --help
 zipstrain utilities build-profile-db --help
 zipstrain utilities build-matrix-db --help
@@ -1385,8 +1346,7 @@ Conventions used by every example below:
 | `map_reads` | Reads → sorted BAMs with Bowtie2 | `local` or `sra` |
 | `profile` | BAMs → per-position profiles and stat tables | (bam table) |
 | `from_sra_to_profile` | SRA accessions → profiles, end to end | `sra` |
-| `compare_genomes` | Pairwise genome ANI/IBS across profiles | `profile_table` or `pair_table` |
-| `compare_genes` | Pairwise gene comparison across profiles | `profile_table` or `pair_table` |
+| `compare` | Pairwise comparison across profiles; `--compare_calculate` picks genome or gene rows | `profile_table` or `pair_table` |
 
 ### Key parameters
 
@@ -1399,9 +1359,9 @@ Conventions used by every example below:
 - `--error_rate` (default `0.001`), `--max_total_reads` (default `50000`), `--p_threshold` (default `0.000001`): profiling null-model parameters. Profiling fails with a rebuild instruction if observed coverage exceeds the model maximum.
 - `--min_mapq`, `--min_baseq`, `--min_freq`, `--min_read_ani`, `--read_inclusion`: profiling read/base/allele filters passed through to `zipstrain utilities profile-single`; `--min_freq` defaults to `0.01`.
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows. Batched mode defaults to one simultaneous pair per task; it divides `task.cpus` among simultaneous pairs and rejects a pair count above the task CPU allocation.
-- `--compare_genome_scope` / `--compare_gene_scope`: comparison scope (`all`, a genome ID, or `all:all`-style gene scope).
+- `--compare_scope`: comparison scope (`all`, a genome ID, or `GENOME:GENE` to limit gene rows).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
-- `--compare_calculate`: metrics to compute (`max_identical_stretch`, `gene_ani`, `genome_ani`, `all`, or `+` combinations). The same names work in single and batched Polars comparisons.
+- `--compare_calculate`: metrics to compute (`genome_ani`, `max_identical_stretch`, `gene_ani`, `gene_selection`, `all`, or `+` combinations). Any gene metric gives one row per gene. V2 gene metrics need `--preprofile_dir`; with 1.x profiles, request `gene_ani` on its own.
 
 Notes:
 
@@ -1507,7 +1467,7 @@ nextflow run OlmLab/ZipStrain \
 
 Omit `--reference_genome` to auto-build a reference with Sylph (as in Command 1, Option B); in that case pass `--sylph_db /path/to/gtdb-r220-c200-dbv1.syldb` pointing at a database you [pre-downloaded](#command-1-map-reads-mode-map_reads), rather than letting the pipeline re-download it each run. Outputs land under `<output_dir>/profiles/`.
 
-### Command 4: Compare genomes (`--mode compare_genomes`)
+### Command 4: Compare profiles (`--mode compare`)
 
 Input is either an all-vs-all profile list (`--input_type profile_table`) or explicit pairs (`--input_type pair_table`):
 
@@ -1526,36 +1486,22 @@ S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
 
 ```bash
 nextflow run OlmLab/ZipStrain \
-  --mode compare_genomes \
+  --mode compare \
   --input_type profile_table \
   --input_table profiles.csv \
   --stb reference_genomes.stb \
-  --compare_genome_scope all \
-  --compare_calculate genome_ani+max_identical_stretch+gene_ani \
+  --preprofile_dir profiling_assets \
+  --compare_calculate all \
+  --compare_scope all \
   --parallel_mode batched \
   --batch_size 1000 \
   --batch_compare_n_parallel 1 \
-  --output_dir out_compare_genomes \
+  --output_dir out_compare \
   -resume
 ```
 
-### Command 5: Compare genes (`--mode compare_genes`)
-
-Same input-table formats as genome compare.
-
-```bash
-nextflow run OlmLab/ZipStrain \
-  --mode compare_genes \
-  --input_type profile_table \
-  --input_table profiles.csv \
-  --stb reference_genomes.stb \
-  --compare_gene_scope all:all \
-  --compare_ani_method popani \
-  --parallel_mode batched \
-  --batch_size 1000 \
-  --batch_compare_n_parallel 1 \
-  --output_dir out_compare_genes \
-  -resume
-```
+`--compare_calculate` decides the rows. Genome metrics alone give one row per
+genome; any gene metric gives one row per qualifying gene. `--mode compare_genomes`
+and `--mode compare_genes` were replaced by this mode.
 
 Comparison outputs: the final merged table at `<output_dir>/merged_comparisons.parquet`, and (with `--parallel_mode batched`) intermediate per-batch outputs under `<output_dir>/batch_comparisons/`.

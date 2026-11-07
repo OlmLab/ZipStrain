@@ -1,5 +1,6 @@
 """Set native worker limits before importing Polars or other compute libraries."""
 
+from contextlib import contextmanager
 import os
 import sys
 import threading
@@ -97,3 +98,42 @@ def configure_cli_threads() -> None:
 
     pa.set_cpu_count(pool)
     pa.set_io_thread_count(1)
+
+
+_NATIVE_THREAD_VARIABLES = (
+    "POLARS_MAX_THREADS", "RAYON_NUM_THREADS", "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+)
+
+
+@contextmanager
+def job_pool(workers: int, threads: int):
+    """Yield a spawned process pool whose workers each use ``threads`` native threads.
+
+    One worker yields ``None``: the caller runs its jobs in this process, on its own pools.
+    Native pools read their size once, when a library loads, so the limits are set in the
+    environment that workers inherit and restored afterwards.
+    """
+    if workers <= 1:
+        yield None
+        return
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    names = (*_NATIVE_THREAD_VARIABLES, "ZIPSTRAIN_CPU_BUDGET")
+    saved = {name: os.environ.get(name) for name in names}
+    os.environ.update({name: str(threads) for name in names})
+    try:
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            yield pool
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def map_jobs(pool, function, jobs) -> list:
+    """Run jobs in ``pool``, or here when there is no pool, and return results in order."""
+    return list(pool.map(function, jobs) if pool is not None else map(function, jobs))

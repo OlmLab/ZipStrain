@@ -1270,7 +1270,7 @@ def _ensure_faidx(reference_fasta: pathlib.Path) -> None:
 def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
                            collect_codons=False, min_mapq=0, min_baseq=13,
                            min_read_ani=PROFILE_MIN_READ_ANI_DEFAULT, read_inclusion=PROFILE_READ_INCLUSION_DEFAULT, min_freq=0.01,
-                           allele_integration="consensus", reference_id=None):
+                           allele_integration="consensus", reference_id=None, codon_extractor=None):
     """Finalize V2 profile identity, gene statistics, and optional codon evidence.
 
     Strip legacy gene labels, preserve existing Parquet metadata, and attach the
@@ -1311,7 +1311,7 @@ def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
             codon_file = profile_file.with_name(profile_file.stem+"_codon_counts.parquet")
         codons.write_codon_counts(bam_file, profile_file, gene_info_file, codon_file,
             min_baseq=min_baseq, min_mapq=min_mapq, min_read_ani=min_read_ani,
-            read_inclusion=read_inclusion)
+            read_inclusion=read_inclusion, extractor=codon_extractor)
         selection = codons.reference_selection(codon_file, gene_info_file, allele_integration=allele_integration)
         metadata["zipstrain_selection_method"] = codons.METHOD
         metadata["zipstrain_allele_integration"] = allele_integration
@@ -1320,7 +1320,8 @@ def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
     stats_file = profile_file.with_name(profile_file.name.replace("_profile.parquet", "_gene_stats.parquet"))
     if stats_file == profile_file:
         stats_file = profile_file.with_name(profile_file.stem+"_gene_stats.parquet")
-    stats.sink_parquet(stats_file, compression="zstd", metadata=metadata)
+    table_metadata = {key: value for key, value in metadata.items() if key != PROFILE_SORTED_METADATA_KEY}
+    stats.sink_parquet(stats_file, compression="zstd", metadata=table_metadata)
 
 
 def profile_bam_in_chunks(
@@ -1494,7 +1495,9 @@ def profile_bam_in_chunks(
             stb=stb,
             bed=bed_lf,
         ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming',
-                       metadata=utils._read_custom_parquet_metadata(output_dir/f"{bam_file.stem}_profile.parquet"))
+                       metadata={key: value for key, value in
+                                 utils._read_custom_parquet_metadata(output_dir/f"{bam_file.stem}_profile.parquet").items()
+                                 if key != PROFILE_SORTED_METADATA_KEY})
     
     
     shutil.rmtree(output_dir / "tmp", ignore_errors=True)

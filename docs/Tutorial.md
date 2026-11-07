@@ -376,10 +376,10 @@ Then run genome comparison:
 
 ```bash
 nextflow run zipstrain.nf \
-  --mode compare_genomes \
+  --mode compare \
   --input_type profile_table \
   --input_table profiles.csv \
-  --compare_genome_scope all \
+  --compare_scope all \
   --compare_calculate genome_ani \
   --compare_ani_method popani \
   --output_dir out_sra_compare \

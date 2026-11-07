@@ -26,7 +26,7 @@ def test_slurm_job_without_cpu_declaration_defaults_to_one(monkeypatch):
 
 
 @pytest.mark.parametrize("command,pool", [
-    (["utilities", "single_compare_genome"], 3),
+    (["utilities", "compare-pair"], 3),
     (["utilities", "profile-single", "--max-concurrency", "8"], 2),
     (["profile", "--num-procs", "3"], 3),
 ])
@@ -85,7 +85,7 @@ def test_polars_pair_comparison_does_not_initialize_duckdb(tmp_path):
     frame.write_parquet(profile_1)
     frame.write_parquet(profile_2)
     args = [
-        "utilities", "single_compare_genome", "--profile-location-1", str(profile_1),
+        "utilities", "compare-pair", "--profile-location-1", str(profile_1),
         "--profile-location-2", str(profile_2),
         "--calculate", "genome_ani", "--output-file", str(output),
     ]

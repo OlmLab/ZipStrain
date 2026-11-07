@@ -1,6 +1,7 @@
 """Profiling backend boundary shared by the CLI and optional distributions."""
 
 from dataclasses import dataclass, replace
+from functools import partial
 from importlib.metadata import entry_points
 from pathlib import Path
 
@@ -68,6 +69,8 @@ def run_profile(request: ProfileRequest, backend_name: str = "python") -> None:
     ``finish_profile_outputs`` applies the authenticated catalog and optional
     observed codon preparation consistently. The Python backend finalizes inside
     its profiling function. Read and allele-integration settings are preserved.
+    A backend may also offer ``extract_codons``, which replaces only the raw BAM pass of
+    :func:`zipstrain.codons.write_codon_counts`; without it, Python does that pass.
     """
     backend = load_backend(backend_name)
     runtime_reference_id = None
@@ -124,10 +127,23 @@ def run_profile(request: ProfileRequest, backend_name: str = "python") -> None:
     ]
     if missing:
         raise ProfileBackendError(f"Profiling backend {backend_name!r} did not write: {', '.join(missing)}")
-    from zipstrain.profile import finish_profile_outputs
+    from zipstrain import utils
+    from zipstrain.profile import PROFILE_SORTED_METADATA_KEY, finish_profile_outputs
+    extract_codons = getattr(backend, "extract_codons", None)
     finish_profile_outputs(request.output_dir / f"{stem}_profile.parquet", request.gene_range_table,
+        codon_extractor=(partial(extract_codons, threads=request.max_concurrency)
+                         if extract_codons is not None else None),
         bam_file=request.bam_file, collect_codons=request.collect_codons,
         min_mapq=request.min_mapq, min_baseq=request.min_baseq,
         min_read_ani=request.min_read_ani, read_inclusion=request.read_inclusion,
         min_freq=request.min_freq, allele_integration=request.allele_integration,
         reference_id=runtime_reference_id)
+    # Native backends write no metadata on genome statistics. Record what Python profiling does.
+    import polars as pl
+
+    genome_stats = request.output_dir / f"{stem}_genome_stats.parquet"
+    metadata = {key: value for key, value in
+                utils._read_custom_parquet_metadata(request.output_dir / f"{stem}_profile.parquet").items()
+                if key != PROFILE_SORTED_METADATA_KEY}
+    metadata["zipstrain_selection_method"] = "not_calculated"
+    pl.read_parquet(genome_stats).write_parquet(genome_stats, compression="zstd", metadata=metadata)

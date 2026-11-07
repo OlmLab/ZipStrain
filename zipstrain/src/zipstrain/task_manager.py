@@ -632,25 +632,45 @@ class CompareTaskGenerator(TaskGenerator):
         comp_config: database.GenomeComparisonConfig,
         ani_method: str = "popani",
         calculate: str = "all",
+        preprofile_dir: str | pathlib.Path | None = None,
+        allele_integration: str = "consensus",
+        codon_tables: dict | None = None,
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
         self.engine = container_engine
         self.ani_method = ani_method
         self.calculate = calculate
+        self.preprofile_dir = preprofile_dir
+        self.allele_integration = allele_integration
+        self.codon_tables = codon_tables or {}
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
-        # Accept any calculate spec that single_compare_genome understands
+        # Accept any calculate spec that compare-pair understands
         # ("all", "genome_ani", or combinations of the descriptive metric names).
         # The value is forwarded verbatim to the per-pair
         # subprocess, so validate it here with the same parser rather than a
         # hardcoded {"all", "ani"} allowlist.
         from . import compare as _compare
-        _compare.parse_genome_calculations(self.calculate)
+        if self.preprofile_dir is None:
+            _compare.parse_genome_calculations(self.calculate)
         
     def get_total_tasks(self) -> int:
         """Returns total number of pairwise comparisons to be made."""
         return self.data.select(size=pl.len()).collect(engine="streaming")["size"][0]
+
+    def _v2_inputs(self, row: dict) -> dict:
+        """Build a V2 pair's arguments. File inputs are also what containers mount."""
+        assets = FileInput(str(self.preprofile_dir))
+        arguments = [f"--preprofile-dir {assets.get_value()}", f"--allele-integration {self.allele_integration}",
+                     f"--sample-name-1 {row['sample_name_1']}", f"--sample-name-2 {row['sample_name_2']}"]
+        inputs = {"preprofile-mount": assets}
+        for number, name in ((1, row["sample_name_1"]), (2, row["sample_name_2"])):
+            if name in self.codon_tables:
+                table = FileInput(str(self.codon_tables[name]))
+                inputs[f"codon-mount-{number}"] = table
+                arguments.append(f"--codon-counts-{number} {table.get_value()}")
+        return {**inputs, "v2-args": StringInput(" ".join(arguments))}
 
     async def generate_tasks(self) -> list[Task]:
         """Yeilds lists of FastCompareTask objects based on the data in batches of yield_size. This method yields the control back to the event loop
@@ -675,9 +695,11 @@ class CompareTaskGenerator(TaskGenerator):
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "ani-method-arg": StringInput(ani_method_arg),
                 "calculate-arg": StringInput(calculate_arg),
-                "calculate-arg": StringInput(f"--calculate {self.calculate}"),
                 "genome-name": StringInput(self.comp_config.scope),
+                "v2-args": StringInput(""),
                 }
+                if self.preprofile_dir is not None:
+                    inputs.update(self._v2_inputs(row))
                 expected_outputs ={
                 "output-file":  FileOutput(row["sample_name_1"]+"_"+row["sample_name_2"]+"_comparison.parquet" ),
 
@@ -1730,7 +1752,7 @@ class ProfileBamTask(Task):
     """
     
 class FastCompareTask(Task):
-    """A Task that performs a genome comparison using `zipstrain utilities single_compare_genome`.
+    """A Task that performs a genome comparison using `zipstrain utilities compare-pair`.
     
     Args:
         id (str): Unique identifier for the task.
@@ -1739,16 +1761,16 @@ class FastCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
         """
     TEMPLATE_CMD="""
-    env ZIPSTRAIN_CPU_BUDGET=${ZIPSTRAIN_CPU_BUDGET:-${SLURM_CPUS_PER_TASK:-1}} zipstrain utilities single_compare_genome --profile-location-1 <profile_1_file> \
-    --profile-location-2 <profile_2_file> \
+    env ZIPSTRAIN_CPU_BUDGET=${ZIPSTRAIN_CPU_BUDGET:-${SLURM_CPUS_PER_TASK:-1}} zipstrain utilities compare-pair --profile-1 <profile_1_file> \
+    --profile-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
     <ani-method-arg> \
     <calculate-arg> \
-    <calculate-arg> \
+    <v2-args> \
     --output-file <output-file> \
-    --genome <genome-name>
+    --scope <genome-name>
     """
 
 
@@ -2045,6 +2067,9 @@ def lazy_run_compares(
     slurm_config: SlurmConfig | None = None,
     ani_method: str = "popani",
     calculate: str = "all",
+    preprofile_dir: str | pathlib.Path | None = None,
+    allele_integration: str = "consensus",
+    codon_tables: dict | None = None,
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -2066,6 +2091,9 @@ def lazy_run_compares(
         comp_config=comps_db.config,
         ani_method=ani_method,
         calculate=calculate,
+        preprofile_dir=preprofile_dir,
+        allele_integration=allele_integration,
+        codon_tables=codon_tables,
     )
     if execution_mode=="local":
         batch_type="local"
@@ -2092,7 +2120,7 @@ def lazy_run_compares(
 
 
 class FastGeneCompareTask(Task):
-    """A Task that performs a gene comparison using `zipstrain utilities single_compare_gene`.
+    """A Task that performs a gene comparison using `zipstrain utilities compare-pair --calculate gene_ani`.
     
     Args:
         id (str): Unique identifier for the task.
@@ -2101,13 +2129,14 @@ class FastGeneCompareTask(Task):
         engine (Engine): Container engine to wrap the command.
     """
     TEMPLATE_CMD="""
-    env ZIPSTRAIN_CPU_BUDGET=${ZIPSTRAIN_CPU_BUDGET:-${SLURM_CPUS_PER_TASK:-1}} zipstrain utilities single_compare_gene --profile-location-1 <profile_1_file> \
-    --profile-location-2 <profile_2_file> \
+    env ZIPSTRAIN_CPU_BUDGET=${ZIPSTRAIN_CPU_BUDGET:-${SLURM_CPUS_PER_TASK:-1}} zipstrain utilities compare-pair --calculate gene_ani --profile-1 <profile_1_file> \
+    --profile-2 <profile_2_file> \
     <stb-file-arg> \
     --min-cov <min_cov> \
     --min-gene-compare-len <min-gene-compare-len> \
     --output-file <output-file> \
-    --ani-method <ani-method>
+    --ani-method <ani-method> \
+    --scope <scope>
     """
 
 class GeneCompareTaskGenerator(TaskGenerator):
@@ -2159,6 +2188,7 @@ class GeneCompareTaskGenerator(TaskGenerator):
                 "min_cov": IntInput(self.comp_config.min_cov),
                 "min-gene-compare-len": IntInput(self.comp_config.min_gene_compare_len),
                 "ani-method": StringInput(self.ani_method),
+                "scope": StringInput(self.comp_config.scope),
                 }
                 expected_outputs ={
                 "output-file":  FileOutput(row["sample_name_1"]+"_"+row["sample_name_2"]+"_gene_comparison.parquet" ),

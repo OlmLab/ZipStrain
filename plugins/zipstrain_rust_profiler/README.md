@@ -26,7 +26,9 @@ no longer accepts `--gene-range`.
 
 ZipStrain's shared V2 finalizer consumes `gene_info.parquet` and creates the
 15-column gene-statistics table after native profiling. With `--collect-codons`,
-it makes an additional BAM pass for observed codons and computes the six
-selection metrics using the requested `--allele-integration` mode. These steps
-run in Python/Polars; base-count and genome-statistics production runs in Rust.
+the plugin makes an additional BAM pass in Rust for observed codons, with counts
+identical to Python extraction, and ZipStrain computes the six selection metrics
+using the requested `--allele-integration` mode. Base counts, genome statistics,
+and codon extraction run in Rust; gene statistics and selection metrics run in
+Python/Polars.
 See [the V2 method documentation](../../docs/v2.md) for formulas and exclusions.

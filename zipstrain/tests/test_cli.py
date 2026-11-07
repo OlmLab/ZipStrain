@@ -238,7 +238,7 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "utilities",
-        "single_compare_genome", 
+        "compare-pair",
         "--profile-location-1", str(profile_1_dir),
         "--profile-location-2", str(profile_2_dir),
         "--stb-file", str(stb_path),
@@ -249,7 +249,7 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     assert lf1.shape[0] == 2
     result = runner.invoke(cli.cli, [
         "utilities",
-        "single_compare_genome", 
+        "compare-pair",
         "--profile-location-1", str(profile_1_dir),
         "--profile-location-2", str(profile_3_dir),
         "--stb-file", str(stb_path),
@@ -261,7 +261,7 @@ def test_cli_profile_compare(profile_1:pl.LazyFrame,
     
 
 
-def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path):
+def test_compare_pair_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     output_path = tmp_path / f"gene_no_stb.parquet"
@@ -273,7 +273,8 @@ def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profi
         cli.cli,
         [
             "utilities",
-            "single_compare_gene",
+            "compare-pair",
+            "--calculate", "gene_ani",
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -290,7 +291,7 @@ def test_single_compare_gene_without_stb_succeeds(profile_1: pl.LazyFrame, profi
     assert output_path.exists()
 
 
-def test_single_compare_genome_scope_limits_rows(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+def test_compare_pair_genome_scope_limits_rows(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     stb_path = tmp_path / "stb.tsv"
@@ -303,7 +304,7 @@ def test_single_compare_genome_scope_limits_rows(profile_1: pl.LazyFrame, profil
         cli.cli,
         [
             "utilities",
-            "single_compare_genome",
+            "compare-pair",
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -311,7 +312,7 @@ def test_single_compare_genome_scope_limits_rows(profile_1: pl.LazyFrame, profil
             "--stb-file",
             str(stb_path),
 
-            "--genome",
+            "--scope",
             "genome1",
             "--output-file",
             str(tmp_path / "scoped_polars.parquet"),
@@ -321,7 +322,7 @@ def test_single_compare_genome_scope_limits_rows(profile_1: pl.LazyFrame, profil
     assert set(pl.read_parquet(tmp_path / "scoped_polars.parquet")["genome"]) == {"genome1"}
 
 
-def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+def test_compare_pair_gene_polars_scope_uses_polars_prefilter(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     stb_path = tmp_path / "stb.tsv"
@@ -343,7 +344,8 @@ def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.La
         cli.cli,
         [
             "utilities",
-            "single_compare_gene",
+            "compare-pair",
+            "--calculate", "gene_ani",
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -361,7 +363,7 @@ def test_single_compare_gene_polars_scope_uses_polars_prefilter(profile_1: pl.La
     assert calls["polars"] == 1
 
 
-def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
+def test_compare_pair_genome_calculate_controls_output_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
     profile_1_dir = tmp_path / "profile_1.parquet"
     profile_2_dir = tmp_path / "profile_2.parquet"
     stb_path = tmp_path / "stb.tsv"
@@ -375,7 +377,7 @@ def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.L
         cli.cli,
         [
             "utilities",
-            "single_compare_genome",
+            "compare-pair",
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -393,7 +395,7 @@ def test_single_compare_genome_calculate_controls_output_columns(profile_1: pl.L
     assert set(out.columns) == {"genome", "max_identical_stretch", "sample_1", "sample_2"}
 
 
-def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_polars(profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
+def test_compare_pair_genome_without_stb_reports_only_nonzero_genomes_polars(profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
     profile_1_dir = tmp_path / "profile_2.parquet"
     profile_3_dir = tmp_path / "profile_3.parquet"
     out_path = tmp_path / "no_stb_polars.parquet"
@@ -405,7 +407,7 @@ def test_single_compare_genome_without_stb_reports_only_nonzero_genomes_polars(p
         cli.cli,
         [
             "utilities",
-            "single_compare_genome",
+            "compare-pair",
             "--profile-location-1",
             str(profile_1_dir),
             "--profile-location-2",
@@ -658,7 +660,7 @@ def test_get_snp_reference_cli_requires_reference_base_column(tmp_path):
     assert "--reference-fasta" in result.output
 
 
-def test_single_compare_genome_strips_profile_suffix_from_sample_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
+def test_compare_pair_genome_strips_profile_suffix_from_sample_columns(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
     profile_1_path = tmp_path / "sample_alpha_profile.parquet"
     profile_2_path = tmp_path / "sample_beta_profile.parquet"
     output_path = tmp_path / f"sample_suffix.parquet"
@@ -673,7 +675,7 @@ def test_single_compare_genome_strips_profile_suffix_from_sample_columns(profile
         cli.cli,
         [
             "utilities",
-            "single_compare_genome",
+            "compare-pair",
             "--profile-location-1",
             str(profile_1_path),
             "--profile-location-2",
@@ -694,7 +696,7 @@ def test_single_compare_genome_strips_profile_suffix_from_sample_columns(profile
     assert set(out.get_column("sample_2").unique().to_list()) == {"sample_beta"}
 
 
-def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
+def test_compare_pair_genome_writes_mismatch_tolerant_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, stb: pl.LazyFrame, tmp_path):
     profile_1_path = tmp_path / f"metadata_left.parquet"
     profile_2_path = tmp_path / f"metadata_right.parquet"
     output_path = tmp_path / f"metadata_compare.parquet"
@@ -725,7 +727,7 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
         cli.cli,
         [
             "utilities",
-            "single_compare_genome",
+            "compare-pair",
             "--profile-location-1",
             str(profile_1_path),
             "--profile-location-2",
@@ -755,7 +757,7 @@ def test_single_compare_genome_writes_mismatch_tolerant_metadata(profile_1: pl.L
     assert metadata[cli.ut.COMPARE_STB_HASH_METADATA_KEY] == "stb_hash_shared"
 
 
-def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path):
+def test_compare_pair_gene_writes_scope_metadata(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, tmp_path):
     profile_1_path = tmp_path / f"gene_metadata_left.parquet"
     profile_2_path = tmp_path / f"gene_metadata_right.parquet"
     output_path = tmp_path / f"gene_metadata_compare.parquet"
@@ -782,7 +784,8 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
         cli.cli,
         [
             "utilities",
-            "single_compare_gene",
+            "compare-pair",
+            "--calculate", "gene_ani",
             "--profile-location-1",
             str(profile_1_path),
             "--profile-location-2",
@@ -808,7 +811,7 @@ def test_single_compare_gene_writes_scope_metadata(profile_1: pl.LazyFrame, prof
     assert metadata[cli.ut.COMPARE_STB_HASH_METADATA_KEY] == cli.ut.COMPARE_METADATA_MISSING_VALUE
 
 
-def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
+def test_compare_pair_table_command(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, stb: pl.LazyFrame, tmp_path, monkeypatch):
     monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "2")
     profile_1_path = tmp_path / "profile_1.parquet"
     profile_2_path = tmp_path / "profile_2.parquet"
@@ -837,7 +840,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
         cli.cli,
         [
             "utilities",
-            "chunk-genome-compare",
+            "compare-pair",
             "--pair-table",
             str(pair_table_path),
             "--stb-file",
@@ -889,7 +892,7 @@ def test_chunk_genome_compare_command(profile_1: pl.LazyFrame, profile_2: pl.Laz
     assert actual.equals(expected)
 
 
-def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
+def test_compare_pair_table_without_stb_reports_only_nonzero_genomes(profile_1: pl.LazyFrame, profile_2: pl.LazyFrame, profile_3: pl.LazyFrame, tmp_path):
     profile_1_path = tmp_path / "profile_1.parquet"
     profile_2_path = tmp_path / "profile_2.parquet"
     profile_3_path = tmp_path / "profile_3.parquet"
@@ -915,7 +918,7 @@ def test_chunk_genome_compare_without_stb_reports_only_nonzero_genomes(profile_1
         cli.cli,
         [
             "utilities",
-            "chunk-genome-compare",
+            "compare-pair",
             "--pair-table",
             str(pair_table_path),
             "--output-file",

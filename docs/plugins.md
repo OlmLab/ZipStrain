@@ -41,6 +41,8 @@ It is most useful for large or deeply sequenced BAMs, large sample sets, and mem
 
 The Rust profiler reads a coordinate-sorted BAM and writes the same three core Parquet outputs as Python profiling: `<sample>_profile.parquet`, `<sample>_gene_stats.parquet`, and `<sample>_genome_stats.parquet`. If the BAM has no BAI or CSI index, the profiler creates a `.bam.bai` beside it before starting workers. The BAM directory must be writable in that case; pre-index BAMs stored read-only. When you use the high-level `zipstrain profile` command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.
 
+With `--collect-codons`, the plugin also extracts observed codons in Rust, with counts identical to Python extraction. Older plugin builds fall back to Python for this step.
+
 The plugin is optional: installing ZipStrain alone does not install it, and leaving out `--backend` keeps the Python behavior.
 
 ### Install from PyPI

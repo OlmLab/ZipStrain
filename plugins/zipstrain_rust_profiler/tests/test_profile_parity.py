@@ -2,10 +2,13 @@
 
 from importlib.metadata import entry_points
 from pathlib import Path
+import random
 import shutil
+import subprocess
 
 import polars as pl
 import pyarrow.parquet as pq
+from polars.testing import assert_frame_equal
 import pytest
 
 from zipstrain.profile_backends import ProfileRequest, run_profile
@@ -130,3 +133,55 @@ def test_installed_backend_builds_missing_bam_index(tmp_path, catalog):
     )
     assert bam.with_suffix(".bam.bai").is_file()
     assert (tmp_path / "out" / "unindexed_profile.parquet").is_file()
+
+
+@pytest.mark.skipif(
+    not entry_points(group="zipstrain.profile_backends", name="rust_profiler"),
+    reason="The compiled Rust plugin wheel is not installed",
+)
+def test_backends_agree_on_overlapping_mates_and_uncovered_ends(tmp_path):
+    """Mates that disagree need mpileup's extended BAQ; an uncovered scaffold end counts as a gap."""
+    rng = random.Random(11)
+    references = {name: "".join(rng.choices("ACGT", k=length)) for name, length in (("s1", 4000), ("s2", 2500))}
+    (tmp_path/"ref.fa").write_text("".join(f">{n}\n{s}\n" for n, s in references.items()))
+    (tmp_path/"ref.stb").write_text("".join(f"{n}\tgenome\n" for n in references))
+    (tmp_path/"genes.fa").write_text("".join(f">{n}_1 # 1 # 900 # 1 # partial=00\n{s[:900]}\n" for n, s in references.items()))
+    (tmp_path/"regions.bed").write_text("".join(f"{n}\t0\t{len(s)}\n" for n, s in references.items()))
+    catalog = write_gene_info(tmp_path/"ref.fa", tmp_path/"genes.fa", tmp_path/"ref.stb", tmp_path/"gene_info.parquet")
+    pl.DataFrame({"cov": list(range(201)), "max_error_count": [0]*201}).write_parquet(tmp_path/"null.parquet")
+
+    def noisy(reference, start):
+        bases = [base if rng.random() > .03 else rng.choice("ACGT") for base in reference[start:start + 100]]
+        return "".join(bases), "".join(chr(33 + rng.choice((14, 20, 30, 40))) for _ in bases)
+
+    rows = []
+    for index in range(1200):
+        name = rng.choice(list(references))
+        # Reads stop well before each scaffold's end, leaving an uncovered region.
+        first = rng.randrange(0, len(references[name]) - 900)
+        second = first + rng.randint(10, 90)
+        for flag, start, mate in ((99, first, second), (147, second, first)):
+            sequence, quality = noisy(references[name], start)
+            rows.append((name, start, f"r{index}\t{flag}\t{name}\t{start + 1}\t60\t100M\t=\t{mate + 1}\t0\t{sequence}\t{quality}"))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    header = "@HD\tVN:1.6\tSO:coordinate\n" + "".join(f"@SQ\tSN:{n}\tLN:{len(s)}\n" for n, s in references.items())
+    (tmp_path/"reads.sam").write_text(header + "\n".join(row[2] for row in rows) + "\n")
+    subprocess.run(["samtools", "view", "-b", "-o", str(tmp_path/"reads.bam"), str(tmp_path/"reads.sam")], check=True)
+
+    for backend in ("python", "rust_profiler"):
+        run_profile(ProfileRequest(
+            bam_file=tmp_path/"reads.bam", bed_file=tmp_path/"regions.bed", stb_file=tmp_path/"ref.stb",
+            null_model=tmp_path/"null.parquet", reference_fasta=tmp_path/"ref.fa", gene_range_table=catalog,
+            output_dir=tmp_path/backend, num_chunks=2, max_concurrency=2, min_read_ani=None,
+            read_inclusion="all-mapped", collect_codons=True), backend)
+
+    for name, keys in (("profile", ["chrom", "pos"]), ("gene_stats", ["gene_id"]), ("codon_counts", ["gene_id", "codon_index", "codon"])):
+        python, rust = (pl.read_parquet(tmp_path/backend/f"reads_{name}.parquet") for backend in ("python", "rust_profiler"))
+        assert python.height > 0
+        assert_frame_equal(python.sort(keys), rust.select(python.columns).sort(keys))
+    python = tmp_path/"python/reads_genome_stats.parquet"
+    rust = tmp_path/"rust_profiler/reads_genome_stats.parquet"
+    assert_frame_equal(pl.read_parquet(python), pl.read_parquet(rust).select(pl.read_parquet(python).columns), abs_tol=1e-9)
+    assert pl.read_parquet(rust)["fug"][0] < 1
+    expected, actual = pl.read_parquet_metadata(python), pl.read_parquet_metadata(rust)
+    assert {k: v for k, v in actual.items() if k.startswith("zipstrain_")} == {k: v for k, v in expected.items() if k.startswith("zipstrain_")}

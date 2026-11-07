@@ -170,6 +170,12 @@ def _read_custom_parquet_metadata(parquet_file: str | pathlib.Path) -> dict[str,
         return {}
 
 
+V2_COMPARISON_IDENTITY_KEYS = (
+    "zipstrain_profile_schema", "zipstrain_reference_id", "zipstrain_annotation_id",
+    "zipstrain_allele_integration", "zipstrain_selection_method",
+)
+
+
 def _merge_compare_metadata(
     parquet_files: list[pathlib.Path],
     *,
@@ -186,6 +192,9 @@ def _merge_compare_metadata(
     )
     if not compare_keys:
         return {}
+    # V2 comparison tables also carry the identity of what they compared.
+    compare_keys.extend(key for key in V2_COMPARISON_IDENTITY_KEYS
+                        if any(key in metadata for metadata in metadata_by_file))
 
     merged: dict[str, str] = {}
     mismatches: list[str] = []
@@ -1183,7 +1192,7 @@ def chunk_genome_compare(
 
     calculations = cp.parse_genome_calculations(calculate)
     if options.requests_all(calculate):
-        warnings.warn("chunk-genome-compare calculates genome metrics only; skipping gene metrics in 'all'.", stacklevel=2)
+        warnings.warn("compare-pair --pair-table calculates genome metrics only; skipping gene metrics in 'all'.", stacklevel=2)
     pair_table_path = pathlib.Path(pair_table)
     output_path = pathlib.Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)

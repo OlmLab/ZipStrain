@@ -5,14 +5,20 @@ This module provides all comparison functions for zipstrain.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Iterable, Optional, Union
 
+import numpy as np
 import polars as pl
 from zipstrain import options
 from zipstrain.profile import PROFILE_SORTED_METADATA_KEY, PROFILE_SORTED_METADATA_VALUE
 from zipstrain.utils import _read_custom_parquet_metadata
+
+_PAIR_BYTES_PER_ROW = 128
+_AUTO_WORKERS_MIN_ROWS = 50_000_000
 
 
 def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = None) -> tuple[str, ...]:
@@ -22,7 +28,7 @@ def parse_genome_calculations(calculate: Optional[Union[str, Iterable[str]]] = N
         if metric in options.GENE_METRICS:
             raise ValueError(
                 f"{metric} is calculated per gene, and this route only calculates genome metrics. "
-                "Use --preprofile-dir with V2 profiles, or single_compare_gene with 1.x profiles."
+                "Use --preprofile-dir with V2 profiles, or request gene_ani on its own with 1.x profiles."
             )
     return options.GENOME_METRICS if options.requests_all(calculate) else explicit
 
@@ -495,6 +501,62 @@ def compare_genes_polars(
     )
 
 
+@dataclass
+class _AlignmentInput:
+    """One profile's checked frame and identity, reusable across every pair it joins."""
+
+    frame: pl.LazyFrame
+    marked: bool
+    reference_id: Optional[str] = None
+    filters: Optional[str] = None
+    scaffolds: Optional[list[dict]] = None
+
+
+def _alignment_input(source) -> _AlignmentInput:
+    """Check one profile's column types and read the identity used to align it."""
+    from zipstrain import gene_info as gi
+    profile = _as_lazy_profile(source)
+    schema = profile.collect_schema()
+    if any(not schema[column].is_integer() for column in ("pos", *"ACGT")):
+        raise ValueError("Profile counts and positions must be integer columns")
+    frame = profile.select(pl.col("chrom", "genome").cast(pl.String), pl.col("pos", *"ACGT").cast(pl.Int64))
+    metadata = pl.read_parquet_metadata(source) if isinstance(source, (str, Path)) else {}
+    return _AlignmentInput(
+        frame, metadata.get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE,
+        metadata.get(gi.REFERENCE_ID), metadata.get("zipstrain_profile_filters"),
+    )
+
+
+def _scaffold_assignments(item: _AlignmentInput) -> list[dict]:
+    """Return a profile's scaffold-to-genome rows, validating an unmarked profile once."""
+    if item.scaffolds is None:
+        item.scaffolds = (
+            item.frame.select("chrom", "genome").unique().collect(engine="streaming").to_dicts()
+            if item.marked else _validate_unmarked_profile(item.frame)
+        )
+    return item.scaffolds
+
+
+def _align_inputs(first: _AlignmentInput, second: _AlignmentInput, min_cov: int) -> pl.LazyFrame:
+    """Inner-join two prepared profiles on shared coordinates after depth filtering."""
+    if any((first.reference_id, second.reference_id)) and first.reference_id != second.reference_id:
+        raise ValueError("Profiles use incompatible reference identities")
+    if any((first.filters, second.filters)) and first.filters != second.filters:
+        raise ValueError("Profiles use incompatible profiling filters")
+    sorted_inputs = first.marked and second.marked
+    if not sorted_inputs:
+        assignments = {}
+        for item in (first, second):
+            for row in _scaffold_assignments(item):
+                if assignments.setdefault(row["chrom"], row["genome"]) != row["genome"]:
+                    raise ValueError("Conflicting genome assignments between profiles")
+    coverage = pl.sum_horizontal("A", "C", "G", "T") >= min_cov
+    joined = _join_position_frames(
+        [item.frame.filter(coverage) for item in (first, second)], sorted_inputs=sorted_inputs,
+    ).drop("genome_2")
+    return joined if sorted_inputs else joined.sort(["chrom", "pos"])
+
+
 def align_profiles(profile_1, profile_2, *, min_cov=options.COMPARE_MIN_COV) -> pl.LazyFrame:
     """Validate and align two position profiles, retaining both samples' counts.
 
@@ -505,48 +567,82 @@ def align_profiles(profile_1, profile_2, *, min_cov=options.COMPARE_MIN_COV) -> 
     assignments before joining. No gene labels are required.
     See ``docs/v2.md`` for the exact input/output contract.
     """
-    from zipstrain import gene_info as gi
     if min_cov < 1:
         raise ValueError("min_cov must be positive")
     require_same_profile_generation((profile_1, profile_2))
-    frames, marked, identities, filters = [], [], [], []
-    for source in (profile_1, profile_2):
-        profile = _as_lazy_profile(source)
-        schema = profile.collect_schema()
-        if any(not schema[column].is_integer() for column in ("pos", *"ACGT")):
-            raise ValueError("Profile counts and positions must be integer columns")
-        frame = profile.select(
-            pl.col("chrom", "genome").cast(pl.String),
-            pl.col("pos", *"ACGT").cast(pl.Int64),
-        )
-        metadata = {}
-        if isinstance(source, (str, Path)):
-            metadata = pl.read_parquet_metadata(source)
-            identities.append(metadata.get(gi.REFERENCE_ID))
-            filters.append(metadata.get("zipstrain_profile_filters"))
-        marked.append(metadata.get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE)
-        frames.append(frame)
-    if len(identities) == 2 and any(identities) and identities[0] != identities[1]:
-        raise ValueError("Profiles use incompatible reference identities")
-    if len(filters) == 2 and any(filters) and filters[0] != filters[1]:
-        raise ValueError("Profiles use incompatible profiling filters")
-    sorted_inputs = all(marked)
-    if not sorted_inputs:
-        assignments = {}
-        for frame, is_marked in zip(frames, marked, strict=True):
-            scaffolds = (
-                frame.select("chrom", "genome").unique().collect(engine="streaming").to_dicts()
-                if is_marked else _validate_unmarked_profile(frame)
-            )
-            for row in scaffolds:
-                chrom, genome = row["chrom"], row["genome"]
-                if assignments.setdefault(chrom, genome) != genome:
-                    raise ValueError("Conflicting genome assignments between profiles")
-    coverage = pl.sum_horizontal("A", "C", "G", "T") >= min_cov
-    joined = _join_position_frames(
-        [frame.filter(coverage) for frame in frames], sorted_inputs=sorted_inputs,
-    ).drop("genome_2")
-    return joined if sorted_inputs else joined.sort(["chrom", "pos"])
+    return _align_inputs(_alignment_input(profile_1), _alignment_input(profile_2), min_cov)
+
+
+def _index_genes(genes: pl.DataFrame) -> dict:
+    """Group a catalog's gene rows and coordinates by scaffold for interval counting."""
+    starts, ends = genes["start"].to_numpy(), genes["end"].to_numpy()
+    index = {}
+    for (chrom,), rows in genes.with_row_index("row").group_by("chrom", maintain_order=True):
+        row = rows["row"].to_numpy()
+        index[chrom] = (row, starts[row], ends[row])
+    return index
+
+
+def _scan_shared_positions(shared: pl.LazyFrame, genes: Optional[pl.DataFrame], *, stretches: bool,
+                           chunk_size: int = 1 << 20, gene_index: Optional[dict] = None,
+                           ) -> tuple[pl.DataFrame, Optional[pl.DataFrame]]:
+    """Calculate genome and gene counts from one streaming pass over aligned positions.
+
+    ``shared`` holds ``chrom``, ``genome``, ``pos`` and boolean ``match`` columns, with rows
+    grouped by scaffold and in position order. Return one frame per genome with
+    ``total_positions``, ``share_allele_pos`` and ``max_identical_stretch``, and, when
+    ``genes`` is given, one per gene with ``gene_total_positions`` and
+    ``gene_share_allele_pos``. Overlapping genes each count all their own positions.
+    A stretch breaks at a mismatch, a coordinate gap, or a new scaffold.
+    """
+    gene_slices, gene_total, gene_share = {}, None, None
+    if genes is not None:
+        gene_total = np.zeros(genes.height, dtype=np.int64)
+        gene_share = np.zeros(genes.height, dtype=np.int64)
+        gene_slices = _index_genes(genes) if gene_index is None else gene_index
+    genome_counts: dict[str, list[int]] = {}
+    previous_chrom, previous_pos, previous_run = None, 0, 0
+    for batch in shared.collect_batches(engine="streaming", chunk_size=chunk_size):
+        if batch.is_empty():
+            continue
+        positions = batch["pos"].to_numpy()
+        matches = batch["match"].to_numpy()
+        scaffolds = batch["chrom"]
+        boundaries = np.flatnonzero(scaffolds.ne_missing(scaffolds.shift(1)).to_numpy())
+        for first, last in zip(boundaries, np.r_[boundaries[1:], batch.height], strict=True):
+            chrom, genome = scaffolds[int(first)], batch["genome"][int(first)]
+            pos, match = positions[first:last], matches[first:last]
+            counts = genome_counts.setdefault(genome, [0, 0, 0])
+            counts[0] += pos.size
+            counts[1] += int(match.sum())
+            if stretches:
+                edges = np.r_[np.flatnonzero(~match | np.r_[False, np.diff(pos) != 1]), pos.size]
+                if edges[0] != 0:
+                    edges = np.r_[0, edges]
+                # A run opened by a mismatch does not count that position.
+                runs = np.diff(edges) - (~match[edges[:-1]])
+                if chrom == previous_chrom and pos[0] == previous_pos + 1 and match[0]:
+                    runs[0] += previous_run
+                counts[2] = max(counts[2], int(runs.max()))
+                previous_chrom, previous_pos, previous_run = chrom, int(pos[-1]), int(runs[-1])
+            if chrom in gene_slices:
+                index, gene_starts, gene_ends = gene_slices[chrom]
+                prefix = np.r_[0, np.cumsum(match, dtype=np.int64)]
+                low = np.searchsorted(pos, gene_starts, side="left")
+                high = np.searchsorted(pos, gene_ends, side="right")
+                gene_total[index] += high - low
+                gene_share[index] += prefix[high] - prefix[low]
+    genome_frame = pl.DataFrame(
+        [(name, *counts) for name, counts in genome_counts.items()],
+        schema={"genome": pl.String, "total_positions": pl.Int64, "share_allele_pos": pl.Int64,
+                "max_identical_stretch": pl.Int64},
+        orient="row",
+    )
+    if genes is None:
+        return genome_frame, None
+    return genome_frame, genes.select("gene_id", "genome").with_columns(
+        pl.Series("gene_total_positions", gene_total), pl.Series("gene_share_allele_pos", gene_share),
+    )
 
 
 def compare_profiles(profile_1, profile_2, *, preprofile_dir=None, calculate=options.CALCULATE,
@@ -569,6 +665,8 @@ def compare_profiles(profile_1, profile_2, *, preprofile_dir=None, calculate=opt
     from zipstrain import codons, gene_info as gi, matrix_pairs as mp
     if min_gene_compare_len < 1:
         raise ValueError("min_gene_compare_len must be positive")
+    if min_cov < 1:
+        raise ValueError("min_cov must be positive")
     genes, gene_file = None, None
     if preprofile_dir is not None:
         gene_file = Path(preprofile_dir)/"gene_info.parquet"
@@ -582,61 +680,71 @@ def compare_profiles(profile_1, profile_2, *, preprofile_dir=None, calculate=opt
         codon_tables_present=[name for name, counts in codon_tables.items() if counts is not None],
         codon_tables_missing=[name for name, counts in codon_tables.items() if counts is None],
     )
-    selection = "gene_selection" in calculations
-    if selection:
+    rates = None
+    if "gene_selection" in calculations:
         from zipstrain.utils import sha256_file
         for counts, positions in ((codon_counts_1, profile_1), (codon_counts_2, profile_2)):
             if pl.read_parquet_metadata(counts).get("zipstrain_source_profile_sha256") != sha256_file(positions):
                 raise ValueError("Codon evidence does not match its sample position profile")
     ani_method, _threshold = mp.parse_matrix_ani_method(ani_method)
-    aligned = align_profiles(profile_1, profile_2, min_cov=min_cov)
-    shared = aligned.with_columns(getattr(PolarsANIExpressions(), ani_method)().alias("surr")).select(
-        "genome", pl.col("chrom").alias("scaffold"), "pos", "surr")
+    require_same_profile_generation((profile_1, profile_2))
+    first, second = _alignment_input(profile_1), _alignment_input(profile_2)
+    # Reject incompatible samples before spending time on selection.
+    aligned = _align_inputs(first, second, min_cov)
+    if "gene_selection" in calculations:
+        rates = codons.pairwise_selection(codon_counts_1, codon_counts_2, gene_file, min_cov=min_cov,
+                                          allele_integration=allele_integration)
+    universe = [_as_lazy_profile(source).select(pl.col("genome").cast(pl.String)).unique()
+                for source in (profile_1, profile_2)]
+    return _compare_aligned(
+        aligned, names, calculations=calculations, ani_method=ani_method,
+        min_gene_compare_len=min_gene_compare_len, genes=genes, rates=rates,
+        genome_universe=[*universe, *_catalog_genomes(preprofile_dir, genes)],
+    )
+
+
+def _catalog_genomes(preprofile_dir, genes: Optional[pl.DataFrame]) -> list[pl.LazyFrame]:
+    """Return the genomes a comparison must report even when no position is shared."""
+    lengths = Path(preprofile_dir)/"genome_lengths.parquet" if preprofile_dir is not None else None
+    if lengths is not None and lengths.exists():
+        return [pl.scan_parquet(lengths).select(pl.col("genome").cast(pl.String)).unique()]
+    return [genes.lazy().select(pl.col("genome").cast(pl.String)).unique()] if genes is not None else []
+
+
+def _compare_aligned(aligned: pl.LazyFrame, names: tuple[str, str], *, calculations: tuple[str, ...],
+                     ani_method: str, min_gene_compare_len: int, genes: Optional[pl.DataFrame],
+                     genome_universe: list, rates: Optional[pl.LazyFrame] = None,
+                     gene_index: Optional[dict] = None) -> pl.LazyFrame:
+    """Build one pair's comparison rows from already validated inputs and resolved metrics."""
+    from zipstrain import gene_info as gi
+    shared = aligned.select(
+        "chrom", "genome", "pos", (getattr(PolarsANIExpressions(), ani_method)() > 0).alias("match"))
     keys = ["sample_1", "sample_2", "genome"]
     sample_columns = [pl.lit(name).alias(key) for key, name in zip(keys[:2], names, strict=True)]
-    parts = []
-    if "genome_ani" in calculations:
-        parts.append(calculate_pop_ani(shared))
-    if "max_identical_stretch" in calculations:
-        # Number runs before removing mismatches, then count matching rows only.
-        # A mismatch at the start of a run must not inflate its length by one.
-        stretches = get_longest_consecutive_blocks(
-            add_contiguity_info(shared, coordinates_sorted=True).filter(pl.col("surr") > 0))
-        parts.append(stretches)
+    gene_rows = "gene_ani" in calculations or rates is not None
+    wants_ani, wants_stretch = "genome_ani" in calculations, "max_identical_stretch" in calculations
+    genome_counts, gene_counts = _scan_shared_positions(
+        shared, genes if gene_rows else None, stretches=wants_stretch, gene_index=gene_index)
     genome = None
-    if parts:
-        genome = parts[0]
-        for part in parts[1:]:
-            genome = genome.join(part, on="genome", how="full", coalesce=True)
-        universe = [_as_lazy_profile(source).select("genome").unique() for source in (profile_1, profile_2)]
-        lengths = Path(preprofile_dir)/"genome_lengths.parquet" if preprofile_dir is not None else None
-        if lengths is not None and lengths.exists():
-            universe.append(pl.scan_parquet(lengths).select("genome").unique())
-        elif genes is not None:
-            universe.append(genes.lazy().select("genome").unique())
-        genome = pl.concat(universe).unique().join(genome, on="genome", how="left")
-        if "genome_ani" in calculations:
-            genome = genome.with_columns(pl.col("total_positions", "share_allele_pos").fill_null(0).cast(pl.Int64))
-        if "max_identical_stretch" in calculations:
-            genome = genome.with_columns(pl.col("max_identical_stretch").fill_null(0).cast(pl.Int64))
-    if "gene_ani" in calculations or selection:
-        gene_counts = ["gene_total_positions", "gene_share_allele_pos"]
-        loci = shared.select(
-            pl.col("scaffold").alias("chrom"), "pos",
-            pl.lit(1).alias(gene_counts[0]),
-            (pl.col("surr") > 0).cast(pl.Int64).alias(gene_counts[1]),
+    if wants_ani or wants_stretch:
+        columns = ["total_positions", "share_allele_pos", "max_identical_stretch"]
+        genome = pl.concat(genome_universe).unique().join(genome_counts.lazy(), on="genome", how="left").with_columns(
+            pl.col(columns).fill_null(0),
+        ).with_columns(
+            pl.when(pl.col("total_positions") > 0)
+            .then(pl.col("share_allele_pos")/pl.col("total_positions")*100).alias("genome_ani"),
+        ).select(
+            "genome",
+            *(["total_positions", "share_allele_pos", "genome_ani"] if wants_ani else []),
+            *(["max_identical_stretch"] if wants_stretch else []),
         )
-        gene = genes.lazy().select("gene_id", "genome").join(
-            gi.range_sums(loci, genes, gene_counts, coordinates_sorted=True), on="gene_id", how="left",
-        ).with_columns(pl.col(gene_counts).fill_null(0).cast(pl.Int64)).filter(
-            pl.col("gene_total_positions") >= min_gene_compare_len,
-        )
+    if gene_rows:
+        gene = gene_counts.lazy().filter(pl.col("gene_total_positions") >= min_gene_compare_len)
         if "gene_ani" in calculations:
             gene = gene.with_columns(
                 (100 * pl.col("gene_share_allele_pos") / pl.col("gene_total_positions")).alias("gene_ani")
             )
-        if selection:
-            rates = codons.pairwise_selection(codon_counts_1, codon_counts_2, gene_file, min_cov=min_cov, allele_integration=allele_integration)
+        if rates is not None:
             gene = gene.join(rates.select("gene_id", *gi.PAIR_SELECTION_COLUMNS), on="gene_id", how="left")
         if genome is not None:
             gene = gene.join(genome, on="genome", how="left")
@@ -645,27 +753,14 @@ def compare_profiles(profile_1, profile_2, *, preprofile_dir=None, calculate=opt
     return genome.with_columns(sample_columns).select(*keys, pl.exclude(keys))
 
 
-def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
-                               calculate=options.CALCULATE, ani_method=options.ANI_METHOD,
-                               min_cov=options.COMPARE_MIN_COV,
-                               min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
-                               codon_counts=None, allele_integration=options.ALLELE_INTEGRATION):
-    """Run/resume V2 Polars comparisons for named profile paths and export Parquet.
+def resolve_collection_metrics(profiles, preprofile_dir, calculate, codon_counts=None) -> tuple:
+    """Decide once, for a whole set of samples, which metrics every pair will calculate.
 
-    ``profiles`` is an iterable of ``(sample_name, profile_path)``. Codon files
-    may be supplied by sample name in ``codon_counts``; otherwise use sibling
-    ``<sample>_codon_counts.parquet`` files. Cache each pair under
-    ``intermediate_files/v2_pairs`` with a content-addressed input/settings
-    contract in Parquet metadata. Only complete, authenticated pair outputs are
-    reused. Added samples compute only new pairs; changed inputs/settings never
-    reuse stale results. Final exports are atomically replaced and contain only
-    the requested collection's pairs. Selection metrics use the explicitly documented gene-overlap SNS/SNV definitions.
+    Return the gene catalog, the resolved metrics, and each sample's codon table, given by name
+    in ``codon_counts`` or found beside its profile. Scheduled and local runs share this, so
+    one sample's missing table can never give pairs with different columns.
     """
-    from zipstrain import codons, gene_info as gi, utils
-    profiles = sorted((str(name), Path(path)) for name, path in profiles)
-    if len(profiles) < 2 or len({name for name, _ in profiles}) != len(profiles):
-        raise ValueError("At least two uniquely named samples are required")
-    require_same_profile_generation([path for _, path in profiles])
+    from zipstrain import codons, gene_info as gi
     genes = gi.read_gene_info(Path(preprofile_dir)/"gene_info.parquet") if preprofile_dir is not None else None
     codon_paths = {}
     for name, path in profiles:
@@ -677,6 +772,128 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
         codon_tables_present=sorted(codon_paths),
         codon_tables_missing=[name for name, _ in profiles if name not in codon_paths],
     )
+    return genes, calculations, codon_paths
+
+
+def _pair_workers(requested, pair_count: int, memory_limit_gb: float, largest_rows: int) -> tuple[int, int]:
+    """Choose concurrent pair processes and each one's Polars threads from CPU and memory.
+
+    Pairs barely benefit from more threads, but scale with more processes that each have
+    few, so ``auto`` uses half the allocated CPUs at two threads each, unless the work is too
+    small to repay starting processes. It stays within the memory one pair holds: roughly 128
+    bytes per profile row in the join and gene counters.
+    """
+    from zipstrain.resource_limits import duckdb_thread_budget
+    if requested != "auto" and (not isinstance(requested, int) or requested < 1):
+        raise ValueError("Pair workers must be a positive integer or 'auto'")
+    cpus = duckdb_thread_budget()
+    by_memory = max(1, int(memory_limit_gb * 1024**3 // max(1, largest_rows * _PAIR_BYTES_PER_ROW)))
+    wanted = requested
+    if requested == "auto":
+        wanted = max(1, cpus // 2) if pair_count * largest_rows >= _AUTO_WORKERS_MIN_ROWS else 1
+    workers = max(1, min(pair_count, wanted, by_memory))
+    return workers, max(1, cpus // workers)
+
+
+@dataclass(frozen=True)
+class _PairJob:
+    """One pair's inputs and settings, in a form a worker process can receive."""
+
+    names: tuple[str, str]
+    paths: tuple[Path, Path]
+    target: Path
+    identity: str
+    metadata: dict
+    calculations: tuple[str, ...]
+    ani_method: str
+    min_cov: int
+    min_gene_compare_len: int
+    preprofile_dir: Optional[Path]
+    rates: Optional[Path]
+
+
+@lru_cache(maxsize=None)
+def _shared_input(path: Path) -> _AlignmentInput:
+    """Read each profile's identity once per process, however many pairs it joins."""
+    return _alignment_input(path)
+
+
+@lru_cache(maxsize=None)
+def _shared_sample_genomes(path: Path) -> pl.DataFrame:
+    """Read each profile's genomes once per process, however many pairs it joins."""
+    return _shared_input(path).frame.select("genome").unique().collect(engine="streaming")
+
+
+@lru_cache(maxsize=1)
+def _shared_catalog(preprofile_dir: Optional[Path]) -> tuple:
+    """Authenticate and index the gene catalog once per process."""
+    from zipstrain import gene_info as gi
+    genes = gi.read_gene_info(preprofile_dir/"gene_info.parquet") if preprofile_dir is not None else None
+    return (genes, _index_genes(genes) if genes is not None else None,
+            [frame.collect() for frame in _catalog_genomes(preprofile_dir, genes)])
+
+
+def _clear_shared_inputs() -> None:
+    """Forget per-process inputs so a later run sees files that have changed."""
+    for function in (_shared_input, _shared_sample_genomes, _shared_catalog):
+        function.cache_clear()
+
+
+def _compare_pair_job(job: _PairJob) -> None:
+    """Calculate and cache one pair's rows, atomically, in a worker or in this process."""
+    genes, gene_index, catalog_genomes = _shared_catalog(job.preprofile_dir)
+    gene_rows = any(metric in options.GENE_METRICS for metric in job.calculations)
+    genome_rows = any(metric in options.GENOME_METRICS for metric in job.calculations)
+    frame = _compare_aligned(
+        _align_inputs(*map(_shared_input, job.paths), job.min_cov), job.names,
+        calculations=job.calculations, ani_method=job.ani_method,
+        min_gene_compare_len=job.min_gene_compare_len, genes=genes if gene_rows else None,
+        rates=pl.scan_parquet(job.rates) if job.rates is not None else None,
+        gene_index=gene_index if gene_rows else None,
+        genome_universe=[*(_shared_sample_genomes(path).lazy() for path in job.paths if genome_rows),
+                         *(genomes.lazy() for genomes in catalog_genomes)],
+    )
+    with TemporaryDirectory(dir=job.target.parent) as staging:
+        temporary = Path(staging) / job.target.name
+        frame.sink_parquet(temporary, engine="streaming", compression="zstd", metadata={
+            **job.metadata, "zipstrain_comparison_id": job.identity,
+        })
+        temporary.replace(job.target)
+
+
+def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
+                               calculate=options.CALCULATE, ani_method=options.ANI_METHOD,
+                               min_cov=options.COMPARE_MIN_COV,
+                               min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
+                               codon_counts=None, allele_integration=options.ALLELE_INTEGRATION,
+                               memory_limit_gb=16.0, workers=1):
+    """Run/resume V2 Polars comparisons for named profile paths and export Parquet.
+
+    ``profiles`` is an iterable of ``(sample_name, profile_path)``. Codon files
+    may be supplied by sample name in ``codon_counts``; otherwise use sibling
+    ``<sample>_codon_counts.parquet`` files. Cache each pair under
+    ``intermediate_files/v2_pairs`` with a content-addressed input/settings
+    contract in Parquet metadata. Only complete, authenticated pair outputs are
+    reused. Added samples compute only new pairs; changed inputs/settings never
+    reuse stale results. Final exports are atomically replaced and contain only
+    the requested collection's pairs. Selection metrics use the explicitly documented gene-overlap SNS/SNV definitions.
+
+    Inputs are validated and each sample's codons packed once, however many pairs it joins.
+    ``workers`` runs that many pairs in separate processes, within the CPU allocation and
+    ``memory_limit_gb``; ``"auto"`` chooses the count. Results do not depend on it. More than
+    one worker re-imports the calling script, so a script needs ``if __name__ == "__main__"``.
+    """
+    from zipstrain import codons, gene_info as gi, matrix_pairs as mp, pair_selection, utils
+    from zipstrain.resource_limits import job_pool, map_jobs
+    if min_cov < 1:
+        raise ValueError("min_cov must be positive")
+    if min_gene_compare_len < 1:
+        raise ValueError("min_gene_compare_len must be positive")
+    profiles = sorted((str(name), Path(path)) for name, path in profiles)
+    if len(profiles) < 2 or len({name for name, _ in profiles}) != len(profiles):
+        raise ValueError("At least two uniquely named samples are required")
+    require_same_profile_generation([path for _, path in profiles])
+    genes, calculations, codon_paths = resolve_collection_metrics(profiles, preprofile_dir, calculate, codon_counts)
     selection = "gene_selection" in calculations
     gene_rows = any(metric in options.GENE_METRICS for metric in calculations)
     # Genome rows do not depend on the threshold, so it must not invalidate their cache.
@@ -692,6 +909,7 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
                      "zipstrain_compare_allele_integration": allele_integration,
                      "zipstrain_compare_selection_method": codons.METHOD if selection else "not_calculated",
                      "zipstrain_compare_kind": "gene" if gene_rows else "genome",
+                     utils.COMPARE_ENGINE_METADATA_KEY: "table",
                      "zipstrain_compare_ani_method": ani_method,
                      "zipstrain_compare_calculate": "+".join(calculations),
                      "zipstrain_allele_integration": allele_integration,
@@ -701,31 +919,44 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
     cache.mkdir(parents=True, exist_ok=True)
     hashes = {name: utils.sha256_file(path) for name, path in profiles}
     codon_hashes = {name: utils.sha256_file(path) for name, path in codon_paths.items()} if selection else {}
-    files = []
-    for i, (name_1, path_1) in enumerate(profiles):
-        for name_2, path_2 in profiles[i+1:]:
-            contract = {"version": "v2-pair-4", "names": [name_1, name_2],
+    pairs = {}
+    for i, (name_1, _) in enumerate(profiles):
+        for name_2, _ in profiles[i+1:]:
+            contract = {"version": "v2-pair-5", "names": [name_1, name_2],
                 "profiles": [hashes[name_1], hashes[name_2]], "calculate": calculations,
                 "ani_method": ani_method, "min_cov": min_cov,
                 "min_gene_compare_len": gene_threshold, "allele_integration": allele_integration,
                 "codons": [codon_hashes.get(name_1), codon_hashes.get(name_2)], **metadata}
             identity = gi.content_digest(contract)
-            target = cache / f"{identity}.parquet"
-            reuse = utils._read_custom_parquet_metadata(target).get("zipstrain_comparison_id") == identity
-            if not reuse:
-                pair = compare_profiles(path_1, path_2, preprofile_dir=preprofile_dir,
-                    calculate=calculations, ani_method=ani_method, min_cov=min_cov,
-                    min_gene_compare_len=min_gene_compare_len,
-                    codon_counts_1=codon_paths.get(name_1) if selection else None,
-                    codon_counts_2=codon_paths.get(name_2) if selection else None,
-                    sample_1=name_1, sample_2=name_2, allele_integration=allele_integration)
-                with TemporaryDirectory(dir=cache) as staging:
-                    temporary = Path(staging) / target.name
-                    pair.sink_parquet(temporary, engine="streaming", compression="zstd", metadata={
-                        **metadata, "zipstrain_comparison_id": identity,
-                    })
-                    temporary.replace(target)
-            files.append(target)
+            pairs[name_1, name_2] = identity, cache / f"{identity}.parquet"
+    missing = {pair: value for pair, value in pairs.items()
+               if utils._read_custom_parquet_metadata(value[1]).get("zipstrain_comparison_id") != value[0]}
+    if missing:
+        method, _threshold = mp.parse_matrix_ani_method(ani_method)
+        directory = Path(preprofile_dir) if preprofile_dir is not None else None
+        paths = dict(profiles)
+        _clear_shared_inputs()
+        # Fail on any unusable profile before starting worker processes.
+        for path in paths.values():
+            _shared_input(path)
+        rows = max(pl.scan_parquet(path).select(pl.len()).collect().item() for path in paths.values())
+        worker_count, threads = _pair_workers(workers, len(missing), memory_limit_gb, rows)
+        with job_pool(worker_count, threads) as pool:
+            rates = {}
+            if selection:
+                rates = dict(zip(pairs, pair_selection.stage_selection_pairs(
+                    profiles, hashes, directory/"gene_info.parquet", cache.parent/"pair_selection",
+                    min_cov=min_cov, genome="all", allele_integration=allele_integration,
+                    memory_limit_gb=memory_limit_gb, codon_tables=codon_paths, codon_digests=codon_hashes,
+                    pool=pool, workers=worker_count,
+                ), strict=True))
+            map_jobs(pool, _compare_pair_job, [
+                _PairJob(pair, (paths[pair[0]], paths[pair[1]]), target, identity, metadata, calculations,
+                         method, min_cov, min_gene_compare_len, directory, rates.get(pair))
+                for pair, (identity, target) in missing.items()
+            ])
+        _clear_shared_inputs()
+    files = [target for _, target in pairs.values()]
     output = run_dir / "all_comparisons.parquet"
     with TemporaryDirectory(dir=run_dir) as staging:
         temporary = Path(staging) / output.name

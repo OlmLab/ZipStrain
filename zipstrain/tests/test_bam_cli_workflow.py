@@ -416,7 +416,7 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         cli_module.cli,
         [
             "utilities",
-            "chunk-genome-compare",
+            "compare-pair",
             "--pair-table",
             str(pair_table),
             "--stb-file",
@@ -456,7 +456,7 @@ def test_cli_standard_compare_workflow_from_real_bams(tmp_path: Path, monkeypatc
         cli_module.cli,
         [
             "utilities",
-            "single_compare_gene",
+            "compare-pair", "--calculate", "gene_ani",
             "--preprofile-dir", str(paths["prep_dir"]),
             "--profile-location-1",
             str(paths["sample_alpha_profile"]),

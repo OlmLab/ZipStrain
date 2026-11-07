@@ -577,7 +577,7 @@ def calculate_ibs(
         pl.col("max_identical_stretch"),
     ).collect(engine="streaming").pivot(
         index="genome",
-        columns="comparison_type",
+        on="comparison_type",
         values="max_identical_stretch",
     ).with_columns(
         pl.col("*").exclude("genome").fill_null([-1])
