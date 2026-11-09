@@ -263,6 +263,134 @@ def test_pair_alignment_genome_gene_comparison_and_annotation_guards(assets):
         compare.align_profiles(a, b)
 
 
+def write_two_scaffold_sample(root, catalog, name, chr1, *, missing=()):
+    """Write chr1 (genomeA) and chr2 (genomeB) rows, leaving out the ``missing`` chr1 positions."""
+    rows = [(chrom, genome, i+1, *[10 if base == b else 0 for b in "ACGT"], {"A":1,"C":2,"G":4,"T":8}[base])
+            for chrom, genome, sequence in (("chr1", "genomeA", chr1), ("chr2", "genomeB", "GGAGGAGGA"))
+            for i, base in enumerate(sequence) if (chrom, i+1) not in {("chr1", p) for p in missing}]
+    schema = {"chrom":pl.String,"genome":pl.String,"pos":pl.Int64,"A":pl.Int64,"C":pl.Int64,"G":pl.Int64,"T":pl.Int64,"ref_base_bitmask":pl.UInt8}
+    path = root / f"{name}_profile.parquet"
+    metadata = utils._read_custom_parquet_metadata(catalog)
+    metadata[profile.PROFILE_SORTED_METADATA_KEY] = profile.PROFILE_SORTED_METADATA_VALUE
+    pl.DataFrame(rows, schema=schema, orient="row").write_parquet(path, metadata=metadata)
+    return path
+
+
+def test_identical_stretches_report_coordinates_and_match_max_stretch(assets):
+    root, _, _, _, catalog = assets
+    a = write_two_scaffold_sample(root, catalog, "a", "AAAGGATTTCCCAAAGGTTAA")
+    # A mismatch at chr1:6 and no coverage at chr1:12 split chr1 into 1-5, 7-11 and 13-21.
+    b = write_two_scaffold_sample(root, catalog, "b", "AAAGGCTTTCCCAAAGGTTAA", missing=(12,))
+    stretches = compare.identical_stretches(a, b, min_length=1).collect()
+    assert stretches.columns == ["sample_1", "sample_2", "genome", "chrom", "stretch_id", "start", "end", "length",
+                                 "background_divergence", "expected_runs", "p_value"]
+    # genomeA: 1 mismatch in 20 shared positions, so 2 runs and q = 0.95 ** length.
+    nine = stretches.filter(pl.col("length") == 9, pl.col("genome") == "genomeA").row(0, named=True)
+    assert nine["background_divergence"] == pytest.approx(0.05)
+    assert nine["expected_runs"] == pytest.approx(2 * 0.95 ** 9)
+    assert nine["p_value"] == pytest.approx(1 - (1 - 0.95 ** 9) ** 2)
+    # genomeB matches everywhere, so no run length is surprising.
+    assert stretches.filter(pl.col("genome") == "genomeB")["p_value"].to_list() == [1.0]
+    assert stretches.select("genome", "chrom", "start", "end", "length").rows() == [
+        ("genomeA", "chr1", 1, 5, 5), ("genomeA", "chr1", 7, 11, 5),
+        ("genomeA", "chr1", 13, 21, 9), ("genomeB", "chr2", 1, 9, 9)]
+    assert stretches["stretch_id"].is_unique().all() and stretches["stretch_id"].is_sorted()
+    assert set(stretches["sample_1"]) == {"a"} and set(stretches["sample_2"]) == {"b"}
+    longest = compare.compare_profiles(a, b, calculate="max_identical_stretch").collect()
+    assert dict(longest.select("genome", "max_identical_stretch").rows()) == dict(
+        stretches.group_by("genome").agg(pl.col("length").max()).rows())
+    long_only = compare.identical_stretches(a, b, min_length=6, sample_1="x", sample_2="y").collect()
+    assert long_only.select("sample_1", "sample_2", "chrom", "start", "end").rows() == [
+        ("x", "y", "chr1", 13, 21), ("x", "y", "chr2", 1, 9)]
+    assert long_only["stretch_id"].to_list() == stretches["stretch_id"].to_list()[2:]
+    assert compare.identical_stretches(a, b, min_length=50).collect().is_empty()
+    with pytest.raises(ValueError, match="positive"):
+        compare.identical_stretches(a, b, min_length=0)
+
+
+def _planted_matches(rng, d=1e-3):
+    """A genome with random background mismatches, a planted identical and a planted divergent block."""
+    import numpy as np
+
+    frames = []
+    for chrom, length in (("c1", 300_000), ("c2", 100_000)):
+        pos = np.arange(1, length + 1)
+        mismatch = rng.random(length) < d
+        if chrom == "c1":
+            mismatch[(pos >= 100_001) & (pos <= 160_000)] = False                 # recombined: identical
+            divergent = (pos >= 220_001) & (pos <= 230_000)
+            mismatch[divergent] = rng.random(int(divergent.sum())) < 0.03           # imported: 30x denser
+            keep = (pos < 50_001) | (pos > 51_000)                                  # a coverage gap
+            pos, mismatch = pos[keep], mismatch[keep]
+        frames.append(pl.DataFrame({"chrom": chrom, "genome": "g1", "pos": pos, "match": ~mismatch}))
+    return pl.concat(frames)
+
+
+def test_mosaic_regions_find_planted_blocks_and_nothing_else():
+    import numpy as np
+
+    matches = _planted_matches(np.random.default_rng(5))
+    events = compare._mosaic_events(matches.lazy()).collect()
+    assert events.filter(pl.col("kind") == 1).height == (~matches["match"]).sum()
+    blocks = compare._decode_mosaics(events, factor=20, switch_probability=1e-3)
+    assert blocks["state"].to_list() == ["low_divergence", "high_divergence"]
+    low, high = blocks.rows(named=True)
+    assert low["chrom"] == high["chrom"] == "c1"
+    assert abs(low["start"] - 100_001) < 3_000 and abs(low["end"] - 160_000) < 3_000 and low["mismatches"] <= 2
+    assert abs(high["start"] - 220_001) < 500 and abs(high["end"] - 230_000) < 500
+    assert high["divergence"] == pytest.approx(0.03, rel=0.25)
+    assert blocks["background_divergence"][0] == pytest.approx(1e-3, rel=0.15)
+    assert (blocks["log_likelihood_ratio"] > 0).all()
+    # Coverage gaps are skipped, not counted: lengths are in shared positions.
+    assert low["callable_positions"] == matches.filter(
+        pl.col("chrom") == "c1", pl.col("pos").is_between(low["start"], low["end"])).height
+    # Without mismatches nothing is reported, and the background alone yields no blocks.
+    assert compare._decode_mosaics(events.filter(pl.col("kind") != 1), factor=20, switch_probability=1e-3).is_empty()
+    plain = matches.filter(pl.col("chrom") == "c2")
+    assert compare._decode_mosaics(compare._mosaic_events(plain.lazy()).collect(),
+                                   factor=20, switch_probability=1e-3).is_empty()
+
+
+def test_mosaic_regions_through_the_pair_api(assets):
+    root, _, _, _, catalog = assets
+    a = write_two_scaffold_sample(root, catalog, "a", "AAAGGATTTCCCAAAGGTTAA")
+    b = write_two_scaffold_sample(root, catalog, "b", "AAAGGCTTTCCCAAAGGTTAA", missing=(12,))
+    pair = compare.PairComparison(a, b)
+    blocks, stretches = pair.collect(pair.mosaic_regions(), pair.identical_stretches(min_length=1))
+    assert blocks.columns == ["sample_1", "sample_2", *compare._MOSAIC_SCHEMA]
+    assert_frame_equal(blocks, compare.mosaic_regions(a, b).collect())
+    assert stretches.height == 4
+    with pytest.raises(ValueError, match="factor"):
+        pair.mosaic_regions(factor=1)
+    with pytest.raises(ValueError, match="switch_probability"):
+        pair.mosaic_regions(switch_probability=0)
+
+
+def test_pair_comparison_reuses_one_join_for_every_analysis(assets):
+    root, _, _, _, catalog = assets
+    a = write_two_scaffold_sample(root, catalog, "a", "AAAGGATTTCCCAAAGGTTAA")
+    b = write_two_scaffold_sample(root, catalog, "b", "AAAGGCTTTCCCAAAGGTTAA", missing=(12,))
+    pair = compare.PairComparison(a, b, preprofile_dir=root)
+    assert pair.names == ("a", "b")
+    assert_frame_equal(pair.aligned.collect(), compare.align_profiles(a, b).collect())
+    counts, stretches = pair.collect(
+        pair.matches.group_by("genome").agg(pl.len(), pl.col("match").sum()).sort("genome"),
+        pair.identical_stretches(min_length=6),
+    )
+    assert counts.rows() == [("genomeA", 20, 19), ("genomeB", 9, 9)]
+    assert_frame_equal(stretches, compare.identical_stretches(a, b, min_length=6).collect())
+    keys = ["sample_1", "sample_2", "genome", "gene_id"]
+    for calculate in ("genome_ani+max_identical_stretch", "all"):
+        assert_frame_equal(
+            pair.compare(calculate).collect().sort(keys[:3] if calculate != "all" else keys),
+            compare.compare_profiles(a, b, preprofile_dir=root, calculate=calculate).collect()
+            .sort(keys[:3] if calculate != "all" else keys))
+    with pytest.raises(ValueError, match="min_cov"):
+        compare.PairComparison(a, b, min_cov=0)
+    with pytest.raises(ValueError, match="Unsupported"):
+        compare.PairComparison(a, b, ani_method="bogus")
+
+
 def test_v2_matrix_compare_exports_one_gene_table(assets):
     pytest.importorskip("h5py")
     root, _, _, stb, catalog = assets
@@ -704,6 +832,32 @@ def test_selection_results_do_not_depend_on_batch_size(assets):
         codons.pairwise_selection(a, b, catalog, batch_size=0)
 
 
+def test_selection_results_do_not_depend_on_gene_range_size(assets, monkeypatch):
+    """Packing and matching in gene-ID ranges must give the single-range answer."""
+    import numpy as np
+    import pyarrow.parquet as pq
+
+    root, _, _, _, catalog = assets
+    rng = np.random.default_rng(13)
+    a = _random_codon_table(root, catalog, "a", rng, stop_rate=.05)
+    b = _random_codon_table(root, catalog, "b", rng, stop_rate=.05)
+    calls = {"pair": lambda: codons.pairwise_selection(a, b, catalog, min_cov=2).collect().sort("gene_id"),
+             "reference": lambda: codons.reference_selection(a, catalog, min_cov=2).collect().sort("gene_id")}
+    expected = {name: call() for name, call in calls.items()}
+    assert expected["pair"].height > 1
+    real_writer = pq.ParquetWriter
+
+    class TinyRowGroups(real_writer):  # split genes across row groups, so cuts must not split them
+        def write_table(self, table, row_group_size=None):
+            super().write_table(table, row_group_size=3)
+
+    monkeypatch.setattr(pq, "ParquetWriter", TinyRowGroups)
+    for chunk in (1, 2, 5, 64):
+        monkeypatch.setattr(codons, "SELECTION_CHUNK_CODONS", chunk)
+        for name, call in calls.items():
+            assert_frame_equal(call(), expected[name]), (name, chunk)
+
+
 def test_shared_position_scan_is_independent_of_chunks_and_matches_brute_force(assets):
     """Stretches and gene counts must survive batch edges, scaffold changes, and coordinate gaps."""
     import numpy as np
@@ -741,6 +895,8 @@ def test_shared_position_scan_is_independent_of_chunks_and_matches_brute_force(a
         genome, gene = compare._scan_shared_positions(shared.lazy(), genes, stretches=True, chunk_size=chunk_size)
         assert {row[0]: row[1:] for row in genome.iter_rows()} == expected_genome, chunk_size
         assert {row[0]: (row[2], row[3]) for row in gene.iter_rows()} == expected_gene, chunk_size
+    longest = compare._identical_stretch_rows(shared.lazy()).group_by("genome").agg(pl.col("length").max())
+    assert dict(longest.collect().rows()) == {genome: best for genome, (_, _, best) in expected_genome.items()}
 
 
 def test_collection_validates_each_sample_once_and_parallel_pairs_match(assets, monkeypatch):

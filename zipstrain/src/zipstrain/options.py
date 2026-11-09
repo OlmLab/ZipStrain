@@ -25,6 +25,29 @@ ANALYSIS_MIN_GENE_POSITIONS = 100
 # or cross-scaffold pairs are dropped while single-end reads stay (inStrain's defaults).
 PROFILE_MIN_READ_ANI = 0.95
 PROFILE_READ_INCLUSION = "paired"
+PROFILE_READ_INCLUSION_CHOICES = ("proper-pairs", "paired", "all-mapped")
+PROFILE_MIN_MAPQ = 0
+PROFILE_MIN_BASEQ = 13
+PROFILE_MIN_FREQ = 0.01
+# Sequencing-error null model that profiling uses to drop error-level allele counts.
+NULL_MODEL_ERROR_RATE = 0.001
+NULL_MODEL_MAX_COVERAGE = 50_000
+NULL_MODEL_P_THRESHOLD = 1e-6
+# Profiles carry this Parquet metadata when rows are sorted by scaffold and position.
+PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
+PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
+
+# Choices the CLI shows while it loads. They live here so building the CLI does not
+# import the modules that implement them; those modules re-export these names.
+MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
+MATRIX_COMPARE_KERNEL_ANCHOR = "anchor"
+MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE = 1
+MATRIX_STORAGE_MODES = ("bitmask", "counts")
+MATRIX_COUNT_DTYPE_CHOICES = ("auto", "uint16", "uint32")
+MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
+MATRIX_HDF5_EXPORT_TARGET_BATCH_MB = 128.0
+ABUNDANCE_TOOLS = ("sylph",)  # must match build_db.ADAPTERS
+SYLPH_DB_URL = "http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb"
 
 GENOME_METRICS = ("genome_ani", "max_identical_stretch")
 GENE_METRICS = ("gene_ani", "gene_selection")

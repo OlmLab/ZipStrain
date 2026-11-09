@@ -2519,3 +2519,25 @@ def test_get_snp_reference_cli_vcf_includes_subconsensus_snv_sites(tmp_path):
     ]
     # Superset: both the consensus-differs site (1) AND the sub-consensus SNV site (2).
     assert positions == ["1", "2"], positions
+
+
+def test_building_the_cli_loads_no_command_modules():
+    """Each comparison job starts the CLI, so building it must not load profiling, matrix or database code."""
+    import subprocess
+    import sys
+    probe = (
+        "import sys, zipstrain.cli\n"
+        "loaded = sorted(name for name, module in sys.modules.items() if name.startswith('zipstrain.')\n"
+        "                and type(module).__name__ != '_LazyModule')\n"
+        "heavy = sorted(name for name in ('scipy', 'pyarrow', 'duckdb', 'torch', 'h5py', 'numpy') if name in sys.modules)\n"
+        "print(loaded, heavy)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout.strip()
+    assert out == "['zipstrain.cli', 'zipstrain.options', 'zipstrain.resource_limits', 'zipstrain.run_logger'] []"
+
+
+def test_cli_choice_constants_match_their_modules():
+    from zipstrain import build_db, matrix_pairs, options, profile
+    assert options.ABUNDANCE_TOOLS == tuple(sorted(build_db.ADAPTERS))
+    assert matrix_pairs.MATRIX_PAIR_BACKENDS is options.MATRIX_PAIR_BACKENDS
+    assert profile.PROFILE_READ_INCLUSION_CHOICES is options.PROFILE_READ_INCLUSION_CHOICES

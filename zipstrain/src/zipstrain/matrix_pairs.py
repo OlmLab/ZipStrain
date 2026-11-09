@@ -36,7 +36,7 @@ MATRIX_DTYPES = {
     "uint8": np.uint8,
     **COUNT_DTYPES,
 }
-MATRIX_COUNT_DTYPE_CHOICES = ("auto", "uint16", "uint32")
+MATRIX_COUNT_DTYPE_CHOICES = options.MATRIX_COUNT_DTYPE_CHOICES
 MATRIX_BUILD_MIN_COV = options.COMPARE_MIN_COV
 FILTERED_PRESENCE_MATRIX_VALUE_SEMANTICS = "allele_presence_after_cov_filter"
 BITMASK_MATRIX_VALUE_SEMANTICS = "packed_allele_presence_after_cov_filter"
@@ -44,7 +44,8 @@ COUNT_MATRIX_VALUE_SEMANTICS = "allele_counts_after_cov_filter"
 MATRIX_STORAGE_BITMASK = "bitmask"
 MATRIX_STORAGE_COUNTS = "counts"
 MATRIX_STORAGE_LEGACY_PRESENCE = "legacy-presence"
-MATRIX_STORAGE_MODES = (MATRIX_STORAGE_BITMASK, MATRIX_STORAGE_COUNTS)
+MATRIX_STORAGE_MODES = options.MATRIX_STORAGE_MODES
+assert MATRIX_STORAGE_MODES == (MATRIX_STORAGE_BITMASK, MATRIX_STORAGE_COUNTS)
 BITMASK_DTYPE_NAME = "uint8"
 BITMASK_BASE_BITS = np.asarray([1, 2, 4, 8], dtype=np.uint8)  # A, T, C, G
 CURRENT_MATRIX_DB_LAYOUT = "per_sample_per_genome_dense_matrix"
@@ -53,12 +54,12 @@ CURRENT_MATRIX_HDF5_SPARSE_LAYOUT = "per_genome_sample_major_sparse_indices_matr
 CURRENT_MATRIX_HDF5_BITMASK_LAYOUT = "per_genome_sample_major_bitmask_hdf5"
 CURRENT_MATRIX_HDF5_BITMASK_SPARSE_LAYOUT = "per_genome_sample_major_sparse_bitmask_hdf5"
 MATRIX_HDF5_FILE_VERSION = "1"
-MATRIX_PAIR_BACKENDS = ("numpy", "torch", "torch-cpu", "torch-cuda", "torch-mps")
-MATRIX_IO_EXECUTOR_KINDS = ("thread", "process")
+MATRIX_PAIR_BACKENDS = options.MATRIX_PAIR_BACKENDS
+MATRIX_IO_EXECUTOR_KINDS = options.MATRIX_IO_EXECUTOR_KINDS
 # "anchor" compares one anchor sample against blocks of targets position by
 # position (supports every metric); "block" computes genome-level popANI/conANI
 # for whole blocks of sample pairs with dense matrix multiplications.
-MATRIX_COMPARE_KERNEL_ANCHOR = "anchor"
+MATRIX_COMPARE_KERNEL_ANCHOR = options.MATRIX_COMPARE_KERNEL_ANCHOR
 MATRIX_COMPARE_KERNEL_BLOCK = "block"
 MATRIX_COMPARE_KERNELS = (MATRIX_COMPARE_KERNEL_ANCHOR, MATRIX_COMPARE_KERNEL_BLOCK)
 # Deprecated names kept so existing scripts and configs keep working.
@@ -93,8 +94,8 @@ MATRIX_BUILD_MIN_COMMIT_BATCH_BYTES = 64 * 1024 * 1024
 MATRIX_BUILD_DUCKDB_MEMORY_FRACTION = 0.25
 MATRIX_COMPARE_CHECKPOINT_BATCH_UNITS = 4
 MATRIX_COMPARE_TORCH_CHECKPOINT_BATCH_UNITS = 16
-MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT = 1
-MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT = 128.0
+MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT = options.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE
+MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT = options.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB
 
 
 def _emit_matrix_compare_writer_log(

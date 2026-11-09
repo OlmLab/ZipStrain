@@ -1,30 +1,55 @@
 """
-zipstrain.utils
+zipstrain.cli
 ========================
 This module contains the command-line interface (CLI) implementation for the zipstrain application.
+
+Building the CLI imports only ``options`` and the libraries every command shares. Each
+ZipStrain module below loads the first time a command uses it, so a comparison job never
+loads the profiling, mapping or database code. Option defaults therefore come from
+:mod:`zipstrain.options`, never from those modules.
 """
+from __future__ import annotations
+
+import importlib.util
+import sys
+
 from zipstrain.resource_limits import configure_cli_threads
 
 configure_cli_threads()
 
 import click as click
 from zipstrain import __version__, options
-import zipstrain.utils as ut
-import zipstrain.compare as cp
-import zipstrain.profile as pf
-import zipstrain.profile_backends as profile_backends
-import zipstrain.task_manager as tm
-import zipstrain.database as db
-import zipstrain.build_db as bdb
-import zipstrain.matrix_pairs as mp
-import zipstrain.healthcheck as hc
-import zipstrain.mapping as mapping
-import zipstrain.matrix_workflow as matrix_workflow
+
+
+def _lazy_module(name: str):
+    """Return module ``name``, executing it only when one of its attributes is first used."""
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.find_spec(name)
+    spec.loader = importlib.util.LazyLoader(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    parent, _, child = name.rpartition(".")
+    setattr(sys.modules[parent], child, module)
+    return module
+
+
+ut = _lazy_module("zipstrain.utils")
+cp = _lazy_module("zipstrain.compare")
+pf = _lazy_module("zipstrain.profile")
+profile_backends = _lazy_module("zipstrain.profile_backends")
+tm = _lazy_module("zipstrain.task_manager")
+db = _lazy_module("zipstrain.database")
+bdb = _lazy_module("zipstrain.build_db")
+mp = _lazy_module("zipstrain.matrix_pairs")
+hc = _lazy_module("zipstrain.healthcheck")
+mapping = _lazy_module("zipstrain.mapping")
+matrix_workflow = _lazy_module("zipstrain.matrix_workflow")
 from zipstrain.run_logger import RunLogger
 import polars as pl
 import pathlib
 import shutil
-import sys
 import tempfile
 import time
 from rich.console import Console
@@ -385,9 +410,9 @@ def _build_null_model_frame(error_rate: float, max_total_reads: int, p_threshold
     return pf._build_null_model_frame(error_rate, max_total_reads, p_threshold, model_type)
 
 @utilities.command("build-null-model")
-@click.option('--error-rate', '-e', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate for the sequencing technology.")
-@click.option('--max-total-reads', '-m', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage to consider for a base")
-@click.option('--p-threshold', '-p', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold for the Poisson distribution.")
+@click.option('--error-rate', '-e', default=options.NULL_MODEL_ERROR_RATE, show_default=True, help="Error rate for the sequencing technology.")
+@click.option('--max-total-reads', '-m', default=options.NULL_MODEL_MAX_COVERAGE, show_default=True, help="Maximum coverage to consider for a base")
+@click.option('--p-threshold', '-p', default=options.NULL_MODEL_P_THRESHOLD, show_default=True, help="Significance threshold for the Poisson distribution.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
 @click.option('--model-type', '-t', default="poisson", type=click.Choice(['poisson']), help="Type of null model to build.")
 def build_null_model(error_rate, max_total_reads, p_threshold, output_file, model_type):
@@ -461,7 +486,7 @@ def parquet_to_csv(input_file, output_file, separator, no_header):
 @utilities.command("adjust-sequence-errors")
 @click.option('--profile-parquet', '-p', required=True, help="Input profile parquet file.")
 @click.option('--null-model', '-n', required=True, help="Null model parquet file.")
-@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
+@click.option('--min-freq', default=options.PROFILE_MIN_FREQ, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
 @click.option('--output-file', '-o', required=True, help="Path to save the sequence-adjusted profile parquet.")
 def adjust_sequence_errors(profile_parquet, null_model, min_freq, output_file):
     """
@@ -596,17 +621,17 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
 @click.option('--gene-info-table', '--gene-range-table', 'gene_range_table', default=None, help="Optional headerless TSV of gene, scaffold, start, end to store gene-coordinate ranges for gene ANI.")
 @click.option(
     '--storage-mode',
-    type=click.Choice(mp.MATRIX_STORAGE_MODES),
+    type=click.Choice(options.MATRIX_STORAGE_MODES),
     default=None,
     help="Storage representation. Omitted uses bitmask, unless --count-dtype is supplied for compatibility with older count-store commands.",
 )
 @click.option(
     '--count-dtype',
-    type=click.Choice(mp.MATRIX_COUNT_DTYPE_CHOICES),
+    type=click.Choice(options.MATRIX_COUNT_DTYPE_CHOICES),
     default=None,
     help="Count dtype for --storage-mode counts. auto selects uint16 or uint32 after checking all profiles.",
 )
-@click.option('--min-cov', type=int, default=mp.MATRIX_BUILD_MIN_COV, show_default=True, help="Build-time minimum coverage. Positions below it are stored as zero.")
+@click.option('--min-cov', type=int, default=options.COMPARE_MIN_COV, show_default=True, help="Build-time minimum coverage. Positions below it are stored as zero.")
 @click.option(
     '--memory-limit-gb',
     type=float,
@@ -617,7 +642,7 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
 @click.option(
     '--export-batch-mb',
     type=float,
-    default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    default=options.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB,
     show_default=True,
     help="Approximate matrix-store sample-axis chunk target size, in MiB.",
 )
@@ -727,7 +752,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
 @click.option(
     '--export-batch-mb',
     type=float,
-    default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    default=options.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB,
     show_default=True,
     help="Approximate matrix-store sample-axis chunk target size, in MiB, used when rewriting the store.",
 )
@@ -835,17 +860,17 @@ _COMPARE_KERNEL_HELP = (
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--anchor-queue-size', type=int, default=1, show_default=True, help="Host-side torch anchor queue size. Only one anchor is transferred to the GPU at a time.")
 @click.option('--target-queue-size', type=int, default=1, show_default=True, help="Host-side torch target queue size. `1` keeps the current synchronous target-load behavior.")
-@click.option('--result-transfer-batch-size', type=int, default=mp.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT, show_default=True, help="Maximum Torch compare units per transfer of genome/gene counts and requested IBS masks; capped at 16 units. Larger batches use more memory.")
+@click.option('--result-transfer-batch-size', type=int, default=options.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE, show_default=True, help="Maximum Torch compare units per transfer of genome/gene counts and requested IBS masks; capped at 16 units. Larger batches use more memory.")
 @click.option(
     '--loader-executor',
-    type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
+    type=click.Choice(options.MATRIX_IO_EXECUTOR_KINDS),
     default="thread",
     show_default=True,
     help="Executor used for torch loader prefetch work.",
 )
 @click.option(
     '--writer-executor',
-    type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
+    type=click.Choice(options.MATRIX_IO_EXECUTOR_KINDS),
     default="thread",
     show_default=True,
     help="Executor used for torch result writing/checkpoint work.",
@@ -853,14 +878,14 @@ _COMPARE_KERNEL_HELP = (
 @click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all. All includes gene_ani when the matrix store has gene annotations.")
 @click.option(
     '--backend',
-    type=click.Choice(mp.MATRIX_PAIR_BACKENDS),
+    type=click.Choice(options.MATRIX_PAIR_BACKENDS),
     default="numpy",
     show_default=True,
     help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
 )
 @click.option(
     '--compare-kernel',
-    default=mp.MATRIX_COMPARE_KERNEL_ANCHOR,
+    default=options.MATRIX_COMPARE_KERNEL_ANCHOR,
     show_default=True,
     metavar="[anchor|block]",
     callback=_normalize_compare_kernel_option,
@@ -976,7 +1001,7 @@ def matrix_compare(
 @click.option(
     '--export-batch-mb',
     type=float,
-    default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    default=options.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB,
     show_default=True,
     help="Approximate target batch size, in MiB, for streaming sample matrices from DuckDB into HDF5.",
 )
@@ -1078,7 +1103,7 @@ def matrix_compare_export(matrix_compare_db_file, output_file, result_table):
 
 
 @utilities.command("build-genome-db")
-@click.option('--tool', '-t', required=True, type=click.Choice(sorted(bdb.ADAPTERS.keys())), help="Abundance tool format to parse (for example, sylph).")
+@click.option('--tool', '-t', required=True, type=click.Choice(options.ABUNDANCE_TOOLS), help="Abundance tool format to parse (for example, sylph).")
 @click.option('--abundance-table', '-a', required=True, help="Path to abundance table (csv/tsv/parquet).")
 @click.option('--cache-dir', '-c', required=True, help="Genome cache directory. Reuses already-downloaded genomes.")
 @click.option('--output-dir', '-o', required=True, help="Directory where concatenated reference FASTA and STB are written.")
@@ -1565,9 +1590,9 @@ def get_gene_range_table(gene_file, output_file):
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
 @click.option('--gene-fasta', '-g', default=None, help="Optional path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--error-rate', '-e', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate for the sequencing technology when building the null model.")
-@click.option('--max-total-reads', '-m', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage to consider when building the null model.")
-@click.option('--p-threshold', '-p', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold for the null model.")
+@click.option('--error-rate', '-e', default=options.NULL_MODEL_ERROR_RATE, show_default=True, help="Error rate for the sequencing technology when building the null model.")
+@click.option('--max-total-reads', '-m', default=options.NULL_MODEL_MAX_COVERAGE, show_default=True, help="Maximum coverage to consider when building the null model.")
+@click.option('--p-threshold', '-p', default=options.NULL_MODEL_P_THRESHOLD, show_default=True, help="Significance threshold for the null model.")
 @click.option('--model-type', '-t', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Type of null model to build.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling database.")
 def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_total_reads, p_threshold, model_type, output_dir):
@@ -1599,11 +1624,11 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into the profile parquet metadata.")
 @click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
 @click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
-@click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
-@click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
-@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
-@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
+@click.option('--min-mapq', default=options.PROFILE_MIN_MAPQ, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
+@click.option('--min-baseq', default=options.PROFILE_MIN_BASEQ, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-freq', default=options.PROFILE_MIN_FREQ, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
+@click.option('--min-read-ani', default=options.PROFILE_MIN_READ_ANI, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=options.PROFILE_READ_INCLUSION, show_default=True, type=click.Choice(options.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
 @click.option('--collect-codons', '--prepare-dnds', 'collect_codons', is_flag=True, default=False, help="Write observed read-phased codon counts and reference dN/dS and pN/pS in gene statistics.")
 @click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default='consensus', show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
@@ -1643,7 +1668,7 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
 @click.option('--reference-fasta', '-f', default=None, help="Reference FASTA to map against. If omitted, Sylph automatically picks and builds a reference from the reads.")
 @click.option('--stb-file', '-s', default=None, help="Scaffold-to-genome mapping file. Required when --reference-fasta is provided.")
 @click.option('--sylph-db', default=None, help="Path to the Sylph database. Used when no --reference-fasta is given; downloaded from --sylph-db-url if the path does not exist.")
-@click.option('--sylph-db-url', default=mapping.DEFAULT_SYLPH_DB_URL, show_default=True, help="URL to download the Sylph database from when --sylph-db is missing.")
+@click.option('--sylph-db-url', default=options.SYLPH_DB_URL, show_default=True, help="URL to download the Sylph database from when --sylph-db is missing.")
 @click.option('--genome-cache-dir', default=None, help="Directory that caches genome FASTAs downloaded during Sylph-based reference building. Required when no --reference-fasta is given.")
 @click.option('--predict-genes', is_flag=True, default=False, show_default=True, help="Also run prodigal to emit a gene FASTA (for gene-level profiling via `profile --gene-fasta`).")
 @click.option('--non-competitive', is_flag=True, default=False, show_default=True, help="Pass -a to Bowtie2 for non-competitive mapping (report all alignments).")
@@ -1745,16 +1770,16 @@ map_command.option_sections = {
 @click.option('--profiling-contract', default=None, help="Pre-built profiling_contract.json. When provided, its hashes are written into each profile parquet metadata. Auto-generated otherwise.")
 @click.option('--bed-file', '-b', default=None, help="Pre-built BED file for profiling regions. Auto-generated into <run-dir>/profiling_assets if not provided.")
 @click.option('--genome-length-file', '-l', default=None, help="Pre-built genome length file. Auto-generated into <run-dir>/profiling_assets if not provided.")
-@click.option('--error-rate', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate used when auto-generating the null model.")
-@click.option('--max-total-reads', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
-@click.option('--p-threshold', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold used when auto-generating the null model.")
+@click.option('--error-rate', default=options.NULL_MODEL_ERROR_RATE, show_default=True, help="Error rate used when auto-generating the null model.")
+@click.option('--max-total-reads', default=options.NULL_MODEL_MAX_COVERAGE, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
+@click.option('--p-threshold', default=options.NULL_MODEL_P_THRESHOLD, show_default=True, help="Significance threshold used when auto-generating the null model.")
 @click.option('--model-type', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Null model type used when auto-generating the null model.")
 @click.option('--force-prepare', is_flag=True, default=False, show_default=True, help="Regenerate all auto-generated profiling assets even if valid cached copies exist.")
-@click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
-@click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
-@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
-@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
+@click.option('--min-mapq', default=options.PROFILE_MIN_MAPQ, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
+@click.option('--min-baseq', default=options.PROFILE_MIN_BASEQ, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-freq', default=options.PROFILE_MIN_FREQ, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
+@click.option('--min-read-ani', default=options.PROFILE_MIN_READ_ANI, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=options.PROFILE_READ_INCLUSION, show_default=True, type=click.Choice(options.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--backend', default='python', show_default=True, help="Profiling backend: python or an installed entry-point plugin (for example, rust_profiler).")
 @click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
 @click.option('--max-concurrent-batches', '-m', default=5, show_default=True, help="Maximum number of concurrent batches to run.")
@@ -1931,7 +1956,7 @@ def _run_matrix_compare_method(
     min_cov,
     ani_method,
     calculate=options.CALCULATE,
-    compare_kernel=mp.MATRIX_COMPARE_KERNEL_ANCHOR,
+    compare_kernel=options.MATRIX_COMPARE_KERNEL_ANCHOR,
     min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
     allele_integration=options.ALLELE_INTEGRATION,
     no_csv=False,
@@ -2101,9 +2126,9 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
 @click.option("--calculate", default=options.CALCULATE, show_default=True, help=options.CALCULATE_HELP + " Any gene metric selects per-gene rows.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--gene-info-table", "--gene-range-table", "gene_range_table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
-@click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
+@click.option("--backend", type=click.Choice(options.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
 @click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for the comparison.")
-@click.option("--compare-kernel", default=mp.MATRIX_COMPARE_KERNEL_ANCHOR, show_default=True, metavar="[anchor|block]", callback=_normalize_compare_kernel_option, help=_COMPARE_KERNEL_HELP + " Applies to --method matrix.")
+@click.option("--compare-kernel", default=options.MATRIX_COMPARE_KERNEL_ANCHOR, show_default=True, metavar="[anchor|block]", callback=_normalize_compare_kernel_option, help=_COMPARE_KERNEL_HELP + " Applies to --method matrix.")
 @click.option("--max-concurrent-batches", "-m", default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option("--poll-interval", "-p", default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
 @click.option("--task-per-batch", "-t", default=10, show_default=True, help="Number of tasks to include in each batch.")

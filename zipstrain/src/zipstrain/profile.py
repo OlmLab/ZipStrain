@@ -23,25 +23,22 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
-PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
+PROFILE_SORTED_METADATA_KEY = options.PROFILE_SORTED_METADATA_KEY
+PROFILE_SORTED_METADATA_VALUE = options.PROFILE_SORTED_METADATA_VALUE
 PROFILE_WRITE_BATCH_SIZE = 10_000
 MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
-PROFILE_MIN_MAPQ_DEFAULT = 0
-PROFILE_MIN_BASEQ_DEFAULT = 13
-PROFILE_MIN_FREQ_DEFAULT = 0.01
+PROFILE_MIN_MAPQ_DEFAULT = options.PROFILE_MIN_MAPQ
+PROFILE_MIN_BASEQ_DEFAULT = options.PROFILE_MIN_BASEQ
+PROFILE_MIN_FREQ_DEFAULT = options.PROFILE_MIN_FREQ
 # Read-ANI floor applied by default so low-identity (typically mis-mapped) reads
 # do not inflate SNV calls; matches inStrain's default of 0.95.
 PROFILE_MIN_READ_ANI_DEFAULT = options.PROFILE_MIN_READ_ANI
 READ_INCLUSION_ALL_MAPPED = "all-mapped"
 READ_INCLUSION_PAIRED = "paired"
 READ_INCLUSION_PROPER_PAIRS = "proper-pairs"
-PROFILE_READ_INCLUSION_CHOICES = (
-    READ_INCLUSION_PROPER_PAIRS,
-    READ_INCLUSION_PAIRED,
-    READ_INCLUSION_ALL_MAPPED,
-)
+PROFILE_READ_INCLUSION_CHOICES = options.PROFILE_READ_INCLUSION_CHOICES
+assert PROFILE_READ_INCLUSION_CHOICES == (READ_INCLUSION_PROPER_PAIRS, READ_INCLUSION_PAIRED, READ_INCLUSION_ALL_MAPPED)
 # Default eligibility: for paired reads keep only those whose mate maps to the same
 # scaffold (matching inStrain's default "paired_only": drops half-mapped orphans and
 # cross-scaffold pairs), while keeping genuinely single-end reads.

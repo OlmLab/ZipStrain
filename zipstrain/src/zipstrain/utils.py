@@ -20,7 +20,6 @@ import re
 import pyarrow as pa
 import pyarrow.parquet as pq
 from collections import Counter
-from scipy.stats import poisson
 import subprocess
 import numpy as np
 from typing import TYPE_CHECKING
@@ -30,9 +29,9 @@ from zipstrain.resource_limits import connect_duckdb
 if TYPE_CHECKING:
     import duckdb
 
-NULL_MODEL_ERROR_RATE_DEFAULT = 0.001
-NULL_MODEL_MAX_COVERAGE_DEFAULT = 50_000
-NULL_MODEL_P_THRESHOLD_DEFAULT = 1e-6
+NULL_MODEL_ERROR_RATE_DEFAULT = options.NULL_MODEL_ERROR_RATE
+NULL_MODEL_MAX_COVERAGE_DEFAULT = options.NULL_MODEL_MAX_COVERAGE
+NULL_MODEL_P_THRESHOLD_DEFAULT = options.NULL_MODEL_P_THRESHOLD
 
 CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "genome", "A", "T", "C", "G"}
 REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
@@ -559,6 +558,8 @@ def build_null_poisson(
         raise ValueError("max_total_reads must be >= 1")
     if not 0.0 < p_threshold < 1.0:
         raise ValueError("p_threshold must be between 0 and 1")
+    # Imported here: scipy.stats takes about half a second to load, and only profiling needs it.
+    from scipy.stats import poisson
 
     coverage = np.arange(1, max_total_reads + 1, dtype=np.int64)
     lambdas = coverage.astype(np.float64) * (error_rate / 3.0)
