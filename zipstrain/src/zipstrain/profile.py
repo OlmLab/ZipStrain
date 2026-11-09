@@ -494,34 +494,30 @@ def _write_sorted_profile_with_metadata(
     tmp_dir: pathlib.Path,
     metadata: Optional[dict[str, str]] = None,
 ) -> None:
-    """Write the final profile parquet and only fall back to sorting when needed."""
+    """Write the final profile once with its metadata, and sort it only when needed.
+
+    Chunks are already sorted and usually concatenated in order, so the profile is
+    written directly and checked; only out-of-order input pays for a sorted rewrite.
+    """
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    candidate_path = tmp_dir / f"{output_file.stem}.candidate.parquet"
-    candidate_path.unlink(missing_ok=True)
-
-    profile_lf.sink_parquet(
-        candidate_path,
-        compression="zstd",
-        engine="streaming",
-    )
-
     output_metadata = dict(metadata or {})
     output_metadata[PROFILE_SORTED_METADATA_KEY] = PROFILE_SORTED_METADATA_VALUE
-
-    if _parquet_rows_are_coordinate_sorted(candidate_path):
-        pl.scan_parquet(candidate_path).sink_parquet(
-            output_file,
-            compression="zstd",
-            engine="streaming",
-            metadata=output_metadata,
-        )
-    else:
+    profile_lf.sink_parquet(
+        output_file,
+        compression="zstd",
+        engine="streaming",
+        metadata=output_metadata,
+    )
+    if not _parquet_rows_are_coordinate_sorted(output_file):
+        candidate_path = tmp_dir / f"{output_file.stem}.candidate.parquet"
+        os.replace(output_file, candidate_path)
         _sort_existing_profile_parquet(
             input_file=candidate_path,
             output_file=output_file,
             tmp_dir=tmp_dir,
             metadata=output_metadata,
         )
+        candidate_path.unlink(missing_ok=True)
 
 
 def _sort_existing_profile_parquet(
@@ -607,26 +603,20 @@ def _profile_parquet_is_coordinate_sorted(profile_parquet: pathlib.Path) -> bool
 
 
 def _parquet_rows_are_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
-    """Check row order without materializing the full parquet in memory."""
-    check_expr = (
-        pl.when(pl.col("chrom").shift(1).is_null())
-        .then(True)
-        .otherwise(
-            (pl.col("chrom") > pl.col("chrom").shift(1))
-            | (
-                (pl.col("chrom") == pl.col("chrom").shift(1))
-                & (pl.col("pos") >= pl.col("pos").shift(1))
-            )
-        )
-        .all()
-        .alias("is_sorted")
-    )
-    return bool(
-        pl.scan_parquet(profile_parquet)
-        .select(check_expr)
-        .collect(engine="streaming")
-        .item()
-    )
+    """Check (chrom, pos) row order over streamed batches, carrying one row between them."""
+    ordered = (
+        (pl.col("chrom") > pl.col("chrom").shift(1))
+        | ((pl.col("chrom") == pl.col("chrom").shift(1)) & (pl.col("pos") >= pl.col("pos").shift(1)))
+    ).fill_null(True).all()
+    previous = None
+    for batch in pl.scan_parquet(profile_parquet).select("chrom", "pos").collect_batches(engine="streaming"):
+        if not batch.height:
+            continue
+        rows = batch if previous is None else pl.concat([previous, batch])
+        if not rows.select(ordered).item():
+            return False
+        previous = batch.tail(1)
+    return True
 
 
 def _stream_profile_mpileup_chunk_to_parquet(
@@ -1264,6 +1254,34 @@ def _ensure_faidx(reference_fasta: pathlib.Path) -> None:
         raise Exception(f"samtools faidx failed: {result.stderr.decode().strip()}")
 
 
+def profile_output_metadata(existing, gene_info_file=None, *, min_mapq=0, min_baseq=13,
+                            min_read_ani=PROFILE_MIN_READ_ANI_DEFAULT,
+                            read_inclusion=PROFILE_READ_INCLUSION_DEFAULT, min_freq=0.01,
+                            reference_id=None) -> dict[str, str]:
+    """Return the V2 profile metadata: ``existing`` plus schema, filters and catalog identities.
+
+    Reject a profile whose recorded reference or annotation identity differs from the catalog.
+    """
+    from zipstrain import gene_info as gi
+
+    metadata = dict(existing)
+    metadata[gi.SCHEMA_KEY] = "2"
+    if reference_id is not None:
+        metadata[gi.REFERENCE_ID] = reference_id
+    metadata["zipstrain_profile_filters"] = json.dumps({"min_mapq": min_mapq,
+        "min_baseq": min_baseq, "min_read_ani": min_read_ani,
+        "read_inclusion": read_inclusion, "min_freq": min_freq}, sort_keys=True)
+    metadata["zipstrain_selection_method"] = "not_calculated"
+    if gene_info_file is not None:
+        gi.read_gene_info(gene_info_file)
+        catalog_metadata = pl.read_parquet_metadata(gene_info_file)
+        for key in (gi.REFERENCE_ID, gi.ANNOTATION_ID):
+            if metadata.get(key) is not None and metadata[key] != catalog_metadata[key]:
+                raise ValueError(f"Profile and gene catalog have incompatible {key}")
+        metadata.update({key: catalog_metadata[key] for key in (gi.REFERENCE_ID, gi.ANNOTATION_ID)})
+    return metadata
+
+
 def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
                            collect_codons=False, min_mapq=0, min_baseq=13,
                            min_read_ani=PROFILE_MIN_READ_ANI_DEFAULT, read_inclusion=PROFILE_READ_INCLUSION_DEFAULT, min_freq=0.01,
@@ -1279,28 +1297,21 @@ def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
     from zipstrain import codons, gene_info as gi
 
     profile_file = pathlib.Path(profile_file)
-    metadata = utils._read_custom_parquet_metadata(profile_file)
-    metadata[gi.SCHEMA_KEY] = "2"
-    if reference_id is not None:
-        metadata[gi.REFERENCE_ID] = reference_id
-    metadata["zipstrain_profile_filters"] = json.dumps({"min_mapq": min_mapq,
-        "min_baseq": min_baseq, "min_read_ani": min_read_ani,
-        "read_inclusion": read_inclusion, "min_freq": min_freq}, sort_keys=True)
-    metadata["zipstrain_selection_method"] = "not_calculated"
-    if gene_info_file is not None:
-        gi.read_gene_info(gene_info_file)
-        catalog_metadata = pl.read_parquet_metadata(gene_info_file)
-        for key in (gi.REFERENCE_ID, gi.ANNOTATION_ID):
-            if metadata.get(key) is not None and metadata[key] != catalog_metadata[key]:
-                raise ValueError(f"Profile and gene catalog have incompatible {key}")
-        metadata.update({key: catalog_metadata[key] for key in (gi.REFERENCE_ID, gi.ANNOTATION_ID)})
+    existing = utils._read_custom_parquet_metadata(profile_file)
+    metadata = profile_output_metadata(existing, gene_info_file, min_mapq=min_mapq,
+        min_baseq=min_baseq, min_read_ani=min_read_ani, read_inclusion=read_inclusion,
+        min_freq=min_freq, reference_id=reference_id)
     if collect_codons and (bam_file is None or gene_info_file is None):
         raise ValueError("Observed codons require a BAM and preprofile gene_info.parquet")
     source = pl.scan_parquet(profile_file)
-    columns = [name for name in source.collect_schema().names() if name not in ("gene", "gene_id")]
-    rewritten = profile_file.with_suffix(".v2.parquet")
-    source.select(columns).sink_parquet(rewritten, compression="zstd", metadata=metadata)
-    os.replace(rewritten, profile_file)
+    names = source.collect_schema().names()
+    columns = [name for name in names if name not in ("gene", "gene_id")]
+    # Python profiling writes the final metadata and no gene labels up front, so the
+    # profile is rewritten only for native backends and legacy files.
+    if columns != names or existing != metadata:
+        rewritten = profile_file.with_suffix(".v2.parquet")
+        source.select(columns).sink_parquet(rewritten, compression="zstd", metadata=metadata)
+        os.replace(rewritten, profile_file)
     selection = None
     if collect_codons:
         codon_file = profile_file.with_name(profile_file.name.replace("_profile.parquet", "_codon_counts.parquet"))
@@ -1312,7 +1323,8 @@ def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
         selection = codons.reference_selection(codon_file, gene_info_file, allele_integration=allele_integration)
         metadata["zipstrain_selection_method"] = codons.METHOD
         metadata["zipstrain_allele_integration"] = allele_integration
-    stats = (gi.gene_statistics(pl.scan_parquet(profile_file), gene_info_file, selection=selection)
+    stats = (gi.gene_statistics(pl.scan_parquet(profile_file), gene_info_file, selection=selection,
+                                coordinates_sorted=metadata.get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE)
              if gene_info_file is not None else empty_gene_stats_table())
     stats_file = profile_file.with_name(profile_file.name.replace("_profile.parquet", "_gene_stats.parquet"))
     if stats_file == profile_file:
@@ -1467,7 +1479,11 @@ def profile_bam_in_chunks(
             profile_lf=mpileup_df,
             output_file=output_dir / f"{bam_file.stem}_profile.parquet",
             tmp_dir=output_dir / "tmp",
-            metadata=utils.profile_contract_metadata_from_values(profile_contract),
+            # Final V2 metadata up front, so the finalizer need not rewrite the profile.
+            metadata=profile_output_metadata(
+                utils.profile_contract_metadata_from_values(profile_contract), gene_range_table_path,
+                min_mapq=min_mapq, min_baseq=min_baseq, min_read_ani=min_read_ani,
+                read_inclusion=read_inclusion, min_freq=min_freq, reference_id=runtime_reference_id),
         )
         finish_profile_outputs(
             output_dir / f"{bam_file.stem}_profile.parquet", gene_range_table_path,

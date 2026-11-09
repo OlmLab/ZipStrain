@@ -14,6 +14,7 @@ from typing import Iterable, Optional, Union
 import numpy as np
 import polars as pl
 from zipstrain import options
+from zipstrain.gene_info import _index_genes, _scaffold_runs
 from zipstrain.options import PROFILE_SORTED_METADATA_KEY, PROFILE_SORTED_METADATA_VALUE
 
 
@@ -232,6 +233,15 @@ def _join_position_frames(frames: list[pl.LazyFrame], *, sorted_inputs: bool) ->
     return left.join(right, on=keys, suffix="_2")
 
 
+def _profiles_marked_sorted(*sources) -> bool:
+    """Return whether every source is a profile file carrying the profiler's sort marker."""
+    return all(
+        isinstance(source, (str, Path))
+        and _read_custom_parquet_metadata(source).get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE
+        for source in sources
+    )
+
+
 def _shared_loci_polars(
     mpile1: Union[str, Path, pl.LazyFrame],
     mpile2: Union[str, Path, pl.LazyFrame],
@@ -247,12 +257,7 @@ def _shared_loci_polars(
     scope = _profile_scope_predicate(genome_scope, gene_scope)
     coverage = pl.sum_horizontal("A", "C", "G", "T") >= min_cov
     frames = [frame.filter(scope & coverage) for frame in inputs]
-    sorted_inputs = all(
-        isinstance(source, (str, Path))
-        and _read_custom_parquet_metadata(source).get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE
-        for source in (mpile1, mpile2)
-    )
-    joined = _join_position_frames(frames, sorted_inputs=sorted_inputs)
+    joined = _join_position_frames(frames, sorted_inputs=_profiles_marked_sorted(mpile1, mpile2))
     gene = [] if profile_is_gene_free(mpile1) else ["gene"]
     return (
         joined
@@ -290,45 +295,6 @@ def polars_prefilter_by_scope(
     return filtered(mpile1), filtered(mpile2)
 
 
-def add_contiguity_info(mpile_contig: pl.LazyFrame, *, coordinates_sorted: bool = False) -> pl.LazyFrame:
-    """ Adds group id information to the lazy frame. If on the same scaffold and not popANI, then they are in the same group.
-    
-    Args:
-        mpile_contig (pl.LazyFrame): The input LazyFrame containing mpileup data.
-        coordinates_sorted: Rows are already grouped by scaffold and in position order.
-
-    Returns:
-        pl.LazyFrame: Updated LazyFrame with group id information added.
-    """
-
-    has_genome = "genome" in mpile_contig.collect_schema().names()
-    sort_cols = (["genome"] if has_genome else []) + ["scaffold", "pos"]
-
-    def changed(column: str) -> pl.Expr:
-        """True on the first row of each new run of `column` (once sorted)."""
-        return pl.col(column) != pl.col(column).shift(1).fill_null(pl.col(column))
-
-    # A contiguous block is a run of consecutive shared positions. It breaks at
-    # the first row of a new scaffold (or new genome, when that column exists),
-    # at a gap in genomic coordinates, or at a position that is itself an SNV
-    # (surr == 0). Marking those break points and taking a cumulative sum
-    # numbers the blocks, so `group_id` is constant within each block and
-    # increments at every break.
-    position_gap = (pl.col("pos") - pl.col("pos").shift(1) != 1).fill_null(True)
-    break_expr = changed("scaffold") | position_gap | (pl.col("surr") == 0)
-    if has_genome:
-        break_expr = (
-            changed("genome")
-            | changed("scaffold")
-            | position_gap
-            | (pl.col("surr") == 0)
-        )
-
-    ordered = mpile_contig if coordinates_sorted else mpile_contig.sort(sort_cols)
-    return ordered.with_columns(
-        break_expr.cast(pl.Int64).cum_sum().alias("group_id")
-    )
-
 def add_genome_info(mpile_contig:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame) -> pl.LazyFrame:
     """
     Adds genome information to the mpileup LazyFrame based on scaffold to genome mapping.
@@ -343,41 +309,6 @@ def add_genome_info(mpile_contig:pl.LazyFrame, scaffold_to_genome:pl.LazyFrame) 
     return mpile_contig.join(
         scaffold_to_genome, on="scaffold", how="left"
     ).fill_null("NA")
-
-def calculate_pop_ani(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
-    """
-    Calculates the population ANI (Average Nucleotide Identity) for the given mpileup LazyFrame.
-    NOTE: Remember that this function should be applied to the merged mpileup using `_shared_loci_polars`
-    or ``align_profiles`` followed by an ANI match expression.
-
-    Args:
-        mpile_contig (pl.LazyFrame): The input LazyFrame containing mpileup data.
-    
-    Returns:
-        pl.LazyFrame: Updated LazyFrame with population ANI information added.
-    """
-    return mpile_contig.group_by("genome").agg(
-            total_positions=pl.len(),
-            share_allele_pos=(pl.col("surr") > 0 ).sum()
-        ).with_columns(
-            genome_ani=pl.col("share_allele_pos")/pl.col("total_positions")*100,
-        )
-
-def get_longest_consecutive_blocks(mpile_contig:pl.LazyFrame) -> pl.LazyFrame:
-    """
-    Calculates the longest consecutive blocks for each genome in the mpileup LazyFrame for any genome.
-    
-    Args:
-        mpile_contig (pl.LazyFrame): The input LazyFrame containing mpileup data.
-    
-    Returns:
-        pl.LazyFrame: Updated LazyFrame with longest consecutive blocks information added.
-    """
-    block_lengths = (
-        mpile_contig.group_by(["genome", "scaffold", "group_id"])
-        .agg(pl.len().alias("length"))
-    ) 
-    return block_lengths.group_by("genome").agg(pl.col("length").max().alias("max_identical_stretch"))
 
 def get_unique_scaffolds(mpile_contig:pl.LazyFrame,batch_size:int=10000) -> set:
     """
@@ -437,16 +368,24 @@ def compare_genomes_polars(
         min_cov=min_cov,
         genome_scope=genome_scope,
         ani_method=ani_method,
-    )
-    genome_comp_parts: list[pl.LazyFrame] = []
-    if "genome_ani" in calculations:
-        genome_comp_parts.append(calculate_pop_ani(shared))
-    if "max_identical_stretch" in calculations:
-        genome_comp_parts.append(get_longest_consecutive_blocks(add_contiguity_info(shared)))
+    ).select(pl.col("scaffold").alias("chrom"), pl.col("genome").cast(pl.String), "pos",
+             (pl.col("surr") > 0).alias("match"))
+    if not _profiles_marked_sorted(mpile_contig_1, mpile_contig_2):
+        shared = shared.sort("chrom", "pos")
+    wants_stretch = "max_identical_stretch" in calculations
 
-    genome_comp = genome_comp_parts[0]
-    for part in genome_comp_parts[1:]:
-        genome_comp = genome_comp.join(part, on="genome", how="left")
+    def counts() -> pl.DataFrame:
+        # The V2 streaming scan, keeping the 1.x stretch definition (a run opened by a mismatch counts it).
+        genome_counts, _ = _scan_shared_positions(shared, None, stretches=wants_stretch,
+                                                  count_opening_mismatch=True)
+        return genome_counts.with_columns(
+            (pl.col("share_allele_pos") / pl.col("total_positions") * 100).alias("genome_ani"))
+
+    genome_comp = pl.defer(counts, schema={**_GENOME_COUNT_SCHEMA, "genome_ani": pl.Float64}).select(
+        "genome",
+        *(["total_positions", "share_allele_pos", "genome_ani"] if "genome_ani" in calculations else []),
+        *(["max_identical_stretch"] if wants_stretch else []),
+    )
 
     if stb_file is not None:
         genome_comp = _join_stb_requested_genomes(
@@ -576,55 +515,104 @@ def align_profiles(profile_1, profile_2, *, min_cov=options.COMPARE_MIN_COV) -> 
     return PairComparison(profile_1, profile_2, min_cov=min_cov).aligned
 
 
-def _index_genes(genes: pl.DataFrame) -> dict:
-    """Group a catalog's gene rows and coordinates by scaffold for interval counting."""
-    starts, ends = genes["start"].to_numpy(), genes["end"].to_numpy()
-    index = {}
-    for (chrom,), rows in genes.with_row_index("row").group_by("chrom", maintain_order=True):
-        row = rows["row"].to_numpy()
-        index[chrom] = (row, starts[row], ends[row])
-    return index
+_STRETCH_SCHEMA = {"genome": pl.String, "chrom": pl.String, "stretch_id": pl.Int64, "start": pl.Int64,
+                   "end": pl.Int64, "length": pl.Int64}
+_STRETCH_BACKGROUND_SCHEMA = {"genome": pl.String, "_positions": pl.Int64, "_mismatches": pl.Int64,
+                              "_segments": pl.Int64}
 
 
-def _identical_stretch_rows(matches: pl.LazyFrame) -> pl.LazyFrame:
-    """Number and measure every identical stretch in aligned positions.
+def _scan_identical_stretches(matches: pl.LazyFrame, min_length: int = 1, *,
+                              chunk_size: int = 1 << 20) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Find identical stretches and each genome's background in one streaming NumPy pass.
 
     ``matches`` holds ``chrom``, ``genome``, ``pos`` and boolean ``match`` in scaffold and
     position order. A stretch is a run of consecutive matching positions and breaks at a
-    mismatch, a coordinate gap, or a new scaffold. Return ``stretch_id``, ``genome``,
-    ``chrom``, ``start``, ``end`` and ``length`` per stretch, in no particular row order.
+    mismatch, a coordinate gap, or a new scaffold. Return the stretches of at least
+    ``min_length`` (``_STRETCH_SCHEMA``, in stream order) and, per genome, the shared positions,
+    mismatches and unbroken segments (scaffold starts plus coordinate gaps), which together
+    give the number of runs the significance test expects. ``stretch_id`` numbers every
+    stretch in stream order from 1, before the length filter. Only run boundaries are kept,
+    so memory follows the number of reported stretches, not the number of positions.
     """
-    new_stretch = ((pl.col("chrom") != pl.col("chrom").shift(1))
-                   | (pl.col("pos") != pl.col("pos").shift(1) + 1)).fill_null(True)
-    return (
-        matches.filter("match")
-        .with_columns(new_stretch.cum_sum().cast(pl.Int64).alias("stretch_id"))
-        .group_by("stretch_id")
-        .agg(pl.col("genome").first(), pl.col("chrom").first(), pl.col("pos").min().alias("start"),
-             pl.col("pos").max().alias("end"), pl.len().cast(pl.Int64).alias("length"))
-    )
+    found: list[tuple] = []
+    background: dict[str, list[int]] = {}
+    pending = None  # [genome, chrom, stretch_id, start, end, length] of a run reaching a batch end
+    next_id, previous_chrom, previous_pos, previous_match = 1, None, 0, False
+
+    def emit(run):
+        if run[5] >= min_length:
+            found.append(tuple(run))
+
+    frames = matches.select("chrom", "genome", "pos", "match")
+    for batch in frames.collect_batches(engine="streaming", chunk_size=chunk_size):
+        if batch.is_empty():
+            continue
+        positions, flags, scaffolds = batch["pos"].to_numpy(), batch["match"].to_numpy(), batch["chrom"]
+        for first, last in _scaffold_runs(scaffolds):
+            chrom, genome = scaffolds[first], batch["genome"][first]
+            pos, match = positions[first:last], flags[first:last]
+            continues = chrom == previous_chrom and int(pos[0]) == previous_pos + 1
+            adjacent = np.diff(pos) == 1
+            counts = background.setdefault(genome, [0, 0, 0])
+            counts[0] += pos.size
+            counts[1] += int(pos.size - match.sum())
+            counts[2] += int(not continues) + int((~adjacent).sum())
+            # A run starts at a match whose predecessor is a mismatch or not adjacent, and
+            # ends at a match whose successor is; the last row of a slice always closes one.
+            opened = match & ~np.r_[continues and previous_match, adjacent & match[:-1]]
+            closed = match & ~np.r_[adjacent & match[1:], False]
+            merge = bool(continues and previous_match and match[0])
+            if merge:
+                opened[0] = True
+            run_starts, run_ends = np.flatnonzero(opened), np.flatnonzero(closed)
+            if pending is not None and not merge:
+                emit(pending)
+                pending = None
+            fresh = len(run_starts) - merge
+            ids = np.arange(next_id - merge, next_id + fresh)
+            next_id += fresh
+            lengths = run_ends - run_starts + 1
+            starts, ends = pos[run_starts], pos[run_ends]
+            for k in range(len(run_starts)):
+                run = [genome, chrom, int(ids[k]), int(starts[k]), int(ends[k]), int(lengths[k])]
+                if k == 0 and merge:
+                    run[2], run[3], run[5] = pending[2], pending[3], pending[5] + run[5]
+                    pending = None
+                if k == len(run_starts) - 1 and run_ends[k] == pos.size - 1:
+                    pending = run
+                else:
+                    emit(run)
+            previous_chrom, previous_pos, previous_match = chrom, int(pos[-1]), bool(match[-1])
+    if pending is not None:
+        emit(pending)
+    stretches = pl.DataFrame(found, schema=_STRETCH_SCHEMA, orient="row")
+    totals = pl.DataFrame([(name, *values) for name, values in background.items()],
+                          schema=_STRETCH_BACKGROUND_SCHEMA, orient="row")
+    return stretches, totals
 
 
-def _stretch_significance(stretches: pl.LazyFrame, matches: pl.LazyFrame) -> pl.LazyFrame:
+def _stretch_significance(stretches: pl.LazyFrame, background: pl.LazyFrame) -> pl.LazyFrame:
     """Add how surprising each stretch is if mismatches fall at random at the genome's popANI rate.
 
-    With ``M`` mismatches among ``n`` shared positions, ``d = M / n`` and a genome holds about
-    ``M + 1`` runs of matches. A run reaches ``length`` with probability ``q = (1 - d) ** length``,
-    so ``expected_runs = (M + 1) q`` (an E-value) and ``p_value`` is the chance that any run does.
+    With ``M`` mismatches among ``n`` shared positions, ``d = M / n``. Every mismatch, scaffold
+    start and coordinate gap begins a run, so a genome with ``S`` such segments holds
+    ``M + S`` runs of matches. A run reaches ``length`` with probability
+    ``q = (1 - d) ** length``, so ``expected_runs = (M + S) q`` (an E-value) and ``p_value``
+    is the chance that any run does. ``background`` has ``genome``, ``_positions``,
+    ``_mismatches`` and ``_segments``, as :func:`_scan_identical_stretches` returns.
     """
-    background = matches.group_by("genome").agg(
-        pl.len().cast(pl.Int64).alias("_positions"), (~pl.col("match")).sum().cast(pl.Int64).alias("_mismatches"))
     rate = pl.col("_mismatches") / pl.col("_positions")
-    runs = pl.col("_mismatches") + 1
+    runs = pl.col("_mismatches") + pl.col("_segments")
     q = (pl.col("length") * (-rate).log1p()).exp()
     # log1p(-q) stays accurate for tiny q; 1 - exp(x) loses digits near 0, where -x - x²/2 does not.
     x = runs * (-q).log1p()
     p_value = pl.when(x > -1e-3).then(-x - x * x / 2).otherwise(1 - x.exp())
     return stretches.join(background, on="genome", how="left").with_columns(
         rate.alias("background_divergence"), (runs * q).alias("expected_runs"), p_value.alias("p_value"),
-    ).drop("_positions", "_mismatches")
+    ).drop("_positions", "_mismatches", "_segments")
 
 
+_MOSAIC_RATE_FLOOR = 1e-12
 _MOSAIC_STATES = ("low_divergence", "background", "high_divergence")
 _MOSAIC_SCHEMA = {
     "genome": pl.String, "chrom": pl.String, "state": pl.String, "start": pl.Int64, "end": pl.Int64,
@@ -723,9 +711,14 @@ def _decode_mosaics(events: pl.DataFrame, *, factor: float, switch_probability: 
     ends = pos[closes]
     scaffold_starts = np.flatnonzero(kind[opens] == 0)
     rate = hit.sum() / positions.sum()
+    def emission_scores(rate):
+        # Clip so a genome at (or refitted to) rate 0 or 1 gives finite scores, not 0 * -inf.
+        rates = np.clip([1 - (1 - rate) ** (1 / factor), rate, 1 - (1 - rate) ** factor],
+                        _MOSAIC_RATE_FLOOR, 1 - _MOSAIC_RATE_FLOOR)
+        return gaps[:, None] * np.log1p(-rates) + hit[:, None] * np.log(rates)
+
     for _ in range(max_iterations):
-        rates = np.array([1 - (1 - rate) ** (1 / factor), rate, 1 - (1 - rate) ** factor])
-        emissions = gaps[:, None] * np.log1p(-rates) + hit[:, None] * np.log(rates)
+        emissions = emission_scores(rate)
         path = _viterbi(emissions, scaffold_starts, switch_probability)
         background = path == 1
         if not hit[background].sum():
@@ -735,8 +728,7 @@ def _decode_mosaics(events: pl.DataFrame, *, factor: float, switch_probability: 
             rate = refitted
             break
         rate = refitted
-    rates = np.array([1 - (1 - rate) ** (1 / factor), rate, 1 - (1 - rate) ** factor])
-    emissions = gaps[:, None] * np.log1p(-rates) + hit[:, None] * np.log(rates)
+    emissions = emission_scores(rate)
     path = _viterbi(emissions, scaffold_starts, switch_probability)
     new_block = np.r_[True, (path[1:] != path[:-1]) | (kind[opens][1:] == 0)]
     block = np.cumsum(new_block) - 1
@@ -763,6 +755,7 @@ def _decode_mosaics(events: pl.DataFrame, *, factor: float, switch_probability: 
 
 def _scan_shared_positions(shared: pl.LazyFrame, genes: Optional[pl.DataFrame], *, stretches: bool,
                            chunk_size: int = 1 << 20, gene_index: Optional[dict] = None,
+                           count_opening_mismatch: bool = False,
                            ) -> tuple[pl.DataFrame, Optional[pl.DataFrame]]:
     """Calculate genome and gene counts from one streaming pass over aligned positions.
 
@@ -771,7 +764,8 @@ def _scan_shared_positions(shared: pl.LazyFrame, genes: Optional[pl.DataFrame], 
     ``total_positions``, ``share_allele_pos`` and ``max_identical_stretch``, and, when
     ``genes`` is given, one per gene with ``gene_total_positions`` and
     ``gene_share_allele_pos``. Overlapping genes each count all their own positions.
-    A stretch breaks at a mismatch, a coordinate gap, or a new scaffold.
+    A stretch breaks at a mismatch, a coordinate gap, or a new scaffold. 1.x profiles keep
+    their definition with ``count_opening_mismatch``, which counts the mismatch that opens a run.
     """
     gene_slices, gene_total, gene_share = {}, None, None
     if genes is not None:
@@ -786,9 +780,8 @@ def _scan_shared_positions(shared: pl.LazyFrame, genes: Optional[pl.DataFrame], 
         positions = batch["pos"].to_numpy()
         matches = batch["match"].to_numpy()
         scaffolds = batch["chrom"]
-        boundaries = np.flatnonzero(scaffolds.ne_missing(scaffolds.shift(1)).to_numpy())
-        for first, last in zip(boundaries, np.r_[boundaries[1:], batch.height], strict=True):
-            chrom, genome = scaffolds[int(first)], batch["genome"][int(first)]
+        for first, last in _scaffold_runs(scaffolds):
+            chrom, genome = scaffolds[first], batch["genome"][first]
             pos, match = positions[first:last], matches[first:last]
             counts = genome_counts.setdefault(genome, [0, 0, 0])
             counts[0] += pos.size
@@ -798,7 +791,7 @@ def _scan_shared_positions(shared: pl.LazyFrame, genes: Optional[pl.DataFrame], 
                 if edges[0] != 0:
                     edges = np.r_[0, edges]
                 # A run opened by a mismatch does not count that position.
-                runs = np.diff(edges) - (~match[edges[:-1]])
+                runs = np.diff(edges) - (0 if count_opening_mismatch else ~match[edges[:-1]])
                 if chrom == previous_chrom and pos[0] == previous_pos + 1 and match[0]:
                     runs[0] += previous_run
                 counts[2] = max(counts[2], int(runs.max()))
@@ -851,6 +844,19 @@ def compare_profiles(profile_1, profile_2, *, preprofile_dir=None, calculate=opt
     return pair.compare(calculate, min_gene_compare_len=min_gene_compare_len)
 
 
+def _file_digest(path) -> str:
+    """Return a file's SHA-256, hashing each unchanged file version once per process."""
+    path = Path(path).resolve()
+    stat = path.stat()
+    return _cached_digest(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=64)
+def _cached_digest(path: str, _mtime_ns: int, _size: int) -> str:
+    from zipstrain.utils import sha256_file
+    return sha256_file(path)
+
+
 def _pair_names(profile_1, profile_2, sample_1=None, sample_2=None) -> tuple[str, str]:
     """Name a pair's samples, defaulting to the profile file names without ``_profile``."""
     def name(source, given, default):
@@ -864,18 +870,20 @@ class PairComparison:
     """Two validated profiles and their shared-position join, reused by every pair analysis.
 
     Construction does once what each analysis needs: the profile-generation, reference and
-    filter checks, optional preprofile assets, sample names and the ANI method. ``aligned``
-    and ``matches`` are lazy, and the analyses built on them share one join and one
-    streaming pass when collected together with :meth:`collect`::
+    filter checks, optional preprofile assets, sample names and the ANI method. Every
+    analysis is lazy and reads no profile rows until collected. Polars plans built on
+    ``aligned`` and ``matches`` share one join and one streaming pass when collected
+    together with :meth:`collect`::
 
         pair = PairComparison("A_profile.parquet", "B_profile.parquet", preprofile_dir="assets")
-        positions, stretches = pair.collect(
+        positions, blocks = pair.collect(
             pair.matches.group_by("genome").agg(pl.len()),
-            pair.identical_stretches(min_length=1000),
+            pair.mosaic_regions(),
         )
 
-    :meth:`compare` is the exception: it counts in NumPy batches and runs its own pass.
-    Codon tables are only read by ``compare(calculate=...)`` with ``gene_selection``.
+    :meth:`compare` and :meth:`identical_stretches` count in NumPy batches and run their
+    own pass when collected. Codon tables are only read when ``compare(calculate=...)``
+    with ``gene_selection`` is collected.
     """
 
     def __init__(self, profile_1, profile_2, *, preprofile_dir=None, ani_method=options.ANI_METHOD,
@@ -926,12 +934,13 @@ class PairComparison:
         )
         rates = None
         if "gene_selection" in calculations:
-            from zipstrain.utils import sha256_file
-            for counts, positions in zip(self.codon_counts, self.profiles, strict=True):
-                if pl.read_parquet_metadata(counts).get("zipstrain_source_profile_sha256") != sha256_file(positions):
-                    raise ValueError("Codon evidence does not match its sample position profile")
-            rates = codons.pairwise_selection(*self.codon_counts, self.gene_file, min_cov=self.min_cov,
-                                              allele_integration=self.allele_integration)
+            def rates():
+                # At collect time, so building the plan reads no codons and hashes no profile.
+                for counts, positions in zip(self.codon_counts, self.profiles, strict=True):
+                    if pl.read_parquet_metadata(counts).get("zipstrain_source_profile_sha256") != _file_digest(positions):
+                        raise ValueError("Codon evidence does not match its sample position profile")
+                return codons.pairwise_selection(*self.codon_counts, self.gene_file, min_cov=self.min_cov,
+                                                 allele_integration=self.allele_integration)
         universe = [_as_lazy_profile(source).select(pl.col("genome").cast(pl.String)).unique()
                     for source in self.profiles]
         return _compare_aligned(
@@ -944,14 +953,18 @@ class PairComparison:
         """Return identical stretches of at least ``min_length``, as in :func:`identical_stretches`."""
         if min_length < 1:
             raise ValueError("min_length must be positive")
-        stretches = _identical_stretch_rows(self.matches).filter(pl.col("length") >= min_length)
-        return (
-            _stretch_significance(stretches, self.matches)
-            .sort("stretch_id")
-            .select(pl.lit(self.names[0]).alias("sample_1"), pl.lit(self.names[1]).alias("sample_2"),
-                    pl.col("genome").cast(pl.String), pl.col("chrom").cast(pl.String),
-                    "stretch_id", "start", "end", "length", "background_divergence", "expected_runs", "p_value")
-        )
+        matches, names = self.matches, self.names
+
+        def run() -> pl.DataFrame:
+            stretches, background = _scan_identical_stretches(matches, min_length)
+            return _stretch_significance(stretches.lazy(), background.lazy()).select(
+                pl.lit(names[0]).alias("sample_1"), pl.lit(names[1]).alias("sample_2"), *_STRETCH_SCHEMA,
+                "background_divergence", "expected_runs", "p_value").collect()
+
+        schema = {"sample_1": pl.String, "sample_2": pl.String, **_STRETCH_SCHEMA,
+                  "background_divergence": pl.Float64, "expected_runs": pl.Float64, "p_value": pl.Float64}
+        # Its own NumPy pass when collected, like :meth:`compare`.
+        return pl.defer(run, schema=schema)
 
     def mosaic_regions(self, *, factor: float = 20.0, switch_probability: float = 1e-3) -> pl.LazyFrame:
         """Return blocks whose mismatches are much rarer or much denser than the genome's background.
@@ -999,8 +1012,9 @@ def identical_stretches(profile_1, profile_2, *, min_length: int, ani_method=opt
     has that length. Return one row per stretch with ``sample_1``, ``sample_2``, ``genome``,
     ``chrom``, ``stretch_id``, ``start``, ``end``, ``length``, ``background_divergence``,
     ``expected_runs`` and ``p_value``. The last three test the stretch against mismatches
-    falling at random at the genome's popANI rate ``d``: with ``M`` mismatches the genome has
-    about ``M + 1`` runs, ``expected_runs = (M + 1)(1 - d) ** length`` is the E-value, and
+    falling at random at the genome's popANI rate ``d``: with ``M`` mismatches and ``S`` unbroken
+    segments (scaffold starts and coordinate gaps) the genome has ``M + S`` runs,
+    ``expected_runs = (M + S)(1 - d) ** length`` is the E-value, and
     ``p_value`` is the chance that some run is at least this long. Large mosaics change ``d``
     itself; :meth:`PairComparison.mosaic_regions` refits it. ``start`` and ``end`` are
     one-based, inclusive profile coordinates. ``stretch_id`` numbers every stretch of the
@@ -1038,20 +1052,51 @@ def _catalog_genomes(preprofile_dir, genes: Optional[pl.DataFrame]) -> list[pl.L
     return [genes.lazy().select(pl.col("genome").cast(pl.String)).unique()] if genes is not None else []
 
 
+_GENOME_COUNT_SCHEMA = {"genome": pl.String, "total_positions": pl.Int64, "share_allele_pos": pl.Int64,
+                        "max_identical_stretch": pl.Int64}
+_GENE_COUNT_SCHEMA = {"gene_id": pl.UInt64, "genome": pl.String, "gene_total_positions": pl.Int64,
+                      "gene_share_allele_pos": pl.Int64}
+
+
 def _compare_aligned(aligned: pl.LazyFrame, names: tuple[str, str], *, calculations: tuple[str, ...],
                      ani_method: str, min_gene_compare_len: int, genes: Optional[pl.DataFrame],
-                     genome_universe: list, rates: Optional[pl.LazyFrame] = None,
+                     genome_universe: list, rates=None,
                      gene_index: Optional[dict] = None) -> pl.LazyFrame:
-    """Build one pair's comparison rows from already validated inputs and resolved metrics."""
-    from zipstrain import gene_info as gi
+    """Build one pair's comparison rows from already validated inputs and resolved metrics.
+
+    The result is lazy: the NumPy counting pass runs when it is collected. ``rates`` is a
+    selection frame, or a function returning one that is called at collect time.
+    """
+    from zipstrain import codons
     shared = aligned.select(
         "chrom", "genome", "pos", (getattr(PolarsANIExpressions(), ani_method)() > 0).alias("match"))
+    gene_rows = "gene_ani" in calculations or rates is not None
+    wants_stretch = "max_identical_stretch" in calculations
+
+    def rows(genome_counts: pl.DataFrame, gene_counts: Optional[pl.DataFrame], rate_frame) -> pl.LazyFrame:
+        return _comparison_rows(genome_counts, gene_counts, rate_frame, names, calculations=calculations,
+                                min_gene_compare_len=min_gene_compare_len, genome_universe=genome_universe)
+
+    def run() -> pl.DataFrame:
+        genome_counts, gene_counts = _scan_shared_positions(
+            shared, genes if gene_rows else None, stretches=wants_stretch, gene_index=gene_index)
+        rate_frame = rates() if callable(rates) else rates
+        return rows(genome_counts, gene_counts, rate_frame).collect(engine="streaming")
+
+    empty_rates = pl.LazyFrame(schema=codons._SELECTION_SCHEMA) if rates is not None else None
+    schema = rows(pl.DataFrame(schema=_GENOME_COUNT_SCHEMA),
+                  pl.DataFrame(schema=_GENE_COUNT_SCHEMA) if gene_rows else None, empty_rates).collect_schema()
+    return pl.defer(run, schema=schema)
+
+
+def _comparison_rows(genome_counts: pl.DataFrame, gene_counts: Optional[pl.DataFrame], rates,
+                     names: tuple[str, str], *, calculations: tuple[str, ...], min_gene_compare_len: int,
+                     genome_universe: list) -> pl.LazyFrame:
+    """Turn one pair's genome and gene counts into its output rows."""
+    from zipstrain import gene_info as gi
     keys = ["sample_1", "sample_2", "genome"]
     sample_columns = [pl.lit(name).alias(key) for key, name in zip(keys[:2], names, strict=True)]
-    gene_rows = "gene_ani" in calculations or rates is not None
     wants_ani, wants_stretch = "genome_ani" in calculations, "max_identical_stretch" in calculations
-    genome_counts, gene_counts = _scan_shared_positions(
-        shared, genes if gene_rows else None, stretches=wants_stretch, gene_index=gene_index)
     genome = None
     if wants_ani or wants_stretch:
         columns = ["total_positions", "share_allele_pos", "max_identical_stretch"]
@@ -1065,7 +1110,7 @@ def _compare_aligned(aligned: pl.LazyFrame, names: tuple[str, str], *, calculati
             *(["total_positions", "share_allele_pos", "genome_ani"] if wants_ani else []),
             *(["max_identical_stretch"] if wants_stretch else []),
         )
-    if gene_rows:
+    if gene_counts is not None:
         gene = gene_counts.lazy().filter(pl.col("gene_total_positions") >= min_gene_compare_len)
         if "gene_ani" in calculations:
             gene = gene.with_columns(

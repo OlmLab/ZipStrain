@@ -136,6 +136,11 @@ def test_overlap_statistics_and_missing_reference(assets):
     genes = gi.read_gene_info(catalog)
     sums = gi.range_sums(pl.scan_parquet(path).select("chrom", "pos", pl.lit(1).alias("sites")), genes, ["sites"]).collect()
     assert sorted(sums["sites"].to_list()) == [0.0, 9.0, 9.0, 9.0]
+    loci = pl.scan_parquet(path).select("chrom", "pos", pl.col("A").alias("depth"))
+    expected = gi.range_sums(loci, genes, ["depth"]).collect().sort("gene_id")
+    for chunk_size in (1, 2, 5):  # scaffolds split across batches sum the same
+        streamed = gi.range_sums(loci, genes, ["depth"], coordinates_sorted=True, chunk_size=chunk_size)
+        assert_frame_equal(streamed.collect().sort("gene_id"), expected)
     with pytest.raises(ValueError):
         gi.gene_statistics(pl.scan_parquet(path), catalog, min_cov=0)
 
@@ -284,11 +289,12 @@ def test_identical_stretches_report_coordinates_and_match_max_stretch(assets):
     stretches = compare.identical_stretches(a, b, min_length=1).collect()
     assert stretches.columns == ["sample_1", "sample_2", "genome", "chrom", "stretch_id", "start", "end", "length",
                                  "background_divergence", "expected_runs", "p_value"]
-    # genomeA: 1 mismatch in 20 shared positions, so 2 runs and q = 0.95 ** length.
+    # genomeA: 1 mismatch in 20 shared positions and the gap at 12 start the runs after the
+    # scaffold's first, so 3 runs and q = 0.95 ** length.
     nine = stretches.filter(pl.col("length") == 9, pl.col("genome") == "genomeA").row(0, named=True)
     assert nine["background_divergence"] == pytest.approx(0.05)
-    assert nine["expected_runs"] == pytest.approx(2 * 0.95 ** 9)
-    assert nine["p_value"] == pytest.approx(1 - (1 - 0.95 ** 9) ** 2)
+    assert nine["expected_runs"] == pytest.approx(3 * 0.95 ** 9)
+    assert nine["p_value"] == pytest.approx(1 - (1 - 0.95 ** 9) ** 3)
     # genomeB matches everywhere, so no run length is surprising.
     assert stretches.filter(pl.col("genome") == "genomeB")["p_value"].to_list() == [1.0]
     assert stretches.select("genome", "chrom", "start", "end", "length").rows() == [
@@ -346,6 +352,11 @@ def test_mosaic_regions_find_planted_blocks_and_nothing_else():
         pl.col("chrom") == "c1", pl.col("pos").is_between(low["start"], low["end"])).height
     # Without mismatches nothing is reported, and the background alone yields no blocks.
     assert compare._decode_mosaics(events.filter(pl.col("kind") != 1), factor=20, switch_probability=1e-3).is_empty()
+    # Every position a mismatch: rates of 1 must stay finite and find no block.
+    different = pl.DataFrame({"chrom": ["c1"] * 50, "genome": ["g"] * 50, "pos": list(range(1, 51)),
+                              "match": [False] * 50})
+    assert compare._decode_mosaics(compare._mosaic_events(different.lazy()).collect(),
+                                   factor=20, switch_probability=1e-3).is_empty()
     plain = matches.filter(pl.col("chrom") == "c2")
     assert compare._decode_mosaics(compare._mosaic_events(plain.lazy()).collect(),
                                    factor=20, switch_probability=1e-3).is_empty()
@@ -858,6 +869,33 @@ def test_selection_results_do_not_depend_on_gene_range_size(assets, monkeypatch)
             assert_frame_equal(call(), expected[name]), (name, chunk)
 
 
+def test_unsorted_codon_tables_are_sorted_once(assets, monkeypatch):
+    """A table whose row groups are not in gene order is sorted once, with the same results."""
+    import numpy as np
+    import pyarrow.parquet as pq
+
+    root, _, _, _, catalog = assets
+    rng = np.random.default_rng(29)
+    a = _random_codon_table(root, catalog, "a", rng, stop_rate=.05)
+    b = _random_codon_table(root, catalog, "b", rng, stop_rate=.05)
+    expected = codons.pairwise_selection(a, b, catalog, min_cov=2).collect().sort("gene_id")
+    reference = codons.reference_selection(a, catalog, min_cov=2).collect().sort("gene_id")
+    table = pq.read_table(a)
+    shuffled = root / "shuffled_codon_counts.parquet"
+    footer = {key: value for key, value in pq.read_metadata(a).metadata.items() if not key.startswith(b"ARROW")}
+    pq.write_table(table.take(rng.permutation(table.num_rows)).replace_schema_metadata(footer), shuffled,
+                   row_group_size=3)
+    assert codons._row_groups_gene_ordered(a) and not codons._row_groups_gene_ordered(shuffled)
+    monkeypatch.setattr(codons, "SELECTION_CHUNK_CODONS", 2)
+    with pytest.warns(UserWarning, match="sorting a temporary copy once") as caught:
+        pair = codons.pairwise_selection(shuffled, b, catalog, min_cov=2).collect().sort("gene_id")
+    assert len(caught) == 1
+    assert_frame_equal(pair, expected)
+    with pytest.warns(UserWarning, match="sorting a temporary copy once"):
+        assert_frame_equal(codons.reference_selection(shuffled, catalog, min_cov=2).collect().sort("gene_id"),
+                           reference)
+
+
 def test_shared_position_scan_is_independent_of_chunks_and_matches_brute_force(assets):
     """Stretches and gene counts must survive batch edges, scaffold changes, and coordinate gaps."""
     import numpy as np
@@ -891,12 +929,34 @@ def test_shared_position_scan_is_independent_of_chunks_and_matches_brute_force(a
         inside = shared.filter((pl.col("chrom") == chrom) & pl.col("pos").is_between(start, end))
         expected_gene[gene_id] = (inside.height, int(inside["match"].sum()))
 
+    expected_stretches, expected_background, previous = [], [], None
+    for genome in ("g1", "g2"):
+        positions = mismatches = segments = 0
+        for chrom in shared.filter(pl.col("genome") == genome)["chrom"].unique(maintain_order=True):
+            last = None
+            for pos, match in shared.filter(pl.col("chrom") == chrom).select("pos", "match").iter_rows():
+                positions, mismatches = positions + 1, mismatches + (not match)
+                segments += last is None or pos != last + 1
+                if match and previous is not None and previous[1] == chrom and previous[4] == pos - 1:
+                    previous[4], previous[5] = pos, previous[5] + 1
+                elif match:
+                    previous = [genome, chrom, len(expected_stretches) + 1, pos, pos, 1]
+                    expected_stretches.append(previous)
+                last = pos
+        expected_background.append((genome, positions, mismatches, segments))
+    expected_stretches = [tuple(row) for row in expected_stretches]
+
     for chunk_size in (1, 2, 3, 17, 256, 1 << 20):
         genome, gene = compare._scan_shared_positions(shared.lazy(), genes, stretches=True, chunk_size=chunk_size)
         assert {row[0]: row[1:] for row in genome.iter_rows()} == expected_genome, chunk_size
         assert {row[0]: (row[2], row[3]) for row in gene.iter_rows()} == expected_gene, chunk_size
-    longest = compare._identical_stretch_rows(shared.lazy()).group_by("genome").agg(pl.col("length").max())
-    assert dict(longest.collect().rows()) == {genome: best for genome, (_, _, best) in expected_genome.items()}
+        stretches, background = compare._scan_identical_stretches(shared.lazy(), chunk_size=chunk_size)
+        assert stretches.rows() == expected_stretches, chunk_size
+        assert background.rows() == expected_background, chunk_size
+        longest = stretches.group_by("genome").agg(pl.col("length").max())
+        assert dict(longest.rows()) == {genome: best for genome, (_, _, best) in expected_genome.items()}
+    assert compare._scan_identical_stretches(shared.lazy(), 20, chunk_size=7)[0].rows() == [
+        row for row in expected_stretches if row[5] >= 20]
 
 
 def test_collection_validates_each_sample_once_and_parallel_pairs_match(assets, monkeypatch):

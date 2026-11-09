@@ -7,9 +7,11 @@ See ``docs/v2.md`` for filters, estimators, exclusions, and runnable examples.
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
 from functools import lru_cache
 from itertools import permutations, product
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import heapq
 import json
 import re
@@ -483,11 +485,15 @@ class _ReferenceLookup:
 
     @classmethod
     def for_genome(cls, catalog, genome: str = "all") -> "_ReferenceLookup":
-        """Return the lookup of every catalog gene, or of one genome's genes."""
-        genes = gi.read_gene_info(catalog)
-        if genome == "all":
-            return cls(catalog, genes)
-        return cls(catalog, genes.filter(pl.col("genome") == genome), subset=True)
+        """Return the lookup of every catalog gene, or of one genome's genes.
+
+        Lookups are read-only and cached per process and file version, so packing many
+        samples against one catalog reads ``reference_codons.parquet`` once.
+        """
+        catalog = Path(catalog).resolve()
+        versions = tuple((stat.st_mtime_ns, stat.st_size) for stat in (
+            catalog.stat(), catalog.with_name("reference_codons.parquet").stat()))
+        return _cached_lookup(str(catalog), genome, versions)
 
     def _index(self, frame: pl.DataFrame) -> np.ndarray:
         where = _run_positions(frame["gene_id"].to_numpy(), self.gene_ids)
@@ -505,6 +511,57 @@ class _ReferenceLookup:
         starts = np.flatnonzero(np.diff(group, prepend=-1))
         ends = np.append(starts[1:], len(self.gene_ids)) - 1
         return [(int(self.gene_ids[s]), int(self.gene_ids[e])) for s, e in zip(starts, ends)]
+
+
+@lru_cache(maxsize=2)
+def _cached_lookup(catalog: str, genome: str, _versions: tuple) -> _ReferenceLookup:
+    """Build :meth:`_ReferenceLookup.for_genome` lookups; ``_versions`` keys out edited files."""
+    genes = gi.read_gene_info(catalog)
+    if genome == "all":
+        return _ReferenceLookup(catalog, genes)
+    return _ReferenceLookup(catalog, genes.filter(pl.col("genome") == genome), subset=True)
+
+
+def _row_groups_gene_ordered(path) -> bool:
+    """Return whether a parquet file's row groups follow gene ID order.
+
+    Range filters then read only the row groups they need. A single row group counts as
+    ordered; missing statistics or overlapping groups do not.
+    """
+    import pyarrow.parquet as pq
+
+    metadata = pq.ParquetFile(path).metadata
+    if metadata.num_row_groups <= 1:
+        return True
+    column = metadata.schema.names.index("gene_id")
+    previous = None
+    for index in range(metadata.num_row_groups):
+        statistics = metadata.row_group(index).column(column).statistics
+        if statistics is None or not statistics.has_min_max:
+            return False
+        if previous is not None and statistics.min < previous:
+            return False
+        previous = statistics.max
+    return True
+
+
+@contextmanager
+def _gene_ordered_counts(path, counts: pl.LazyFrame):
+    """Yield ``counts`` from a file whose row groups follow gene order, sorting once if needed.
+
+    Tables from :func:`write_codon_counts` are sorted and returned unchanged. Any other table
+    would be read in full once per gene range, so it is sorted into a temporary copy first.
+    """
+    if _row_groups_gene_ordered(path):
+        yield counts
+        return
+    import warnings
+    warnings.warn(f"{path} is not sorted by gene; sorting a temporary copy once before selection.",
+                  stacklevel=3)
+    with TemporaryDirectory() as staging:
+        ordered = Path(staging) / "codon_counts.sorted.parquet"
+        counts.sort(_KEYS, maintain_order=True).sink_parquet(ordered, engine="streaming")
+        yield pl.scan_parquet(ordered)
 
 
 def _gene_range(first: int | None, last: int | None) -> pl.Expr:
@@ -533,8 +590,9 @@ def _pack_callable_codons(source, catalog, destination, min_cov: int, genome: st
     reference = _ReferenceLookup.for_genome(catalog, genome)
     schema = pl.DataFrame(schema=_PACKED_SCHEMA).to_arrow().schema.with_metadata(metadata or {})
     # Packed files are short-lived staging, so favour write speed over size.
-    with pq.ParquetWriter(destination, schema, compression="zstd", compression_level=1) as writer:
-        for part in _packed_ranges(counts, reference, min_cov, min_freq):
+    with _gene_ordered_counts(source, counts) as ordered, \
+            pq.ParquetWriter(destination, schema, compression="zstd", compression_level=1) as writer:
+        for part in _packed_ranges(ordered, reference, min_cov, min_freq):
             writer.write_table(part.to_arrow().cast(schema))
 
 
@@ -740,6 +798,19 @@ def _selection_totals(matched, integration: str, batch_size: int) -> pl.LazyFram
     return _selection_columns(np.concatenate(gene_ids), np.concatenate(totals))
 
 
+_SELECTION_SCHEMA = {"gene_id": pl.UInt64, **{name: pl.Float64 for name in gi.SELECTION_COLUMNS}}
+
+
+def _deferred_selection(matched, integration: str, batch_size: int) -> pl.LazyFrame:
+    """Return selection metrics as a lazy frame that reads the codon tables when collected.
+
+    ``matched`` is a generator function for :func:`_selection_totals`; each collect calls it
+    again, so the result never caches file contents between collects.
+    """
+    return pl.defer(lambda: _selection_totals(matched(), integration, batch_size).collect(),
+                    schema=_SELECTION_SCHEMA)
+
+
 def vectorized_pair_selection(left, right, *, allele_integration: str = options.ALLELE_INTEGRATION,
                               batch_size: int = SELECTION_BATCH_ROWS) -> pl.LazyFrame:
     """Compare two packed samples one gene range at a time, in bounded batches.
@@ -755,7 +826,7 @@ def vectorized_pair_selection(left, right, *, allele_integration: str = options.
             a, b = (frame if _keys_sorted(frame) else frame.sort(_KEYS) for frame in (a, b))
             yield a, b, *_match_sorted(a, b)
 
-    return _selection_totals(matched(), allele_integration, batch_size)
+    return _deferred_selection(matched, allele_integration, batch_size)
 
 
 def reference_selection(codon_counts, gene_info, *, min_cov=options.COMPARE_MIN_COV, min_freq=0.0,
@@ -777,11 +848,15 @@ def reference_selection(codon_counts, gene_info, *, min_cov=options.COMPARE_MIN_
     """
     _selection_arguments(min_cov, min_freq, allele_integration, batch_size)
     counts = read_codon_counts(codon_counts, gene_info)
-    reference = _ReferenceLookup.for_genome(gene_info)
 
     def matched():
+        reference = _ReferenceLookup.for_genome(gene_info)
+        with _gene_ordered_counts(codon_counts, counts) as ordered:
+            yield from reference_rows(reference, ordered)
+
+    def reference_rows(reference, ordered):
         # Every packed codon has a sense reference codon, which sample 1 holds one read of.
-        for b in _packed_ranges(counts, reference, min_cov, min_freq):
+        for b in _packed_ranges(ordered, reference, min_cov, min_freq):
             a = b.select(*_KEYS, "s_sites").with_columns(
                 pl.Series("reference_id", reference.codon_ids(b), dtype=pl.UInt8)
             ).select(*_KEYS, "s_sites", pl.concat_list("reference_id").alias("codon"),
@@ -790,7 +865,7 @@ def reference_selection(codon_counts, gene_info, *, min_cov=options.COMPARE_MIN_
             rows = np.arange(b.height)
             yield a, b, rows, rows
 
-    return _selection_totals(matched(), allele_integration, batch_size)
+    return _deferred_selection(matched, allele_integration, batch_size)
 
 
 def pairwise_selection(codon_counts_1, codon_counts_2, gene_info, *, min_cov=options.COMPARE_MIN_COV,
@@ -810,13 +885,14 @@ def pairwise_selection(codon_counts_1, codon_counts_2, gene_info, *, min_cov=opt
     """
     _selection_arguments(min_cov, min_freq, allele_integration, batch_size)
     first, second = read_codon_counts(codon_counts_1, gene_info), read_codon_counts(codon_counts_2, gene_info)
-    reference = _ReferenceLookup.for_genome(gene_info)
 
     def matched():
-        # Both samples are packed in the same gene ranges, so range k of one meets range k of the other.
-        for a, b in zip(_packed_ranges(first, reference, min_cov, min_freq),
-                        _packed_ranges(second, reference, min_cov, min_freq), strict=True):
-            b = b.drop("s_sites")
-            yield a, b, *_match_sorted(a, b)
+        reference = _ReferenceLookup.for_genome(gene_info)
+        with _gene_ordered_counts(codon_counts_1, first) as left, _gene_ordered_counts(codon_counts_2, second) as right:
+            # Both samples are packed in the same gene ranges, so range k of one meets range k of the other.
+            for a, b in zip(_packed_ranges(left, reference, min_cov, min_freq),
+                            _packed_ranges(right, reference, min_cov, min_freq), strict=True):
+                b = b.drop("s_sites")
+                yield a, b, *_match_sorted(a, b)
 
-    return _selection_totals(matched(), allele_integration, batch_size)
+    return _deferred_selection(matched, allele_integration, batch_size)

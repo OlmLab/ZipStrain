@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 
 
@@ -186,9 +187,24 @@ def write_gene_info(reference_fasta, gene_fasta, stb_file, output_file) -> Path:
     return output
 
 
+# Authenticated catalogs keyed by (resolved path, mtime_ns, size). Digesting every gene
+# row is the costly part, and one comparison asks for the same catalog several times.
+_CATALOG_CACHE: dict[tuple[str, int, int], pl.DataFrame] = {}
+_CATALOG_CACHE_SIZE = 4
+
+
 def read_gene_info(path: str | Path) -> pl.DataFrame:
-    """Read and authenticate a V2 catalog; reject edited mappings and duplicate IDs."""
-    path = Path(path)
+    """Read and authenticate a V2 catalog; reject edited mappings and duplicate IDs.
+
+    A catalog is authenticated once per process and file version: repeated reads
+    of an unchanged file return the cached frame, and an edited file is checked again.
+    """
+    path = Path(path).resolve()
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _CATALOG_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
         frame = pl.read_parquet(path).select(list(GENE_SCHEMA)).cast(GENE_SCHEMA).sort("gene_id")
     except pl.exceptions.PolarsError as exc:
@@ -207,6 +223,9 @@ def read_gene_info(path: str | Path) -> pl.DataFrame:
         pl.any_horizontal([pl.col(name).is_null() for name in GENE_SCHEMA]))
     if invalid.height or frame["gene"].n_unique() != frame.height:
         raise ValueError("Invalid or unsupported gene annotation")
+    if len(_CATALOG_CACHE) >= _CATALOG_CACHE_SIZE:
+        _CATALOG_CACHE.pop(next(iter(_CATALOG_CACHE)))
+    _CATALOG_CACHE[key] = frame
     return frame
 
 
@@ -241,26 +260,61 @@ def read_gene_ranges(path) -> pl.LazyFrame:
                        new_columns=["gene", "scaffold", "start", "end"])
 
 
-def range_sums(loci: pl.LazyFrame, genes: pl.DataFrame, columns, *, coordinates_sorted=False) -> pl.LazyFrame:
+def _index_genes(genes: pl.DataFrame) -> dict:
+    """Group a catalog's gene rows and coordinates by scaffold for interval counting."""
+    starts, ends = genes["start"].to_numpy(), genes["end"].to_numpy()
+    index = {}
+    for (chrom,), rows in genes.with_row_index("row").group_by("chrom", maintain_order=True):
+        row = rows["row"].to_numpy()
+        index[chrom] = (row, starts[row], ends[row])
+    return index
+
+
+def _scaffold_runs(scaffolds: pl.Series):
+    """Yield ``(first, last)`` row bounds of each run of one scaffold in a batch."""
+    boundaries = np.flatnonzero(scaffolds.ne_missing(scaffolds.shift(1)).to_numpy())
+    return zip(boundaries.tolist(), np.r_[boundaries[1:], scaffolds.len()].tolist(), strict=True)
+
+
+def range_sums(loci: pl.LazyFrame, genes: pl.DataFrame, columns, *, coordinates_sorted=False,
+               chunk_size: int = 1 << 20) -> pl.LazyFrame:
     """Sum numeric position columns within every gene, including overlaps.
 
-    Input positions must be unique within each scaffold. Prefix sums are joined
-    at inclusive ``end`` and ``start-1`` boundaries, avoiding per-position gene
-    expansion. Uncovered genes receive zero; scaffold prefixes never mix.
-    Set coordinates_sorted only for loci already ordered by chrom and pos.
+    Input positions must be unique within each scaffold. One streaming pass takes
+    per-batch prefix sums and reads each gene's inclusive interval with a binary
+    search, so no position is expanded per gene and the profile is never held in
+    memory. Uncovered genes receive zero; null values count as zero.
+    Set ``coordinates_sorted`` only for loci in position order within each scaffold
+    run; otherwise they are sorted first. The result is lazy and computed on collect.
     """
     columns = list(columns)
-    ordered = loci if coordinates_sorted else loci.sort(["chrom", "pos"])
-    prefix = ordered.with_columns(
-        [pl.col(name).cast(pl.Float64).cum_sum().over("chrom").alias(name) for name in columns])
-    bounds = pl.concat([
-        genes.select("gene_id", "chrom", pl.col("end").alias("boundary")).with_columns(pl.lit(1).alias("sign")),
-        genes.select("gene_id", "chrom", (pl.col("start")-1).alias("boundary")).with_columns(pl.lit(-1).alias("sign")),
-    ]).lazy().sort(["chrom", "boundary"])
-    return bounds.join_asof(prefix.select("chrom", "pos", *columns),
-        left_on="boundary", right_on="pos", by="chrom", strategy="backward",
-        check_sortedness=False).group_by("gene_id").agg(
-            [(pl.col(name).fill_null(0)*pl.col("sign")).sum().alias(name) for name in columns])
+
+    def compute() -> pl.DataFrame:
+        ordered = loci if coordinates_sorted else loci.sort(["chrom", "pos"])
+        totals = np.zeros((len(columns), genes.height), dtype=np.float64)
+        index = _index_genes(genes)
+        frames = ordered.select("chrom", "pos", *[pl.col(name).cast(pl.Float64).fill_null(0) for name in columns])
+        for batch in frames.collect_batches(engine="streaming", chunk_size=chunk_size):
+            if batch.is_empty():
+                continue
+            positions = batch["pos"].to_numpy()
+            values = [batch[name].to_numpy() for name in columns]
+            scaffolds = batch["chrom"]
+            for first, last in _scaffold_runs(scaffolds):
+                entry = index.get(scaffolds[first])
+                if entry is None:
+                    continue
+                rows, starts, ends = entry
+                pos = positions[first:last]
+                low = np.searchsorted(pos, starts, side="left")
+                high = np.searchsorted(pos, ends, side="right")
+                for k, value in enumerate(values):
+                    prefix = np.r_[0.0, np.cumsum(value[first:last])]
+                    totals[k, rows] += prefix[high] - prefix[low]
+        return genes.select("gene_id").with_columns(
+            pl.Series(name, totals[k]) for k, name in enumerate(columns))
+
+    return pl.defer(compute, schema={"gene_id": pl.UInt64, **{name: pl.Float64 for name in columns}})
 
 
 def with_selection_ratios(frame):
@@ -271,12 +325,15 @@ def with_selection_ratios(frame):
     )
 
 
-def gene_statistics(profile: pl.LazyFrame, gene_info, *, min_cov=5, selection=None) -> pl.LazyFrame:
+def gene_statistics(profile: pl.LazyFrame, gene_info, *, min_cov=5, selection=None,
+                    coordinates_sorted=False) -> pl.LazyFrame:
     """Build the agreed 15-column sample gene table from intervals and counts.
 
     Coverage and breadth use retained depth > 0, reference ANI uses known
     reference bases with depth >= ``min_cov``. Missing reference evidence and
     unavailable selection metrics are null, including undefined ratios.
+    Pass ``coordinates_sorted`` for a profile marked as sorted to skip the sort
+    and stream the profile in one pass (see :func:`range_sums`).
     """
     if min_cov < 1:
         raise ValueError("min_cov must be positive")
@@ -288,7 +345,9 @@ def gene_statistics(profile: pl.LazyFrame, gene_info, *, min_cov=5, selection=No
     match = pl.any_horizontal([(ref == bit) & (pl.col(base) > 0) for base, bit in zip("ACGT", [1, 2, 4, 8])])
     loci = profile.select("chrom", "pos", depth.alias("depth"), (depth > 0).alias("covered"),
                           callable_site.alias("callable"), (callable_site & match).alias("matches"))
-    result = genes.lazy().join(range_sums(loci, genes, ["depth", "covered", "callable", "matches"]), on="gene_id", how="left").with_columns(
+    sums = range_sums(loci, genes, ["depth", "covered", "callable", "matches"],
+                      coordinates_sorted=coordinates_sorted)
+    result = genes.lazy().join(sums, on="gene_id", how="left").with_columns(
         (pl.col("depth").fill_null(0)/pl.col("length")).alias("coverage"),
         (pl.col("covered").fill_null(0)/pl.col("length")).alias("breadth"),
         pl.when(pl.col("callable") > 0).then(100*pl.col("matches")/pl.col("callable")).otherwise(None).alias("ref_ani"))
