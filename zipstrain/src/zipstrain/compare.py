@@ -1152,15 +1152,16 @@ def _pair_workers(requested, pair_count: int, memory_limit_gb: float, largest_ro
 
     Pairs barely benefit from more threads, but scale with more processes that each have
     few, so ``auto`` uses half the allocated CPUs at two threads each, unless the work is too
-    small to repay starting processes. It stays within the memory one pair holds: roughly 128
-    bytes per profile row in the join and gene counters.
+    small to repay starting processes. A requested count is capped by the CPU budget. It stays
+    within the memory one pair holds: roughly 128 bytes per profile row in the join and gene
+    counters.
     """
     from zipstrain.resource_limits import duckdb_thread_budget
     if requested != "auto" and (not isinstance(requested, int) or requested < 1):
         raise ValueError("Pair workers must be a positive integer or 'auto'")
     cpus = duckdb_thread_budget()
     by_memory = max(1, int(memory_limit_gb * 1024**3 // max(1, largest_rows * _PAIR_BYTES_PER_ROW)))
-    wanted = requested
+    wanted = min(requested, cpus) if requested != "auto" else requested
     if requested == "auto":
         wanted = max(1, cpus // 2) if pair_count * largest_rows >= _AUTO_WORKERS_MIN_ROWS else 1
     workers = max(1, min(pair_count, wanted, by_memory))

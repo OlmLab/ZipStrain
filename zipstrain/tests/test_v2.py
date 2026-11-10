@@ -992,7 +992,7 @@ def test_pair_workers_respect_cpu_and_memory(monkeypatch):
     monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "8")
     assert compare._pair_workers("auto", 100, 16.0, 1_000_000) == (4, 2)
     assert compare._pair_workers("auto", 2, 16.0, 30_000_000) == (2, 4)
-    assert compare._pair_workers(16, 100, 16.0, 1000) == (16, 1)
+    assert compare._pair_workers(16, 100, 16.0, 1000) == (8, 1)  # capped by the budget
     # Too little work to repay starting processes.
     assert compare._pair_workers("auto", 3, 16.0, 1000) == (1, 8)
     # A pair of 40 M rows holds about 5 GiB, so 16 GiB fits three.

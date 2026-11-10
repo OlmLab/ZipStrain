@@ -578,22 +578,33 @@ def clean_bases(bases: str, indel_re: re.Pattern) -> str:
         bases (str): The bases string from mpileup.
         indel_re (re.Pattern): Compiled regex pattern to match indels and markers.
     
+
+    Every alternative of ``indel_re`` must start with ``^``, ``$``, ``+`` or ``-``: the text
+    between those characters is copied in one slice instead of being matched character by
+    character, and a line without them (most lines) is only uppercased.
     """
+    marker = _MPILEUP_MARKER_RE.search(bases)
+    if marker is None:
+        return bases.upper()
     cleaned = []
     i = 0
-    while i < len(bases):
-        m = indel_re.match(bases, i)
-        if m:
-            if m.group(0).startswith('+') or m.group(0).startswith('-'):
-                # indel length
-                indel_len = int(m.group(1))
-                i = m.end() + indel_len
-            else:
-                i = m.end()
+    while marker is not None:
+        j = marker.start()
+        cleaned.append(bases[i:j])
+        m = indel_re.match(bases, j)
+        if m is None:
+            cleaned.append(bases[j])
+            i = j + 1
+        elif bases[j] in "+-":
+            i = m.end() + int(m.group(1))
         else:
-            cleaned.append(bases[i].upper())
-            i += 1
-    return ''.join(cleaned)
+            i = m.end()
+        marker = _MPILEUP_MARKER_RE.search(bases, i)
+    cleaned.append(bases[i:])
+    return ''.join(cleaned).upper()
+
+
+_MPILEUP_MARKER_RE = re.compile(r"[\^$+-]")
 
 def encode_reference_base_bitmask(base: str) -> int:
     """
@@ -642,18 +653,15 @@ def count_mpileup_bases(bases: str, ref_base: str, indel_re: re.Pattern) -> dict
 
     In samtools mpileup, `.` and `,` indicate a read base matching the reference on
     the forward and reverse strand respectively. This helper resolves those tokens
-    to the provided reference base before counting.
+    to the provided reference base before counting; with a reference base other than
+    A/C/G/T they are dropped.
     """
     cleaned = clean_bases(bases, indel_re)
+    counts = {base: cleaned.count(base) for base in "ACGT"}
     ref_upper = str(ref_base).upper()
-    translated: list[str] = []
-    for base in cleaned:
-        if base in {".", ","}:
-            if ref_upper in REF_BASE_BIT_VALUES:
-                translated.append(ref_upper)
-            continue
-        translated.append(base.upper())
-    return count_bases("".join(translated))
+    if ref_upper in counts:
+        counts[ref_upper] += cleaned.count(".") + cleaned.count(",")
+    return counts
 
 def process_mpileup_function(batch_size, output_file):
     """

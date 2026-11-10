@@ -95,6 +95,22 @@ python -c "import json; print(json.load(open('out_dir/zipstrain_status.json'))['
 
 If `status` is `running` but nothing has updated for a long time, use the recorded `pid` to check whether the process is still alive (e.g. `ps -p <pid>`). Because the log is append-only, re-running in the same directory (for example to [resume `map`](#map)) adds a fresh block rather than overwriting the previous run's history.
 
+### Limiting CPU use
+
+Every command that computes takes one option for this: `--threads N`, the most CPUs the whole command may use. ZipStrain splits them internally between its worker processes, its Polars, PyArrow and DuckDB pools, and concurrent batches. Without it, a command uses the Slurm allocation (`SLURM_CPUS_PER_TASK`) or every CPU on the machine. Inside a Slurm job, `--threads` can only lower the allocation.
+
+```bash
+zipstrain profile ... --threads 16
+zipstrain compare ... --threads 16
+zipstrain utilities compare-pair ... --threads 4
+```
+
+- `zipstrain profile` and `zipstrain compare`, local mode: N is the total for the run. Each of the batches running at once (`--max-concurrent-batches`, or fewer when the run has fewer batches) gets an equal share.
+- Slurm mode: N is the CPUs for each job. It fills in `cpus-per-task` when the Slurm config does not set it.
+- From Python, call `zipstrain.set_threads(N)` before importing Polars or running any work. It raises an error if Polars is already running more threads, because that pool cannot be shrunk.
+
+The older `--num-procs` (`profile`), `--max-concurrency` (`utilities profile-single`) and `--workers` (`utilities compare-pair`) still work, but are hidden from `--help`. Each is capped by `--threads`. `ZIPSTRAIN_CPU_BUDGET` sets the same budget as `--threads` through the environment, which is how Nextflow passes `task.cpus`.
+
 ### Map
 
 #### `zipstrain map`
@@ -212,9 +228,9 @@ Major options:
 - Read filters: `--min-mapq` (0), `--min-baseq` (13), `--min-read-ani` (0.95), `--read-inclusion` (`paired`). The read-ANI floor and paired-read defaults filter low-identity / mis-mapped reads (matching inStrain).
 - Allele filters: the Poisson null model assumes a 0.1% total error rate and `p_threshold=0.000001` by default, removing counts at or below its error ceiling. `--min-freq` defaults to `0.01`, requiring at least 1% within-position frequency; set it to `0` to disable frequency filtering. The denominator is the original A+C+G+T depth before allele filtering. These defaults favor strain comparison over rare-allele sensitivity. Supplied null models keep their existing thresholds; rebuild the model and rerun profiling to apply changed defaults.
 - Presence & SNVs: `--no-snvs`, `--snv-min-cov` (5), `--presence-ber` (0.5), `--presence-fug` (1.0), `--presence-min-cov-use-fug` (2.0), `--presence-min-coverage` (0.1), `--genome-taxonomy`
-- Execution: `-n, --num-procs` (8), `-m, --max-concurrent-batches` (5), `-t, --task-per-batch` (10), `-e, --execution-mode` (`local`/`slurm`), `-c, --slurm-config`, `-o, --container-engine`, `--container-address`
+- Execution: `--threads` (total CPUs; see [Limiting CPU use](#limiting-cpu-use)), `-m, --max-concurrent-batches` (5), `-t, --task-per-batch` (10), `-e, --execution-mode` (`local`/`slurm`), `-c, --slurm-config`, `-o, --container-engine`, `--container-address`
 
-ZipStrain profiles each BAM with a CPU budget no larger than `--num-procs` or the Slurm CPU allocation, whichever is smaller. It reserves part of that budget for Polars and limits concurrent profiling chunks accordingly. The external mapper and samtools sort retain their own thread settings.
+In local mode, each BAM is profiled with `--threads` divided by the number of batches running at once; in Slurm mode, with `--threads` or the job's allocation. Each BAM reserves a quarter of its share for Polars and parses that many fewer chunks at once in separate processes. The external mapper and samtools sort retain their own thread settings.
 
 <details>
 <summary><code>zipstrain profile --help</code></summary>
@@ -334,8 +350,10 @@ SNV calling and presence:
                                   produced by `zipstrain map` (Sylph route).
 
 Running parameters:
-  -n, --num-procs INTEGER         Number of processors to use for each profiling
-                                  task.  [default: 8]
+  --threads INTEGER RANGE         Maximum CPUs this command uses in total,
+                                  shared out internally. Defaults to the Slurm
+                                  allocation, or every CPU on this machine.
+                                  [x>=1]
   -m, --max-concurrent-batches INTEGER
                                   Maximum number of concurrent batches to run.
                                   [default: 5]
@@ -367,7 +385,7 @@ Compare profiled samples to each other, one row per genome per sample pair, and 
 
 `--method table` (default) compares Parquet profiles pairwise in Polars. `--method matrix` builds a reusable matrix store for vectorized all-vs-all comparison. With either method, rerunning in the same run directory after adding samples computes only the new pairs. See the [Tutorial](./Tutorial.md) and [Expected output](./expected_output.md).
 
-In local mode, the table method runs V2 pairs in worker processes, as many as the CPU budget and `--memory-limit-gb` allow. In Slurm and container modes, each V2 pair runs through the same pair command as Nextflow. For legacy profiles, batched comparison runs each pair in a separate process. Batch scripts use the Slurm `--cpus-per-task` allocation, or one CPU per pair when no allocation is exposed. Set `ZIPSTRAIN_CPU_BUDGET` to specify a per-process cap within that allocation. For concurrent local batches, use `--max-concurrent-batches` to control aggregate CPU use.
+In local mode, the table method runs V2 pairs in worker processes, as many as the CPU budget and `--memory-limit-gb` allow. In Slurm and container modes, each V2 pair runs through the same pair command as Nextflow. For legacy profiles, batched comparison runs each pair in a separate process. Batch scripts use the Slurm `--cpus-per-task` allocation, or one CPU per pair when no allocation is exposed. `--threads` caps the whole command: in local mode the concurrent batches share it, and in Slurm mode it is each job's CPUs.
 
 ```bash
 # Table comparison from a CSV of profiles
@@ -673,7 +691,7 @@ zipstrain utilities profile-single \
   --null-model profiling_assets/null_model.parquet \
   --profiling-contract profiling_assets/profiling_contract.json \
   --num-chunks 24 \
-  --max-concurrency 4 \
+  --threads 4 \
   --output-dir sample_profile
 ```
 
@@ -687,7 +705,7 @@ Options:
 - `-g, --gene-range-table` (optional)
 - `--profiling-contract` (optional)
 - `-n, --num-chunks` (default: `24`) — number of BED chunks to create
-- `-c, --max-concurrency` (default: `4`) — how many chunks run simultaneously
+- `--threads` (default: the Slurm allocation or every CPU) — total CPUs; a quarter go to Polars and the rest parse chunks at once
 - `--min-mapq` (default: `0`)
 - `--min-baseq` (default: `13`)
 - `--min-freq` (default: `0.01`) — after the null-model test, retain an allele only when `count / original A+C+G+T coverage >= min_freq`
@@ -786,7 +804,7 @@ Options:
 - `--codon-counts-1`, `--codon-counts-2` (codon tables for `gene_selection`; by default, `<sample>_codon_counts.parquet` beside each profile)
 - `--allele-integration` (`consensus`/`weighted`; used by `gene_selection`; default: `consensus`)
 - `--sample-name-1`, `--sample-name-2` (names written to the output; by default, taken from the profile file names)
-- `-w, --workers` (with `--pair-table`; defaults to CPU count capped by pair count)
+- `--threads` (total CPUs; with `--pair-table`, pairs run in parallel within it)
 
 Accepted pair-table schemas:
 

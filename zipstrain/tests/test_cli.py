@@ -1262,6 +1262,37 @@ def test_profile_command_calls_lazy_run_profile(tmp_path, monkeypatch):
     assert captured["backend"] == "python"
 
 
+@pytest.mark.parametrize(("extra", "expected"), [((), 4), (("--num-procs", "2"), 2), (("--num-procs", "9"), 4)])
+def test_profile_command_shares_threads_between_running_batches(tmp_path, monkeypatch, extra, expected):
+    # 25 samples at 10 per batch is 3 batches, all running at once: 12 CPUs / 3 = 4 per task.
+    monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "12")
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    input_table = tmp_path / "input.csv"
+    input_table.write_text("sample_name,bamfile\n" + "".join(f"s{i},/tmp/s{i}.bam\n" for i in range(25)))
+    null_model = tmp_path / "null_model.parquet"
+    pl.DataFrame({"cov": list(range(10)), "max_error_count": [0] * 10}).write_parquet(null_model)
+    captured = {}
+    monkeypatch.setattr(cli.tm, "lazy_run_profile", lambda **kwargs: captured.update(kwargs))
+    result = CliRunner().invoke(cli.cli, [
+        "profile", "--input-table", str(input_table), "--stb-file", str(tmp_path / "stb.tsv"),
+        "--null-model", str(null_model), "--gene-range-table", str(tmp_path / "gene_range.tsv"),
+        "--bed-file", str(tmp_path / "bed.bed"), "--genome-length-file", str(tmp_path / "genome_length.parquet"),
+        "--run-dir", str(tmp_path / "run"), "--task-per-batch", "10", "--max-concurrent-batches", "5", *extra,
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["num_procs"] == expected
+
+
+def test_threads_fills_missing_slurm_cpus_per_task(tmp_path):
+    config = tmp_path / "slurm.json"
+    config.write_text('{"time": "01:00:00"}')
+    assert "cpus-per-task" not in cli._load_slurm_config(config).additional_params
+    assert cli._load_slurm_config(config, 6).additional_params["cpus-per-task"] == "6"
+    config.write_text('{"time": "01:00:00", "additional_params": {"cpus-per-task": "3"}}')
+    assert cli._load_slurm_config(config, 6).additional_params["cpus-per-task"] == "3"
+
+
 def test_profile_command_passes_custom_read_filters(tmp_path, monkeypatch):
     input_table = tmp_path / "input.csv"
     input_table.write_text("sample_name,bamfile\nsample1,/tmp/sample1.bam\n")
@@ -2334,7 +2365,7 @@ def test_profile_help_is_organized_into_sections_with_defaults():
     assert "[default: 50000]" in normalized_help  # --max-total-reads
     assert "--min-freq FLOAT" in result.output
     assert "[default: 0.01]" in normalized_help   # --min-freq
-    assert "[default: 8]" in normalized_help      # --num-procs
+    assert "--threads" in result.output and "--num-procs" not in result.output
     assert "[default: local]" in normalized_help  # --execution-mode
 
 

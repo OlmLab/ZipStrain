@@ -28,12 +28,15 @@ def test_slurm_job_without_cpu_declaration_defaults_to_one(monkeypatch):
 @pytest.mark.parametrize("command,pool", [
     (["utilities", "compare-pair"], 3),
     (["utilities", "profile-single", "--max-concurrency", "8"], 2),
-    (["profile", "--num-procs", "3"], 3),
+    (["profile", "--threads", "3"], 3),
+    (["compare", "--threads", "2"], 2),
+    (["utilities", "compare-pair", "--threads=5"], 5),
+    (["utilities", "profile-single", "--threads", "8"], 2),
 ])
 def test_cli_initializes_polars_with_job_budget(command, pool):
     env = os.environ.copy()
-    if command[0] == "profile":
-        env.pop("ZIPSTRAIN_CPU_BUDGET", None)
+    if "--threads" in " ".join(command):
+        env["ZIPSTRAIN_CPU_BUDGET"] = "64"  # --threads overrides an inherited budget
     else:
         env["ZIPSTRAIN_CPU_BUDGET"] = "8" if "profile-single" in command else "3"
     env.pop("SLURM_CPUS_PER_TASK", None)
@@ -135,3 +138,35 @@ def test_matrix_build_duckdb_connection_uses_job_budget(monkeypatch, tmp_path):
         assert conn.execute("SELECT current_setting('threads')").fetchone()[0] == 2
     finally:
         conn.close()
+
+
+def test_batch_share_splits_budget_between_running_batches(monkeypatch):
+    monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "16")
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    assert resource_limits.batch_share(5) == 3
+    assert resource_limits.batch_share(5, batch_count=2) == 8
+    assert resource_limits.batch_share(64) == 1
+
+
+def test_set_threads_refuses_a_larger_running_polars_pool(monkeypatch):
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    if pl.thread_pool_size() > 1:
+        with pytest.raises(RuntimeError, match="set_threads"):
+            resource_limits.set_threads(1)
+    with pytest.raises(ValueError):
+        resource_limits.set_threads(0)
+
+
+def test_set_threads_before_polars_bounds_its_pool():
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("ZIPSTRAIN_CPU_BUDGET", "POLARS_MAX_THREADS", "SLURM_CPUS_PER_TASK", "SLURM_JOB_ID")}
+    code = "import zipstrain; zipstrain.set_threads(2); import polars as pl; print(pl.thread_pool_size())"
+    result = subprocess.run([sys.executable, "-c", code], env=env, text=True, capture_output=True, check=True)
+    assert result.stdout.strip() == "2"
+
+
+def test_requested_pair_workers_never_exceed_the_budget(monkeypatch):
+    from zipstrain import compare
+    monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "4")
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    assert compare._pair_workers(16, 100, 64.0, 1000) == (4, 1)

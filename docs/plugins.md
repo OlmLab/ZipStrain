@@ -70,7 +70,7 @@ zipstrain profile \
   --backend rust_profiler
 ```
 
-`mapped/samples.txt` is the same CSV used by Python profiling, with `sample_name,bamfile` columns. Keep the BAMs coordinate-sorted. `--num-procs` controls the maximum Rust workers per sample; the plugin also respects ZipStrain's detected CPU allocation. Existing profiling filters such as `--min-baseq`, `--min-read-ani`, and `--read-inclusion` are passed through.
+`mapped/samples.txt` is the same CSV used by Python profiling, with `sample_name,bamfile` columns. Keep the BAMs coordinate-sorted. `--threads` caps the CPUs for the whole run, and each sample's Rust workers get their share of it; the plugin also respects ZipStrain's detected CPU allocation. Existing profiling filters such as `--min-baseq`, `--min-read-ani`, and `--read-inclusion` are passed through.
 
 For one BAM with already prepared assets, use `zipstrain utilities profile-single`:
 
@@ -84,7 +84,7 @@ zipstrain utilities profile-single \
   --backend rust_profiler
 ```
 
-This command requires an indexed BAM, BED file, STB file, and null-model Parquet. `--reference-fasta`, `--gene-range-table`, and `--profiling-contract` remain optional; provide the reference FASTA if you want `ref_base_bitmask` in the profile. Its worker limit is `--max-concurrency`.
+This command requires an indexed BAM, BED file, STB file, and null-model Parquet. `--reference-fasta`, `--gene-range-table`, and `--profiling-contract` remain optional; provide the reference FASTA if you want `ref_base_bitmask` in the profile. Its CPU limit is `--threads`.
 
 ### Select it in Nextflow
 

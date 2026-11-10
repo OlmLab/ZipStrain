@@ -16,7 +16,7 @@ import signal
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
-from zipstrain.resource_limits import connect_duckdb, cpu_budget
+from zipstrain.resource_limits import connect_duckdb, cpu_budget, job_pool
 import tempfile
 import subprocess
 import pyarrow as pa
@@ -1181,21 +1181,25 @@ def _profile_chunk_task(
     min_mapq: int,
     min_baseq: int,
     min_freq: float,
+    parser=None,
 )->None:
+    """Profile one BED chunk into its final chunk parquet and read-location parquet.
+
+    ``parser`` is an optional process pool for the mpileup parse, which is pure Python and
+    would otherwise hold the interpreter lock that every chunk thread shares.
+    """
     include_reference_base = reference_fasta is not None
     raw_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.parquet"
     raw_sorted_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.sorted.parquet"
     candidate_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.candidate.parquet"
     final_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.parquet"
 
-    _stream_profile_mpileup_chunk_to_parquet(
-        bed_file=bed_file,
-        bam_file=bam_file,
-        reference_fasta=reference_fasta,
-        output_parquet=raw_chunk_path,
-        min_mapq=min_mapq,
-        min_baseq=min_baseq,
-    )
+    parse = dict(bed_file=bed_file, bam_file=bam_file, reference_fasta=reference_fasta,
+                 output_parquet=raw_chunk_path, min_mapq=min_mapq, min_baseq=min_baseq)
+    if parser is None:
+        _stream_profile_mpileup_chunk_to_parquet(**parse)
+    else:
+        parser.submit(_stream_profile_mpileup_chunk_to_parquet, **parse).result()
     raw_for_processing = raw_chunk_path
     if not _parquet_rows_are_coordinate_sorted(raw_chunk_path):
         _sort_existing_profile_parquet(
@@ -1441,7 +1445,9 @@ def profile_bam_in_chunks(
     if budget is not None:
         # Chunk subprocesses and the process-wide Polars pool share one allocation.
         requested_workers = min(requested_workers, max(1, budget - pl.thread_pool_size()))
-    with ThreadPoolExecutor(max_workers=requested_workers) as executor:
+    # The mpileup parse runs in a spawned process pool of the same size: it is pure Python,
+    # so in threads the chunks would take turns on one interpreter lock.
+    with job_pool(requested_workers, 1) as parser, ThreadPoolExecutor(max_workers=requested_workers) as executor:
         futures = [
             executor.submit(
                 _profile_chunk_task,
@@ -1456,6 +1462,7 @@ def profile_bam_in_chunks(
                 min_mapq=min_mapq,
                 min_baseq=min_baseq,
                 min_freq=min_freq,
+                parser=parser,
             )
             for chunk_id, bed_chunk_file in enumerate(bed_chunk_files)
         ]

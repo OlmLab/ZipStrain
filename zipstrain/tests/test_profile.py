@@ -6,7 +6,10 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 from pathlib import Path
+from contextlib import contextmanager
+import os
 import re
+from zipstrain.resource_limits import job_pool
 
 
 a_chr1=     [ 1, 0, 1, 0, 0, 0, 4, 4, 2, 1]
@@ -489,7 +492,49 @@ def _install_fake_profile_subprocess(monkeypatch: pytest.MonkeyPatch, observed_c
         bai.write_text("")
 
     monkeypatch.setattr(profile, "_filter_bam_for_profiling", _noop_filter_bam_for_profiling)
+
+    # Spawned parse workers would not see these patches, so parse in this process;
+    # test_mpileup_parse_in_process_pool_matches_in_process covers the pool itself.
+    @contextmanager
+    def _no_pool(workers, threads):
+        yield None
+
+    monkeypatch.setattr(profile, "job_pool", _no_pool)
     return observed_mpileups, observed_reference_flags
+
+
+@pytest.mark.parametrize(
+    ("bases", "ref", "expected"),
+    [
+        ("..,,", "C", {"A": 0, "C": 4, "G": 0, "T": 0}),
+        ("..,,", "N", {"A": 0, "C": 0, "G": 0, "T": 0}),
+        ("^].a$,+2ACg-1t*N", "T", {"A": 1, "C": 0, "G": 1, "T": 2}),
+        ("^+.^$,$", "g", {"A": 0, "C": 0, "G": 2, "T": 0}),
+        ("+x.+12ACGTACGTACGTc", "A", {"A": 1, "C": 1, "G": 0, "T": 0}),
+        ("", "A", {"A": 0, "C": 0, "G": 0, "T": 0}),
+    ],
+)
+def test_count_mpileup_bases_handles_markers_and_indels(bases, ref, expected):
+    assert utils.count_mpileup_bases(bases, ref, profile.MPILEUP_INDEL_RE) == expected
+
+
+def test_mpileup_parse_in_process_pool_matches_in_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pileup = tmp_path / "pile.txt"
+    pileup.write_text("".join(f"s{c}\t{p}\tA\t3\t.,^]g$+1T\tIII\n" for c in range(2) for p in range(1, 2001)))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    samtools = fake_bin / "samtools"
+    samtools.write_text(f"#!/bin/sh\ncat '{pileup}'\n")
+    samtools.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    kwargs = dict(bed_file=tmp_path / "x.bed", bam_file=tmp_path / "x.bam", reference_fasta=None)
+    profile._stream_profile_mpileup_chunk_to_parquet(**kwargs, output_parquet=tmp_path / "here.parquet")
+    with job_pool(2, 1) as pool:
+        pool.submit(profile._stream_profile_mpileup_chunk_to_parquet, **kwargs,
+                    output_parquet=tmp_path / "pool.parquet").result()
+    here, pooled = pl.read_parquet(tmp_path / "here.parquet"), pl.read_parquet(tmp_path / "pool.parquet")
+    assert here.height == 4000 and here.equals(pooled)
+    assert here.row(0) == ("s0", 1, 2, 0, 1, 0)
 
 
 def test_profile_bam_end_to_end_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

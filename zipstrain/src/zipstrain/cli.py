@@ -13,7 +13,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 
-from zipstrain.resource_limits import configure_cli_threads
+from zipstrain.resource_limits import configure_cli_threads, available_cpus, batch_share
 
 configure_cli_threads()
 
@@ -48,6 +48,9 @@ mapping = _lazy_module("zipstrain.mapping")
 matrix_workflow = _lazy_module("zipstrain.matrix_workflow")
 from zipstrain.run_logger import RunLogger
 import polars as pl
+import contextlib
+import math
+import os
 import pathlib
 import shutil
 import tempfile
@@ -59,6 +62,42 @@ from rich import box
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn, TaskProgressColumn
 
 DEFAULT_CONTAINER_REPOSITORY = "parsaghadermazi/zipstrain"
+
+
+THREADS_HELP = ("Maximum CPUs this command uses in total, shared out internally. "
+                "Defaults to the Slurm allocation, or every CPU on this machine.")
+
+
+def threads_option(function):
+    """Add ``--threads``, which :func:`configure_cli_threads` already read before Polars loaded."""
+    return click.option("--threads", type=click.IntRange(min=1), default=None, help=THREADS_HELP)(function)
+
+
+def _load_slurm_config(path, threads=None):
+    """Load a Slurm config; ``--threads`` fills in ``cpus-per-task`` when the config has none."""
+    config = tm.SlurmConfig.from_json(path)
+    if threads is not None:
+        config.additional_params.setdefault("cpus-per-task", str(threads))
+    return config
+
+
+@contextlib.contextmanager
+def _local_batch_budget(execution_mode, max_concurrent_batches):
+    """While batches run, give each concurrent local batch an equal share of the budget
+    through the environment its scripts inherit, then restore it. Slurm jobs keep the budget
+    as is: each job has its own allocation."""
+    if execution_mode != "local":
+        yield
+        return
+    saved = os.environ.get("ZIPSTRAIN_CPU_BUDGET")
+    os.environ["ZIPSTRAIN_CPU_BUDGET"] = str(batch_share(max_concurrent_batches))
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("ZIPSTRAIN_CPU_BUDGET", None)
+        else:
+            os.environ["ZIPSTRAIN_CPU_BUDGET"] = saved
 
 
 class SectionedCommand(click.Command):
@@ -1533,10 +1572,11 @@ def _write_pair_table(pair_table, output_file, *, calculate, scope, stb_file, wo
 @click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
 @click.option('--sample-name-1', default=None, help="Sample label. Defaults to the name in the first profile's filename.")
 @click.option('--sample-name-2', default=None, help="Sample label. Defaults to the name in the second profile's filename.")
-@click.option('--workers', '-w', type=int, default=None, help="With --pair-table: parallel workers. Defaults to CPU count capped by pair count.")
+@threads_option
+@click.option('--workers', '-w', type=click.IntRange(min=1), default=None, hidden=True, help="Advanced, with --pair-table: pairs compared at once. Defaults to what --threads allows.")
 def compare_pair(profile_1, profile_2, pair_table, output_file, calculate, scope, preprofile_dir, stb_file,
                  min_cov, min_gene_compare_len, ani_method, codon_counts_1, codon_counts_2, allele_integration,
-                 sample_name_1, sample_name_2, workers):
+                 sample_name_1, sample_name_2, threads, workers):
     """Compare one sample pair and write its comparison Parquet.
 
     This is the unit ``zipstrain compare``, Slurm, and Nextflow schedule.
@@ -1623,7 +1663,8 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--gene-info-table', '--gene-range-table', '-g', 'gene_range_table', default=None, help="Optional preprofile gene_info.parquet catalog.")
 @click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into the profile parquet metadata.")
 @click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
-@click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
+@threads_option
+@click.option('--max-concurrency', '-c', type=click.IntRange(min=1), default=None, hidden=True, help="Advanced: profiling chunks run at once. Defaults to what --threads allows.")
 @click.option('--min-mapq', default=options.PROFILE_MIN_MAPQ, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
 @click.option('--min-baseq', default=options.PROFILE_MIN_BASEQ, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
 @click.option('--min-freq', default=options.PROFILE_MIN_FREQ, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
@@ -1633,7 +1674,7 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--collect-codons', '--prepare-dnds', 'collect_codons', is_flag=True, default=False, help="Write observed read-phased codon counts and reference dN/dS and pN/pS in gene statistics.")
 @click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default='consensus', show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
 @click.option('--backend', default='python', show_default=True, help="Profiling backend: python or an installed entry-point plugin (for example, rust_profiler).")
-def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, output_dir, backend, collect_codons, allele_integration):
+def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, threads, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, output_dir, backend, collect_codons, allele_integration):
     """
     Profile a single BAM file using the provided BED file and optional gene range table.
     
@@ -1647,7 +1688,7 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
         null_model=pathlib.Path(null_model),
         profiling_contract=pathlib.Path(profiling_contract) if profiling_contract is not None else None,
         num_chunks=num_chunks,
-        max_concurrency=max_concurrency,
+        max_concurrency=max_concurrency or available_cpus(),
         min_mapq=min_mapq,
         min_baseq=min_baseq,
         min_freq=min_freq,
@@ -1781,7 +1822,8 @@ map_command.option_sections = {
 @click.option('--min-read-ani', default=options.PROFILE_MIN_READ_ANI, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
 @click.option('--read-inclusion', default=options.PROFILE_READ_INCLUSION, show_default=True, type=click.Choice(options.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--backend', default='python', show_default=True, help="Profiling backend: python or an installed entry-point plugin (for example, rust_profiler).")
-@click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
+@threads_option
+@click.option('--num-procs', '-n', type=click.IntRange(min=1), default=None, hidden=True, help="Advanced: CPUs for each profiling task. Defaults to --threads shared between concurrent batches.")
 @click.option('--max-concurrent-batches', '-m', default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option('--poll-interval', '-p', default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
 @click.option('--task-per-batch', '-t', default=10, show_default=True, help="Number of tasks to include in each batch.")
@@ -1798,7 +1840,7 @@ map_command.option_sections = {
 @click.option('--collect-codons', '--prepare-dnds', 'collect_codons', is_flag=True, default=False, help="Write observed read-phased codon counts and reference dN/dS and pN/pS in gene statistics.")
 @click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default='consensus', show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
 @click.option('--genome-taxonomy', default=None, help="Optional genome->taxonomy TSV to add a genome_taxonomy column to genome_stats. Auto-discovered next to the reference/STB when produced by `zipstrain map` (Sylph route).")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, backend, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy, collect_codons, allele_integration):
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, threads, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, backend, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy, collect_codons, allele_integration):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1825,7 +1867,14 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
         if execution_mode == "slurm":
             if slurm_config is None:
                 raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+            slurm_conf = _load_slurm_config(slurm_config, threads)
+            # Each job's budget is capped by its own allocation, so this only needs to be large enough.
+            share = num_procs or threads or int(slurm_conf.additional_params.get("cpus-per-task", 1))
+        else:
+            samples = bams_lf.select(pl.len()).collect().item()
+            share = batch_share(max_concurrent_batches, math.ceil(samples / max(1, task_per_batch)))
+            share = min(num_procs, share) if num_procs else share
+        num_procs = share
 
         run_log.step("Resolving profiling assets")
         assets = pf.resolve_profiling_assets(
@@ -1931,7 +1980,7 @@ profile.option_sections = {
         "genome_taxonomy",
     ],
     "Running parameters": [
-        "num_procs",
+        "threads",
         "max_concurrent_batches",
         "poll_interval",
         "task_per_batch",
@@ -2067,7 +2116,7 @@ def _run_matrix_compare_method(
 def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *, calculate, ani_method, min_cov,
                               min_gene_compare_len, allele_integration, execution_mode, slurm_config,
                               container_engine, container_address, max_concurrent_batches, poll_interval,
-                              task_per_batch):
+                              task_per_batch, threads=None):
     """Run V2 pairs as scheduled jobs. Every job gets the same resolved metrics and inputs."""
     try:
         plan = cp.resolve_collection_metrics(
@@ -2079,7 +2128,7 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
     if execution_mode == "slurm":
         if slurm_config is None:
             raise click.UsageError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-        slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+        slurm_conf = _load_slurm_config(slurm_config, threads)
     # A finished run with these exact inputs and settings is reused, and any other is refused.
     # Extending a table across scheduled jobs is not supported, because nothing here can prove
     # earlier rows came from the same inputs.
@@ -2100,13 +2149,14 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
         profile_db=profile_database,
         config=db.GenomeComparisonConfig(scope="all", min_cov=min_cov, min_gene_compare_len=min_gene_compare_len),
     )
-    tm.lazy_run_compares(
-        comps_db=comparisons, container_engine=_build_container_engine(container_engine, container_address),
-        run_dir=run_dir, max_concurrent_batches=max_concurrent_batches, execution_mode=execution_mode,
-        slurm_config=slurm_conf, ani_method=ani_method, calculate="+".join(calculations),
-        tasks_per_batch=task_per_batch, poll_interval=poll_interval, preprofile_dir=preprofile_dir,
-        allele_integration=allele_integration, codon_tables=codon_paths if "gene_selection" in calculations else None,
-    )
+    with _local_batch_budget(execution_mode, max_concurrent_batches):
+        tm.lazy_run_compares(
+            comps_db=comparisons, container_engine=_build_container_engine(container_engine, container_address),
+            run_dir=run_dir, max_concurrent_batches=max_concurrent_batches, execution_mode=execution_mode,
+            slurm_config=slurm_conf, ani_method=ani_method, calculate="+".join(calculations),
+            tasks_per_batch=task_per_batch, poll_interval=poll_interval, preprofile_dir=preprofile_dir,
+            allele_integration=allele_integration, codon_tables=codon_paths if "gene_selection" in calculations else None,
+        )
     if (run_dir / "all_comparisons.parquet").exists():
         finished.write_text(identity)
 
@@ -2128,6 +2178,7 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
 @click.option("--gene-info-table", "--gene-range-table", "gene_range_table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
 @click.option("--backend", type=click.Choice(options.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
 @click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for the comparison.")
+@threads_option
 @click.option("--compare-kernel", default=options.MATRIX_COMPARE_KERNEL_ANCHOR, show_default=True, metavar="[anchor|block]", callback=_normalize_compare_kernel_option, help=_COMPARE_KERNEL_HELP + " Applies to --method matrix.")
 @click.option("--max-concurrent-batches", "-m", default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option("--poll-interval", "-p", default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
@@ -2140,7 +2191,7 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Also write a companion .csv. V2 exports Parquet by default.")
 @click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="Shared V2 profiling_assets directory for gene and selection comparisons.")
 @click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
-def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, calculate, bed_file, gene_range_table, backend, memory_limit_gb, compare_kernel, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv, preprofile_dir, allele_integration):
+def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, calculate, bed_file, gene_range_table, backend, memory_limit_gb, threads, compare_kernel, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv, preprofile_dir, allele_integration):
     """
     Compare profiled samples at the genome level, or per gene when a gene metric is requested.
 
@@ -2178,7 +2229,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
                     allele_integration=allele_integration, execution_mode=execution_mode,
                     slurm_config=slurm_config, container_engine=container_engine,
                     container_address=container_address, max_concurrent_batches=max_concurrent_batches,
-                    poll_interval=poll_interval, task_per_batch=task_per_batch,
+                    poll_interval=poll_interval, task_per_batch=task_per_batch, threads=threads,
                 )
                 _maybe_write_csv(run_dir / "all_comparisons.parquet", no_csv=no_csv or not force_csv, force_csv=force_csv)
                 run_log.step("Exported V2 comparison table")
@@ -2230,7 +2281,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
         if execution_mode == "slurm":
             if slurm_config is None:
                 raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+            slurm_conf = _load_slurm_config(slurm_config, threads)
 
         # Table method: auto-resume from a prior run in the same run-dir when the
         # user did not pass an explicit comparison to extend.
@@ -2241,56 +2292,57 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
 
         container_engine_obj = _build_container_engine(container_engine, container_address)
 
-        if compare_genes:
-            resolved_scope = scope if scope is not None else "all:all"
-            comps_db = db.GeneComparisonDatabase(
-                profile_db=profile_database,
-                config=db.GeneComparisonConfig(
-                    scope=resolved_scope,
-                    min_cov=min_cov,
-                    min_gene_compare_len=min_gene_compare_len,
-                    stb_file_loc=stb_file,
-                ),
-                comp_db_loc=comp_db_file,
-            )
-            run_log.step("Comparing genes across sample pairs")
-            tm.lazy_run_gene_compares(
-                comps_db=comps_db,
-                container_engine=container_engine_obj,
-                run_dir=run_dir,
-                max_concurrent_batches=max_concurrent_batches,
-                execution_mode=execution_mode,
-                slurm_config=slurm_conf,
-                tasks_per_batch=task_per_batch,
-                poll_interval=poll_interval,
-                ani_method=ani_method,
-            )
-        else:
-            resolved_scope = scope if scope is not None else "all"
-            cp.parse_genome_calculations(calculate)
-            comps_db = db.GenomeComparisonDatabase(
-                profile_db=profile_database,
-                config=db.GenomeComparisonConfig(
-                    scope=resolved_scope,
-                    min_cov=min_cov,
-                    min_gene_compare_len=min_gene_compare_len,
-                    stb_file_loc=stb_file,
-                ),
-                comp_db_loc=comp_db_file,
-            )
-            run_log.step("Comparing genomes across sample pairs")
-            tm.lazy_run_compares(
-                comps_db=comps_db,
-                container_engine=container_engine_obj,
-                run_dir=run_dir,
-                max_concurrent_batches=max_concurrent_batches,
-                execution_mode=execution_mode,
-                slurm_config=slurm_conf,
-                ani_method=ani_method,
-                calculate=calculate,
-                tasks_per_batch=task_per_batch,
-                poll_interval=poll_interval,
-            )
+        with _local_batch_budget(execution_mode, max_concurrent_batches):
+            if compare_genes:
+                resolved_scope = scope if scope is not None else "all:all"
+                comps_db = db.GeneComparisonDatabase(
+                    profile_db=profile_database,
+                    config=db.GeneComparisonConfig(
+                        scope=resolved_scope,
+                        min_cov=min_cov,
+                        min_gene_compare_len=min_gene_compare_len,
+                        stb_file_loc=stb_file,
+                    ),
+                    comp_db_loc=comp_db_file,
+                )
+                run_log.step("Comparing genes across sample pairs")
+                tm.lazy_run_gene_compares(
+                    comps_db=comps_db,
+                    container_engine=container_engine_obj,
+                    run_dir=run_dir,
+                    max_concurrent_batches=max_concurrent_batches,
+                    execution_mode=execution_mode,
+                    slurm_config=slurm_conf,
+                    tasks_per_batch=task_per_batch,
+                    poll_interval=poll_interval,
+                    ani_method=ani_method,
+                )
+            else:
+                resolved_scope = scope if scope is not None else "all"
+                cp.parse_genome_calculations(calculate)
+                comps_db = db.GenomeComparisonDatabase(
+                    profile_db=profile_database,
+                    config=db.GenomeComparisonConfig(
+                        scope=resolved_scope,
+                        min_cov=min_cov,
+                        min_gene_compare_len=min_gene_compare_len,
+                        stb_file_loc=stb_file,
+                    ),
+                    comp_db_loc=comp_db_file,
+                )
+                run_log.step("Comparing genomes across sample pairs")
+                tm.lazy_run_compares(
+                    comps_db=comps_db,
+                    container_engine=container_engine_obj,
+                    run_dir=run_dir,
+                    max_concurrent_batches=max_concurrent_batches,
+                    execution_mode=execution_mode,
+                    slurm_config=slurm_conf,
+                    ani_method=ani_method,
+                    calculate=calculate,
+                    tasks_per_batch=task_per_batch,
+                    poll_interval=poll_interval,
+                )
 
         run_log.step("Writing comparison outputs")
         output_name = "all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet"
@@ -2325,6 +2377,9 @@ compare.option_sections = {
     "Output": [
         "no_csv",
         "force_csv",
+    ],
+    "Resources": [
+        "threads",
     ],
     "Table method (--method table)": [
         "max_concurrent_batches",

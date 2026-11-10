@@ -30,14 +30,31 @@ def cpu_budget() -> int | None:
     return 1 if os.environ.get("SLURM_JOB_ID") else None
 
 
+def available_cpus() -> int:
+    """Return the CPU budget, or the CPUs this process may run on when there is none."""
+    budget = cpu_budget()
+    if budget is None:
+        budget = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    return max(1, budget or 1)
+
+
+def batch_share(concurrent_batches: int, batch_count: int | None = None) -> int:
+    """Split :func:`available_cpus` evenly between the batches that run at the same time.
+
+    ``batch_count`` caps the divisor, so a run with fewer batches than ``concurrent_batches``
+    gives each batch more CPUs.
+    """
+    running = max(1, int(concurrent_batches))
+    if batch_count is not None:
+        running = max(1, min(running, int(batch_count)))
+    return max(1, available_cpus() // running)
+
+
 def duckdb_thread_budget(requested: int | None = None) -> int:
     """Bound DuckDB by the job budget, or by affinity outside a job."""
     if requested is not None and requested < 1:
         raise ValueError("DuckDB threads must be >= 1")
-    budget = cpu_budget()
-    if budget is None:
-        budget = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
-    budget = max(1, budget or 1)
+    budget = available_cpus()
     return min(requested, budget) if requested is not None else budget
 
 
@@ -70,19 +87,26 @@ def _option_int(name: str) -> int | None:
 
 
 def configure_cli_threads() -> None:
-    """Bound native pools for one CLI process before the CLI imports Polars."""
+    """Bound native pools for one CLI process before the CLI imports Polars.
+
+    ``--threads N`` on any command becomes the CPU budget (still capped by a Slurm
+    allocation). Without it, ``profile-single`` falls back to ``--max-concurrency`` or every CPU.
+    """
+    threads = _option_int("--threads")
+    if threads is not None:
+        os.environ["ZIPSTRAIN_CPU_BUDGET"] = str(threads)
     budget = cpu_budget()
     profiling = "profile-single" in sys.argv[1:]
-    profile_runner = sys.argv[1:2] == ["profile"]
     if budget is None and profiling:
-        budget = _option_int("--max-concurrency") or 4
-        os.environ["ZIPSTRAIN_CPU_BUDGET"] = str(budget)
-    if budget is None and profile_runner:
-        budget = _option_int("--num-procs") or _option_int("-n") or 8
+        budget = _option_int("--max-concurrency") or available_cpus()
         os.environ["ZIPSTRAIN_CPU_BUDGET"] = str(budget)
     if budget is None:
         return
+    _limit_native_pools(budget, profiling)
 
+
+def _limit_native_pools(budget: int, profiling: bool = False) -> None:
+    """Size the Polars, Rayon, BLAS and PyArrow pools for ``budget`` CPUs."""
     requested_pool = _positive_int(os.environ.get("ZIPSTRAIN_POLARS_THREADS"))
     if requested_pool is None:
         requested_pool = max(1, budget // 4) if profiling else budget
@@ -98,6 +122,24 @@ def configure_cli_threads() -> None:
 
     pa.set_cpu_count(pool)
     pa.set_io_thread_count(1)
+
+
+def set_threads(threads: int) -> None:
+    """Limit ZipStrain to ``threads`` CPUs in this Python process; call it before any work.
+
+    This is the library form of ``--threads``. Polars sizes its pool once, when it is first
+    imported, so a larger pool that is already running cannot be shrunk: that raises
+    ``RuntimeError`` instead of being silently ignored.
+    """
+    if not isinstance(threads, int) or isinstance(threads, bool) or threads < 1:
+        raise ValueError("threads must be a positive integer")
+    polars = sys.modules.get("polars")
+    if polars is not None and polars.thread_pool_size() > threads:
+        raise RuntimeError(
+            f"Polars is already running {polars.thread_pool_size()} threads; call "
+            "zipstrain.set_threads() before importing polars or any zipstrain module that uses it.")
+    os.environ["ZIPSTRAIN_CPU_BUDGET"] = str(threads)
+    _limit_native_pools(cpu_budget() or threads)
 
 
 _NATIVE_THREAD_VARIABLES = (
