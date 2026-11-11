@@ -1334,7 +1334,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the default container to `parsaghadermazi/zipstrain:1.3.0`;
+- sets the beta container to `parsaghadermazi/zipstrain:2.0.0b1`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 
@@ -1343,7 +1343,7 @@ For a cluster, keep site-specific SLURM profiles in an ignored local config such
 ### General running pattern
 
 ```bash
-nextflow run OlmLab/ZipStrain \
+nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
   --mode <mode> \
   --input_table <path/to/input.csv> \
   --output_dir <path/to/output_dir> \
@@ -1353,7 +1353,7 @@ nextflow run OlmLab/ZipStrain \
 Conventions used by every example below:
 
 - **Docker is the default**, so no `-profile` is shown. On a cluster, pass a site-specific config with `-c conf.local.config -profile <name>`.
-- Pin a branch/tag/commit with `-r <revision>` (e.g. `-r main`); omit it to use the default branch.
+- The examples pin the beta with `-r v2.0.0b1`. Use `-r <revision>` to select another tag, branch, or commit.
 - If you have **cloned the repo**, replace `OlmLab/ZipStrain` with `zipstrain.nf` and run from the repo root.
 - `-resume` reuses completed steps from a previous run in the same working directory.
 
@@ -1411,7 +1411,7 @@ SRR12345679
 **Option A — map against an existing reference:**
 
 ```bash
-nextflow run OlmLab/ZipStrain \
+nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
   --mode map_reads \
   --input_type local \
   --input_table reads.csv \
@@ -1426,7 +1426,7 @@ Optional: `--index_files` to reuse an existing Bowtie2 index; `--bowtie2_non_com
 **Option B — build the reference automatically with Sylph** (when `--reference_genome` is omitted): the pipeline runs per-sample `sylph profile`, merges the abundance tables, builds a reference with `zipstrain utilities build-genome-db`, predicts genes with prodigal, indexes with Bowtie2, and maps.
 
 ```bash
-nextflow run OlmLab/ZipStrain \
+nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
   --mode map_reads \
   --input_type local \
   --input_table reads.csv \
@@ -1456,7 +1456,7 @@ S2,/data/S2.bam
 ```
 
 ```bash
-nextflow run OlmLab/ZipStrain \
+nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
   --mode profile \
   --input_table bams.csv \
   --reference_genome reference_genomes.fna \
@@ -1473,7 +1473,7 @@ Outputs: `<output_dir>/*_profile.parquet`, `*_genome_stats.parquet`, `*_gene_sta
 Input table is one SRA accession per row (`Run` column). This mode downloads the reads, maps, and profiles in one go.
 
 ```bash
-nextflow run OlmLab/ZipStrain \
+nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
   --mode from_sra_to_profile \
   --input_table sra.csv \
   --reference_genome reference_genomes.fna \
@@ -1503,7 +1503,7 @@ S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
 ```
 
 ```bash
-nextflow run OlmLab/ZipStrain \
+nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
   --mode compare \
   --input_type profile_table \
   --input_table profiles.csv \

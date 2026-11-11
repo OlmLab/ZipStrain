@@ -45,9 +45,11 @@ With `--collect-codons`, the plugin also extracts observed codons in Rust, with 
 
 The plugin is optional: installing ZipStrain alone does not install it, and leaving out `--backend` keeps the Python behavior.
 
-### Install from PyPI
+### Install the Rust profiler
 
-In a Python 3.12+ environment, install the plugin with pip:
+For ZipStrain `2.0.0b1`, [build the V2 plugin from the beta tag](v2.md#observed-codon-evidence).
+
+For ZipStrain 1.x, install the published plugin in a Python 3.12 or newer environment:
 
 ```bash
 python -m pip install zipstrain_rust_profiler

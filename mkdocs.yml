@@ -12,7 +12,7 @@ nav:
   - usermanual.md
   - installation.md
   - plugins.md
-  - V2 development: v2.md
+  - V2 formats and API: v2.md
   - Performance benchmarks: benchmarks.md
   - Tutorial.md
   - expected_output.md

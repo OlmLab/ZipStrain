@@ -1,6 +1,6 @@
 [project]
 name = "zipstrain"
-version = "2.0.0.dev0"
+version = "2.0.0b1"
 description = ""
 authors = [
     {name = "ParsaGhadermazi",email = "54489047+ParsaGhadermazi@users.noreply.github.com"}
