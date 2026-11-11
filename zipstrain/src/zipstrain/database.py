@@ -531,7 +531,7 @@ class GenomeComparisonDatabase:
         try:
             tmp_path=pathlib.Path(tempfile.mktemp(suffix=".parquet",prefix="tmp_comp_db_",dir=str(self.comp_db_loc.parent)))
             self.comp_db.sink_parquet(tmp_path)
-            os.replace(tmp_path,self.comp_db_loc)
+            ut.replace_file(tmp_path,self.comp_db_loc)
             self._comp_db=pl.scan_parquet(self.comp_db_loc)
         except Exception as e:
             raise Exception(f"Something went wrong when updating the comparison database:{e}")
@@ -726,7 +726,7 @@ class GeneComparisonDatabase:
         try:
             tmp_path = pathlib.Path(tempfile.mktemp(suffix=".parquet", prefix="tmp_gene_comp_db_", dir=str(self.comp_db_loc.parent)))
             self.comp_db.sink_parquet(tmp_path)
-            os.replace(tmp_path, self.comp_db_loc)
+            ut.replace_file(tmp_path, self.comp_db_loc)
             self._comp_db = pl.scan_parquet(self.comp_db_loc)
         except Exception as e:
             raise Exception(f"Something went wrong when updating the comparison database: {e}")

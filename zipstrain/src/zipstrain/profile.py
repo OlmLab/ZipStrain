@@ -510,7 +510,7 @@ def _write_sorted_profile_with_metadata(
     )
     if not _parquet_rows_are_coordinate_sorted(output_file):
         candidate_path = tmp_dir / f"{output_file.stem}.candidate.parquet"
-        os.replace(output_file, candidate_path)
+        utils.replace_file(output_file, candidate_path)
         _sort_existing_profile_parquet(
             input_file=candidate_path,
             output_file=output_file,
@@ -591,7 +591,7 @@ def sort_profile_parquet_in_place(
         metadata = pl.read_parquet_metadata(rewritten_path)
         if metadata.get(PROFILE_SORTED_METADATA_KEY) != PROFILE_SORTED_METADATA_VALUE:
             raise RuntimeError("Failed to attach sortedness metadata to rewritten profile parquet.")
-        os.replace(rewritten_path, profile_path)
+        utils.replace_file(rewritten_path, profile_path)
 
 
 def _profile_parquet_is_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
@@ -1165,7 +1165,7 @@ def write_reference_snps(
             output_file=rendered_vcf,
             min_cov=min_cov,
         )
-        os.replace(rendered_vcf, output_path)
+        utils.replace_file(rendered_vcf, output_path)
     return output_path
 
 
@@ -1220,7 +1220,7 @@ def _profile_chunk_task(
         min_freq=min_freq,
     )
     if _parquet_rows_are_coordinate_sorted(candidate_chunk_path):
-        os.replace(candidate_chunk_path, final_chunk_path)
+        utils.replace_file(candidate_chunk_path, final_chunk_path)
     else:
         _sort_existing_profile_parquet(
             input_file=candidate_chunk_path,
@@ -1315,7 +1315,7 @@ def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
     if columns != names or existing != metadata:
         rewritten = profile_file.with_suffix(".v2.parquet")
         source.select(columns).sink_parquet(rewritten, compression="zstd", metadata=metadata)
-        os.replace(rewritten, profile_file)
+        utils.replace_file(rewritten, profile_file)
     selection = None
     if collect_codons:
         codon_file = profile_file.with_name(profile_file.name.replace("_profile.parquet", "_codon_counts.parquet"))

@@ -157,7 +157,7 @@ def write_gene_info(reference_fasta, gene_fasta, stb_file, output_file) -> Path:
     # Python tuple for every coding triplet in a large reference collection.
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from zipstrain.utils import sha256_file
+    from zipstrain.utils import replace_file, sha256_file
     codon_file = output.with_name("reference_codons.parquet")
     staging = codon_file.with_suffix(".part.parquet")
     schema = pa.schema([("gene_id", pa.uint64()), ("codon_index", pa.uint32()),
@@ -181,7 +181,7 @@ def write_gene_info(reference_fasta, gene_fasta, stb_file, output_file) -> Path:
                         batch.clear()
         if batch:
             writer.write_table(pa.Table.from_pylist(batch, schema=schema))
-    staging.replace(codon_file)
+    replace_file(staging, codon_file)
     metadata["zipstrain_reference_codons_sha256"] = sha256_file(codon_file)
     frame.write_parquet(output, compression="zstd", metadata=metadata)
     return output

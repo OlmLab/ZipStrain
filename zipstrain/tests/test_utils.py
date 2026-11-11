@@ -426,3 +426,35 @@ def test_estimate_genome_presence_makes_sense():
     assert result_dict["genome1"]["coverage"] == (num_reads_genome1 * read_length) / genome_lengths["genome1"]
     assert result_dict["genome2"]["coverage"] == (num_reads_genome2 * read_length) / genome_lengths["genome2"]
     assert result_dict["genome1"]["ber"] > result_dict["genome2"]["ber"] 
+
+
+def test_replace_file_retries_a_busy_filesystem(tmp_path, monkeypatch):
+    import errno, os
+    source, target = tmp_path / "a.part", tmp_path / "a"
+    source.write_text("new")
+    real, calls = os.replace, []
+
+    def busy_twice(src, dst):
+        calls.append(src)
+        if len(calls) <= 2:
+            raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+        real(src, dst)
+
+    monkeypatch.setattr(utils.os, "replace", busy_twice)
+    monkeypatch.setattr(utils.time, "sleep", lambda seconds: None)
+    utils.replace_file(source, target)
+    assert len(calls) == 3 and target.read_text() == "new" and not source.exists()
+
+
+def test_replace_file_explains_a_lasting_lock_and_keeps_other_errors(tmp_path, monkeypatch):
+    import errno
+    def busy(src, dst):
+        raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+    monkeypatch.setattr(utils.os, "replace", busy)
+    monkeypatch.setattr(utils.time, "sleep", lambda seconds: None)
+    with pytest.raises(OSError, match="probably has the file open") as raised:
+        utils.replace_file(tmp_path / "a.part", tmp_path / "a", timeout=0.5)
+    assert raised.value.errno == errno.EAGAIN
+    monkeypatch.undo()
+    with pytest.raises(FileNotFoundError):
+        utils.replace_file(tmp_path / "missing", tmp_path / "a")

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import pathlib
+import errno
 import time
 import warnings
 from tempfile import TemporaryDirectory
@@ -106,6 +107,35 @@ def parquet_to_csv(
         include_header=include_header,
     )
     return output_path
+
+
+_RETRYABLE_REPLACE_ERRORS = {errno.EAGAIN, errno.EWOULDBLOCK, errno.EBUSY}
+
+
+def replace_file(source: str | pathlib.Path, target: str | pathlib.Path, *, timeout: float = 30.0) -> pathlib.Path:
+    """Atomically move ``source`` onto ``target``, retrying while the filesystem is busy.
+
+    Network filesystems (NFS, GPFS, Lustre) can refuse a rename for a moment with
+    ``EAGAIN`` or ``EBUSY``, typically while another process or node holds ``target`` open.
+    Those errors are retried with backoff for up to ``timeout`` seconds; any other error,
+    or one that outlasts the timeout, is raised with the paths and the likely cause.
+    """
+    delay, deadline = 0.1, time.monotonic() + timeout
+    while True:
+        try:
+            os.replace(source, target)
+            return pathlib.Path(target)
+        except OSError as error:
+            if error.errno not in _RETRYABLE_REPLACE_ERRORS:
+                raise
+            if time.monotonic() + delay > deadline:
+                raise OSError(error.errno, (
+                    f"Could not replace {target} with {source} for {timeout:g} s: {error.strerror}. "
+                    "Another process (a second ZipStrain run, or a job on another node) probably "
+                    "has the file open. Stop it, or use a run directory no other job uses, and rerun."
+                )) from error
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
 
 
 def sha256_file(path: str | pathlib.Path, chunk_size: int = 1024 * 1024) -> str:
@@ -306,7 +336,7 @@ def rewrite_parquet_with_metadata(
             compression=compression,
             metadata=metadata,
         )
-        tmp_path.replace(parquet_path)
+        replace_file(tmp_path, parquet_path)
     return parquet_path
 
 

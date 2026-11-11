@@ -1214,6 +1214,7 @@ def _clear_shared_inputs() -> None:
 
 def _compare_pair_job(job: _PairJob) -> None:
     """Calculate and cache one pair's rows, atomically, in a worker or in this process."""
+    from zipstrain import utils
     genes, gene_index, catalog_genomes = _shared_catalog(job.preprofile_dir)
     gene_rows = any(metric in options.GENE_METRICS for metric in job.calculations)
     genome_rows = any(metric in options.GENOME_METRICS for metric in job.calculations)
@@ -1231,7 +1232,7 @@ def _compare_pair_job(job: _PairJob) -> None:
         frame.sink_parquet(temporary, engine="streaming", compression="zstd", metadata={
             **job.metadata, "zipstrain_comparison_id": job.identity,
         })
-        temporary.replace(job.target)
+        utils.replace_file(temporary, job.target)
 
 
 def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
@@ -1334,7 +1335,7 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
     with TemporaryDirectory(dir=run_dir) as staging:
         temporary = Path(staging) / output.name
         pl.scan_parquet(files).sink_parquet(temporary, engine="streaming", compression="zstd", metadata=metadata)
-        temporary.replace(output)
+        utils.replace_file(temporary, output)
     return output
 
 
