@@ -3,6 +3,7 @@
 from importlib.metadata import entry_points
 from pathlib import Path
 import shutil
+import subprocess
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -87,3 +88,48 @@ def test_installed_backend_builds_missing_bam_index(tmp_path):
     )
     assert bam.with_suffix(".bam.bai").is_file()
     assert (tmp_path / "out" / "unindexed_profile.parquet").is_file()
+
+
+@pytest.mark.skipif(
+    not entry_points(group="zipstrain.profile_backends", name="rust_profiler")
+    or not shutil.which("samtools"),
+    reason="The compiled Rust plugin and samtools are required",
+)
+@pytest.mark.parametrize(("pairs", "fug_defined"), [(2000, True), (2001, False)])
+def test_reads_mapped_survives_zero_expected_gap(tmp_path, pairs, fug_defined):
+    genome_length = 1000
+    bed, stb = tmp_path / "ref.bed", tmp_path / "ref.stb"
+    bed.write_text(f"chr\t0\t{genome_length}\n")
+    stb.write_text("chr\tgenome\n")
+
+    sam, bam = tmp_path / "reads.sam", tmp_path / "reads.bam"
+    seq, qual = "A" * 100, "I" * 100
+    with sam.open("w") as handle:
+        handle.write(f"@HD\tVN:1.6\tSO:unsorted\n@SQ\tSN:chr\tLN:{genome_length}\n")
+        for i in range(pairs):
+            # Space first mates by two bases so FUG has nonzero excess gaps
+            # before the rounded expected spacing drops to zero.
+            left = 1 + 2 * (i % 400)
+            right = left + 100
+            handle.write(f"p{i}\t99\tchr\t{left}\t60\t100M\t=\t{right}\t200\t{seq}\t{qual}\n")
+            handle.write(f"p{i}\t147\tchr\t{right}\t60\t100M\t=\t{left}\t-200\t{seq}\t{qual}\n")
+    subprocess.run(["samtools", "sort", "-o", str(bam), str(sam)], check=True)
+
+    out = tmp_path / "out"
+    run_profile(
+        ProfileRequest(
+            bam_file=bam,
+            bed_file=bed,
+            stb_file=stb,
+            null_model=DATA / "null_model.parquet",
+            output_dir=out,
+            num_chunks=1,
+            max_concurrency=1,
+            read_inclusion="proper-pairs",
+        ),
+        "rust_profiler",
+    )
+
+    mapped, fug = pl.read_parquet(out / "reads_genome_stats.parquet").select("reads_mapped", "fug").row(0)
+    assert mapped == pairs
+    assert (fug is not None) == fug_defined
