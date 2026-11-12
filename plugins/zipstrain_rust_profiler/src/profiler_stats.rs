@@ -413,7 +413,7 @@ fn scan_read_gaps(args: &Args, inputs: &Inputs) -> AnyResult<HashMap<String, Gap
         out.insert(
             genome,
             GapStats {
-                rn: if fug.is_some() { scan.rn } else { 0 },
+                rn: scan.rn,
                 mean: if fug.is_some() { mean } else { None },
                 std: if fug.is_some() { std } else { None },
                 fug,

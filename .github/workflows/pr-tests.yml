@@ -106,7 +106,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install native build dependencies
-        run: sudo apt-get install -y libclang-dev
+        run: sudo apt-get install -y libclang-dev samtools
 
       - name: Install ZipStrain and Maturin
         working-directory: zipstrain
