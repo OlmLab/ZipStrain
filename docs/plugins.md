@@ -47,7 +47,7 @@ The plugin is optional: installing ZipStrain alone does not install it, and leav
 
 ### Install the Rust profiler
 
-For ZipStrain `2.0.0b1`, [build the V2 plugin from the beta tag](v2.md#observed-codon-evidence).
+For ZipStrain `2.0.0b1`, install the matching [Rust profiler beta](v2.md#observed-codon-evidence).
 
 For ZipStrain 1.x, install the published plugin in a Python 3.12 or newer environment:
 
