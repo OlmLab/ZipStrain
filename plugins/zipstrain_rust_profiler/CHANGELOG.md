@@ -1,6 +1,6 @@
 # Rust profiler plugin changelog
 
-## Unreleased
+## 0.1.2
 
 Preserve `reads_mapped` when gap uniformity is undefined, including at high coverage.
 
