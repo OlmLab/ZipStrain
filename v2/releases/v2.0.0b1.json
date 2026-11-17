@@ -1,0 +1,1748 @@
+{
+  "suite_version": 2,
+  "quick": false,
+  "series": "release",
+  "version": "2.0.0b1",
+  "revision": "6bbe76e743671d5273535fe4acabd167dc3cbf8e",
+  "measured_at": "2026-11-17T17:41:15.348140+00:00",
+  "environment": {
+    "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+    "cpu": "Intel(R) Xeon(R) 6975P-C",
+    "threads": 2,
+    "python": "3.12.16",
+    "polars": "1.41.0",
+    "numpy": "2.5.5",
+    "h5py": "3.16.0",
+    "runner_image": "20261111.127.1"
+  },
+  "cases": [
+    {
+      "layout": "single",
+      "metric_set": "genome",
+      "method": "table",
+      "allele_integration": null,
+      "genomes": 1,
+      "bases_per_genome": 120000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.611837032000011,
+            "peak_rss_bytes": 299143168
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.32398846899999967,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.32349530199999776,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.32455106000000455,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.32613936399999943,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3202938320000044,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3303901900000028,
+              "peak_rss_bytes": 299143168
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.5607014969999966,
+            "peak_rss_bytes": 299143168
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.32886521800000423,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.3299730570000179,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.3305388139999934,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3291805199999942,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3309032979999813,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.32462826400001177,
+              "peak_rss_bytes": 299143168
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.48226940000000695,
+            "peak_rss_bytes": 299143168
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.32658163700000387,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.33004717899999036,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.32824771400001396,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3286826749999818,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3298616339999967,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3329040339999949,
+              "peak_rss_bytes": 299143168
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "single",
+      "metric_set": "mixed",
+      "method": "table",
+      "allele_integration": null,
+      "genomes": 1,
+      "bases_per_genome": 120000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.49316049600000156,
+            "peak_rss_bytes": 299143168
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.33539276900000914,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.32638753700001644,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.32872418100001255,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3290577670000232,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.32363528000001907,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.32608510000000024,
+              "peak_rss_bytes": 299143168
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.48762499800000114,
+            "peak_rss_bytes": 299143168
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.32975206999998363,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.326637876999996,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.33294433500000764,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3340635579999969,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3295056270000032,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3379225550000058,
+              "peak_rss_bytes": 299143168
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.4918682980000142,
+            "peak_rss_bytes": 299143168
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.3345239200000094,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.33037990699997977,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.3330199859999823,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.33168178799999737,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3258805529999904,
+              "peak_rss_bytes": 299143168
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3276009490000149,
+              "peak_rss_bytes": 299143168
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "single",
+      "metric_set": "selection",
+      "method": "table",
+      "allele_integration": "consensus",
+      "genomes": 1,
+      "bases_per_genome": 120000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.7641055990000041,
+            "peak_rss_bytes": 341655552
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6380808909999871,
+              "peak_rss_bytes": 310988800
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6300606450000146,
+              "peak_rss_bytes": 311128064
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6291193730000089,
+              "peak_rss_bytes": 310366208
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6244356199999856,
+              "peak_rss_bytes": 311255040
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6280897510000045,
+              "peak_rss_bytes": 315277312
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6286778340000012,
+              "peak_rss_bytes": 310472704
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.7604134780000038,
+            "peak_rss_bytes": 348188672
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6215035240000191,
+              "peak_rss_bytes": 309882880
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6219339010000056,
+              "peak_rss_bytes": 311050240
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6145199239999783,
+              "peak_rss_bytes": 310140928
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6156583570000009,
+              "peak_rss_bytes": 310812672
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6136868949999723,
+              "peak_rss_bytes": 314384384
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6279740199999821,
+              "peak_rss_bytes": 310280192
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.7623232450000046,
+            "peak_rss_bytes": 346263552
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6346089869999787,
+              "peak_rss_bytes": 310185984
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6272843220000084,
+              "peak_rss_bytes": 311173120
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6194286969999894,
+              "peak_rss_bytes": 311545856
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.623391225000006,
+              "peak_rss_bytes": 311083008
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6171293230000003,
+              "peak_rss_bytes": 309571584
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6134191619999854,
+              "peak_rss_bytes": 309391360
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "single",
+      "metric_set": "selection",
+      "method": "matrix",
+      "allele_integration": "consensus",
+      "genomes": 1,
+      "bases_per_genome": 120000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.8390145719999964,
+            "peak_rss_bytes": 385417216
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.7555220659999975,
+              "peak_rss_bytes": 371789824
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.7400856069999975,
+              "peak_rss_bytes": 371703808
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.7573346199999946,
+              "peak_rss_bytes": 370958336
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.7525932880000141,
+              "peak_rss_bytes": 371707904
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.7570838809999998,
+              "peak_rss_bytes": 371695616
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.7431916390000026,
+              "peak_rss_bytes": 371593216
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8665769590000139,
+            "peak_rss_bytes": 383594496
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.7464287610000042,
+              "peak_rss_bytes": 371347456
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.7522323970000002,
+              "peak_rss_bytes": 371228672
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.7490029309999784,
+              "peak_rss_bytes": 371712000
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.7454638950000003,
+              "peak_rss_bytes": 371224576
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.7423316989999762,
+              "peak_rss_bytes": 372080640
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.7439552200000037,
+              "peak_rss_bytes": 370970624
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8460885399999825,
+            "peak_rss_bytes": 384200704
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.7365209900000025,
+              "peak_rss_bytes": 372023296
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.7399725310000065,
+              "peak_rss_bytes": 371990528
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.7491819100000043,
+              "peak_rss_bytes": 371851264
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.7363368329999957,
+              "peak_rss_bytes": 371195904
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.7381385959999989,
+              "peak_rss_bytes": 372117504
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.7432540789999962,
+              "peak_rss_bytes": 372580352
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "single",
+      "metric_set": "selection",
+      "method": "table",
+      "allele_integration": "weighted",
+      "genomes": 1,
+      "bases_per_genome": 120000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.7619104610000136,
+            "peak_rss_bytes": 338853888
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6112871759999905,
+              "peak_rss_bytes": 309637120
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6185274460000016,
+              "peak_rss_bytes": 310812672
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6204111729999795,
+              "peak_rss_bytes": 311906304
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6094938659999798,
+              "peak_rss_bytes": 309989376
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6341856000000234,
+              "peak_rss_bytes": 314290176
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6032550539999875,
+              "peak_rss_bytes": 308543488
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.7392286860000183,
+            "peak_rss_bytes": 344965120
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6080009399999824,
+              "peak_rss_bytes": 310341632
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6082934979999948,
+              "peak_rss_bytes": 310960128
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.613486335999994,
+              "peak_rss_bytes": 310906880
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6025580989999924,
+              "peak_rss_bytes": 310734848
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6227646579999941,
+              "peak_rss_bytes": 309366784
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6077487549999887,
+              "peak_rss_bytes": 308326400
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.7485857060000001,
+            "peak_rss_bytes": 347533312
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6101729730000045,
+              "peak_rss_bytes": 310448128
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6202898519999849,
+              "peak_rss_bytes": 310923264
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6113153290000071,
+              "peak_rss_bytes": 312467456
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6232504520000077,
+              "peak_rss_bytes": 311545856
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6156222230000026,
+              "peak_rss_bytes": 309882880
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6106457240000225,
+              "peak_rss_bytes": 310259712
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "single",
+      "metric_set": "selection",
+      "method": "matrix",
+      "allele_integration": "weighted",
+      "genomes": 1,
+      "bases_per_genome": 120000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.8267139619999853,
+            "peak_rss_bytes": 385077248
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.7349622269999827,
+              "peak_rss_bytes": 371384320
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.7330299510000202,
+              "peak_rss_bytes": 371666944
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.7301005200000077,
+              "peak_rss_bytes": 371646464
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.728548743999994,
+              "peak_rss_bytes": 371982336
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.720655617999995,
+              "peak_rss_bytes": 371740672
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.7311277900000164,
+              "peak_rss_bytes": 371654656
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8393008910000219,
+            "peak_rss_bytes": 384634880
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.7360850370000094,
+              "peak_rss_bytes": 371421184
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.73201180800001,
+              "peak_rss_bytes": 370642944
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.7379492910000067,
+              "peak_rss_bytes": 371683328
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.734562316000023,
+              "peak_rss_bytes": 371523584
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.7443661339999892,
+              "peak_rss_bytes": 371896320
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.7394293880000191,
+              "peak_rss_bytes": 371634176
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8401791359999891,
+            "peak_rss_bytes": 383655936
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.7343494650000082,
+              "peak_rss_bytes": 371376128
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.7416350729999976,
+              "peak_rss_bytes": 371441664
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.7462222639999823,
+              "peak_rss_bytes": 371978240
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.7503671930000166,
+              "peak_rss_bytes": 371638272
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.7339620729999865,
+              "peak_rss_bytes": 371937280
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.7476728079999759,
+              "peak_rss_bytes": 371560448
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "multiple",
+      "metric_set": "genome",
+      "method": "table",
+      "allele_integration": null,
+      "genomes": 8,
+      "bases_per_genome": 30000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.5250412169999947,
+            "peak_rss_bytes": 333352960
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.33682994399998734,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.33573527100000433,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.3397357670000076,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3362085149999814,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.33555525599999214,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.33808137400001215,
+              "peak_rss_bytes": 325693440
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.5180746120000208,
+            "peak_rss_bytes": 333029376
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.3371827429999996,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.3340938700000038,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.33647323299999243,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3336687049999796,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3342492639999932,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3353741790000129,
+              "peak_rss_bytes": 325693440
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.5245433879999837,
+            "peak_rss_bytes": 331259904
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.33760150399999134,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.33739390400000957,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.3354089320000071,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.33832741799997734,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3391381410000065,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3372067829999992,
+              "peak_rss_bytes": 325693440
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "multiple",
+      "metric_set": "mixed",
+      "method": "table",
+      "allele_integration": null,
+      "genomes": 8,
+      "bases_per_genome": 30000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.5269152429999906,
+            "peak_rss_bytes": 330416128
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.3401708019999887,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.3418218319999937,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.3455318519999935,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3495893179999996,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.34193776400002207,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3394265900000164,
+              "peak_rss_bytes": 325693440
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.5273752190000209,
+            "peak_rss_bytes": 334745600
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.3415921790000027,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.3446556600000008,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.3436186050000174,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3401059640000028,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.34296397599999295,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.34290895300000557,
+              "peak_rss_bytes": 325693440
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.5304682160000027,
+            "peak_rss_bytes": 330469376
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.3401962049999838,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.3459375029999876,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.3405540070000086,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.3441898720000154,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.3471341730000006,
+              "peak_rss_bytes": 325693440
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.3492609879999975,
+              "peak_rss_bytes": 325693440
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "multiple",
+      "metric_set": "selection",
+      "method": "table",
+      "allele_integration": "consensus",
+      "genomes": 8,
+      "bases_per_genome": 30000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.8329875979999883,
+            "peak_rss_bytes": 389718016
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6308368249999887,
+              "peak_rss_bytes": 353320960
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6452392249999832,
+              "peak_rss_bytes": 356179968
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.646199155000005,
+              "peak_rss_bytes": 354107392
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6447737449999806,
+              "peak_rss_bytes": 355717120
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6336660959999847,
+              "peak_rss_bytes": 354902016
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6318673300000057,
+              "peak_rss_bytes": 354828288
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8220296800000142,
+            "peak_rss_bytes": 390369280
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6348644589999992,
+              "peak_rss_bytes": 354316288
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6368152999999666,
+              "peak_rss_bytes": 354553856
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6438463289999845,
+              "peak_rss_bytes": 354746368
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6418395279999913,
+              "peak_rss_bytes": 355180544
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6416026109999962,
+              "peak_rss_bytes": 354721792
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6494896390000235,
+              "peak_rss_bytes": 353112064
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8280817109999816,
+            "peak_rss_bytes": 391942144
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6381138240000155,
+              "peak_rss_bytes": 354078720
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6455144320000272,
+              "peak_rss_bytes": 353824768
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6404668640000182,
+              "peak_rss_bytes": 354242560
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6480020380000155,
+              "peak_rss_bytes": 353759232
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6391484680000303,
+              "peak_rss_bytes": 354942976
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6497631780000006,
+              "peak_rss_bytes": 354451456
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "multiple",
+      "metric_set": "selection",
+      "method": "matrix",
+      "allele_integration": "consensus",
+      "genomes": 8,
+      "bases_per_genome": 30000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 1.0836195019999764,
+            "peak_rss_bytes": 395370496
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.8464644500000418,
+              "peak_rss_bytes": 383242240
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.8450066690000426,
+              "peak_rss_bytes": 383479808
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.8423203899999976,
+              "peak_rss_bytes": 384491520
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.834447995000005,
+              "peak_rss_bytes": 383037440
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.8391740029999823,
+              "peak_rss_bytes": 382828544
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.8396126779999804,
+              "peak_rss_bytes": 383324160
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 1.072270543000002,
+            "peak_rss_bytes": 393392128
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.845279215000005,
+              "peak_rss_bytes": 382914560
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.8333521000000133,
+              "peak_rss_bytes": 381927424
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.8326971839999828,
+              "peak_rss_bytes": 383217664
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.8401451540000267,
+              "peak_rss_bytes": 383021056
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.832517456000005,
+              "peak_rss_bytes": 383332352
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.8288273539999977,
+              "peak_rss_bytes": 383770624
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 1.0614317950000327,
+            "peak_rss_bytes": 393887744
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.8442006650000167,
+              "peak_rss_bytes": 383254528
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.8319331110000121,
+              "peak_rss_bytes": 383516672
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.8263366429999905,
+              "peak_rss_bytes": 384876544
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.8432110100000045,
+              "peak_rss_bytes": 382414848
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.8482910429999606,
+              "peak_rss_bytes": 383246336
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.8288807019999922,
+              "peak_rss_bytes": 383844352
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "multiple",
+      "metric_set": "selection",
+      "method": "table",
+      "allele_integration": "weighted",
+      "genomes": 8,
+      "bases_per_genome": 30000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 0.8188258289999908,
+            "peak_rss_bytes": 398614528
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6327949650000164,
+              "peak_rss_bytes": 354680832
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6325136849999922,
+              "peak_rss_bytes": 354349056
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6296366609999495,
+              "peak_rss_bytes": 354848768
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6291207319999899,
+              "peak_rss_bytes": 354066432
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6320416269999782,
+              "peak_rss_bytes": 353832960
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6384247889999983,
+              "peak_rss_bytes": 355434496
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8148010799999952,
+            "peak_rss_bytes": 387162112
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6437206669999682,
+              "peak_rss_bytes": 353427456
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.6290748179999923,
+              "peak_rss_bytes": 353189888
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6193692740000074,
+              "peak_rss_bytes": 354295808
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6267142899999953,
+              "peak_rss_bytes": 353751040
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6354475050000019,
+              "peak_rss_bytes": 354951168
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.629150138,
+              "peak_rss_bytes": 354295808
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 0.8085492189999854,
+            "peak_rss_bytes": 383004672
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.6233207579999771,
+              "peak_rss_bytes": 353107968
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.64243744099997,
+              "peak_rss_bytes": 354119680
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.6247769299999959,
+              "peak_rss_bytes": 354025472
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.6225809299999696,
+              "peak_rss_bytes": 353206272
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.6201890690000482,
+              "peak_rss_bytes": 355549184
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.6232129779999696,
+              "peak_rss_bytes": 354009088
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "multiple",
+      "metric_set": "selection",
+      "method": "matrix",
+      "allele_integration": "weighted",
+      "genomes": 8,
+      "bases_per_genome": 30000,
+      "samples": 4,
+      "pairs": 6,
+      "runs": [
+        {
+          "collection": {
+            "seconds": 1.0405041820000065,
+            "peak_rss_bytes": 393957376
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.8072497439999893,
+              "peak_rss_bytes": 382955520
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.8116222000000448,
+              "peak_rss_bytes": 382656512
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.8096392470000069,
+              "peak_rss_bytes": 382656512
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.8093829640000081,
+              "peak_rss_bytes": 381763584
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.8242627320000224,
+              "peak_rss_bytes": 383369216
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.8106828619999646,
+              "peak_rss_bytes": 382742528
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 1.0515446980000434,
+            "peak_rss_bytes": 394858496
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.8228238030000057,
+              "peak_rss_bytes": 382558208
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.8309237130000042,
+              "peak_rss_bytes": 382828544
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.8156231070000217,
+              "peak_rss_bytes": 382504960
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.8112465300000054,
+              "peak_rss_bytes": 382357504
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.8116724889999887,
+              "peak_rss_bytes": 383320064
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.8026791230000185,
+              "peak_rss_bytes": 382386176
+            }
+          ]
+        },
+        {
+          "collection": {
+            "seconds": 1.0412716449999948,
+            "peak_rss_bytes": 393687040
+          },
+          "isolated_pairs": [
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_01",
+              "seconds": 0.8210145929999726,
+              "peak_rss_bytes": 382697472
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_02",
+              "seconds": 0.8241548629999897,
+              "peak_rss_bytes": 382402560
+            },
+            {
+              "sample_1": "sample_00",
+              "sample_2": "sample_03",
+              "seconds": 0.8305128099999592,
+              "peak_rss_bytes": 382603264
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_02",
+              "seconds": 0.8245046180000486,
+              "peak_rss_bytes": 382283776
+            },
+            {
+              "sample_1": "sample_01",
+              "sample_2": "sample_03",
+              "seconds": 0.8347662209999953,
+              "peak_rss_bytes": 382566400
+            },
+            {
+              "sample_1": "sample_02",
+              "sample_2": "sample_03",
+              "seconds": 0.8281086839999716,
+              "peak_rss_bytes": 382595072
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
