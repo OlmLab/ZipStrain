@@ -19,6 +19,8 @@ Second beta of ZipStrain 2.0. Install with `python -m pip install "zipstrain==2.
 - Comparison caching remains one streaming Parquet per pair. There is no persistent digest cache or sharding in this release.
 - Nextflow exposes `--skip_input_validation true` in both single and batched comparison modes, defaulting to `false`. Existing Nextflow work/output handling is unchanged.
 
+- Identical-stretch output now explicitly preserves interval order when attaching genome background statistics, including under Polars 2.x.
+
 ### Tests, documentation and release tooling
 
 - Added coverage histogram and entirely filtered-genome regressions, Python/Rust low-depth parity tests, ungapped/general codon equivalence across strands and phases, and trusted/validated comparison parity and resume tests.

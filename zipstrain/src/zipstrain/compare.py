@@ -600,6 +600,7 @@ def _stretch_significance(stretches: pl.LazyFrame, background: pl.LazyFrame) -> 
     ``q = (1 - d) ** length``, so ``expected_runs = (M + S) q`` (an E-value) and ``p_value``
     is the chance that any run does. ``background`` has ``genome``, ``_positions``,
     ``_mismatches`` and ``_segments``, as :func:`_scan_identical_stretches` returns.
+    Preserve the scanner's interval order when attaching each genome's background.
     """
     rate = pl.col("_mismatches") / pl.col("_positions")
     runs = pl.col("_mismatches") + pl.col("_segments")
@@ -607,7 +608,7 @@ def _stretch_significance(stretches: pl.LazyFrame, background: pl.LazyFrame) -> 
     # log1p(-q) stays accurate for tiny q; 1 - exp(x) loses digits near 0, where -x - x²/2 does not.
     x = runs * (-q).log1p()
     p_value = pl.when(x > -1e-3).then(-x - x * x / 2).otherwise(1 - x.exp())
-    return stretches.join(background, on="genome", how="left").with_columns(
+    return stretches.join(background, on="genome", how="left", maintain_order="left").with_columns(
         rate.alias("background_divergence"), (runs * q).alias("expected_runs"), p_value.alias("p_value"),
     ).drop("_positions", "_mismatches", "_segments")
 

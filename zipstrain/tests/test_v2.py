@@ -389,8 +389,7 @@ def test_pair_comparison_reuses_one_join_for_every_analysis(assets):
         pair.identical_stretches(min_length=6),
     )
     assert counts.rows() == [("genomeA", 20, 19), ("genomeB", 9, 9)]
-    assert_frame_equal(stretches.sort("stretch_id"),
-                       compare.identical_stretches(a, b, min_length=6).collect().sort("stretch_id"))
+    assert_frame_equal(stretches, compare.identical_stretches(a, b, min_length=6).collect())
     keys = ["sample_1", "sample_2", "genome", "gene_id"]
     for calculate in ("genome_ani+max_identical_stretch", "all"):
         assert_frame_equal(
@@ -1123,3 +1122,15 @@ def test_scheduled_compare_forwards_validation_opt_out(assets, monkeypatch):
     for _ in range(2):
         cli._run_scheduled_v2_compare(profiles, profiles.db.collect().to_dicts(), run, root, **kwargs)
     assert len(seen) == 1 and seen[0]["validate_inputs"] is False
+
+
+def test_stretch_significance_preserves_interval_order():
+    """Background joins keep the scanner's interval IDs in order on either Polars version."""
+    stretches = pl.DataFrame({"stretch_id": range(1000), "genome": [f"g{i % 7}" for i in range(1000)],
+                              "length": [10] * 1000})
+    background = pl.DataFrame({"genome": [f"g{i}" for i in reversed(range(7))],
+                               "_positions": [1000] * 7, "_mismatches": [10] * 7, "_segments": [1] * 7})
+    result = compare._stretch_significance(stretches.lazy(), background.lazy()).collect(engine="streaming")
+    assert result["stretch_id"].to_list() == list(range(1000))
+    assert result["genome"].to_list() == stretches["genome"].to_list()
+    assert result["background_divergence"].to_list() == [0.01] * 1000
