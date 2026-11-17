@@ -389,7 +389,8 @@ def test_pair_comparison_reuses_one_join_for_every_analysis(assets):
         pair.identical_stretches(min_length=6),
     )
     assert counts.rows() == [("genomeA", 20, 19), ("genomeB", 9, 9)]
-    assert_frame_equal(stretches, compare.identical_stretches(a, b, min_length=6).collect())
+    assert_frame_equal(stretches.sort("stretch_id"),
+                       compare.identical_stretches(a, b, min_length=6).collect().sort("stretch_id"))
     keys = ["sample_1", "sample_2", "genome", "gene_id"]
     for calculate in ("genome_ani+max_identical_stretch", "all"):
         assert_frame_equal(
@@ -889,7 +890,9 @@ def test_unsorted_codon_tables_are_sorted_once(assets, monkeypatch):
     monkeypatch.setattr(codons, "SELECTION_CHUNK_CODONS", 2)
     with pytest.warns(UserWarning, match="sorting a temporary copy once") as caught:
         pair = codons.pairwise_selection(shuffled, b, catalog, min_cov=2).collect().sort("gene_id")
-    assert len(caught) == 1
+    # Dependency deprecations are also captured; count only the sort warning.
+    assert sum(issubclass(w.category, UserWarning) and "sorting a temporary copy once" in str(w.message)
+               for w in caught) == 1
     assert_frame_equal(pair, expected)
     with pytest.warns(UserWarning, match="sorting a temporary copy once"):
         assert_frame_equal(codons.reference_selection(shuffled, catalog, min_cov=2).collect().sort("gene_id"),
