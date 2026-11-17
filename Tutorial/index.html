@@ -57,6 +57,14 @@
                 <li class="toctree-l1"><a class="reference internal" href="../plugins/">Plugins</a>
                 </li>
               </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../v2/">V2 formats and API</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../benchmarks/">Performance benchmarks</a>
+                </li>
+              </ul>
               <ul class="current">
                 <li class="toctree-l1 current"><a class="reference internal current" href="#">Tutorial</a>
     <ul class="current">
@@ -348,17 +356,17 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 <p>That's the whole command. By default it compares <strong>genomes</strong>; every profile in the table is compared against every other (all-vs-all).</p>
 <div class="admonition tip">
 <p class="admonition-title">Comparing genes instead</p>
-<p>Add <code>--compare-genes</code> to the same command to compare at the gene level instead of the genome level. Other useful flags: <code>--min-cov</code> (minimum coverage to consider a position), <code>--ani-method</code> (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;t&gt;</code>), and <code>--calculate</code> (trim to just <code>ani</code> for a smaller table). Run <code>zipstrain compare -h</code> for the full, grouped list.</p>
+<p>Add <code>--calculate gene_ani</code> to the same command to compare at the gene level instead of the genome level. Other useful flags: <code>--min-cov</code> (minimum coverage to consider a position), <code>--ani-method</code> (<code>popani</code>, <code>conani</code>, <code>cosani_&lt;t&gt;</code>), and <code>--calculate</code> (trim to just <code>genome_ani</code> for a smaller table). Run <code>zipstrain compare -h</code> for the full, grouped list.</p>
 </div>
 <h4 id="two-comparison-methods">Two comparison methods</h4>
-<p><code>zipstrain compare</code> has two engines, chosen with <code>--method</code>. They compute the <strong>same values for the genome metrics supported by both</strong> and write the result to the same <code>all_comparisons.parquet</code> filename. The standard table can include additional requested summary columns that are not emitted by the matrix method. The methods differ mainly in <em>how</em> they calculate the shared metrics, which changes how well each scales to repeated, growing analyses.</p>
-<p><strong>Standard (<code>--method standard</code>, the default)</strong> compares profiles <strong>directly and pairwise</strong>. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.</p>
+<p><code>zipstrain compare</code> offers two methods, selected with <code>--method</code>. Both write <code>all_comparisons.parquet</code> and support genome metrics, gene metrics, and optional selection metrics for V2 profiles. Matrix selection uses the default <code>anchor</code> kernel and observed codon tables from profiling.</p>
+<p><strong>Table (<code>--method table</code>, the default)</strong> compares profiles <strong>directly and pairwise in Polars</strong>. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.</p>
 <p><strong>Matrix (<code>--method matrix</code>)</strong> first turns your profiles into a reusable HDF5 <strong>matrix store</strong>, then performs vectorized all-vs-all comparisons. For default popANI, each covered position is packed into one byte: <code>A=1</code>, <code>T=2</code>, <code>C=4</code>, and <code>G=8</code>, with multiple observed alleles combined by bitwise OR (for example, <code>A+C=5</code>). For conANI or cosANI, ZipStrain instead stores the four <code>A,T,C,G</code> counts. The high-level command chooses the correct representation automatically. Comparison can run on a <strong>GPU</strong> (<code>--backend torch-mps</code> on Apple Silicon, <code>--backend torch-cuda</code> on NVIDIA), records completed pairs in a resumable DuckDB, and appends new samples without rebuilding existing rows. This approach is highly optimized when you have many samples but only one or a few genomes, because parallelization across sample pairs is efficient. It needs the matrix extra (<code>pip install "zipstrain[matrix]"</code>).</p>
 <table>
 <thead>
 <tr>
 <th></th>
-<th>Standard</th>
+<th>Table</th>
 <th>Matrix</th>
 </tr>
 </thead>
@@ -391,7 +399,7 @@ N5_271_010G2,N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G2.sorted.bam
 </tbody>
 </table>
 <p>Both are invoked the same way — just add <code>--method matrix</code> to switch:</p>
-<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Standard (default)</label><label for="__tabbed_1_2">Matrix</label></div>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Table (default)</label><label for="__tabbed_1_2">Matrix</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
 <div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
@@ -422,7 +430,7 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se"
 <span class="w">    </span>--stb-file<span class="w"> </span>N5_271_010G1.maxbin2.stb<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--run-dir<span class="w"> </span>out_compare
 </code></pre></div>
-<p>This works for both methods: the matrix method <strong>appends</strong> the new profiles to its store, and the standard method <strong>resumes</strong> from the existing <code>all_comparisons.parquet</code> — either way, previously computed pairs are not redone.</p>
+<p>This works for both methods: the matrix method <strong>appends</strong> the new profiles to its store, and the table method <strong>resumes</strong> from the existing <code>all_comparisons.parquet</code> — either way, previously computed pairs are not redone.</p>
 <h4 id="understanding-the-output">Understanding the output</h4>
 <p>The real result is a single parquet at the top of the run directory:</p>
 <div class="highlight"><pre><span></span><code>out_compare/
@@ -469,7 +477,7 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span><span class="se"
 <td>Genome-wide ANI (%) between the two samples for this genome. The parquet metadata key <code>zipstrain_compare_ani_method</code> records the method (<code>popani</code>, <code>conani</code>, or <code>cosani_&lt;threshold&gt;</code>)</td>
 </tr>
 <tr>
-<td><code>max_consecutive_length</code></td>
+<td><code>max_identical_stretch</code></td>
 <td>Longest run of shared alleles at adjacent coordinates on one scaffold; a mismatch or uncovered coordinate breaks the run</td>
 </tr>
 <tr>
@@ -527,13 +535,12 @@ SRR6262448
 </code></pre></div>
 <p>Then run genome comparison:</p>
 <div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>zipstrain.nf<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--mode<span class="w"> </span>compare_genomes<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_type<span class="w"> </span>profile_table<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_table<span class="w"> </span>profiles.csv<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--compare_genome_scope<span class="w"> </span>all<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--compare_calculate<span class="w"> </span>ani<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--compare_scope<span class="w"> </span>all<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--compare_calculate<span class="w"> </span>genome_ani<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--compare_ani_method<span class="w"> </span>popani<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--compare_engine<span class="w"> </span>duckdb<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--output_dir<span class="w"> </span>out_sra_compare<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>conf.config<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-profile<span class="w"> </span>docker<span class="w"> </span><span class="se">\</span>
@@ -602,7 +609,7 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span>--method<span cl
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../plugins/" class="btn btn-neutral float-left" title="Plugins"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../benchmarks/" class="btn btn-neutral float-left" title="Performance benchmarks"><span class="icon icon-circle-arrow-left"></span> Previous</a>
         <a href="../expected_output/" class="btn btn-neutral float-right" title="Expected output">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
@@ -626,7 +633,7 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span>--method<span cl
   <span class="rst-current-version" data-toggle="rst-current-version">
     
     
-      <span><a href="../plugins/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../benchmarks/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
       <span><a href="../expected_output/" style="color: #fcfcfc">Next &raquo;</a></span>
@@ -638,6 +645,7 @@ zipstrain<span class="w"> </span>compare<span class="w"> </span>--method<span cl
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
       <script src="../assets/paramsel_tabs.js"></script>
+      <script src="../assets/benchmark_charts.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);

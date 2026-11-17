@@ -58,6 +58,14 @@
                 </li>
               </ul>
               <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../v2/">V2 formats and API</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../benchmarks/">Performance benchmarks</a>
+                </li>
+              </ul>
+              <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
                 </li>
               </ul>
@@ -163,11 +171,16 @@
 <li><code>sample_2</code></li>
 <li><code>genome_ani</code></li>
 <li><code>total_positions</code></li>
-<li><code>max_consecutive_length</code></li>
-<li><code>shared_genes_count</code></li>
-<li><code>identical_gene_count</code></li>
-<li><code>perc_id_genes</code></li>
+<li><code>max_identical_stretch</code></li>
 </ul>
+<p>Identical-gene analyses also need the gene rows written by <code>--calculate gene_ani</code>
+(<code>gene_total_positions</code> and <code>gene_share_allele_pos</code>). <code>calculate_ibs</code> and
+<code>calculate_identical_frac_vs_popani</code> read those rows directly and raise an error
+naming any metric the table lacks.</p>
+<p>When a V2 comparison includes both genome and gene metrics, genome values
+repeat across the gene rows. For a genome-level analysis, select the genome
+columns and keep one row per <code>sample_1</code>, <code>sample_2</code>, and <code>genome</code>. Use a
+genome-only comparison if the analysis needs genomes with no qualifying genes.</p>
 <p>Population-aware functions also expect a <code>sample_to_population</code> lazy frame with:</p>
 <ul>
 <li><code>sample</code></li>
@@ -294,10 +307,13 @@ Use <code>pl.read_parquet(...)</code> when a function expects an eager <code>Dat
 <li><code>comps_lf</code></li>
 <li><code>max_perc_id_genes</code></li>
 <li><code>min_total_positions</code></li>
+<li><code>min_gene_positions</code> (default 100)</li>
 <li>Output:</li>
 <li><code>pl.DataFrame</code></li>
 <li>Notes:</li>
 <li>Produces one row per genome and comparison type.</li>
+<li>Needs <code>--calculate gene_ani+genome_ani+max_identical_stretch</code>.</li>
+<li>Counts each sample pair once, using genes with at least <code>min_gene_positions</code> shared positions. Pass a table's path to also check that this is not below the threshold the table was written with.</li>
 </ul>
 <p>What it does:</p>
 <ul>
@@ -388,8 +404,11 @@ Use <code>pl.read_parquet(...)</code> when a function expects an eager <code>Dat
 <li><code>comps_lf</code></li>
 <li><code>min_shared_genes_count</code></li>
 <li><code>min_total_positions</code></li>
+<li><code>min_gene_positions</code> (default 100)</li>
 <li>Output:</li>
 <li><code>pl.DataFrame</code></li>
+<li>Notes:</li>
+<li>Needs <code>--calculate gene_ani+genome_ani</code>.</li>
 </ul>
 <p>What it does:</p>
 <ul>
@@ -654,6 +673,7 @@ Use <code>pl.read_parquet(...)</code> when a function expects an eager <code>Dat
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
       <script src="../assets/paramsel_tabs.js"></script>
+      <script src="../assets/benchmark_charts.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);

@@ -58,6 +58,8 @@
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#install-zipstrain">Install ZipStrain</a>
         <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#try-the-20-beta">Try the 2.0 beta</a>
+    </li>
     <li class="toctree-l4"><a class="reference internal" href="#option-a-conda-recommended">Option A — Conda (recommended)</a>
     </li>
     <li class="toctree-l4"><a class="reference internal" href="#option-b-pip">Option B — pip</a>
@@ -97,6 +99,14 @@
               </ul>
               <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../plugins/">Plugins</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../v2/">V2 formats and API</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../benchmarks/">Performance benchmarks</a>
                 </li>
               </ul>
               <ul>
@@ -205,6 +215,13 @@
 </table>
 <p>Profiling and comparison need only ZipStrain + samtools. The aligners (bowtie2, sylph, prodigal) are used exclusively by <code>zipstrain map</code>.</p>
 <h3 id="install-zipstrain">Install ZipStrain</h3>
+<h4 id="try-the-20-beta">Try the 2.0 beta</h4>
+<p>In a Python 3.12 or newer environment, install the beta with:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;zipstrain==2.0.0b2&quot;</span>
+</code></pre></div>
+<p>Use <code>zipstrain[matrix]==2.0.0b2</code> to include the matrix dependencies. Install
+<code>samtools</code> separately for profiling. The <a href="../v2/">V2 guide</a> describes the profile
+and comparison formats and has instructions for the optional Rust profiler.</p>
 <h4 id="option-a-conda-recommended">Option A — Conda (recommended)</h4>
 <p>Conda installs ZipStrain <strong>and</strong> samtools together, and can pull the aligners in the same command:</p>
 <div class="highlight"><pre><span></span><code><span class="c1"># ZipStrain + samtools + the tools `zipstrain map` needs</span>
@@ -297,7 +314,7 @@ docker<span class="w"> </span>run<span class="w"> </span>-it<span class="w"> </s
 <tbody>
 <tr>
 <td>zipstrain</td>
-<td>1.2.0</td>
+<td>1.3.0</td>
 <td>—</td>
 </tr>
 <tr>
@@ -393,7 +410,7 @@ conda<span class="w"> </span>install<span class="w"> </span>-c<span class="w"> <
 <li><strong>Singularity / Apptainer</strong> — on most HPC systems (no root needed).</li>
 </ul>
 <p>The repo ships a <code>nextflow.config</code> that enables <strong>Docker by default</strong>, so a laptop run needs no profile — you can run the pipeline straight from GitHub:</p>
-<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>--mode<span class="w"> </span>...<span class="w"> </span>--input_table<span class="w"> </span>...<span class="w"> </span>--output_dir<span class="w"> </span>...<span class="w"> </span>-resume
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0b2<span class="w"> </span>--mode<span class="w"> </span>...<span class="w"> </span>--input_table<span class="w"> </span>...<span class="w"> </span>--output_dir<span class="w"> </span>...<span class="w"> </span>-resume
 </code></pre></div>
 <p>On a cluster, keep site-specific SLURM profiles in a local ignored config such as <code>conf.local.config</code>, then run with <code>-c conf.local.config -profile &lt;name&gt;</code>. The public config only ships generic Docker/Apptainer profiles and uses the published image tag from <code>nextflow.config</code>.</p>
 <h3 id="confirmed-working-versions_1">Confirmed working versions</h3>
@@ -414,8 +431,8 @@ conda<span class="w"> </span>install<span class="w"> </span>-c<span class="w"> <
 <td>17+</td>
 </tr>
 <tr>
-<td>ZipStrain container</td>
-<td><code>parsaghadermazi/zipstrain:1.2.0</code></td>
+<td>ZipStrain beta container</td>
+<td><code>parsaghadermazi/zipstrain:2.0.0b2</code></td>
 </tr>
 </tbody>
 </table>
@@ -466,6 +483,7 @@ conda<span class="w"> </span>install<span class="w"> </span>-c<span class="w"> <
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
       <script src="../assets/paramsel_tabs.js"></script>
+      <script src="../assets/benchmark_charts.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);

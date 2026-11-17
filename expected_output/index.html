@@ -58,6 +58,14 @@
                 </li>
               </ul>
               <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../v2/">V2 formats and API</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../benchmarks/">Performance benchmarks</a>
+                </li>
+              </ul>
+              <ul>
                 <li class="toctree-l1"><a class="reference internal" href="../Tutorial/">Tutorial</a>
                 </li>
               </ul>
@@ -126,6 +134,10 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="expected-output">Expected output</h1>
+<p>This development branch writes V2 profiles. See the <a href="../v2/">V2 guide</a> for
+annotation identities, observed codons, complete selection formulas, and the
+explicit-input Polars comparison path. Legacy 1.x comparison output is described
+where noted below.</p>
 <p>This page describes every file ZipStrain writes, the columns in each, and how to read them. Profile outputs are written as parquet. Convert any parquet table to CSV explicitly with <code>zipstrain utilities parquet-to-csv</code> when text output is needed. The examples below come from <a href="../Tutorial/">Tutorial #3</a> (three replicates of the ZymoBIOMICS standard, Sylph route).</p>
 <hr />
 <h2 id="zipstrain-profile"><code>zipstrain profile</code></h2>
@@ -134,11 +146,12 @@
 ├── SRR12324251/
 │   ├── SRR12324251_profile.parquet        # per-position base counts
 │   ├── SRR12324251_genome_stats.parquet   # per-genome summary
-│   ├── SRR12324251_gene_stats.parquet     # per-gene summary
+│   ├── SRR12324251_gene_stats.parquet     # 15-column per-gene summary
+│   ├── SRR12324251_codon_counts.parquet   # optional observed triplets
 │   ├── SRR12324251_SNVs.parquet           # SNPs vs. reference
 │   └── intermediate_files/                # scratch — safe to ignore
 ├── SRR12324252/ …
-└── profiling_assets/                      # null model, bed, contract, logs
+└── profiling_assets/                      # gene_info + reference_codons Parquets, null model, bed, contract, logs
 </code></pre></div>
 <h3 id="sample_genome_statsparquet"><code>&lt;sample&gt;_genome_stats.parquet</code></h3>
 <p>One row per genome: how well it was covered, whether it is present, and its identity.</p>
@@ -156,15 +169,15 @@
 </tr>
 <tr>
 <td><code>coverage</code></td>
-<td>Mean read depth across the genome (over its full length)</td>
+<td>A/C/G/T depth before allele error/frequency filtering, summed over the genome and divided by its full length</td>
 </tr>
 <tr>
 <td><code>coverage_median</code>, <code>coverage_std</code></td>
-<td>Median and std. dev. of depth across covered positions</td>
+<td>Median and sample standard deviation of pre-allele-filter depth across positions with positive depth</td>
 </tr>
 <tr>
 <td><code>breadth</code></td>
-<td>Fraction of the genome covered by ≥ 1 read</td>
+<td>Fraction of the genome with positive A/C/G/T depth before allele filtering</td>
 </tr>
 <tr>
 <td><code>genome_length</code></td>
@@ -176,7 +189,7 @@
 </tr>
 <tr>
 <td><code>5x_cov_sites</code></td>
-<td>Number of positions covered ≥ 5×</td>
+<td>Number of positions with retained allele depth ≥ 5×</td>
 </tr>
 <tr>
 <td><code>heterogeneity</code></td>
@@ -221,6 +234,11 @@
 GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    present   d__Bacteria;…;s__Salmonella enterica
 </code></pre></div>
 <p>Here breadth ≈ 0.92 at 380× coverage and <code>presence = present</code> — a genuine member of the community. Trace genomes appear with breadth &lt; 0.05 and <code>presence = absent</code>.</p>
+<p>Starting with core <code>2.0.0b2</code> and Rust profiler <code>0.2.0b2</code>, genome coverage,
+breadth and BER use depth before allele filtering. Read inclusion, mapping-quality,
+base-quality and BAQ filtering still apply. Re-profile BAMs to update older statistics;
+the discarded depth cannot be reconstructed from retained profile counts. Gene
+statistics continue to use retained counts, so their depth can differ deliberately.</p>
 <h3 id="sample_gene_statsparquet"><code>&lt;sample&gt;_gene_stats.parquet</code></h3>
 <p>One row per gene, populated only when gene annotations are supplied (<code>profile --gene-fasta</code>, or a gene FASTA on the Sylph route). Empty otherwise.</p>
 <table>
@@ -236,8 +254,12 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 <td>Genome the gene belongs to</td>
 </tr>
 <tr>
-<td><code>gene</code></td>
-<td>Gene identifier</td>
+<td><code>gene_id</code></td>
+<td>Content-derived gene identifier in the shared catalog</td>
+</tr>
+<tr>
+<td><code>chrom</code>, <code>start</code>, <code>end</code></td>
+<td>Scaffold and inclusive gene interval</td>
 </tr>
 <tr>
 <td><code>length</code></td>
@@ -245,18 +267,29 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 </tr>
 <tr>
 <td><code>breadth</code></td>
-<td>Fraction of the gene covered by ≥ 1 read</td>
+<td>Fraction of the gene with positive retained allele depth</td>
 </tr>
 <tr>
 <td><code>coverage</code></td>
-<td>Mean read depth across the gene</td>
+<td>Retained allele depth summed over the gene and divided by gene length</td>
 </tr>
 <tr>
 <td><code>ref_ani</code></td>
-<td>ANI of the sample to the reference for this gene (%)</td>
+<td>Population ANI to the reference for this gene (%); null without callable reference evidence</td>
+</tr>
+<tr>
+<td><code>dN</code>, <code>dS</code>, <code>dN_dS</code></td>
+<td>SNS nonsynonymous/synonymous rates and their ratio</td>
+</tr>
+<tr>
+<td><code>pN</code>, <code>pS</code>, <code>pN_pS</code></td>
+<td>SNV nonsynonymous/synonymous rates and their ratio</td>
 </tr>
 </tbody>
 </table>
+<p>Selection fields are null unless codon preparation was enabled. The exact
+SNS/SNV definitions, opportunity denominators, consensus/weighted integration,
+and null behavior are specified in the <a href="../v2/#selection-method-retained-from-gene-overlap">V2 selection method</a>.</p>
 <h3 id="sample_profileparquet"><code>&lt;sample&gt;_profile.parquet</code></h3>
 <p>The core output: one row per reference position with the observed base counts. This is what comparisons are computed from. It is large (tens of millions of rows), and profile runs do not write CSV sidecars.</p>
 <table>
@@ -276,10 +309,6 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 <td>Genome the scaffold belongs to (<code>NA</code> if unbinned)</td>
 </tr>
 <tr>
-<td><code>gene</code></td>
-<td>Gene at this position (<code>NA</code> if none / unannotated)</td>
-</tr>
-<tr>
 <td><code>pos</code></td>
 <td>Position on the scaffold (<strong>1-based</strong>)</td>
 </tr>
@@ -294,9 +323,9 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 </tbody>
 </table>
 <p>Example:</p>
-<div class="highlight"><pre><span></span><code>chrom                    genome           gene  pos      A   C   G   T   ref_base_bitmask
-GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892095  0   51  0   0   0
-GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
+<div class="highlight"><pre><span></span><code>chrom                    genome           pos      A   C   G   T   ref_base_bitmask
+GCA_016925055.1__CP0704… GCA_016925055.1  3892095  0   51  0   0   0
+GCA_016925055.1__CP0704… GCA_016925055.1  3892097  51  0   0   0   0
 </code></pre></div>
 <p>The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. <code>--min-freq</code> is applied against the original A+C+G+T depth before any allele is removed and defaults to <code>0.01</code> (1%); set it to <code>0</code> to disable frequency filtering. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.</p>
 <h3 id="sample_snvsparquet"><code>&lt;sample&gt;_SNVs.parquet</code></h3>
@@ -310,7 +339,7 @@ GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 </thead>
 <tbody>
 <tr>
-<td><code>chrom</code>, <code>genome</code>, <code>gene</code>, <code>pos</code></td>
+<td><code>chrom</code>, <code>genome</code>, <code>pos</code></td>
 <td>Location (<code>pos</code> is 1-based)</td>
 </tr>
 <tr>
@@ -357,9 +386,14 @@ GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 </div>
 <hr />
 <h2 id="zipstrain-compare"><code>zipstrain compare</code></h2>
-<p>Both methods (standard and matrix) write a single comparison table at the top of the run directory: <code>all_comparisons.parquet</code> (+ <code>.csv</code>), or <code>all_gene_comparisons.parquet</code> with <code>--compare-genes</code>.</p>
+<p>Legacy comparison routes write a selected comparison table at the top of the run directory: <code>all_comparisons.parquet</code> (+ <code>.csv</code>), or <code>all_gene_comparisons.parquet</code> with <code>--calculate gene_ani</code>.</p>
+<p>V2 writes one <code>all_comparisons.parquet</code>. Genome-only runs have one row per
+<code>(sample_1, sample_2, genome)</code>. Requesting a gene metric adds <code>gene_id</code> to the
+key and produces one row per qualifying gene. When both levels are requested,
+genome metrics repeat across each genome's gene rows. Use <code>--force-csv</code> to
+export an additional CSV copy. See the <a href="../v2/#comparison-inputs-and-commands">V2 comparison guide</a>.</p>
 <h3 id="all_comparisonsparquet"><code>all_comparisons.parquet</code></h3>
-<p>One row per genome, per pair of samples.</p>
+<p>In a genome-only run, each row represents one genome and sample pair.</p>
 <table>
 <thead>
 <tr>
@@ -389,18 +423,18 @@ GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
 <td>Genome-wide ANI (%) = <code>share_allele_pos</code> / <code>total_positions</code> × 100. The parquet metadata key <code>zipstrain_compare_ani_method</code> records whether this is <code>popani</code>, <code>conani</code>, or <code>cosani_&lt;threshold&gt;</code></td>
 </tr>
 <tr>
-<td><code>max_consecutive_length</code></td>
+<td><code>max_identical_stretch</code></td>
 <td>Longest run of shared alleles at adjacent coordinates on one scaffold (an identical-by-state / IBS measure); a missing or uncovered coordinate breaks the run</td>
 </tr>
 </tbody>
 </table>
-<p>With gene ranges available, genome-level gene identity summary columns are also added by the default <code>--calculate all</code>: <code>shared_genes_count</code>, <code>identical_gene_count</code>, <code>perc_id_genes</code>.</p>
+<p>Row order is not guaranteed, so join or sort by the key columns rather than relying on position.</p>
 <div class="admonition note">
 <p class="admonition-title">ANI method is stored in the parquet header</p>
 <p><code>--ani-method conani</code> or <code>--ani-method cosani_&lt;threshold&gt;</code> changes how the ANI match indicator is computed, but it does not add method-specific output columns. Check <code>zipstrain_compare_ani_method</code> in the parquet metadata to know what <code>genome_ani</code> represents. Both standard and matrix comparison support <code>popani</code>, <code>conani</code>, and <code>cosani_&lt;threshold&gt;</code>.</p>
 </div>
 <p>Example (same-strain replicates → 100% popANI):</p>
-<div class="highlight"><pre><span></span><code>sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_consecutive_length
+<div class="highlight"><pre><span></span><code>sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_identical_stretch
 SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           100.0           768237
 </code></pre></div>
 <p><strong>Interpreting popANI.</strong> <code>genome_ani</code> near <strong>100.0</strong> means the same strain is present in both samples. A common same-strain threshold is <strong>≥ 99.999%</strong> — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses <em>population</em> ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see <a href="../Tutorial/#interpreting-the-benchmarks">Tutorial #3</a> for the popANI-vs-consensus-ANI discussion.</p>
@@ -444,6 +478,7 @@ SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           10
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
       <script src="../assets/paramsel_tabs.js"></script>
+      <script src="../assets/benchmark_charts.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);

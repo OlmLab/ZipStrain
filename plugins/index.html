@@ -70,7 +70,7 @@
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#how-it-fits-into-zipstrain">How it fits into ZipStrain</a>
     </li>
-    <li class="toctree-l3"><a class="reference internal" href="#install-from-pypi">Install from PyPI</a>
+    <li class="toctree-l3"><a class="reference internal" href="#install-the-rust-profiler">Install the Rust profiler</a>
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#select-it-in-the-cli">Select it in the CLI</a>
     </li>
@@ -79,6 +79,14 @@
         </ul>
     </li>
     </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../v2/">V2 formats and API</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../benchmarks/">Performance benchmarks</a>
                 </li>
               </ul>
               <ul>
@@ -175,14 +183,16 @@ underscores and hyphens as equivalent in distribution names.</p>
 </ul>
 <p>It is most useful for large or deeply sequenced BAMs, large sample sets, and memory-constrained cluster jobs.</p>
 <h3 id="how-it-fits-into-zipstrain">How it fits into ZipStrain</h3>
-<p>The Rust profiler reads a coordinate-sorted, indexed BAM and writes the same three core Parquet outputs as Python profiling: <code>&lt;sample&gt;_profile.parquet</code>, <code>&lt;sample&gt;_gene_stats.parquet</code>, and <code>&lt;sample&gt;_genome_stats.parquet</code>. When you use the high-level <code>zipstrain profile</code> command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.</p>
+<p>The Rust profiler reads a coordinate-sorted BAM and writes the same three core Parquet outputs as Python profiling: <code>&lt;sample&gt;_profile.parquet</code>, <code>&lt;sample&gt;_gene_stats.parquet</code>, and <code>&lt;sample&gt;_genome_stats.parquet</code>. If the BAM has no BAI or CSI index, the profiler creates a <code>.bam.bai</code> beside it before starting workers. The BAM directory must be writable in that case; pre-index BAMs stored read-only. When you use the high-level <code>zipstrain profile</code> command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.</p>
+<p>With <code>--collect-codons</code>, the plugin also extracts observed codons in Rust, with counts identical to Python extraction. Older plugin builds fall back to Python for this step.</p>
 <p>The plugin is optional: installing ZipStrain alone does not install it, and leaving out <code>--backend</code> keeps the Python behavior.</p>
-<h3 id="install-from-pypi">Install from PyPI</h3>
-<p>In a Python 3.12+ environment, install the plugin with pip:</p>
+<h3 id="install-the-rust-profiler">Install the Rust profiler</h3>
+<p>For ZipStrain <code>2.0.0b2</code>, install <code>zipstrain-rust-profiler==0.2.0b2</code> (see the <a href="../v2/#observed-codon-evidence">V2 plugin instructions</a>). Both backends now calculate genome coverage, breadth and BER from depth before allele filtering; re-profile BAMs for corrected low-coverage statistics.</p>
+<p>For ZipStrain 1.x, install the published plugin in a Python 3.12 or newer environment:</p>
 <div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>zipstrain_rust_profiler
 </code></pre></div>
 <p>This also installs ZipStrain 1.2.0 or newer if needed. On a supported platform, pip downloads a prebuilt wheel, so Rust is not needed at installation time. Building from source requires a Rust toolchain and native build prerequisites, including libclang on Linux.</p>
-<p>If using the high-level <code>profile</code> workflow, keep <code>samtools</code> available as described in <a href="../installation/">Installation</a>. The standalone Rust profiler reads the BAM directly, but the ZipStrain workflow still invokes <code>samtools index</code>.</p>
+<p>If using the high-level <code>profile</code> workflow, keep <code>samtools</code> available as described in <a href="../installation/">Installation</a>. The Rust profiler reads and indexes the BAM directly through HTSlib, without invoking <code>samtools index</code> itself.</p>
 <h3 id="select-it-in-the-cli">Select it in the CLI</h3>
 <p>Use the normal profiling command and add one flag:</p>
 <div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>profile<span class="w"> </span><span class="se">\</span>
@@ -192,7 +202,7 @@ underscores and hyphens as equivalent in distribution names.</p>
 <span class="w">  </span>--run-dir<span class="w"> </span>profiled<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--backend<span class="w"> </span>rust_profiler
 </code></pre></div>
-<p><code>mapped/samples.txt</code> is the same CSV used by Python profiling, with <code>sample_name,bamfile</code> columns. Keep the BAMs coordinate-sorted. <code>--num-procs</code> controls the maximum Rust workers per sample; the plugin also respects ZipStrain's detected CPU allocation. Existing profiling filters such as <code>--min-baseq</code>, <code>--min-read-ani</code>, and <code>--read-inclusion</code> are passed through.</p>
+<p><code>mapped/samples.txt</code> is the same CSV used by Python profiling, with <code>sample_name,bamfile</code> columns. Keep the BAMs coordinate-sorted. <code>--threads</code> caps the CPUs for the whole run, and each sample's Rust workers get their share of it; the plugin also respects ZipStrain's detected CPU allocation. Existing profiling filters such as <code>--min-baseq</code>, <code>--min-read-ani</code>, and <code>--read-inclusion</code> are passed through.</p>
 <p>For one BAM with already prepared assets, use <code>zipstrain utilities profile-single</code>:</p>
 <div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>profile-single<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--bam-file<span class="w"> </span>sample.bam<span class="w"> </span><span class="se">\</span>
@@ -202,7 +212,7 @@ underscores and hyphens as equivalent in distribution names.</p>
 <span class="w">  </span>--output-dir<span class="w"> </span>sample_profile<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--backend<span class="w"> </span>rust_profiler
 </code></pre></div>
-<p>This command requires an indexed BAM, BED file, STB file, and null-model Parquet. <code>--reference-fasta</code>, <code>--gene-range-table</code>, and <code>--profiling-contract</code> remain optional; provide the reference FASTA if you want <code>ref_base_bitmask</code> in the profile. Its worker limit is <code>--max-concurrency</code>.</p>
+<p>This command requires an indexed BAM, BED file, STB file, and null-model Parquet. <code>--reference-fasta</code>, <code>--gene-range-table</code>, and <code>--profiling-contract</code> remain optional; provide the reference FASTA if you want <code>ref_base_bitmask</code> in the profile. Its CPU limit is <code>--threads</code>.</p>
 <h3 id="select-it-in-nextflow">Select it in Nextflow</h3>
 <p>For Nextflow modes that run profiling, set:</p>
 <div class="highlight"><pre><span></span><code>--profile_backend<span class="w"> </span>rust_profiler
@@ -214,7 +224,7 @@ underscores and hyphens as equivalent in distribution names.</p>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
         <a href="../installation/" class="btn btn-neutral float-left" title="Installation"><span class="icon icon-circle-arrow-left"></span> Previous</a>
-        <a href="../Tutorial/" class="btn btn-neutral float-right" title="Tutorial">Next <span class="icon icon-circle-arrow-right"></span></a>
+        <a href="../v2/" class="btn btn-neutral float-right" title="V2 formats and API">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
   <hr/>
@@ -240,7 +250,7 @@ underscores and hyphens as equivalent in distribution names.</p>
       <span><a href="../installation/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
-      <span><a href="../Tutorial/" style="color: #fcfcfc">Next &raquo;</a></span>
+      <span><a href="../v2/" style="color: #fcfcfc">Next &raquo;</a></span>
     
   </span>
 </div>
@@ -249,6 +259,7 @@ underscores and hyphens as equivalent in distribution names.</p>
     <script src="../js/theme_extra.js"></script>
     <script src="../js/theme.js"></script>
       <script src="../assets/paramsel_tabs.js"></script>
+      <script src="../assets/benchmark_charts.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);
