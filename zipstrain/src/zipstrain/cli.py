@@ -1414,10 +1414,16 @@ def generate_stb(genomes_dir_file, output_file, extension):
     
 
 
+_SKIP_INPUT_VALIDATION_HELP = (
+    "Trust input contents: skip content hashing and codon-row validation. "
+    "Schema and metadata compatibility checks remain. Resume uses file attributes instead of content hashes."
+)
+
+
 def _write_v2_pair(profile_1, profile_2, preprofile_dir, output_file, *, calculate, ani_method, min_cov,
                    min_gene_compare_len, codon_counts_1=None, codon_counts_2=None,
                    allele_integration=options.ALLELE_INTEGRATION, sample_1=None, sample_2=None,
-                   genome="all", gene="all"):
+                   genome="all", gene="all", validate_inputs=True):
     """Compare one V2 pair and write its table atomically, for every command that runs a pair.
 
     Codon tables default to the ``<sample>_codon_counts.parquet`` beside each profile.
@@ -1437,7 +1443,8 @@ def _write_v2_pair(profile_1, profile_2, preprofile_dir, output_file, *, calcula
             min_gene_compare_len=min_gene_compare_len,
             codon_counts_1=codon_table(codon_counts_1, profile_1),
             codon_counts_2=codon_table(codon_counts_2, profile_2),
-            sample_1=sample_1, sample_2=sample_2, allele_integration=allele_integration)
+            sample_1=sample_1, sample_2=sample_2, allele_integration=allele_integration,
+            validate_inputs=validate_inputs)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
     if genome != "all":
@@ -1556,6 +1563,7 @@ def _write_pair_table(pair_table, output_file, *, calculate, scope, stb_file, wo
 
 
 @utilities.command("compare-pair")
+@click.option("--skip-input-validation", is_flag=True, help=_SKIP_INPUT_VALIDATION_HELP)
 @click.option('--profile-1', '--profile-location-1', 'profile_1', default=None, type=click.Path(exists=True), help="First profile parquet.")
 @click.option('--profile-2', '--profile-location-2', 'profile_2', default=None, type=click.Path(exists=True), help="Second profile parquet.")
 @click.option('--pair-table', '-p', default=None, type=click.Path(exists=True), help="Instead of one pair, compare every pair in this parquet/csv/tsv (sample_name_1, sample_name_2, profile_location_1, profile_location_2) in one process. Genome metrics only.")
@@ -1576,7 +1584,7 @@ def _write_pair_table(pair_table, output_file, *, calculate, scope, stb_file, wo
 @click.option('--workers', '-w', type=click.IntRange(min=1), default=None, hidden=True, help="Advanced, with --pair-table: pairs compared at once. Defaults to what --threads allows.")
 def compare_pair(profile_1, profile_2, pair_table, output_file, calculate, scope, preprofile_dir, stb_file,
                  min_cov, min_gene_compare_len, ani_method, codon_counts_1, codon_counts_2, allele_integration,
-                 sample_name_1, sample_name_2, threads, workers):
+                 sample_name_1, sample_name_2, threads, workers, skip_input_validation):
     """Compare one sample pair and write its comparison Parquet.
 
     This is the unit ``zipstrain compare``, Slurm, and Nextflow schedule.
@@ -1604,7 +1612,7 @@ def compare_pair(profile_1, profile_2, pair_table, output_file, calculate, scope
                        ani_method=ani_method, min_cov=min_cov, min_gene_compare_len=min_gene_compare_len,
                        codon_counts_1=codon_counts_1, codon_counts_2=codon_counts_2,
                        allele_integration=allele_integration, sample_1=sample_name_1, sample_2=sample_name_2,
-                       genome=genome_scope, gene=gene_scope)
+                       genome=genome_scope, gene=gene_scope, validate_inputs=not skip_input_validation)
         return
     _write_v1_pair(profile_1, profile_2, output_file, calculate=calculate, scope=scope, stb_file=stb_file,
                    min_cov=min_cov, min_gene_compare_len=min_gene_compare_len, ani_method=ani_method,
@@ -2012,6 +2020,7 @@ def _run_matrix_compare_method(
     force_csv=False,
     run_log=None,
     progress_interval_seconds=30.0,
+    validate_inputs=True,
 ):
     """Drive the matrix-store comparison route with progress + a summary panel."""
     profiles = [
@@ -2080,6 +2089,7 @@ def _run_matrix_compare_method(
             allele_integration=allele_integration,
             progress_callback=_on_step,
             compare_progress_callback=_on_compare_progress,
+            validate_inputs=validate_inputs,
         )
     except ModuleNotFoundError as exc:
         raise click.UsageError(
@@ -2116,7 +2126,7 @@ def _run_matrix_compare_method(
 def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *, calculate, ani_method, min_cov,
                               min_gene_compare_len, allele_integration, execution_mode, slurm_config,
                               container_engine, container_address, max_concurrent_batches, poll_interval,
-                              task_per_batch, threads=None):
+                              task_per_batch, threads=None, validate_inputs=True):
     """Run V2 pairs as scheduled jobs. Every job gets the same resolved metrics and inputs."""
     try:
         plan = cp.resolve_collection_metrics(
@@ -2134,8 +2144,8 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
     # earlier rows came from the same inputs.
     from zipstrain import gene_info as gi
     identity = gi.content_digest({
-        "profiles": {row["profile_name"]: ut.sha256_file(row["profile_location"]) for row in rows},
-        "codons": {name: ut.sha256_file(path) for name, path in codon_paths.items()} if "gene_selection" in calculations else {},
+        "profiles": {row["profile_name"]: ut.input_fingerprint(row["profile_location"], validate_inputs=validate_inputs) for row in rows},
+        "codons": {name: ut.input_fingerprint(path, validate_inputs=validate_inputs) for name, path in codon_paths.items()} if "gene_selection" in calculations else {},
         "calculate": calculations, "ani_method": ani_method, "min_cov": min_cov,
         "min_gene_compare_len": min_gene_compare_len, "allele_integration": allele_integration,
         "annotation": pl.read_parquet_metadata(pathlib.Path(preprofile_dir)/"gene_info.parquet")[gi.ANNOTATION_ID],
@@ -2156,6 +2166,7 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
             slurm_config=slurm_conf, ani_method=ani_method, calculate="+".join(calculations),
             tasks_per_batch=task_per_batch, poll_interval=poll_interval, preprofile_dir=preprofile_dir,
             allele_integration=allele_integration, codon_tables=codon_paths if "gene_selection" in calculations else None,
+            validate_inputs=validate_inputs,
         )
     if (run_dir / "all_comparisons.parquet").exists():
         finished.write_text(identity)
@@ -2163,6 +2174,7 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
 
 
 @cli.command("compare", cls=SectionedCommand, short_help="Compare samples (genomes or genes).")
+@click.option("--skip-input-validation", is_flag=True, help=_SKIP_INPUT_VALIDATION_HELP)
 @click.option("--profile-db", required=True, help="Profiles to compare: either a CSV with 'profile_name,profile_location' columns (built in memory, no build-profile-db needed) or a pre-built profile-database parquet.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
 @click.option("--method", type=click.Choice(["table", "matrix"]), default="table", show_default=True, help="Comparison method: 'table' (direct pairwise in Polars) or 'matrix' (reusable matrix store).")
@@ -2191,7 +2203,7 @@ def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *
 @click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Also write a companion .csv. V2 exports Parquet by default.")
 @click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="Shared V2 profiling_assets directory for gene and selection comparisons.")
 @click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
-def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, calculate, bed_file, gene_range_table, backend, memory_limit_gb, threads, compare_kernel, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv, preprofile_dir, allele_integration):
+def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, calculate, bed_file, gene_range_table, backend, memory_limit_gb, threads, compare_kernel, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv, preprofile_dir, allele_integration, skip_input_validation):
     """
     Compare profiled samples at the genome level, or per gene when a gene metric is requested.
 
@@ -2230,6 +2242,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
                     slurm_config=slurm_config, container_engine=container_engine,
                     container_address=container_address, max_concurrent_batches=max_concurrent_batches,
                     poll_interval=poll_interval, task_per_batch=task_per_batch, threads=threads,
+                    validate_inputs=not skip_input_validation,
                 )
                 _maybe_write_csv(run_dir / "all_comparisons.parquet", no_csv=no_csv or not force_csv, force_csv=force_csv)
                 run_log.step("Exported V2 comparison table")
@@ -2240,7 +2253,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
                     run_dir, preprofile_dir=preprofile_dir, calculate=calculate,
                     ani_method=ani_method, min_cov=min_cov,
                     min_gene_compare_len=min_gene_compare_len, allele_integration=allele_integration,
-                    memory_limit_gb=memory_limit_gb, workers="auto",
+                    memory_limit_gb=memory_limit_gb, workers="auto", validate_inputs=not skip_input_validation,
                 )
             except (ValueError, FileNotFoundError) as exc:
                 raise click.UsageError(str(exc)) from exc
@@ -2268,6 +2281,7 @@ def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, s
                 no_csv=no_csv,
                 force_csv=force_csv,
                 run_log=run_log,
+                validate_inputs=not skip_input_validation,
             )
             return
 
@@ -2366,6 +2380,7 @@ compare.option_sections = {
         "allele_integration",
         "comp_db_file",
         "allow_mismatch",
+        "skip_input_validation",
     ],
     "Matrix method (--method matrix)": [
         "bed_file",

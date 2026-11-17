@@ -397,7 +397,8 @@ def test_compare_mode_runs_end_to_end_via_docker(tmp_path):
 
 @pytest.mark.skipif(not _NEXTFLOW_AVAILABLE, reason="nextflow and a JVM are required to run the pipeline.")
 @pytest.mark.parametrize("parallel_mode", ["single", "batched"])
-def test_compare_stages_codon_tables_for_gene_selection(tmp_path, parallel_mode):
+@pytest.mark.parametrize("skip_validation", [False, True])
+def test_compare_stages_codon_tables_for_gene_selection(tmp_path, parallel_mode, skip_validation):
     """A V2 Nextflow comparison gives the same table as `zipstrain compare`, gene_selection included."""
     import polars as pl
     from click.testing import CliRunner
@@ -423,7 +424,7 @@ def test_compare_stages_codon_tables_for_gene_selection(tmp_path, parallel_mode)
         pl.DataFrame({"gene_id": [gene_id, gene_id], "codon_index": [0, 1], "codon": ["AAA", codon], "count": [10, 10]},
                      schema={"gene_id": pl.UInt64, "codon_index": pl.UInt32, "codon": pl.String, "count": pl.UInt64}).write_parquet(
             tmp_path/f"{name}_codon_counts.parquet",
-            metadata={**identity, "zipstrain_codon_evidence": "read_phased_v1", "zipstrain_source_profile_sha256": utils.sha256_file(profile)})
+            metadata={**identity, "zipstrain_codon_evidence": "read_phased_v1", "zipstrain_source_profile_sha256": "unverified" if skip_validation else utils.sha256_file(profile)})
         lines.append(f"{name},{profile}")
     table = tmp_path/"profiles.csv"
     table.write_text("\n".join(lines) + "\n")
@@ -436,17 +437,32 @@ def test_compare_stages_codon_tables_for_gene_selection(tmp_path, parallel_mode)
         [str(_NEXTFLOW_BIN), "run", str(NEXTFLOW_FILE), "-c", str(override), "--mode", "compare",
          "--input_type", "profile_table", "--input_table", str(table), "--stb", str(tmp_path/"ref.stb"),
          "--parallel_mode", parallel_mode, "--preprofile_dir", str(tmp_path), "--compare_calculate", "gene_ani+gene_selection",
-         "--batch_compare_n_parallel", "2", "--batch_size", "2", "--output_dir", str(tmp_path/"out")],
+         "--batch_compare_n_parallel", "2", "--batch_size", "2", "--output_dir", str(tmp_path/"out"),
+         "--skip_input_validation", str(skip_validation).lower()],
         cwd=tmp_path, env=_nextflow_subprocess_env(), capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, result.stdout + result.stderr
 
     csv = tmp_path/"local.csv"
     csv.write_text("profile_name,profile_location\n" + "".join(f"{n},{tmp_path/(n + '_profile.parquet')}\n" for n in "abc"))
     local = CliRunner().invoke(cli.cli, ["compare", "--profile-db", str(csv), "--preprofile-dir", str(tmp_path), "--no-csv",
-                                         "--calculate", "gene_ani+gene_selection", "--run-dir", str(tmp_path/"local")])
+                                         "--calculate", "gene_ani+gene_selection", "--run-dir", str(tmp_path/"local"),
+                                         *(["--skip-input-validation"] if skip_validation else [])])
     assert local.exit_code == 0, local.output + repr(local.exception)
     keys = ["sample_1", "sample_2", "gene_id"]
     merged = pl.read_parquet(tmp_path/"out"/"merged_comparisons.parquet").sort(keys)
     expected = pl.read_parquet(tmp_path/"local"/"all_comparisons.parquet").sort(keys)
     assert_frame_equal(merged, expected)
     assert merged["dS"].drop_nulls().max() > 0
+
+
+def test_nextflow_validation_defaults_and_release_containers():
+    """Both comparison modes propagate the opt-out; container pins match the package."""
+    import tomllib
+    version = tomllib.loads((ROOT_DIR / "zipstrain" / "pyproject.toml").read_text())["project"]["version"]
+    text = NEXTFLOW_FILE.read_text()
+    assert "params.skip_input_validation=false" in text
+    assert text.count('def validation_arg = params.skip_input_validation ? "--skip-input-validation" : ""') == 2
+    assert text.count('compare-pair ${preprofile_arg} ${validation_arg}') == 2
+    for config in (ROOT_DIR / "nextflow.config", CONF_FILE):
+        tags = re.findall(r"parsaghadermazi/zipstrain:([^'\s]+)", config.read_text())
+        assert tags and set(tags) == {version}

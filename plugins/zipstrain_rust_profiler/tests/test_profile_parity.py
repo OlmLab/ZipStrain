@@ -192,6 +192,47 @@ def test_backends_agree_on_overlapping_mates_and_uncovered_ends(tmp_path):
     or not shutil.which("samtools"),
     reason="The compiled Rust plugin and samtools are required",
 )
+def test_backends_report_low_coverage_from_unfiltered_depth(tmp_path):
+    """One read never survives the error filter, but it still counts as coverage and breadth."""
+    from zipstrain import utils
+
+    rng = random.Random(5)
+    reference = "".join(rng.choices("ACGT", k=6000))
+    (tmp_path/"ref.fa").write_text(f">s1\n{reference}\n")
+    (tmp_path/"ref.stb").write_text("s1\tgenome\n")
+    (tmp_path/"regions.bed").write_text("s1\t0\t6000\n")
+    pl.DataFrame(utils.build_null_poisson(0.001, 200, 1e-6), schema=["cov", "max_error_count"],
+                 orient="row").write_parquet(tmp_path/"null.parquet")
+    starts = sorted(rng.randrange(0, 5900) for _ in range(40))
+    rows = [f"r{index}\t0\ts1\t{start + 1}\t60\t100M\t*\t0\t0\t{reference[start:start + 100]}\t{'I' * 100}"
+            for index, start in enumerate(starts)]
+    (tmp_path/"reads.sam").write_text("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:s1\tLN:6000\n" + "\n".join(rows) + "\n")
+    subprocess.run(["samtools", "view", "-b", "-o", str(tmp_path/"reads.bam"), str(tmp_path/"reads.sam")], check=True)
+
+    stats = {}
+    for backend in ("python", "rust_profiler"):
+        run_profile(ProfileRequest(
+            bam_file=tmp_path/"reads.bam", bed_file=tmp_path/"regions.bed", stb_file=tmp_path/"ref.stb",
+            null_model=tmp_path/"null.parquet", reference_fasta=tmp_path/"ref.fa", output_dir=tmp_path/backend,
+            num_chunks=2, max_concurrency=2, min_read_ani=None, read_inclusion="all-mapped"), backend)
+        stats[backend] = pl.read_parquet(tmp_path/backend/"reads_genome_stats.parquet")
+    python, rust = (pl.read_parquet(tmp_path/backend/"reads_profile.parquet") for backend in ("python", "rust_profiler"))
+    assert_frame_equal(python.sort("chrom", "pos"), rust.select(python.columns).sort("chrom", "pos"))
+    assert_frame_equal(stats["python"], stats["rust_profiler"].select(stats["python"].columns), abs_tol=1e-9)
+    depth = python.select(pl.sum_horizontal("A", "C", "G", "T")).to_series()
+    # Keep zero-count positions so comparisons retain low-abundance genomes.
+    assert depth.min() == 0
+    row = stats["python"].row(0, named=True)
+    assert row["coverage"] == pytest.approx(40 * 100 / 6000)
+    assert row["breadth"] > 1.5 * (depth > 0).sum() / 6000
+    assert 0.8 < row["ber"] < 1.4
+
+
+@pytest.mark.skipif(
+    not entry_points(group="zipstrain.profile_backends", name="rust_profiler")
+    or not shutil.which("samtools"),
+    reason="The compiled Rust plugin and samtools are required",
+)
 @pytest.mark.parametrize(("pairs", "fug_defined"), [(1999, True), (2000, False)])
 def test_reads_mapped_survives_zero_expected_gap(tmp_path, pairs, fug_defined):
     # V2 counts one trailing-gap position per covered scaffold when rounding the spacing.

@@ -18,10 +18,11 @@ _BYTES_PER_WORST_CASE_ROW = 4096 * 256
 
 def _pack_job(job: tuple) -> None:
     """Pack one sample, atomically, in a worker or in this process."""
-    source, catalog, target, min_cov, genome, identity = job
+    source, catalog, target, min_cov, genome, identity, validate_inputs = job
     with TemporaryDirectory(dir=target.parent) as staging:
         temporary = Path(staging) / target.name
-        codons._pack_callable_codons(source, catalog, temporary, min_cov, genome, {_CACHE_KEY: identity})
+        codons._pack_callable_codons(source, catalog, temporary, min_cov, genome, {_CACHE_KEY: identity},
+                                    validate_inputs=validate_inputs)
         temporary.replace(target)
 
 
@@ -40,7 +41,7 @@ def _selection_pair_job(job: tuple) -> None:
 def stage_selection_pairs(profiles, fingerprints, catalog: Path, directory: Path, *,
                           min_cov: int, genome: str, allele_integration: str,
                           memory_limit_gb: float, codon_tables=None, codon_digests=None,
-                          pool=None, workers: int = 1) -> list[Path]:
+                          pool=None, workers: int = 1, validate_inputs: bool = True) -> list[Path]:
     """Validate samples and cache complete selection results by content.
 
     Return one result path per sample pair, in sorted-name order. Only samples in pairs
@@ -48,7 +49,8 @@ def stage_selection_pairs(profiles, fingerprints, catalog: Path, directory: Path
     added samples cost only what is new. ``codon_tables`` maps a sample name to its table when
     it does not sit beside the profile. ``codon_digests`` saves hashing tables the caller
     already hashed. ``pool`` runs the work in ``workers`` processes, which share
-    ``memory_limit_gb``. Results do not depend on any of these.
+    ``memory_limit_gb``. With ``validate_inputs=False``, trust input contents, use stat
+    fingerprints and skip content hashes and codon-row validation. Metadata checks remain.
     """
     if allele_integration not in codons.ALLELE_INTEGRATION_MODES:
         raise ValueError("allele_integration must be consensus or weighted")
@@ -59,8 +61,8 @@ def stage_selection_pairs(profiles, fingerprints, catalog: Path, directory: Path
     directory.mkdir(parents=True, exist_ok=True)
     annotation = pl.read_parquet_metadata(catalog)
     reference = catalog.resolve().with_name("reference_codons.parquet")
-    reference_digest = utils.sha256_file(reference)
-    if reference_digest != annotation.get("zipstrain_reference_codons_sha256"):
+    reference_digest = utils.input_fingerprint(reference, validate_inputs=validate_inputs)
+    if validate_inputs and reference_digest != annotation.get("zipstrain_reference_codons_sha256"):
         raise ValueError("Reference codon contents do not match the preprofile catalog")
     filters = {pl.read_parquet_metadata(path).get("zipstrain_profile_filters") for _, path in profiles}
     if len(filters) > 1:
@@ -76,11 +78,12 @@ def stage_selection_pairs(profiles, fingerprints, catalog: Path, directory: Path
         source = Path(source) if source is not None else codons.sibling_codon_table(path)
         if not source.is_file():
             raise ValueError(f"Missing observed codon table for {name}. Profile with --collect-codons: {source}")
-        if pl.read_parquet_metadata(source).get("zipstrain_source_profile_sha256") != fingerprints[name]:
+        if validate_inputs and pl.read_parquet_metadata(source).get("zipstrain_source_profile_sha256") != fingerprints[name]:
             raise ValueError(f"Codon evidence does not match its sample position profile: {name}")
         identity = gi.content_digest([
             _CACHE_VERSION, annotation[gi.ANNOTATION_ID], reference_digest, fingerprints[name],
-            (codon_digests or {}).get(name) or utils.sha256_file(source), min_cov, genome,
+            (codon_digests or {}).get(name) or utils.input_fingerprint(source, validate_inputs=validate_inputs),
+            min_cov, genome,
         ])
         samples[name] = source, directory / f"sample-{identity}.parquet", identity
 
@@ -100,7 +103,7 @@ def stage_selection_pairs(profiles, fingerprints, catalog: Path, directory: Path
     batch_size = max(1, min(codons.SELECTION_BATCH_ROWS, budget // _BYTES_PER_WORST_CASE_ROW))
     used = sorted({name for name_a, name_b, _, _ in needed for name in (name_a, name_b)})
     try:
-        map_jobs(pool, _pack_job, [(samples[name][0], catalog, samples[name][1], min_cov, genome, samples[name][2])
+        map_jobs(pool, _pack_job, [(samples[name][0], catalog, samples[name][1], min_cov, genome, samples[name][2], validate_inputs)
                                    for name in used])
         map_jobs(pool, _selection_pair_job, [
             (samples[name_a][1], samples[name_b][1], name_a, name_b, allele_integration, batch_size, identity, target)

@@ -10,7 +10,7 @@ use parquet::format::KeyValue;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::bam::{self, Read};
 use rust_htslib::faidx;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
@@ -450,14 +450,18 @@ fn reference_base(
     ))
 }
 
+/// Unfiltered depth histogram of each genome: depth -> positions with that many reads.
+type RawDepth = HashMap<String, BTreeMap<i32, i64>>;
+
 fn run_task(
     index: usize,
     args: &Args,
     inputs: &Inputs,
     schema: &Arc<Schema>,
     tmp: &Path,
-) -> AnyResult<PathBuf> {
+) -> AnyResult<(PathBuf, RawDepth)> {
     let path = tmp.join(format!("chunk_{index:05}.parquet"));
+    let mut raw_depth = RawDepth::new();
     let mut output = writer(&path, schema.clone(), vec![])?;
     let mut batch = ProfileBatch::default();
     let mut bam = baq::BaqReader::new(args)?;
@@ -522,6 +526,16 @@ fn run_task(
             if null_limit == i64::MIN {
                 return Err(format!("null model lacks coverage {depth}").into());
             }
+            let genome = inputs.genome.get(chrom).map(String::as_str).unwrap_or("NA");
+            // The error filter can remove a position's only allele, so coverage and breadth
+            // are counted here, from the unfiltered depth.
+            if depth > 0 {
+                let histogram = match raw_depth.get_mut(genome) {
+                    Some(histogram) => histogram,
+                    None => raw_depth.entry(genome.to_owned()).or_default(),
+                };
+                *histogram.entry(i32::try_from(depth)?).or_default() += 1;
+            }
             for count in &mut counts {
                 if i64::from(*count) <= null_limit
                     || f64::from(*count) < depth as f64 * args.min_freq
@@ -530,14 +544,7 @@ fn run_task(
                 }
             }
             batch.chrom.push(chrom.to_owned());
-            batch.genome.push(
-                inputs
-                    .genome
-                    .get(chrom)
-                    .map(String::as_str)
-                    .unwrap_or("NA")
-                    .to_owned(),
-            );
+            batch.genome.push(genome.to_owned());
             batch.pos.push(pos);
             batch.a.push(counts[0]);
             batch.c.push(counts[1]);
@@ -555,7 +562,7 @@ fn run_task(
     }
     batch.flush(&mut output, schema, reference.is_some())?;
     output.close()?;
-    Ok(path)
+    Ok((path, raw_depth))
 }
 
 fn run_workers(
@@ -563,13 +570,14 @@ fn run_workers(
     inputs: &Inputs,
     schema: &Arc<Schema>,
     tmp: &Path,
-) -> AnyResult<Vec<PathBuf>> {
+) -> AnyResult<(Vec<PathBuf>, RawDepth)> {
     let next = AtomicUsize::new(0);
     let mut paths: Vec<Option<PathBuf>> = vec![None; inputs.tasks.len()];
+    let mut raw_depth = RawDepth::new();
     thread::scope(|scope| -> AnyResult<()> {
         let mut jobs = Vec::new();
         for _ in 0..args.threads.min(inputs.tasks.len()) {
-            jobs.push(scope.spawn(|| -> AnyResult<Vec<(usize, PathBuf)>> {
+            jobs.push(scope.spawn(|| -> AnyResult<Vec<(usize, (PathBuf, RawDepth))>> {
                 let mut completed = Vec::new();
                 loop {
                     let id = next.fetch_add(1, Ordering::Relaxed);
@@ -582,16 +590,23 @@ fn run_workers(
             }));
         }
         for job in jobs {
-            for (id, path) in job.join().map_err(|_| "profile worker panicked")?? {
+            for (id, (path, depths)) in job.join().map_err(|_| "profile worker panicked")?? {
                 paths[id] = Some(path);
+                for (genome, histogram) in depths {
+                    let total = raw_depth.entry(genome).or_default();
+                    for (depth, sites) in histogram {
+                        *total.entry(depth).or_default() += sites;
+                    }
+                }
             }
         }
         Ok(())
     })?;
-    paths
+    let paths = paths
         .into_iter()
         .map(|p| p.ok_or_else(|| "missing chunk output".into()))
-        .collect()
+        .collect::<AnyResult<Vec<PathBuf>>>()?;
+    Ok((paths, raw_depth))
 }
 
 fn metadata(args: &Args) -> AnyResult<Vec<KeyValue>> {
@@ -748,10 +763,11 @@ fn main() -> AnyResult<()> {
         args.threads
     );
     let workers_start = Instant::now();
-    let paths = run_workers(&args, &inputs, &schema, &tmp)?;
+    let (paths, raw_depth) = run_workers(&args, &inputs, &schema, &tmp)?;
     eprintln!("Workers: {:.2}s", workers_start.elapsed().as_secs_f64());
     let merge_start = Instant::now();
     let mut acc = merge_chunks(&paths, &args, &schema, &out)?;
+    acc.set_raw_depth(raw_depth);
     eprintln!("Merge: {:.2}s", merge_start.elapsed().as_secs_f64());
     let stats_start = Instant::now();
     acc.write_stats(&args, &inputs, &stem)?;

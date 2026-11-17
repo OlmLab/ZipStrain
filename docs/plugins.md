@@ -47,7 +47,7 @@ The plugin is optional: installing ZipStrain alone does not install it, and leav
 
 ### Install the Rust profiler
 
-For ZipStrain `2.0.0b1`, install the matching [Rust profiler beta](v2.md#observed-codon-evidence).
+For ZipStrain `2.0.0b2`, install `zipstrain-rust-profiler==0.2.0b2` (see the [V2 plugin instructions](v2.md#observed-codon-evidence)). Both backends now calculate genome coverage, breadth and BER from depth before allele filtering; re-profile BAMs for corrected low-coverage statistics.
 
 For ZipStrain 1.x, install the published plugin in a Python 3.12 or newer environment:
 

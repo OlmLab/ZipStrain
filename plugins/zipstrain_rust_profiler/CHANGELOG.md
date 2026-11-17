@@ -1,5 +1,13 @@
 # Rust profiler plugin changelog
 
+## 0.2.0b2
+
+- Fixed: genome `coverage`, `coverage_median`, `coverage_std`, `breadth` and `ber` are counted from the depth before the error filter, matching ZipStrain. The filter removes a position's only allele when too few reads support it, so the old values under-reported genomes below about 2x coverage.
+
+- Require ZipStrain `>=2.0.0b2,<3` to pair the corrected native statistics with the matching core beta.
+- Keep zero-count position rows so the comparison genome inventory is preserved.
+- Added low-coverage Python/Rust parity coverage.
+
 ## 0.2.0b1
 
 - Require ZipStrain V2 and write gene-free position tables directly, including worker chunks. Remove native gene-range loading, per-position annotation, and redundant gene-statistics production. The shared V2 finalizer creates gene statistics and optional codon/selection outputs.

@@ -150,6 +150,23 @@ def sha256_file(path: str | pathlib.Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def input_fingerprint(path: str | pathlib.Path, *, validate_inputs: bool = True) -> str:
+    """Identify a comparison input by content, or by file attributes in trusted mode.
+
+    Trusted mode reads no file contents. Its cache key includes resolved path, device,
+    inode, size, modification time and change time. It detects ordinary replacements
+    but does not authenticate contents. The ``stat:`` prefix separates trusted cache
+    entries from content-validated results.
+    """
+    if validate_inputs:
+        return sha256_file(path)
+    resolved = pathlib.Path(path).resolve()
+    stat = resolved.stat()
+    identity = [str(resolved), stat.st_dev, stat.st_ino, stat.st_size,
+                stat.st_mtime_ns, stat.st_ctime_ns]
+    return "stat:" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
 def normalize_profile_contract_values(contract: dict[str, str] | None) -> dict[str, str]:
     """Return a full profile-contract mapping with missing values set to NA."""
     source = contract or {}
@@ -1559,6 +1576,27 @@ def get_genome_gaps(
 
     return pl.from_arrow(table).lazy()
 
+def _raw_depth_statistics(raw_depth: pl.LazyFrame) -> pl.DataFrame:
+    """Summarize each genome's unfiltered depth histogram (``genome``, ``depth``, ``sites``).
+
+    Return ``genome``, ``raw_sites`` (positions with any read), ``raw_bases`` (their summed
+    depth) and the median and sample standard deviation of depth over those positions.
+    """
+    histogram = (raw_depth.filter(pl.col("depth") > 0).group_by("genome", "depth")
+                 .agg(pl.col("sites").sum()).sort("genome", "depth").collect())
+    rows = []
+    for (genome,), part in histogram.group_by("genome", maintain_order=True):
+        depth, count = part["depth"].to_numpy().astype(np.float64), part["sites"].to_numpy().astype(np.int64)
+        sites, bases = int(count.sum()), float((depth * count).sum())
+        cumulative = np.cumsum(count)
+        at = lambda rank: float(depth[np.searchsorted(cumulative, rank, side="right")])
+        spread = float(np.sqrt(((depth - bases / sites) ** 2 * count).sum() / (sites - 1))) if sites > 1 else None
+        rows.append((str(genome), sites, bases, (at((sites - 1) // 2) + at(sites // 2)) / 2, spread))
+    return pl.DataFrame(rows, orient="row", schema={
+        "genome": pl.String, "raw_sites": pl.Int64, "raw_bases": pl.Float64,
+        "raw_median": pl.Float64, "raw_std": pl.Float64})
+
+
 def get_genome_stats(
     profile:pl.LazyFrame,
     bed: pl.LazyFrame,
@@ -1568,8 +1606,17 @@ def get_genome_stats(
     hetro_min_freq: float = 0.8,
     hetro_min_cov: int = 5,
     ref_ani_min_cov: int = 5,
-    
+    raw_depth: pl.LazyFrame | None = None,
 )->pl.LazyFrame:
+    """Summarize one sample per genome: coverage, breadth, BER, FUG and reference statistics.
+
+    ``raw_depth`` is the unfiltered depth histogram (``genome``, ``depth``, ``sites``) written
+    while profiling. With it, ``coverage``, ``coverage_median``, ``coverage_std``, ``breadth``
+    and ``ber`` describe every position with a read, and a genome whose positions were all
+    removed by the error filter still gets a row. Without it they are taken from the profile's
+    retained counts, which under-report genomes below about 2x coverage. The other columns
+    always use retained counts.
+    """
     include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
     genome_lengths = extract_genome_length(stb, bed)
     scaffold_lengths = extract_scaffold_length(bed)
@@ -1583,12 +1630,22 @@ def get_genome_stats(
     ]
     if include_reference_ani:
         profile_columns.append(pl.col(REF_BASE_BITMASK_COLUMN).cast(pl.UInt8).alias(REF_BASE_BITMASK_COLUMN))
+    raw_stats = _raw_depth_statistics(raw_depth) if raw_depth is not None else None
+    if raw_stats is None:
+        source, key = "profile_stats AS p", "p"
+        bases, sites = "p.covered_bases", "p.total_covered_sites::DOUBLE"
+        median, spread = "p.coverage_median", "p.coverage_std"
+    else:
+        source, key = "raw_src AS r LEFT JOIN profile_stats AS p ON p.genome = r.genome", "r"
+        bases, sites, median, spread = "r.raw_bases", "r.raw_sites::DOUBLE", "r.raw_median", "r.raw_std"
     with TemporaryDirectory(prefix="zipstrain_genome_stats_") as tmp_dir:
         profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
         profile.select(profile_columns).sink_parquet(profile_path, compression="zstd", engine="streaming")
 
         conn = _duckdb_connect_with_temp_dir(tmp_dir)
         try:
+            if raw_stats is not None:
+                conn.register("raw_src", raw_stats.to_arrow())
             conn.register(
                 "genome_length_src",
                 genome_lengths.select("genome", "genome_length").collect().to_arrow(),
@@ -1720,26 +1777,26 @@ def get_genome_stats(
                   GROUP BY genome
                 )
                 SELECT
-                  CAST(p.genome AS VARCHAR) AS genome,
-                  p.covered_bases / gl.genome_length AS coverage,
-                  CAST(p.coverage_median AS DOUBLE) AS coverage_median,
-                  CAST(p.coverage_std AS DOUBLE) AS coverage_std,
-                  p.total_covered_sites::DOUBLE / gl.genome_length AS breadth,
+                  CAST({key}.genome AS VARCHAR) AS genome,
+                  {bases} / gl.genome_length AS coverage,
+                  CAST({median} AS DOUBLE) AS coverage_median,
+                  CAST({spread} AS DOUBLE) AS coverage_std,
+                  {sites} / gl.genome_length AS breadth,
                   CAST(gl.genome_length AS BIGINT) AS genome_length,
                   CAST(gg.gap_mean AS DOUBLE) AS gap_mean,
                   CAST(gg.gap_std AS DOUBLE) AS gap_std,
-                  CAST(p.cov_sites AS BIGINT) AS "{int(comp_min_cov_breadth)}x_cov_sites",
+                  COALESCE(CAST(p.cov_sites AS BIGINT), 0) AS "{int(comp_min_cov_breadth)}x_cov_sites",
                   CAST(p.heterogeneity AS DOUBLE) AS heterogeneity,
-                  (p.total_covered_sites::DOUBLE / gl.genome_length)
-                    / (1 - EXP(-0.883 * (p.covered_bases / gl.genome_length))) AS ber,
+                  ({sites} / gl.genome_length)
+                    / (1 - EXP(-0.883 * ({bases} / gl.genome_length))) AS ber,
                   CAST(gg.fug AS DOUBLE) AS fug,
                   COALESCE(CAST(gg.rn AS BIGINT), 0) AS reads_mapped
                   {ref_select_sql}
-                FROM profile_stats AS p
+                FROM {source}
                 LEFT JOIN genome_length_src AS gl
-                  ON p.genome = CAST(gl.genome AS VARCHAR)
+                  ON {key}.genome = CAST(gl.genome AS VARCHAR)
                 LEFT JOIN genome_gap_src AS gg
-                  ON p.genome = CAST(gg.genome AS VARCHAR)
+                  ON {key}.genome = CAST(gg.genome AS VARCHAR)
                 """
             ).fetch_arrow_table()
         finally:

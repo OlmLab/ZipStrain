@@ -412,6 +412,7 @@ Major options:
 - Table method: V2 runs locally in Polars. Legacy profiles also support the batch execution and container options.
 - Output: `--no-csv` / `--force-csv`
 - `--comp-db-file` / `--allow-mismatch` — resume from an existing comparison / skip profile-contract validation
+- `--skip-input-validation` — trust file contents and skip content hashes and codon-row validation; schema, catalog and metadata checks remain. See [trusted comparison inputs](v2.md#comparison-inputs-and-commands).
 
 The calculation names select metrics; `--ani-method` selects how alleles match:
 
@@ -448,105 +449,93 @@ kernel supports all metrics and ANI methods. Matrix comparisons update
 <summary><code>zipstrain compare --help</code></summary>
 
 ```text
-Usage: zipstrain compare [OPTIONS]
+Usage: cli compare [OPTIONS]
 
-  Compare profiled samples at the genome level, or per gene when a gene metric
-  is requested.
+  Compare profiled samples at the genome level, or per gene when a gene metric is requested.
 
-  ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
-  there is no need to run ``zipstrain utilities build-profile-db`` first; a pre-
-  built profile-database parquet is also accepted.
+  ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so there is no need to
+  run ``zipstrain utilities build-profile-db`` first; a pre-built profile-database parquet is also
+  accepted.
 
-  V2 writes ``<run-dir>/all_comparisons.parquet`` with one row per genome or one
-  row per qualifying gene when any gene metric is requested. Re-running with the
-  same ``--run-dir`` and a profiles table that includes new samples extends the
-  existing comparison, computing only the new pairs.
+  V2 writes ``<run-dir>/all_comparisons.parquet`` with one row per genome or one row per qualifying
+  gene when any gene metric is requested. Re-running with the same ``--run-dir`` and a profiles
+  table that includes new samples extends the existing comparison, computing only the new pairs.
 
 Required inputs:
-  --profile-db TEXT           Profiles to compare: either a CSV with
-                              'profile_name,profile_location' columns (built in
-                              memory, no build-profile-db needed) or a pre-built
+  --profile-db TEXT           Profiles to compare: either a CSV with 'profile_name,profile_location'
+                              columns (built in memory, no build-profile-db needed) or a pre-built
                               profile-database parquet.  [required]
-  --preprofile-dir DIRECTORY  Shared V2 profiling_assets directory for gene and
-                              selection comparisons.
+  --preprofile-dir DIRECTORY  Shared V2 profiling_assets directory for gene and selection
+                              comparisons.
   -r, --run-dir TEXT          Directory to save the run data.  [required]
 
 Comparison parameters:
-  --method [table|matrix]         Comparison method: 'table' (direct pairwise in
-                                  Polars) or 'matrix' (reusable matrix store).
-                                  [default: table]
-  --scope TEXT                    Comparison scope. Defaults to 'all' for
-                                  genomes and 'all:all' for genes.
-  --min-cov INTEGER               Minimum coverage to consider a position.
-                                  [default: 5]
-  --min-gene-compare-len INTEGER  Minimum shared positions for a gene to get a
-                                  comparison row.  [default: 1]
-  --stb-file TEXT                 Scaffold-to-genome mapping file. Required for
-                                  --method matrix.
-  -a, --ani-method TEXT           ANI calculation method (e.g., 'popani',
-                                  'conani', 'cosani_0.4').  [default: popani]
-  --calculate TEXT                Metrics to compute, combined with '+':
-                                  genome_ani; max_identical_stretch; gene_ani;
-                                  gene_selection: dN, dS, dN/dS, pN, pS, pN/pS
-                                  per gene (requires --collect-codons); or all,
-                                  meaning every metric the inputs support. Any
-                                  gene metric selects per-gene rows.  [default:
-                                  all]
+  --method [table|matrix]         Comparison method: 'table' (direct pairwise in Polars) or 'matrix'
+                                  (reusable matrix store).  [default: table]
+  --scope TEXT                    Comparison scope. Defaults to 'all' for genomes and 'all:all' for
+                                  genes.
+  --min-cov INTEGER               Minimum coverage to consider a position.  [default: 5]
+  --min-gene-compare-len INTEGER  Minimum shared positions for a gene to get a comparison row.
+                                  [default: 1]
+  --stb-file TEXT                 Scaffold-to-genome mapping file. Required for --method matrix.
+  -a, --ani-method TEXT           ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').
+                                  [default: popani]
+  --calculate TEXT                Metrics to compute, combined with '+': genome_ani;
+                                  max_identical_stretch; gene_ani; gene_selection: dN, dS, dN/dS,
+                                  pN, pS, pN/pS per gene (requires --collect-codons); or all,
+                                  meaning every metric the inputs support. Any gene metric selects
+                                  per-gene rows.  [default: all]
   --allele-integration [consensus|weighted]
-                                  SNS/SNV consequence integration: strongest
-                                  differing allele choice with ties averaged, or
-                                  frequency-weighted choices.  [default:
+                                  SNS/SNV consequence integration: strongest differing allele choice
+                                  with ties averaged, or frequency-weighted choices.  [default:
                                   consensus]
-  --comp-db-file TEXT             Optional existing comparison parquet to
-                                  resume/extend (table method). Auto-detected
-                                  from --run-dir if omitted.
-  --allow-mismatch                Skip profile contract validation when building
-                                  the profile database from a CSV.
+  --comp-db-file TEXT             Optional existing comparison parquet to resume/extend (table
+                                  method). Auto-detected from --run-dir if omitted.
+  --allow-mismatch                Skip profile contract validation when building the profile
+                                  database from a CSV.
+  --skip-input-validation         Trust input contents: skip content hashing and codon-row
+                                  validation. Schema and metadata compatibility checks remain.
+                                  Resume uses file attributes instead of content hashes.
 
 Matrix method (--method matrix):
-  --bed-file TEXT                 BED file for the matrix store (--method
-                                  matrix). Auto-discovered from profiling_assets
-                                  if omitted.
+  --bed-file TEXT                 BED file for the matrix store (--method matrix). Auto-discovered
+                                  from profiling_assets if omitted.
   --gene-info-table, --gene-range-table TEXT
-                                  Gene range table for gene ANI (--method
-                                  matrix). Auto-discovered from profiling_assets
-                                  if omitted.
+                                  Gene range table for gene ANI (--method matrix). Auto-discovered
+                                  from profiling_assets if omitted.
   --backend [numpy|torch|torch-cpu|torch-cuda|torch-mps]
-                                  Compute backend for --method matrix (numpy, or
-                                  torch on CPU/CUDA/MPS).  [default: numpy]
-  --memory-limit-gb FLOAT         Approximate memory budget for --method matrix.
-                                  [default: 16.0]
+                                  Compute backend for --method matrix (numpy, or torch on
+                                  CPU/CUDA/MPS).  [default: numpy]
+  --memory-limit-gb FLOAT         Approximate memory budget for the comparison.  [default: 16.0]
   --compare-kernel [anchor|block]
-                                  Comparison kernel. 'anchor' compares one
-                                  sample against blocks of others position by
-                                  position and supports every metric. 'block'
-                                  computes genome-level popANI/conANI for whole
-                                  blocks of sample pairs with matrix
-                                  multiplications (same values, much faster;
-                                  requires --calculate genome_ani). Applies to
-                                  --method matrix.  [default: anchor]
+                                  Comparison kernel. 'anchor' compares one sample against blocks of
+                                  others position by position and supports every metric. 'block'
+                                  computes genome-level popANI/conANI for whole blocks of sample
+                                  pairs with matrix multiplications (same values, much faster;
+                                  requires --calculate genome_ani). Applies to --method matrix.
+                                  [default: anchor]
 
 Output:
   --no-csv     Do not write a companion .csv next to the comparison parquet.
   --force-csv  Also write a companion .csv. V2 exports Parquet by default.
 
+Resources:
+  --threads INTEGER RANGE  Maximum CPUs this command uses in total, shared out internally. Defaults
+                           to the Slurm allocation, or every CPU on this machine.  [x>=1]
+
 Table method (--method table):
   -m, --max-concurrent-batches INTEGER
-                                  Maximum number of concurrent batches to run.
-                                  [default: 5]
-  -p, --poll-interval INTEGER     Polling interval in seconds to check the
-                                  status of batches.  [default: 1]
-  -t, --task-per-batch INTEGER    Number of tasks to include in each batch.
-                                  [default: 10]
-  -e, --execution-mode TEXT       Execution mode: 'local' or 'slurm'.  [default:
-                                  local]
-  -s, --slurm-config TEXT         Path to the SLURM configuration file in json
-                                  format. Required if execution mode is 'slurm'.
-  -c, --container-engine TEXT     Container engine to use: 'local', 'docker' or
-                                  'apptainer'.  [default: local]
-  --container-address TEXT        Optional container image/address override.
-                                  Defaults to the current ZipStrain version tag
-                                  for docker/apptainer.
+                                  Maximum number of concurrent batches to run.  [default: 5]
+  -p, --poll-interval INTEGER     Polling interval in seconds to check the status of batches.
+                                  [default: 1]
+  -t, --task-per-batch INTEGER    Number of tasks to include in each batch.  [default: 10]
+  -e, --execution-mode TEXT       Execution mode: 'local' or 'slurm'.  [default: local]
+  -s, --slurm-config TEXT         Path to the SLURM configuration file in json format. Required if
+                                  execution mode is 'slurm'.
+  -c, --container-engine TEXT     Container engine to use: 'local', 'docker' or 'apptainer'.
+                                  [default: local]
+  --container-address TEXT        Optional container image/address override. Defaults to the current
+                                  ZipStrain version tag for docker/apptainer.
 
 Other options:
   -h, --help  Show this message and exit.
@@ -805,6 +794,7 @@ Options:
 - `--allele-integration` (`consensus`/`weighted`; used by `gene_selection`; default: `consensus`)
 - `--sample-name-1`, `--sample-name-2` (names written to the output; by default, taken from the profile file names)
 - `--threads` (total CPUs; with `--pair-table`, pairs run in parallel within it)
+- `--skip-input-validation` (skip content hashes and codon-row validation for trusted inputs; schema, catalog and metadata checks remain)
 
 Accepted pair-table schemas:
 
@@ -1334,7 +1324,7 @@ You need **Nextflow**, a **Java 17+** runtime, and a **container engine** (Docke
 You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a `nextflow.config` that:
 
 - enables **Docker by default** (with `--platform linux/amd64` for Apple Silicon), so a laptop run needs no `-profile`;
-- sets the beta container to `parsaghadermazi/zipstrain:2.0.0b1`;
+- sets the beta container to `parsaghadermazi/zipstrain:2.0.0b2`;
 - declares `zipstrain.nf` as the main script (so `-main-script` is not needed);
 - `includeConfig`s `conf.config`, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.
 
@@ -1343,7 +1333,7 @@ For a cluster, keep site-specific SLURM profiles in an ignored local config such
 ### General running pattern
 
 ```bash
-nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
+nextflow run OlmLab/ZipStrain -r v2.0.0b2 \
   --mode <mode> \
   --input_table <path/to/input.csv> \
   --output_dir <path/to/output_dir> \
@@ -1353,7 +1343,7 @@ nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
 Conventions used by every example below:
 
 - **Docker is the default**, so no `-profile` is shown. On a cluster, pass a site-specific config with `-c conf.local.config -profile <name>`.
-- The examples pin the beta with `-r v2.0.0b1`. Use `-r <revision>` to select another tag, branch, or commit.
+- The examples pin the beta with `-r v2.0.0b2`. Use `-r <revision>` to select another tag, branch, or commit.
 - If you have **cloned the repo**, replace `OlmLab/ZipStrain` with `zipstrain.nf` and run from the repo root.
 - `-resume` reuses completed steps from a previous run in the same working directory.
 
@@ -1379,6 +1369,7 @@ Conventions used by every example below:
 - `--parallel_mode` (`single` | `batched`) and `--batch_size` / `--batch_compare_n_parallel`: parallelization of the comparison workflows. Batched mode defaults to one simultaneous pair per task; it divides `task.cpus` among simultaneous pairs and rejects a pair count above the task CPU allocation.
 - `--compare_scope`: comparison scope (`all`, a genome ID, or `GENOME:GENE` to limit gene rows).
 - `--compare_ani_method`: ANI method (`popani`, `conani`, `cosani_<threshold>`).
+- `--skip_input_validation`: default `false`; set `true` to forward `--skip-input-validation` to each single or batched comparison. This trusts input contents while retaining schema, catalog and metadata compatibility checks.
 - `--compare_calculate`: metrics to compute (`genome_ani`, `max_identical_stretch`, `gene_ani`, `gene_selection`, `all`, or `+` combinations). Any gene metric gives one row per gene. V2 gene metrics need `--preprofile_dir`; with 1.x profiles, request `gene_ani` on its own.
 
 Notes:
@@ -1411,7 +1402,7 @@ SRR12345679
 **Option A — map against an existing reference:**
 
 ```bash
-nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
+nextflow run OlmLab/ZipStrain -r v2.0.0b2 \
   --mode map_reads \
   --input_type local \
   --input_table reads.csv \
@@ -1426,7 +1417,7 @@ Optional: `--index_files` to reuse an existing Bowtie2 index; `--bowtie2_non_com
 **Option B — build the reference automatically with Sylph** (when `--reference_genome` is omitted): the pipeline runs per-sample `sylph profile`, merges the abundance tables, builds a reference with `zipstrain utilities build-genome-db`, predicts genes with prodigal, indexes with Bowtie2, and maps.
 
 ```bash
-nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
+nextflow run OlmLab/ZipStrain -r v2.0.0b2 \
   --mode map_reads \
   --input_type local \
   --input_table reads.csv \
@@ -1456,7 +1447,7 @@ S2,/data/S2.bam
 ```
 
 ```bash
-nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
+nextflow run OlmLab/ZipStrain -r v2.0.0b2 \
   --mode profile \
   --input_table bams.csv \
   --reference_genome reference_genomes.fna \
@@ -1473,7 +1464,7 @@ Outputs: `<output_dir>/*_profile.parquet`, `*_genome_stats.parquet`, `*_gene_sta
 Input table is one SRA accession per row (`Run` column). This mode downloads the reads, maps, and profiles in one go.
 
 ```bash
-nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
+nextflow run OlmLab/ZipStrain -r v2.0.0b2 \
   --mode from_sra_to_profile \
   --input_table sra.csv \
   --reference_genome reference_genomes.fna \
@@ -1503,7 +1494,7 @@ S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
 ```
 
 ```bash
-nextflow run OlmLab/ZipStrain -r v2.0.0b1 \
+nextflow run OlmLab/ZipStrain -r v2.0.0b2 \
   --mode compare \
   --input_type profile_table \
   --input_table profiles.csv \

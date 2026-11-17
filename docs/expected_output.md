@@ -33,12 +33,12 @@ One row per genome: how well it was covered, whether it is present, and its iden
 | Column | Meaning |
 |--------|---------|
 | `genome` | Genome identifier (a GTDB accession on the Sylph route) |
-| `coverage` | Mean read depth across the genome (over its full length) |
-| `coverage_median`, `coverage_std` | Median and std. dev. of depth across covered positions |
-| `breadth` | Fraction of the genome covered by ≥ 1 read |
+| `coverage` | A/C/G/T depth before allele error/frequency filtering, summed over the genome and divided by its full length |
+| `coverage_median`, `coverage_std` | Median and sample standard deviation of pre-allele-filter depth across positions with positive depth |
+| `breadth` | Fraction of the genome with positive A/C/G/T depth before allele filtering |
 | `genome_length` | Genome length (bp) |
 | `gap_mean`, `gap_std` | Mean / std. dev. of the gap length between consecutive mapped reads |
-| `5x_cov_sites` | Number of positions covered ≥ 5× |
+| `5x_cov_sites` | Number of positions with retained allele depth ≥ 5× |
 | `heterogeneity` | Mean per-site nucleotide diversity (within-sample microdiversity) |
 | `ber` | Breadth-error ratio: observed breadth ÷ breadth expected at this coverage (~1 for an evenly-covered genome) |
 | `fug` | Read-distribution uniformity (fraction of non-excess gaps); ~0.632 under a random distribution |
@@ -58,6 +58,12 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 
 Here breadth ≈ 0.92 at 380× coverage and `presence = present` — a genuine member of the community. Trace genomes appear with breadth < 0.05 and `presence = absent`.
 
+Starting with core `2.0.0b2` and Rust profiler `0.2.0b2`, genome coverage,
+breadth and BER use depth before allele filtering. Read inclusion, mapping-quality,
+base-quality and BAQ filtering still apply. Re-profile BAMs to update older statistics;
+the discarded depth cannot be reconstructed from retained profile counts. Gene
+statistics continue to use retained counts, so their depth can differ deliberately.
+
 ### `<sample>_gene_stats.parquet`
 
 One row per gene, populated only when gene annotations are supplied (`profile --gene-fasta`, or a gene FASTA on the Sylph route). Empty otherwise.
@@ -68,8 +74,8 @@ One row per gene, populated only when gene annotations are supplied (`profile --
 | `gene_id` | Content-derived gene identifier in the shared catalog |
 | `chrom`, `start`, `end` | Scaffold and inclusive gene interval |
 | `length` | Gene length (bp) |
-| `breadth` | Fraction of the gene covered by ≥ 1 read |
-| `coverage` | Mean read depth across the gene |
+| `breadth` | Fraction of the gene with positive retained allele depth |
+| `coverage` | Retained allele depth summed over the gene and divided by gene length |
 | `ref_ani` | Population ANI to the reference for this gene (%); null without callable reference evidence |
 | `dN`, `dS`, `dN_dS` | SNS nonsynonymous/synonymous rates and their ratio |
 | `pN`, `pS`, `pN_pS` | SNV nonsynonymous/synonymous rates and their ratio |

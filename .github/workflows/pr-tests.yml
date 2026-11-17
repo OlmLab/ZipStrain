@@ -43,10 +43,10 @@ jobs:
           cache: "pip"
           cache-dependency-path: zipstrain/pyproject.toml
 
-      - name: Install samtools
+      - name: Install samtools and GNU parallel
         run: |
           sudo apt-get update
-          sudo apt-get install -y samtools
+          sudo apt-get install -y samtools parallel
 
       - name: Set up Java for Nextflow
         uses: actions/setup-java@v4

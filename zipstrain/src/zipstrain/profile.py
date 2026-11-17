@@ -751,13 +751,27 @@ def _process_raw_profile_chunk_with_polars(
     gene_range: pl.LazyFrame,
     include_reference_base: bool = True,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
+    depth_parquet: pathlib.Path | None = None,
 ) -> None:
-    """Adjust and annotate one coordinate-sorted raw chunk using Polars."""
+    """Adjust and annotate one coordinate-sorted raw chunk using Polars.
+
+    The error filter also removes a position's only allele when too few reads support it
+    (a single read, with the default model), so genome coverage and breadth cannot be read
+    from the filtered counts. ``depth_parquet`` receives the chunk's unfiltered depth
+    histogram (``genome``, ``depth``, ``sites``) for those statistics.
+    """
     raw_columns = ["chrom", "pos", "A", "C", "G", "T"]
     if include_reference_base:
         raw_columns.append(utils.REF_BASE_BITMASK_COLUMN)
 
     raw_lf = pl.scan_parquet(raw_parquet).set_sorted(["chrom", "pos"])
+    if depth_parquet is not None:
+        add_genome_info_to_mpileup(
+            mpileup_df=pl.scan_parquet(raw_parquet).select(
+                "chrom", pl.sum_horizontal("A", "C", "G", "T").cast(pl.Int64).alias("depth")),
+            scaffold_to_genome=scaffold_to_genome,
+        ).filter(pl.col("depth") > 0).group_by("genome", "depth").agg(pl.len().cast(pl.Int64).alias("sites")) \
+            .sink_parquet(depth_parquet, compression="zstd", engine="streaming")
     adjusted = adjust_for_sequence_errors(
         raw_lf,
         null_model,
@@ -1192,6 +1206,7 @@ def _profile_chunk_task(
     raw_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.parquet"
     raw_sorted_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.sorted.parquet"
     candidate_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.candidate.parquet"
+    depth_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.depth.parquet"
     final_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.parquet"
 
     parse = dict(bed_file=bed_file, bam_file=bam_file, reference_fasta=reference_fasta,
@@ -1218,6 +1233,7 @@ def _profile_chunk_task(
         gene_range=gene_range,
         include_reference_base=include_reference_base,
         min_freq=min_freq,
+        depth_parquet=depth_chunk_path,
     )
     if _parquet_rows_are_coordinate_sorted(candidate_chunk_path):
         utils.replace_file(candidate_chunk_path, final_chunk_path)
@@ -1509,11 +1525,14 @@ def profile_bam_in_chunks(
     )
 
     if mpile_container and read_loc_pfs:
+        depth_files = [path for chunk_id in range(len(bed_chunk_files))
+                       if (path := output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.depth.parquet").exists()]
         utils.get_genome_stats(
             profile=mpileup_df,
             read_loc_table=read_loc_df,
             stb=stb,
             bed=bed_lf,
+            raw_depth=pl.scan_parquet(depth_files) if depth_files else None,
         ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming',
                        metadata={key: value for key, value in
                                  utils._read_custom_parquet_metadata(output_dir/f"{bam_file.stem}_profile.parquet").items()

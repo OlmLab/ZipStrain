@@ -1,4 +1,4 @@
-use super::{allowed, writer, AnyResult, Args, Inputs};
+use super::{allowed, writer, AnyResult, Args, Inputs, RawDepth};
 use arrow_array::{
     ArrayRef, Float64Array, Int32Array, Int64Array, LargeStringArray, RecordBatch, UInt8Array,
 };
@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 #[derive(Default)]
 struct Counts {
+    // Positions with any read, their summed depth and its histogram, before the error
+    // filter. Every other field counts retained alleles.
     sites: i64,
     bases: i64,
     depth_histogram: BTreeMap<i32, i64>,
@@ -25,9 +27,6 @@ struct Counts {
 impl Counts {
     fn add(&mut self, bases: [i32; 4], reference: Option<u8>) {
         let depth: i32 = bases.iter().sum();
-        self.sites += 1;
-        self.bases += i64::from(depth);
-        *self.depth_histogram.entry(depth).or_default() += 1;
         if depth >= 5 {
             self.deep_sites += 1;
         }
@@ -145,6 +144,19 @@ impl Accumulator {
                 .add(bases, mask);
         }
         Ok(())
+    }
+
+    /// Record each genome's unfiltered depth, which gives its coverage, breadth and BER.
+    pub(super) fn set_raw_depth(&mut self, raw_depth: RawDepth) {
+        for (genome, histogram) in raw_depth {
+            let counts = self.genomes.entry(genome).or_default();
+            counts.sites = histogram.values().sum();
+            counts.bases = histogram
+                .iter()
+                .map(|(depth, sites)| i64::from(*depth) * sites)
+                .sum();
+            counts.depth_histogram = histogram;
+        }
     }
 
     pub(super) fn write_stats(

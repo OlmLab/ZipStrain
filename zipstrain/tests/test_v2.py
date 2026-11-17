@@ -969,7 +969,7 @@ def test_collection_validates_each_sample_once_and_parallel_pairs_match(assets, 
         profiles.append((name, path))
 
     real, calls = codons.read_codon_counts, []
-    monkeypatch.setattr(codons, "read_codon_counts", lambda path, info: calls.append(path) or real(path, info))
+    monkeypatch.setattr(codons, "read_codon_counts", lambda path, info, **kwargs: calls.append(path) or real(path, info, **kwargs))
     keys = ["sample_1", "sample_2", "gene_id"]
     serial = pl.read_parquet(compare.compare_profile_collection(profiles, root/"serial", preprofile_dir=root, workers=1)).sort(keys)
     assert len(calls) == 3
@@ -1000,3 +1000,123 @@ def test_pair_workers_respect_cpu_and_memory(monkeypatch):
     assert compare._pair_workers("auto", 100, 1.0, 40_000_000) == (1, 8)
     monkeypatch.setenv("ZIPSTRAIN_CPU_BUDGET", "1")
     assert compare._pair_workers("auto", 100, 16.0, 1_000_000) == (1, 1)
+
+
+def test_ungapped_codons_match_general_cigar_path():
+    """Exercise both strands/phases, partial overlap, ambiguous calls and quality gates."""
+    import random
+    rng = random.Random(19)
+    for strand in (-1, 1):
+        for phase in range(3):
+            for _ in range(150):
+                start, length = rng.randint(1, 80), rng.randint(1, 100)
+                gene_start, gene_length = rng.randint(1, 80), rng.randint(1, 100)
+                gene = dict(start=gene_start, end=gene_start+gene_length-1,
+                            length=gene_length, strand=strand, phase=phase)
+                sequence = "".join(rng.choices("ACGTN", weights=[10, 10, 10, 10, 1], k=length))
+                quality = "".join(chr(33+rng.choice([0, 12, 13, 30, 40])) for _ in sequence)
+                bases = codons.aligned_read_bases(start, f"{length}M", sequence, quality)
+                assert list(codons._ungapped_codon_observations(start, sequence, quality.encode(), gene)) == list(
+                    codons.read_codon_observations(bases, gene))
+
+
+def test_trusted_collection_uses_separate_cache_and_no_content_hashes(assets, monkeypatch):
+    root, _, _, _, catalog = assets
+    profiles = [(name, write_sample(root, catalog, name)) for name in "abc"]
+    run = root / "trusted"
+    expected = pl.read_parquet(compare.compare_profile_collection(profiles, run, calculate="genome_ani"))
+    cache = run / "intermediate_files" / "v2_pairs"
+    validated = set(cache.glob("*.parquet"))
+    assert len(validated) == 3
+    def unexpected_hash(*args, **kwargs):
+        raise AssertionError("Trusted comparison must not hash file contents")
+    monkeypatch.setattr(utils, "sha256_file", unexpected_hash)
+    actual = pl.read_parquet(compare.compare_profile_collection(profiles, run, calculate="genome_ani", validate_inputs=False))
+    assert_frame_equal(actual, expected)
+    trusted = set(cache.glob("*.parquet")) - validated
+    assert len(trusted) == 3 and not list(cache.glob("shard_*"))
+    stamps = {p: p.stat().st_mtime_ns for p in trusted}
+    monkeypatch.setattr(compare, "_compare_pair_job", lambda job: pytest.fail("Resume recomputed a pair"))
+    compare.compare_profile_collection(profiles, run, calculate="genome_ani", validate_inputs=False)
+    assert all(p.stat().st_mtime_ns == stamp for p, stamp in stamps.items())
+
+
+@pytest.mark.parametrize("method", ["table", "matrix", "pair"])
+def test_cli_skip_input_validation_selection(assets, monkeypatch, method):
+    """The flag reaches every selection path, without hashes or evidence scan passes."""
+    if method == "matrix":
+        pytest.importorskip("h5py")
+    root, _, _, stb, catalog = assets
+    a, b = write_sample(root, catalog, "a"), write_sample(root, catalog, "b", "AAAGGTTTTCCCAAAGGTTAA")
+    gene_id = gi.read_gene_info(catalog).filter(pl.col("gene") == "chr1_1")["gene_id"][0]
+    write_counts(root, catalog, "a", [(gene_id, 1, "GGA", 10)], source_profile=a)
+    write_counts(root, catalog, "b", [(gene_id, 1, "GGT", 10)], source_profile=b)
+    inputs = root / "profiles.csv"
+    inputs.write_text(f"profile_name,profile_location\na,{a}\nb,{b}\n")
+    bed = root / "regions.bed"
+    bed.write_text("chr1\t0\t21\nchr2\t0\t9\n")
+    output = root / "result" / "all_comparisons.parquet"
+    common = ["--preprofile-dir", str(root), "--calculate", "gene_selection", "--min-gene-compare-len", "1"]
+    if method == "pair":
+        args = ["utilities", "compare-pair", "--profile-1", str(a), "--profile-2", str(b), "-o", str(output), *common]
+    else:
+        args = ["compare", "--profile-db", str(inputs), "--run-dir", str(output.parent), "--threads", "1",
+                "--method", method, *common]
+        if method == "matrix":
+            args += ["--stb-file", str(stb), "--bed-file", str(bed)]
+    runner = CliRunner()
+    checked = runner.invoke(cli.cli, args)
+    assert checked.exit_code == 0, checked.output + repr(checked.exception)
+    expected = pl.read_parquet(output)
+    shutil.rmtree(output.parent)
+    def unexpected_validation(*args, **kwargs):
+        raise AssertionError("Trusted comparison ran content validation")
+    monkeypatch.setattr(utils, "sha256_file", unexpected_validation)
+    monkeypatch.setattr(compare, "_file_digest", unexpected_validation)
+    monkeypatch.setattr(codons, "_has_duplicate_rows", unexpected_validation)
+    result = runner.invoke(cli.cli, [*args, "--skip-input-validation"])
+    assert result.exit_code == 0, result.output + repr(result.exception)
+    keys = ["sample_1", "sample_2", "gene_id"]
+    assert_frame_equal(pl.read_parquet(output).sort(keys), expected.sort(keys))
+
+
+def test_trusted_codons_still_check_metadata(assets):
+    root, _, _, _, catalog = assets
+    gene_id = gi.read_gene_info(catalog)["gene_id"][0]
+    path = write_counts(root, catalog, "a", [(gene_id, 0, "AAA", 10)])
+    metadata = pl.read_parquet_metadata(path)
+    metadata[gi.REFERENCE_ID] = "different-reference"
+    pl.read_parquet(path).write_parquet(path, metadata=metadata)
+    with pytest.raises(ValueError, match="Incompatible"):
+        codons.read_codon_counts(path, catalog, validate_inputs=False)
+
+
+def test_scheduled_compare_forwards_validation_opt_out(assets, monkeypatch):
+    """Scheduler identity and generated pair commands both honor trusted mode."""
+    from zipstrain import database, task_manager
+    root, _, _, _, catalog = assets
+    a, b = write_sample(root, catalog, "a"), write_sample(root, catalog, "b")
+    inputs = root / "profiles.csv"
+    inputs.write_text(f"profile_name,profile_location\na,{a}\nb,{b}\n")
+    profiles = database.ProfileDatabase.from_csv(inputs)
+    run = root / "scheduled"
+    run.mkdir()
+    seen = []
+    def dispatch(**kwargs):
+        seen.append(kwargs)
+        generator = task_manager.CompareTaskGenerator(
+            data=kwargs["comps_db"].to_complete_input_table(), yield_size=1,
+            container_engine=kwargs["container_engine"], comp_config=kwargs["comps_db"].config,
+            preprofile_dir=root, calculate="genome_ani", validate_inputs=kwargs["validate_inputs"])
+        row = generator.data.collect().row(0, named=True)
+        assert "--skip-input-validation" in generator._v2_inputs(row)["v2-args"].get_value()
+        pl.DataFrame({"done": [True]}).write_parquet(run / "all_comparisons.parquet")
+    monkeypatch.setattr(task_manager, "lazy_run_compares", dispatch)
+    monkeypatch.setattr(utils, "sha256_file", lambda *args: pytest.fail("Scheduler hashed trusted input"))
+    kwargs = dict(calculate="genome_ani", ani_method="popani", min_cov=5, min_gene_compare_len=1,
+                  allele_integration="consensus", execution_mode="local", slurm_config=None,
+                  container_engine="local", container_address="", max_concurrent_batches=1,
+                  poll_interval=1, task_per_batch=1, validate_inputs=False)
+    for _ in range(2):
+        cli._run_scheduled_v2_compare(profiles, profiles.db.collect().to_dicts(), run, root, **kwargs)
+    assert len(seen) == 1 and seen[0]["validate_inputs"] is False

@@ -193,11 +193,13 @@ def test_scheduled_v2_run_matches_local_and_keeps_the_format(run, tmp_path):
     assert refused.returncode != 0 and "new --run-dir" in refused.stdout + refused.stderr
 
 
-def test_scheduled_v2_tasks_mount_every_input(run):
+@pytest.mark.parametrize("validate_inputs", [True, False])
+def test_scheduled_v2_tasks_mount_every_input(run, validate_inputs):
     """Containers mount only file inputs, so assets and codon tables must be among them."""
     from zipstrain import task_manager as tm
 
     generator = tm.CompareTaskGenerator.__new__(tm.CompareTaskGenerator)
+    generator.validate_inputs = validate_inputs
     generator.preprofile_dir, generator.allele_integration = run/"assets", "weighted"
     generator.codon_tables = {"a": run/"sample/a_codon_counts.parquet", "b": run/"sample/b_codon_counts.parquet"}
     inputs = generator._v2_inputs({"sample_name_1": "a", "sample_name_2": "b"})
@@ -205,3 +207,4 @@ def test_scheduled_v2_tasks_mount_every_input(run):
     assert mounted == {str(run/"assets"), str(run/"sample/a_codon_counts.parquet"), str(run/"sample/b_codon_counts.parquet")}
     arguments = inputs["v2-args"].get_value()
     assert "--allele-integration weighted" in arguments and "--sample-name-2 b" in arguments
+    assert ("--skip-input-validation" in arguments) == (not validate_inputs)

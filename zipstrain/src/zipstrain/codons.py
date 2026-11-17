@@ -147,6 +147,38 @@ def read_codon_observations(bases: dict, gene: dict, min_baseq: int = 13):
         yield index, codon, min(q for _, q, _ in calls)
 
 
+_UNGAPPED_CIGAR = re.compile(r"(\d+)M")
+_TRIPLETS = frozenset("".join(codon) for codon in product("ACGT", repeat=3))
+_REVERSE_COMPLEMENT = {codon: codon[::-1].translate(str.maketrans("ACGT", "TGCA")) for codon in _TRIPLETS}
+
+
+def _ungapped_codon_observations(start: int, sequence: str, qualities: bytes, gene: dict, min_baseq: int = 13):
+    """Yield what :func:`read_codon_observations` yields, for a read aligned without gaps.
+
+    ``sequence`` is the uppercase read whose first base sits at reference ``start`` and
+    ``qualities`` its Phred+33 bytes. Most reads align as one ``M`` run, where each codon is
+    a slice of the read, so no per-base table is built.
+    """
+    end = start + len(sequence) - 1
+    codons_in_gene = (gene["length"] - gene["phase"]) // 3
+    if gene["strand"] == 1:
+        origin = gene["start"] + gene["phase"]
+        first, last = max(0, -((origin - start) // 3)), min(codons_in_gene - 1, (end - 2 - origin) // 3)
+        offset, step = origin - start + 3 * first, 3
+    else:
+        origin = gene["end"] - gene["phase"]
+        first, last = max(0, -((end - origin) // 3)), min(codons_in_gene - 1, (origin - 2 - start) // 3)
+        offset, step = origin - 2 - start - 3 * first, -3
+    floor = min_baseq + 33
+    for index in range(first, last + 1):
+        codon = sequence[offset:offset + 3]
+        quality = min(qualities[offset:offset + 3])
+        offset += step
+        if codon not in _TRIPLETS or quality < floor:
+            continue
+        yield index, (codon if gene["strand"] == 1 else _REVERSE_COMPLEMENT[codon]), quality - 33
+
+
 def _extract_raw_codons(bam_file, genes: pl.DataFrame, raw, *, min_baseq, min_mapq, min_read_ani,
                         read_inclusion) -> None:
     """Write per-fragment codon counts for a coordinate-sorted BAM, read through samtools."""
@@ -193,16 +225,25 @@ def _extract_raw_codons(bam_file, genes: pl.DataFrame, raw, *, min_baseq, min_ma
                     active.pop(key, None)
                 if fields[10] == "*":
                     continue
-                bases = aligned_read_bases(start, fields[5], fields[9], fields[10])
-                if not bases:
-                    continue
+                ungapped = _UNGAPPED_CIGAR.fullmatch(fields[5])
+                if (ungapped and start >= 1 and len(fields[9]) == len(fields[10]) == int(ungapped.group(1))
+                        and fields[10].isascii()):
+                    bases, last = None, start + len(fields[9]) - 1
+                    sequence, qualities = fields[9].upper(), fields[10].encode()
+                else:
+                    bases = aligned_read_bases(start, fields[5], fields[9], fields[10])
+                    if not bases:
+                        continue
+                    last = max(bases)
                 candidates = {}
-                for bucket in range(start//16384, max(bases)//16384+1):
+                for bucket in range(start//16384, last//16384+1):
                     for gene in bins.get((chrom, bucket), []):
                         candidates[gene["gene_id"]] = gene
                 rg = next((f for f in fields[11:] if f.startswith("RG:Z:")), "")
                 for gene in candidates.values():
-                    for index, codon, quality in read_codon_observations(bases, gene, min_baseq):
+                    observations = (_ungapped_codon_observations(start, sequence, qualities, gene, min_baseq)
+                                    if bases is None else read_codon_observations(bases, gene, min_baseq))
+                    for index, codon, quality in observations:
                         key = (fields[0], rg, gene["gene_id"], index)
                         old = active.get(key)
                         if old is not None:
@@ -215,7 +256,7 @@ def _extract_raw_codons(bam_file, genes: pl.DataFrame, raw, *, min_baseq, min_ma
                                 active[key] = (None, quality)
                                 continue
                         else:
-                            heapq.heappush(expiry, (max(bases), key))
+                            heapq.heappush(expiry, (last, key))
                         counts[gene["gene_id"], index, codon] += 1
                         active[key] = (codon, quality)
             if counts:
@@ -284,12 +325,14 @@ def write_codon_counts(bam_file, profile_file, gene_info, output_file, *,
     return output
 
 
-def read_codon_counts(path, gene_info) -> pl.LazyFrame:
+def read_codon_counts(path, gene_info, *, validate_inputs: bool = True) -> pl.LazyFrame:
     """Authenticate and validate observed-codon evidence before selection analysis.
 
     Reject marginal/reconstructed evidence, invalid triplets, zero counts,
     duplicate haplotype rows, unknown genes, and out-of-range codon indices.
     The adjacent reference-codon file must carry the same annotation identity.
+    ``validate_inputs=False`` skips content hashes and row validation for trusted files;
+    schema, annotation and read-phased-evidence metadata checks remain enabled.
     """
     gi.validate_profile_assets([path], gene_info)
     if pl.read_parquet_metadata(path).get("zipstrain_codon_evidence") != "read_phased_v1":
@@ -297,9 +340,11 @@ def read_codon_counts(path, gene_info) -> pl.LazyFrame:
     reference_file = Path(gene_info).resolve().with_name("reference_codons.parquet")
     gi.validate_profile_assets([reference_file], gene_info)
     from zipstrain.utils import sha256_file
-    if sha256_file(reference_file) != pl.read_parquet_metadata(gene_info).get("zipstrain_reference_codons_sha256"):
+    if validate_inputs and sha256_file(reference_file) != pl.read_parquet_metadata(gene_info).get("zipstrain_reference_codons_sha256"):
         raise ValueError("Reference codon contents do not match the preprofile catalog")
     frame = pl.scan_parquet(path).select(list(COUNT_SCHEMA)).cast(COUNT_SCHEMA)
+    if not validate_inputs:
+        return frame
     if frame.filter(pl.col("count").is_null() | (pl.col("count") == 0) | pl.col("codon").is_null() |
                     ~pl.col("codon").str.contains(r"^[ACGT]{3}$")).limit(1).collect(engine="streaming").height:
         raise ValueError("Invalid observed codon or count")
@@ -575,7 +620,8 @@ def _gene_range(first: int | None, last: int | None) -> pl.Expr:
 
 
 def _pack_callable_codons(source, catalog, destination, min_cov: int, genome: str = "all",
-                          metadata: dict[str, str] | None = None, min_freq: float = 0.0) -> None:
+                          metadata: dict[str, str] | None = None, min_freq: float = 0.0,
+                          *, validate_inputs: bool = True) -> None:
     """Stage one sample as sorted sparse codon groups after validating its evidence.
 
     Each row is one callable codon: its observed codon IDs and counts, retained depth, and
@@ -583,10 +629,11 @@ def _pack_callable_codons(source, catalog, destination, min_cov: int, genome: st
     *codon* frequency floor; position-level allele filtering has already occurred, so it is
     zero by default. Reference stop or ambiguous codons are excluded. Genes are packed in
     gene-ID ranges of about ``SELECTION_CHUNK_CODONS`` codons, so memory does not grow with the table.
+    ``validate_inputs`` controls content validation as in :func:`read_codon_counts`.
     """
     import pyarrow.parquet as pq
 
-    counts = read_codon_counts(source, catalog)
+    counts = read_codon_counts(source, catalog, validate_inputs=validate_inputs)
     reference = _ReferenceLookup.for_genome(catalog, genome)
     schema = pl.DataFrame(schema=_PACKED_SCHEMA).to_arrow().schema.with_metadata(metadata or {})
     # Packed files are short-lived staging, so favour write speed over size.
@@ -870,7 +917,7 @@ def reference_selection(codon_counts, gene_info, *, min_cov=options.COMPARE_MIN_
 
 def pairwise_selection(codon_counts_1, codon_counts_2, gene_info, *, min_cov=options.COMPARE_MIN_COV,
                        min_freq=0.0, allele_integration=options.ALLELE_INTEGRATION,
-                       batch_size=SELECTION_BATCH_ROWS) -> pl.LazyFrame:
+                       batch_size=SELECTION_BATCH_ROWS, validate_inputs: bool = True) -> pl.LazyFrame:
     """Compute pairwise SNS dN/dS and SNV pN/pS with the branch's integration rules.
 
     Merge sorted callable codons from both samples. Use reference opportunities
@@ -882,9 +929,11 @@ def pairwise_selection(codon_counts_1, codon_counts_2, gene_info, *, min_cov=opt
     populations can have positive pN/pS: this measures polymorphic allele-pair
     consequences, not only substitutions separating populations. Raw proportions,
     no Jukes–Cantor correction; six output metrics, undefined ratios null.
+    ``validate_inputs`` controls content validation as in :func:`read_codon_counts`.
     """
     _selection_arguments(min_cov, min_freq, allele_integration, batch_size)
-    first, second = read_codon_counts(codon_counts_1, gene_info), read_codon_counts(codon_counts_2, gene_info)
+    first, second = (read_codon_counts(path, gene_info, validate_inputs=validate_inputs)
+                     for path in (codon_counts_1, codon_counts_2))
 
     def matched():
         reference = _ReferenceLookup.for_genome(gene_info)

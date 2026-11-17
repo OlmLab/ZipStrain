@@ -820,7 +820,8 @@ def compare_profiles(profile_1, profile_2, *, preprofile_dir=None, calculate=opt
                      ani_method=options.ANI_METHOD, min_cov=options.COMPARE_MIN_COV,
                      min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
                      codon_counts_1=None, codon_counts_2=None,
-                     sample_1=None, sample_2=None, allele_integration=options.ALLELE_INTEGRATION) -> pl.LazyFrame:
+                     sample_1=None, sample_2=None, allele_integration=options.ALLELE_INTEGRATION,
+                     validate_inputs: bool = True) -> pl.LazyFrame:
     """Compare one pair using ordinary Polars functions and explicit shared assets.
 
     Return one row per genome, or one row per qualifying gene if any gene
@@ -833,13 +834,15 @@ def compare_profiles(profile_1, profile_2, *, preprofile_dir=None, calculate=opt
     null, not zero. Input count filters, profile identities, and annotation IDs
     are validated before using gene IDs. See ``docs/v2.md`` for examples.
     This is :meth:`PairComparison.compare` for a pair used once.
+    ``validate_inputs=False`` skips content hashes and codon-row validation for trusted
+    inputs. Schema and metadata compatibility checks still apply.
     """
     if min_gene_compare_len < 1:
         raise ValueError("min_gene_compare_len must be positive")
     pair = PairComparison(
         profile_1, profile_2, preprofile_dir=preprofile_dir, ani_method=ani_method, min_cov=min_cov,
         sample_1=sample_1, sample_2=sample_2, codon_counts_1=codon_counts_1, codon_counts_2=codon_counts_2,
-        allele_integration=allele_integration,
+        allele_integration=allele_integration, validate_inputs=validate_inputs,
     )
     return pair.compare(calculate, min_gene_compare_len=min_gene_compare_len)
 
@@ -881,6 +884,9 @@ class PairComparison:
             pair.mosaic_regions(),
         )
 
+    ``validate_inputs=False`` skips content hashes and codon-row validation for trusted
+    inputs; schema, catalog and metadata checks remain.
+
     :meth:`compare` and :meth:`identical_stretches` count in NumPy batches and run their
     own pass when collected. Codon tables are only read when ``compare(calculate=...)``
     with ``gene_selection`` is collected.
@@ -888,7 +894,8 @@ class PairComparison:
 
     def __init__(self, profile_1, profile_2, *, preprofile_dir=None, ani_method=options.ANI_METHOD,
                  min_cov=options.COMPARE_MIN_COV, sample_1=None, sample_2=None,
-                 codon_counts_1=None, codon_counts_2=None, allele_integration=options.ALLELE_INTEGRATION):
+                 codon_counts_1=None, codon_counts_2=None, allele_integration=options.ALLELE_INTEGRATION,
+                 validate_inputs: bool = True):
         from zipstrain import gene_info as gi, matrix_pairs as mp
         if min_cov < 1:
             raise ValueError("min_cov must be positive")
@@ -902,6 +909,7 @@ class PairComparison:
         self.names = _pair_names(profile_1, profile_2, sample_1, sample_2)
         self.codon_counts = (codon_counts_1, codon_counts_2)
         self.allele_integration = allele_integration
+        self.validate_inputs = validate_inputs
         self.min_cov = min_cov
         self.ani_method, _threshold = mp.parse_matrix_ani_method(ani_method)
         require_same_profile_generation(self.profiles)
@@ -937,10 +945,11 @@ class PairComparison:
             def rates():
                 # At collect time, so building the plan reads no codons and hashes no profile.
                 for counts, positions in zip(self.codon_counts, self.profiles, strict=True):
-                    if pl.read_parquet_metadata(counts).get("zipstrain_source_profile_sha256") != _file_digest(positions):
+                    if self.validate_inputs and pl.read_parquet_metadata(counts).get("zipstrain_source_profile_sha256") != _file_digest(positions):
                         raise ValueError("Codon evidence does not match its sample position profile")
                 return codons.pairwise_selection(*self.codon_counts, self.gene_file, min_cov=self.min_cov,
-                                                 allele_integration=self.allele_integration)
+                                                 allele_integration=self.allele_integration,
+                                                 validate_inputs=self.validate_inputs)
         universe = [_as_lazy_profile(source).select(pl.col("genome").cast(pl.String)).unique()
                     for source in self.profiles]
         return _compare_aligned(
@@ -1240,7 +1249,7 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
                                min_cov=options.COMPARE_MIN_COV,
                                min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
                                codon_counts=None, allele_integration=options.ALLELE_INTEGRATION,
-                               memory_limit_gb=16.0, workers=1):
+                               memory_limit_gb=16.0, workers=1, validate_inputs: bool = True):
     """Run/resume V2 Polars comparisons for named profile paths and export Parquet.
 
     ``profiles`` is an iterable of ``(sample_name, profile_path)``. Codon files
@@ -1248,11 +1257,14 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
     ``<sample>_codon_counts.parquet`` files. Cache each pair under
     ``intermediate_files/v2_pairs`` with a content-addressed input/settings
     contract in Parquet metadata. Only complete, authenticated pair outputs are
-    reused. Added samples compute only new pairs; changed inputs/settings never
-    reuse stale results. Final exports are atomically replaced and contain only
+    reused by default. Added samples compute only new pairs; changed content/settings
+    invalidate validated results. Final exports are atomically replaced and contain only
     the requested collection's pairs. Selection metrics use the explicitly documented gene-overlap SNS/SNV definitions.
 
     Inputs are validated and each sample's codons packed once, however many pairs it joins.
+    ``validate_inputs=False`` skips content hashes and codon-row validation, using file
+    attributes for cache identity. It trusts contents; schema and metadata checks remain.
+    Trusted cache entries cannot be reused by a validated run.
     ``workers`` runs that many pairs in separate processes, within the CPU allocation and
     ``memory_limit_gb``; ``"auto"`` chooses the count. Results do not depend on it. More than
     one worker re-imports the calling script, so a script needs ``if __name__ == "__main__"``.
@@ -1291,8 +1303,9 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
     run_dir = Path(run_dir)
     cache = run_dir/"intermediate_files"/"v2_pairs"
     cache.mkdir(parents=True, exist_ok=True)
-    hashes = {name: utils.sha256_file(path) for name, path in profiles}
-    codon_hashes = {name: utils.sha256_file(path) for name, path in codon_paths.items()} if selection else {}
+    hashes = {name: utils.input_fingerprint(path, validate_inputs=validate_inputs) for name, path in profiles}
+    codon_hashes = {name: utils.input_fingerprint(path, validate_inputs=validate_inputs)
+                    for name, path in codon_paths.items()} if selection else {}
     pairs = {}
     for i, (name_1, _) in enumerate(profiles):
         for name_2, _ in profiles[i+1:]:
@@ -1322,7 +1335,7 @@ def compare_profile_collection(profiles, run_dir, *, preprofile_dir=None,
                     profiles, hashes, directory/"gene_info.parquet", cache.parent/"pair_selection",
                     min_cov=min_cov, genome="all", allele_integration=allele_integration,
                     memory_limit_gb=memory_limit_gb, codon_tables=codon_paths, codon_digests=codon_hashes,
-                    pool=pool, workers=worker_count,
+                    pool=pool, workers=worker_count, validate_inputs=validate_inputs,
                 ), strict=True))
             map_jobs(pool, _compare_pair_job, [
                 _PairJob(pair, (paths[pair[0]], paths[pair[1]]), target, identity, metadata, calculations,

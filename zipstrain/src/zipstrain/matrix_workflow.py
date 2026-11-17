@@ -210,6 +210,7 @@ def run_matrix_compare(
     allele_integration: str = options.ALLELE_INTEGRATION,
     progress_callback: ProgressCallback | None = None,
     compare_progress_callback: mp.CompareProgressCallback | None = None,
+    validate_inputs: bool = True,
 ) -> pathlib.Path:
     """Build/extend a matrix store, run resumable compare, and export to parquet.
 
@@ -226,6 +227,9 @@ def run_matrix_compare(
     pairs are cached independently and joined onto qualifying gene rows.
     ``compare_progress_callback`` receives the raw progress events of the
     all-vs-all compare step.
+    ``validate_inputs=False`` skips selection input hashes and codon-row validation,
+    using file attributes for selection cache identity. Metadata checks remain. Changing
+    validation mode on an existing selection matrix requires a new run directory.
     """
     calculate = calculate or options.CALCULATE
     # Validate early so a bad token fails before the matrix store is built.
@@ -308,7 +312,7 @@ def run_matrix_compare(
     if selection:
         from zipstrain import pair_selection
 
-        fingerprints = {name: utils.sha256_file(path) for name, path in profiles}
+        fingerprints = {name: utils.input_fingerprint(path, validate_inputs=validate_inputs) for name, path in profiles}
         manifest = intermediate / "matrix_selection_profiles.json"
         if existing_names:
             previous = json.loads(manifest.read_text()) if manifest.exists() else {}
@@ -318,7 +322,7 @@ def run_matrix_compare(
         selection_files = pair_selection.stage_selection_pairs(
             profiles, fingerprints, catalog, intermediate / "matrix_selection",
             min_cov=min_cov, genome=scope, allele_integration=allele_integration,
-            memory_limit_gb=memory_limit_gb,
+            memory_limit_gb=memory_limit_gb, validate_inputs=validate_inputs,
         )
         # Record intended inputs before an append. On retry, only names that
         # reached the matrix store need to match the manifest.

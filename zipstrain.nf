@@ -16,6 +16,7 @@ params.batch_compare_n_parallel=1
 params.publish_mode="symlink"
 params.compare_scope="all"
 params.compare_ani_method="popani"
+params.skip_input_validation=false
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
 params.min_mapq=0
@@ -335,9 +336,10 @@ process compare_pairs_single {
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
     def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets} --allele-integration ${params.allele_integration}" : ""
+    def validation_arg = params.skip_input_validation ? "--skip-input-validation" : ""
     """
     export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
-    zipstrain utilities compare-pair ${preprofile_arg} \
+    zipstrain utilities compare-pair ${preprofile_arg} ${validation_arg} \
                         --profile-1 ${profile_location_1} \
                         --profile-2 ${profile_location_2} \
                         -s ${stb} \
@@ -373,6 +375,7 @@ process compare_pairs_batched {
 
     script:
     def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets} --allele-integration ${params.allele_integration}" : ""
+    def validation_arg = params.skip_input_validation ? "--skip-input-validation" : ""
     def parallel_pairs = params.batch_compare_n_parallel as int
     if (parallel_pairs < 1 || parallel_pairs > task.cpus) {
         error "batch_compare_n_parallel must be between 1 and the compare task CPU allocation (${task.cpus})"
@@ -383,7 +386,7 @@ process compare_pairs_batched {
     """
     export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities compare-pair ${preprofile_arg} \
+    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities compare-pair ${preprofile_arg} ${validation_arg} \
                         --profile-1 {1} \
                         --profile-2 {2} \
                         -s ${stb} \

@@ -635,6 +635,7 @@ class CompareTaskGenerator(TaskGenerator):
         preprofile_dir: str | pathlib.Path | None = None,
         allele_integration: str = "consensus",
         codon_tables: dict | None = None,
+        validate_inputs: bool = True,
     ) -> None:
         super().__init__(data, yield_size)
         self.comp_config = comp_config
@@ -644,6 +645,7 @@ class CompareTaskGenerator(TaskGenerator):
         self.preprofile_dir = preprofile_dir
         self.allele_integration = allele_integration
         self.codon_tables = codon_tables or {}
+        self.validate_inputs = validate_inputs
         if type(self.data) is not pl.LazyFrame:
             raise ValueError("data must be a polars LazyFrame.")
         # Accept any calculate spec that compare-pair understands
@@ -664,6 +666,8 @@ class CompareTaskGenerator(TaskGenerator):
         assets = FileInput(str(self.preprofile_dir))
         arguments = [f"--preprofile-dir {assets.get_value()}", f"--allele-integration {self.allele_integration}",
                      f"--sample-name-1 {row['sample_name_1']}", f"--sample-name-2 {row['sample_name_2']}"]
+        if not self.validate_inputs:
+            arguments.append("--skip-input-validation")
         inputs = {"preprofile-mount": assets}
         for number, name in ((1, row["sample_name_1"]), (2, row["sample_name_2"])):
             if name in self.codon_tables:
@@ -2070,6 +2074,7 @@ def lazy_run_compares(
     preprofile_dir: str | pathlib.Path | None = None,
     allele_integration: str = "consensus",
     codon_tables: dict | None = None,
+    validate_inputs: bool = True,
 ) -> None:
     """A helper function to quickly set up and run a CompareRunner with given parameters.
     
@@ -2094,6 +2099,7 @@ def lazy_run_compares(
         preprofile_dir=preprofile_dir,
         allele_integration=allele_integration,
         codon_tables=codon_tables,
+        validate_inputs=validate_inputs,
     )
     if execution_mode=="local":
         batch_type="local"

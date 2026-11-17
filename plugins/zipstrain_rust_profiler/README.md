@@ -5,11 +5,11 @@ The Rust profiler builds a missing BAM index beside the input before profiling. 
 A ZipStrain plugin that provides a native, multithreaded profiling backend. It
 can profile up to ~10x faster than the built-in Python profiler, with better
 memory management on large BAM files, while producing the same outputs. This
-beta requires ZipStrain 2.0.0b1 or a later 2.x release and is selected with `--backend rust_profiler`. Without that
+beta requires ZipStrain 2.0.0b2 or a later 2.x release and is selected with `--backend rust_profiler`. Without that
 flag, ZipStrain continues to use its built-in Python profiler.
 
 ```bash
-python -m pip install "zipstrain-rust-profiler==0.2.0b1"
+python -m pip install "zipstrain-rust-profiler==0.2.0b2"
 zipstrain profile --input-table mapped/samples.txt --reference-fasta ref.fna \
   --stb-file ref.stb --run-dir profiled --backend rust_profiler
 ```

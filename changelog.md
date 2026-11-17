@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.0.0b2
+
+Second beta of ZipStrain 2.0. Install with `python -m pip install "zipstrain==2.0.0b2"`; the matching optional Rust profiler is `zipstrain-rust-profiler==0.2.0b2`. Nextflow users should select `-r v2.0.0b2`; the default Docker and Apptainer images are pinned to `parsaghadermazi/zipstrain:2.0.0b2`.
+
+### Profiling correctness and performance
+
+- Genome `coverage`, `coverage_median`, `coverage_std`, `breadth` and `ber` now use A/C/G/T depth before the allele error/frequency filters in both Python and Rust. Read, mapping-quality, base-quality and BAQ filtering still apply. Previously, removing a position's only allele could depress coverage while breadth still counted the position, inflating BER for low-abundance genomes. Coverage and breadth use full genome length as their denominator; median and sample standard deviation describe covered positions.
+- Low-coverage presence calls can therefore change. Re-profile BAMs to obtain corrected statistics; old profile counts cannot recover discarded depth. Use Rust profiler `0.2.0b2` for parity with the Python backend.
+- Zero-count profile positions are retained, preserving the genome inventory for comparisons. Position schemas and gene-selection definitions are unchanged.
+- Python `--collect-codons` slices reads aligned as a single `M` run directly into codons, avoiding per-base dictionaries. Gapped/clipped reads retain the general CIGAR path. Strand, phase, quality filtering and overlapping-mate behavior are preserved.
+
+### Optional comparison input validation
+
+- Added `--skip-input-validation` to `zipstrain compare` and `zipstrain utilities compare-pair`, including table, matrix selection and scheduled V2 jobs. Validation remains enabled by default.
+- Trusted mode skips file-content hashing, codon-to-profile SHA checks and extra codon-row validation scans. Schema, catalog integrity, reference/annotation metadata, profiling-filter and read-phased-evidence checks remain enabled.
+- Trusted table resumes use resolved path, device/inode, size, modification time and change time instead of authenticated contents. Trusted and validated caches are separate. Switching validation mode on an existing matrix selection store requires a new run directory.
+- Comparison caching remains one streaming Parquet per pair. There is no persistent digest cache or sharding in this release.
+- Nextflow exposes `--skip_input_validation true` in both single and batched comparison modes, defaulting to `false`. Existing Nextflow work/output handling is unchanged.
+
+### Tests, documentation and release tooling
+
+- Added coverage histogram and entirely filtered-genome regressions, Python/Rust low-depth parity tests, ungapped/general codon equivalence across strands and phases, and trusted/validated comparison parity and resume tests.
+- Nextflow integration tests exercise both comparison modes with validation enabled and disabled. CI installs GNU parallel so batched tests run.
+- Updated installation examples, CLI help, V2 and plugin guides, citation metadata and container pins.
+- Retained release benchmarks and added the manual tagged-release recovery path already used on main. Rust publication now checks its declared core dependency instead of a hard-coded 1.x version.
+
 ## 2.0.0b1
 
 First public beta of ZipStrain 2.0, compared with 1.3.0. Install it in a Python 3.12 or newer environment with `python -m pip install "zipstrain==2.0.0b1"`. For the container, use `parsaghadermazi/zipstrain:2.0.0b1`. To run the matching Nextflow pipeline, use `nextflow run OlmLab/ZipStrain -r v2.0.0b1` with your usual inputs.
