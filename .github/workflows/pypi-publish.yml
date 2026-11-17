@@ -4,10 +4,19 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing version tag to publish, for example v2.0.0b1"
+        required: true
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release.outputs.sha }}
+      benchmark_supported: ${{ steps.release.outputs.benchmark_supported }}
     permissions:
       contents: read
 
@@ -16,6 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -27,6 +37,9 @@ jobs:
           python -m pip install --upgrade pip poetry
 
       - name: Validate tag version
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -41,10 +54,18 @@ jobs:
           print(match.group(1))
           PY
           )
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${RELEASE_TAG}" != v* ]]; then
+            echo "Expected a release tag beginning with v" >&2
+            exit 1
+          fi
+          TAG_VERSION="${RELEASE_TAG#v}"
           if [[ "${PYPROJECT_VERSION}" != "${TAG_VERSION}" ]]; then
             echo "Git tag ${TAG_VERSION} does not match pyproject version ${PYPROJECT_VERSION}" >&2
             exit 1
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [[ -f Scripts/benchmark_compare.py ]]; then
+            echo "benchmark_supported=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build distribution artifacts with Poetry
@@ -59,8 +80,40 @@ jobs:
           name: pypi-dist
           path: zipstrain/dist/*
 
-  publish:
+  benchmark:
     needs: build
+    if: ${{ needs.build.outputs.benchmark_supported == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.release_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist
+      - name: Install the release wheel
+        run: python -m pip install 'polars==1.41.0' 'h5py==3.16.0' dist/*.whl
+      - name: Measure whole comparisons and individual pairs
+        env:
+          RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+        run: GITHUB_SHA="$RELEASE_SHA" python Scripts/benchmark_compare.py --release --output benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: comparison-benchmark
+          path: benchmark.json
+          if-no-files-found: error
+
+  publish:
+    needs: [build, benchmark]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.benchmark.result == 'success' || needs.benchmark.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -78,3 +131,59 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  archive-benchmark:
+    needs: [build, benchmark, publish]
+    if: ${{ needs.benchmark.result == 'success' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.release_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: comparison-benchmark
+          path: ${{ runner.temp }}/comparison-benchmark
+      - run: python -m pip install matplotlib packaging
+      - name: Append release measurements and refresh charts
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/comparison-benchmark/benchmark.json"
+          history="$RUNNER_TEMP/benchmark-history"
+          series=$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["suite_version"]))' "$report")
+          git worktree add --detach "$history" HEAD
+          git -C "$history" config user.name 'github-actions[bot]'
+          git -C "$history" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          branch_ref=refs/heads/benchmark-results
+          for attempt in 1 2 3 4 5; do
+            if git ls-remote --exit-code --heads origin "$branch_ref" > /dev/null; then
+              git -C "$history" fetch --no-tags origin "$branch_ref"
+              git -C "$history" reset --hard FETCH_HEAD
+            else
+              status=$?
+              if [[ "$status" != 2 ]]; then exit "$status"; fi
+              git -C "$history" switch --detach "$RELEASE_SHA"
+              git -C "$history" switch --orphan "benchmark-initial-$attempt"
+            fi
+            target="$history/v$series"
+            mkdir -p "$target/releases"
+            record="$target/releases/$RELEASE_TAG.json"
+            if [[ -f "$record" ]]; then exit 0; fi
+            cp "$report" "$record"
+            python Scripts/plot_compare_benchmarks.py --output-dir "$target/charts" "$target"/releases/*.json
+            git -C "$history" add -- "v$series"
+            git -C "$history" commit -m "Archive ZipStrain $RELEASE_TAG comparison benchmarks"
+            if git -C "$history" push origin "HEAD:$branch_ref"; then exit 0; fi
+            if [[ "$attempt" == 5 ]]; then exit 1; fi
+            sleep "$attempt"
+          done
