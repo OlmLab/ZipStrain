@@ -67,11 +67,34 @@ selection and kernels through the build/append/compare/export workflow.
 
 For usage patterns and examples, see the [Tutorial](./Tutorial.md) and the [CLI reference](./usermanual.md#zipstrain-command-line-interface).
 
-## Task Manager
+## Pair analyses
 
-The [V2 development guide](./v2.md) documents the new annotation, observed-codon,
-gene-statistics, and explicit-input comparison functions, their schemas,
-selection formulas, and corresponding tests.
+`zipstrain.compare.PairComparison` validates two V2 profiles once and joins them on their
+shared positions. Its analyses return lazy Polars frames, and `PairComparison.collect` runs
+several of them over that one join:
+
+```python
+from zipstrain.compare import PairComparison
+
+pair = PairComparison("A_profile.parquet", "B_profile.parquet", ani_method="popani")
+table = pair.compare("genome_ani+max_identical_stretch").collect()
+blocks, stretches = pair.collect(pair.mosaic_regions(), pair.identical_stretches(min_length=1_000))
+```
+
+- `compare(calculate)` gives the same rows and columns as `zipstrain compare` for one pair.
+  Pass `preprofile_dir=` to the constructor for gene metrics.
+- `identical_stretches(min_length)` lists runs of matching shared positions, each with a
+  p-value for its length.
+- `mosaic_regions(factor=20, switch_probability=1e-3)` finds blocks of unusually low or high
+  divergence: candidate recombined and imported segments.
+
+The [recombination mosaics guide](parameter_selection/recombination/index.md) shows
+`identical_stretches` and `mosaic_regions` on simulated data and how to choose their
+parameters. The [V2 guide](./v2.md) documents the annotation, observed-codon,
+gene-statistics, and explicit-input comparison functions, their schemas, selection formulas,
+and corresponding tests.
+
+## Task Manager
 
 For more advanced users, custom workflows can also be assembled through the task manager layer:
 

@@ -20,6 +20,8 @@ nav:
   - Parameter selection guide:
       - Profiling parameters:
           - popANI depth bias: parameter_selection/index.md
+      - Comparison parameters:
+          - Recombination mosaics: parameter_selection/recombination/index.md
   - api.md
 
 extra_css:
@@ -28,6 +30,7 @@ extra_css:
 extra_javascript:
   - assets/paramsel_tabs.js
   - assets/benchmark_charts.js
+  - assets/mosaic_explorer.js
 
 markdown_extensions:
   - toc:

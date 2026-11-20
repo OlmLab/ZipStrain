@@ -1,9 +1,8 @@
 # Expected output
 
-This development branch writes V2 profiles. See the [V2 guide](v2.md) for
-annotation identities, observed codons, complete selection formulas, and the
-explicit-input Polars comparison path. Legacy 1.x comparison output is described
-where noted below.
+This page describes the output of ZipStrain 2.0. See the [V2 guide](v2.md) for
+annotation identities, observed codons, complete selection formulas, the
+explicit-input Polars comparison path, and the [column types frozen for 2.0](v2.md#output-formats-frozen-for-20).
 
 This page describes every file ZipStrain writes, the columns in each, and how to read them. Profile outputs are written as parquet. Convert any parquet table to CSV explicitly with `zipstrain utilities parquet-to-csv` when text output is needed. The examples below come from [Tutorial #3](./Tutorial.md) (three replicates of the ZymoBIOMICS standard, Sylph route).
 
@@ -19,12 +18,17 @@ out_profile/
 │   ├── SRR12324251_profile.parquet        # per-position base counts
 │   ├── SRR12324251_genome_stats.parquet   # per-genome summary
 │   ├── SRR12324251_gene_stats.parquet     # 15-column per-gene summary
-│   ├── SRR12324251_codon_counts.parquet   # optional observed triplets
+│   ├── SRR12324251_codon_counts.parquet   # observed codons (only with --collect-codons)
 │   ├── SRR12324251_SNVs.parquet           # SNPs vs. reference
 │   └── intermediate_files/                # scratch — safe to ignore
 ├── SRR12324252/ …
-└── profiling_assets/                      # gene_info + reference_codons Parquets, null model, bed, contract, logs
+└── profiling_assets/                      # shared by every sample
+    ├── gene_info.parquet                  # gene catalog (with --gene-fasta)
+    ├── reference_codons.parquet           # reference codons of each gene (with --gene-fasta)
+    └── …                                  # null model, BED, genome lengths, contract, logs
 ```
+
+Pass `profiling_assets/` to `zipstrain compare --preprofile-dir` for gene comparisons, or leave it next to the sample folders so `compare` finds it. Keep it with the profiles: gene comparisons check that every profile was made against the same catalog.
 
 ### `<sample>_genome_stats.parquet`
 
@@ -58,7 +62,7 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 
 Here breadth ≈ 0.92 at 380× coverage and `presence = present` — a genuine member of the community. Trace genomes appear with breadth < 0.05 and `presence = absent`.
 
-Starting with core `2.0.0b2` and Rust profiler `0.2.0b2`, genome coverage,
+In ZipStrain 2.0 (and Rust profiler 0.2), genome coverage,
 breadth and BER use depth before allele filtering. Read inclusion, mapping-quality,
 base-quality and BAQ filtering still apply. Re-profile BAMs to update older statistics;
 the discarded depth cannot be reconstructed from retained profile counts. Gene
@@ -137,9 +141,7 @@ Monomorphic reference matches are not emitted. The per-genome `SNS_count` and `S
 
 ## `zipstrain compare`
 
-Legacy comparison routes write a selected comparison table at the top of the run directory: `all_comparisons.parquet` (+ `.csv`), or `all_gene_comparisons.parquet` with `--calculate gene_ani`.
-
-V2 writes one `all_comparisons.parquet`. Genome-only runs have one row per
+A comparison run writes one `all_comparisons.parquet` at the top of the run directory. Genome-only runs have one row per
 `(sample_1, sample_2, genome)`. Requesting a gene metric adds `gene_id` to the
 key and produces one row per qualifying gene. When both levels are requested,
 genome metrics repeat across each genome's gene rows. Use `--force-csv` to
@@ -171,3 +173,19 @@ SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           10
 ```
 
 **Interpreting popANI.** `genome_ani` near **100.0** means the same strain is present in both samples. A common same-strain threshold is **≥ 99.999%** — stringent enough to distinguish strains that diverged only a few years apart. Because ZipStrain uses *population* ANI (a position matches if any read supports the shared base), co-existing minor variants confirm rather than break a match; see [Tutorial #3](./Tutorial.md#interpreting-the-benchmarks) for the popANI-vs-consensus-ANI discussion.
+
+### Gene rows
+
+Requesting `gene_ani` or `gene_selection` (and the default `--calculate all` when a gene catalog is available) gives one row per `(sample_1, sample_2, genome, gene_id)`. A gene gets a row when at least `--min-gene-compare-len` positions are callable in both samples. Columns appear for the metrics that ran, in this order:
+
+| Column | Meaning |
+|--------|---------|
+| `sample_1`, `sample_2`, `genome`, `gene_id` | Row key. `gene_id` joins to `gene_info.parquet` in `profiling_assets/` for the gene's name, scaffold and coordinates |
+| `gene_total_positions` | Gene positions covered in **both** samples (≥ `--min-cov`) |
+| `gene_share_allele_pos` | Of those, positions that match under the selected ANI method |
+| `gene_ani` | Gene ANI (%) = `gene_share_allele_pos` / `gene_total_positions` × 100 |
+| `dN`, `dS` | Pairwise SNS nonsynonymous / synonymous rates (`gene_selection`, needs `--collect-codons` profiles) |
+| `pN`, `pS` | Pairwise SNV nonsynonymous / synonymous rates (`gene_selection`) |
+| `total_positions`, `share_allele_pos`, `genome_ani`, `max_identical_stretch` | Genome metrics, repeated on every gene row of the genome when requested |
+
+The table stores the four rates but not `dN_dS` or `pN_pS`. Add them with `zipstrain.gene_info.with_selection_ratios`, which returns null when `dS` or `pS` is zero or null. To summarize genome metrics from a gene table, deduplicate by `sample_1`, `sample_2`, and `genome` first; a genome with no qualifying gene has no row, so run genome metrics alone for complete genome coverage. See the [V2 comparison guide](v2.md#comparison-inputs-and-commands) for the selection formulas.

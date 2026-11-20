@@ -54,7 +54,8 @@ GENE_METRICS = ("gene_ani", "gene_selection")
 METRICS = (*GENOME_METRICS, *GENE_METRICS)
 CALCULATE_HELP = (
     "Metrics to compute, combined with '+': genome_ani; max_identical_stretch; gene_ani; "
-    "gene_selection: dN, dS, dN/dS, pN, pS, pN/pS per gene (requires --collect-codons); "
+    "gene_selection: dN, dS, pN, pS per gene (requires --collect-codons; add the ratios "
+    "with zipstrain.gene_info.with_selection_ratios); "
     "or all, meaning every metric the inputs support."
 )
 MIN_GENE_COMPARE_LEN_HELP = "Minimum shared positions for a gene to get a comparison row."

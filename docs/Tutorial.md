@@ -155,7 +155,8 @@ out_profile/
 ├── N5_271_010G1/                      # one folder per sample
 │   ├── N5_271_010G1_profile.parquet       # per-position base counts (the core output)
 │   ├── N5_271_010G1_genome_stats.parquet  # per-genome coverage, breadth, ANI to reference
-│   ├── N5_271_010G1_gene_stats.parquet    # per-gene coverage and breadth
+│   ├── N5_271_010G1_gene_stats.parquet    # per-gene summary (empty without --gene-fasta)
+│   ├── N5_271_010G1_SNVs.parquet          # SNVs/SNPs against the reference
 │   └── intermediate_files/                # symlinks, logs, scratch — safe to ignore
 ├── N5_271_010G2/
 │   └── ...
@@ -163,14 +164,14 @@ out_profile/
     └── log/
 ```
 
-The three `*.parquet` files at the top of each sample folder are the real outputs; everything else is bookkeeping. Have a quick look at the genome stats:
+The `*.parquet` files at the top of each sample folder are the real outputs; everything else is bookkeeping. Have a quick look at the genome stats:
 
 ```bash
 python -c "import polars as pl; print(pl.read_parquet('out_profile/N5_271_010G1/N5_271_010G1_genome_stats.parquet'))"
 ```
 
 !!! tip "Gene profiling and tuning"
-    Pass `--gene-fasta` to enable gene-level profiling. Sequencing-error filtering defaults to `--error-rate 0.001`, `--p-threshold 0.000001`, and `--min-freq 0.01`. These defaults favor strain comparison; stringent filtering can discard genuine rare alleles, especially near 1% frequency. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use `--force-prepare` to rebuild cached assets after changing null-model parameters. Existing supplied null-model files retain their original thresholds: rebuild them and rerun profiling to apply the new defaults. Run `zipstrain profile -h` to see all options grouped by category.
+    Pass `--gene-fasta` to enable gene-level statistics and comparisons ([Step 5](#step-5-optional-compare-genes-and-estimate-selection)). Sequencing-error filtering defaults to `--error-rate 0.001`, `--p-threshold 0.000001`, and `--min-freq 0.01`. These defaults favor strain comparison; stringent filtering can discard genuine rare alleles, especially near 1% frequency. The generated null model covers depth through 50,000 by default; profiling stops with an explicit rebuild instruction if a position exceeds that limit. Use `--force-prepare` to rebuild cached assets after changing null-model parameters. Existing supplied null-model files retain their original thresholds: rebuild them and rerun profiling to apply the new defaults. Run `zipstrain profile -h` to see all options grouped by category.
 
 ??? note "Preparing assets separately (advanced / cluster use)"
     You can still build the intermediate files ahead of time with `zipstrain utilities prepare_profiling` and pass them in explicitly via `--null-model`, `--bed-file`, `--genome-length-file`, etc. This is useful on clusters where you prepare once and profile many BAMs across nodes, and it is the path the Nextflow pipeline uses internally.
@@ -188,7 +189,7 @@ python -c "import polars as pl; print(pl.read_parquet('out_profile/N5_271_010G1/
 
 The comparison step asks, for every genome present in two samples, *how similar are the strains?* It walks each shared genome position by position and computes a population-level ANI (popANI) between the two samples.
 
-First, make a small table telling ZipStrain which profiles to compare and what to call them. The two columns are `profile_name` (any label) and `profile_location` (the path to that sample's `*_profile.parquet` from Step 2):
+First, make a small table telling ZipStrain which profiles to compare and what to call them. The two columns are `profile_name` (any label) and `profile_location` (the path to that sample's `*_profile.parquet` from Step 3):
 
 ```bash
 printf 'profile_name,profile_location\nN5_271_010G1,out_profile/N5_271_010G1/N5_271_010G1_profile.parquet\nN5_271_010G2,out_profile/N5_271_010G2/N5_271_010G2_profile.parquet\n' > profiles.csv
@@ -203,23 +204,23 @@ zipstrain compare \
     --run-dir out_compare
 ```
 
-That's the whole command. By default it compares **genomes**; every profile in the table is compared against every other (all-vs-all).
+That's the whole command. Every profile in the table is compared against every other (all-vs-all). The default `--calculate all` computes every metric the inputs support: these profiles have no gene catalog, so this run compares **genomes**. Profiles made with `--gene-fasta` get one row per gene instead ([Step 5](#step-5-optional-compare-genes-and-estimate-selection)).
 
-!!! tip "Comparing genes instead"
-    Add `--calculate gene_ani` to the same command to compare at the gene level instead of the genome level. Other useful flags: `--min-cov` (minimum coverage to consider a position), `--ani-method` (`popani`, `conani`, `cosani_<t>`), and `--calculate` (trim to just `genome_ani` for a smaller table). Run `zipstrain compare -h` for the full, grouped list.
+!!! tip "Useful flags"
+    `--min-cov` (minimum coverage to consider a position), `--ani-method` (`popani`, `conani`, `cosani_<t>`), and `--calculate` (for example `genome_ani` alone for a smaller table, or `genome_ani+max_identical_stretch`). Run `zipstrain compare -h` for the full, grouped list.
 
 #### Two comparison methods
 
 `zipstrain compare` offers two methods, selected with `--method`. Both write `all_comparisons.parquet` and support genome metrics, gene metrics, and optional selection metrics for V2 profiles. Matrix selection uses the default `anchor` kernel and observed codon tables from profiling.
 
-**Table (`--method table`, the default)** compares profiles **directly and pairwise in Polars**. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. Nothing is kept between pairs — every comparison is computed fresh from the profiles. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.
+**Table (`--method table`, the default)** compares profiles **directly and pairwise in Polars**. For each pair of samples it reads their two profile parquets, walks the positions they share on each genome, and tallies matching vs. differing alleles to get popANI. There is no intermediate store: finished pairs are cached in `intermediate_files/` so a rerun or an added sample computes only what is new. This makes it simple and dependency-light, and it shines when you have many genomes but only need a bounded number of comparisons or a one-off run.
 
 **Matrix (`--method matrix`)** first turns your profiles into a reusable HDF5 **matrix store**, then performs vectorized all-vs-all comparisons. For default popANI, each covered position is packed into one byte: `A=1`, `T=2`, `C=4`, and `G=8`, with multiple observed alleles combined by bitwise OR (for example, `A+C=5`). For conANI or cosANI, ZipStrain instead stores the four `A,T,C,G` counts. The high-level command chooses the correct representation automatically. Comparison can run on a **GPU** (`--backend torch-mps` on Apple Silicon, `--backend torch-cuda` on NVIDIA), records completed pairs in a resumable DuckDB, and appends new samples without rebuilding existing rows. This approach is highly optimized when you have many samples but only one or a few genomes, because parallelization across sample pairs is efficient. It needs the matrix extra (`pip install "zipstrain[matrix]"`).
 
 | | Table | Matrix |
 |---|----------|--------|
 | **How it compares** | Direct, pairwise from profiles | Vectorized math over a prebuilt matrix store |
-| **Persistent artifact** | None (recomputes each run) | Reusable HDF5 store + resumable compare DB |
+| **Persistent artifact** | Cached pair results | Reusable HDF5 store + resumable compare DB |
 | **Best for** | Many genomes, bounded comparisons, one-off | Repeated all-vs-all, few genomes, growing cohorts |
 | **Hardware** | CPU | CPU or GPU (`--backend torch-*`) |
 | **Extra dependency** | none | `zipstrain[matrix]` (h5py, torch) |
@@ -263,7 +264,7 @@ zipstrain compare \
     --run-dir out_compare
 ```
 
-This works for both methods: the matrix method **appends** the new profiles to its store, and the table method **resumes** from the existing `all_comparisons.parquet` — either way, previously computed pairs are not redone.
+This works for both methods: the matrix method **appends** the new profiles to its store, and the table method **reuses** its cached pairs — either way, previously computed pairs are not redone. A cached pair is recomputed only if one of its profiles or the comparison settings changed.
 
 #### Understanding the output
 
@@ -272,8 +273,8 @@ The real result is a single parquet at the top of the run directory:
 ```text
 out_compare/
 ├── all_comparisons.parquet     # the pairwise comparison table — this is what you want
-├── log/                        # run logs
-└── intermediate_files/         # per-pair scratch parquets — safe to ignore
+├── zipstrain_run.log           # run log (see Run logging in the User Manual)
+└── intermediate_files/         # cached pair results, reused when samples are added — safe to ignore
 ```
 
 Read it in:
@@ -312,6 +313,55 @@ Key columns:
     These values use the default `--min-cov 5`. `total_positions` is the intersection of passing coordinates, not either sample's individual count. For example, `fobin.fasta` has 1,183 covered positions in N5_271_010G2 at `--min-cov 1`, but only 1,181 coordinates pass in both samples at that threshold and 1,072 pass in both at the default threshold.
 
     This interpretation assumes the default `--ani-method popani`; if you run `--ani-method conani`, the same column is still called `genome_ani`, but the parquet header records `zipstrain_compare_ani_method=conani`.
+
+---
+
+### Step 5 — Optional: compare genes and estimate selection
+
+Gene-level comparisons need genes. ZipStrain 2.0 keeps position profiles gene-free and stores the genes once, in a shared catalog in `profiling_assets/`. Every sample profiled in that run directory uses the same catalog, so gene IDs line up across samples.
+
+**1. Get a gene FASTA.** Use your own gene calls for the reference, or let `zipstrain map` predict them with [Prodigal](https://github.com/hyattpd/Prodigal) by adding `--predict-genes` (install `prodigal` first). This writes `mapped/reference_genomes_gene.fasta`:
+
+```bash
+zipstrain map \
+    --reads-table reads.csv \
+    --output-dir mapped \
+    --reference-fasta N5_271_010G1_scaffold_min1000.fa \
+    --stb-file N5_271_010G1.maxbin2.stb \
+    --predict-genes \
+    --threads 6
+```
+
+Mapping resumes, so this only adds the gene prediction if Step 2 already ran.
+
+**2. Profile with the genes.** Add `--gene-fasta`, and `--collect-codons` if you also want dN/dS and pN/pS. This example uses a new run directory, so the profiles from Step 3 stay as they are:
+
+```bash
+zipstrain profile \
+    --input-table mapped/samples.txt \
+    --reference-fasta N5_271_010G1_scaffold_min1000.fa \
+    --stb-file N5_271_010G1.maxbin2.stb \
+    --gene-fasta mapped/reference_genomes_gene.fasta \
+    --collect-codons \
+    --run-dir out_profile_genes
+```
+
+Each sample folder now also holds `<sample>_codon_counts.parquet` (the codons observed within single reads), its `<sample>_gene_stats.parquet` is filled, and `profiling_assets/` holds `gene_info.parquet` and `reference_codons.parquet`. `--collect-codons` reads every BAM a second time, so leave it out when you only need gene ANI.
+
+**3. Compare.** The command is the same as in Step 4. `compare` finds `profiling_assets/` next to the profiles, and the default `--calculate all` now gives one row per gene and sample pair, with gene ANI, the pairwise dN, dS, pN and pS, and the genome metrics repeated on each gene row:
+
+```bash
+printf 'profile_name,profile_location\nN5_271_010G1,out_profile_genes/N5_271_010G1/N5_271_010G1_profile.parquet\nN5_271_010G2,out_profile_genes/N5_271_010G2/N5_271_010G2_profile.parquet\n' > profiles_genes.csv
+
+zipstrain compare \
+    --profile-db profiles_genes.csv \
+    --run-dir out_compare_genes
+```
+
+Select metrics explicitly with `--calculate`, for example `--calculate gene_ani` for gene ANI alone or `--calculate genome_ani` for a genome table from the same profiles. Pass `--preprofile-dir out_profile_genes/profiling_assets` if the profiles were moved away from it. The gene columns are described in [Expected output](expected_output.md#gene-rows), and the selection method in the [V2 guide](v2.md#selection-method-retained-from-gene-overlap).
+
+!!! tip "Going further: recombination between two samples"
+    For closely related strains, the Python API can also find recombined and imported blocks between two profiles (`PairComparison.mosaic_regions` and `identical_stretches`). The [recombination mosaics guide](parameter_selection/recombination/index.md) walks through it on simulated data with known answers, including how to choose its parameters.
 
 ---
 
@@ -360,7 +410,7 @@ nextflow run zipstrain.nf \
 !!! tip "Auto-built genome database"
     Because no `--reference_genome` is provided, the pipeline runs Sylph on each sample to identify likely organisms and automatically downloads and builds the reference genome database. Results are cached in `--genome_db_cache_dir` (default: `genome_cache/`) so re-runs are fast.
 
-Profiles are written to `out_sra_profile/profiles/`, one subdirectory per sample.
+Profiles are written to `out_sra_profile/profiles/`, named by SRA run, for example `SRR6262445_profile.parquet` with its `_genome_stats` and `_gene_stats` tables beside it.
 
 ---
 
@@ -369,7 +419,7 @@ Profiles are written to `out_sra_profile/profiles/`, one subdirectory per sample
 Build a profile table pointing at the outputs from Step 2:
 
 ```bash
-printf 'sample_name,profiles\nN5_271_010G1,out_sra_profile/profiles/N5_271_010G1_profile.parquet\nN5_271_010G2,out_sra_profile/profiles/N5_271_010G2_profile.parquet\n' > profiles.csv
+printf 'sample_name,profiles\nN5_271_010G1,out_sra_profile/profiles/SRR6262445_profile.parquet\nN5_271_010G2,out_sra_profile/profiles/SRR6262448_profile.parquet\n' > profiles.csv
 ```
 
 Then run genome comparison:
@@ -388,7 +438,7 @@ nextflow run zipstrain.nf \
   -resume
 ```
 
-Results are written to `out_sra_compare/Outputs/all_comparisons.parquet` in the same format as Tutorial #1.
+Results are written to `out_sra_compare/merged_comparisons.parquet`, with the same columns as Tutorial #1's `all_comparisons.parquet`.
 
 ---
 
