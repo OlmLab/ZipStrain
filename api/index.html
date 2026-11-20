@@ -85,6 +85,12 @@
                 </li>
     </ul>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" >Comparison parameters</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../parameter_selection/recombination/">Recombination mosaics</a>
+                </li>
+    </ul>
+                  </li>
               </ul>
               <ul class="current">
                 <li class="toctree-l1 current"><a class="reference internal current" href="#">API</a>
@@ -400,6 +406,8 @@
         </ul>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#matrix-store-workflow">Matrix Store Workflow</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#pair-analyses">Pair analyses</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#task-manager">Task Manager</a>
         <ul>
@@ -15655,10 +15663,30 @@ comparison contracts and output columns are unchanged.</p>
 <code>compare_kernel</code>, and <code>compare_progress_callback</code>, exposing the same metric
 selection and kernels through the build/append/compare/export workflow.</p>
 <p>For usage patterns and examples, see the <a href="../Tutorial/">Tutorial</a> and the <a href="../usermanual/#zipstrain-command-line-interface">CLI reference</a>.</p>
+<h2 id="pair-analyses">Pair analyses</h2>
+<p><code>zipstrain.compare.PairComparison</code> validates two V2 profiles once and joins them on their
+shared positions. Its analyses return lazy Polars frames, and <code>PairComparison.collect</code> runs
+several of them over that one join:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">zipstrain.compare</span><span class="w"> </span><span class="kn">import</span> <span class="n">PairComparison</span>
+
+<span class="n">pair</span> <span class="o">=</span> <span class="n">PairComparison</span><span class="p">(</span><span class="s2">&quot;A_profile.parquet&quot;</span><span class="p">,</span> <span class="s2">&quot;B_profile.parquet&quot;</span><span class="p">,</span> <span class="n">ani_method</span><span class="o">=</span><span class="s2">&quot;popani&quot;</span><span class="p">)</span>
+<span class="n">table</span> <span class="o">=</span> <span class="n">pair</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="s2">&quot;genome_ani+max_identical_stretch&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
+<span class="n">blocks</span><span class="p">,</span> <span class="n">stretches</span> <span class="o">=</span> <span class="n">pair</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">pair</span><span class="o">.</span><span class="n">mosaic_regions</span><span class="p">(),</span> <span class="n">pair</span><span class="o">.</span><span class="n">identical_stretches</span><span class="p">(</span><span class="n">min_length</span><span class="o">=</span><span class="mi">1_000</span><span class="p">))</span>
+</code></pre></div>
+<ul>
+<li><code>compare(calculate)</code> gives the same rows and columns as <code>zipstrain compare</code> for one pair.
+  Pass <code>preprofile_dir=</code> to the constructor for gene metrics.</li>
+<li><code>identical_stretches(min_length)</code> lists runs of matching shared positions, each with a
+  p-value for its length.</li>
+<li><code>mosaic_regions(factor=20, switch_probability=1e-3)</code> finds blocks of unusually low or high
+  divergence: candidate recombined and imported segments.</li>
+</ul>
+<p>The <a href="../parameter_selection/recombination/">recombination mosaics guide</a> shows
+<code>identical_stretches</code> and <code>mosaic_regions</code> on simulated data and how to choose their
+parameters. The <a href="../v2/">V2 guide</a> documents the annotation, observed-codon,
+gene-statistics, and explicit-input comparison functions, their schemas, selection formulas,
+and corresponding tests.</p>
 <h2 id="task-manager">Task Manager</h2>
-<p>The <a href="../v2/">V2 development guide</a> documents the new annotation, observed-codon,
-gene-statistics, and explicit-input comparison functions, their schemas,
-selection formulas, and corresponding tests.</p>
 <p>For more advanced users, custom workflows can also be assembled through the task manager layer:</p>
 
 
@@ -25041,7 +25069,7 @@ Some important concepts:</p>
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../parameter_selection/" class="btn btn-neutral float-left" title="popANI depth bias"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../parameter_selection/recombination/" class="btn btn-neutral float-left" title="Recombination mosaics"><span class="icon icon-circle-arrow-left"></span> Previous</a>
     </div>
 
   <hr/>
@@ -25064,7 +25092,7 @@ Some important concepts:</p>
   <span class="rst-current-version" data-toggle="rst-current-version">
     
     
-      <span><a href="../parameter_selection/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../parameter_selection/recombination/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
   </span>
@@ -25075,6 +25103,7 @@ Some important concepts:</p>
     <script src="../js/theme.js"></script>
       <script src="../assets/paramsel_tabs.js"></script>
       <script src="../assets/benchmark_charts.js"></script>
+      <script src="../assets/mosaic_explorer.js"></script>
     <script>
         jQuery(function () {
             SphinxRtdTheme.Navigation.enable(true);

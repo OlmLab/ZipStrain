@@ -1,0 +1,947 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mosaic Explorer</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --ring: rgba(11, 11, 11, 0.10);
+    --low: #2a78d6; --high: #eb6834; --on-accent: #ffffff;
+    --low-tint: rgba(42, 120, 214, 0.13); --high-tint: rgba(235, 104, 52, 0.14);
+    --data: #52514e; --accent-wash: rgba(42, 120, 214, 0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19;
+      --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --baseline: #383835; --ring: rgba(255, 255, 255, 0.10);
+      --low: #3987e5; --high: #d95926; --on-accent: #ffffff;
+      --low-tint: rgba(57, 135, 229, 0.22); --high-tint: rgba(217, 89, 38, 0.24);
+      --data: #c3c2b7; --accent-wash: rgba(57, 135, 229, 0.14);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --ring: rgba(255, 255, 255, 0.10);
+    --low: #3987e5; --high: #d95926; --on-accent: #ffffff;
+    --low-tint: rgba(57, 135, 229, 0.22); --high-tint: rgba(217, 89, 38, 0.24);
+    --data: #c3c2b7; --accent-wash: rgba(57, 135, 229, 0.14);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 28px 16px 56px; }
+  h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 6px; }
+  .lead { color: var(--ink-2); margin: 0 0 20px; max-width: 780px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--ring); border-radius: 12px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 28px;
+    border: 0; margin: 0 0 14px; padding: 0; min-width: 0; }
+  .controls:disabled .control { opacity: 0.45; }
+  .group-title { grid-column: 1 / -1; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--muted); margin: 4px 0 -6px; padding: 0; float: none; }
+  legend.group-title { margin: 4px 0 12px; }
+  .control label { display: flex; justify-content: space-between; gap: 8px; font-size: 0.9rem; }
+  .control output { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); white-space: nowrap; }
+  .control .hint { font-size: 0.8rem; color: var(--muted); }
+  input[type="range"] { width: 100%; accent-color: var(--low); margin: 6px 0 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .source { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .source .hint { font-size: 0.84rem; color: var(--ink-2); flex: 1 1 260px; }
+  .segmented { display: inline-flex; border: 1px solid var(--baseline); border-radius: 9px; padding: 2px; gap: 2px; }
+  .segmented label { position: relative; }
+  .segmented input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .segmented span { display: block; padding: 5px 14px; border-radius: 7px; font-size: 0.9rem; cursor: pointer; }
+  .segmented input:checked + span { background: var(--low); color: var(--on-accent); }
+  .segmented input:focus-visible + span { outline: 2px solid var(--low); outline-offset: 2px; }
+  .segmented input:disabled + span { opacity: 0.4; cursor: not-allowed; }
+  button {
+    font: inherit; font-size: 0.9rem; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--baseline); background: var(--surface); color: var(--ink);
+  }
+  button:hover:not(:disabled) { background: var(--accent-wash); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary { border-color: var(--low); }
+  .seed { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 12px 14px; }
+  .tile .label { font-size: 0.8rem; color: var(--ink-2); }
+  .tile .value { font-size: 1.45rem; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.25; margin-top: 2px; }
+  .tile .sub { font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+  .chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .chart-head h2 { font-size: 1rem; margin: 0; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; color: var(--ink); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .key-line { width: 18px; height: 0; border-top: 2px solid var(--data); display: inline-block; }
+  .key-dash { width: 18px; height: 0; border-top: 2px dashed var(--muted); display: inline-block; }
+  .key-hatch { width: 14px; height: 10px; border-radius: 3px; display: inline-block; border: 1.5px solid var(--muted);
+    background: repeating-linear-gradient(135deg, var(--muted) 0 1.5px, transparent 1.5px 4px); }
+  .key-tick { width: 2px; height: 12px; background: var(--data); display: inline-block; }
+  .key-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 2px solid var(--low); }
+  svg { width: 100%; height: auto; display: block; overflow: visible; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .zooms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 8px 24px; }
+  .zooms h3 { font-size: 0.9rem; font-weight: 600; margin: 4px 0 0; display: flex; align-items: center; gap: 6px; }
+  .zooms h3 .status { font-weight: 400; color: var(--ink-2); }
+  .caption { font-size: 0.86rem; color: var(--ink-2); margin: 8px 0 0; }
+  .warning { border-left: 4px solid var(--ink-2); display: flex; gap: 10px; align-items: flex-start; font-size: 0.92rem; }
+  .warning[hidden] { display: none; }
+  .warning strong { display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  th { color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+  td.fp { color: var(--muted); }
+  .table-wrap { overflow: auto; max-height: 420px; }
+  .empty { color: var(--muted); font-style: italic; }
+  #tooltip {
+    position: fixed; pointer-events: none; z-index: 10; display: none; min-width: 140px;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--ring); border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); padding: 8px 10px; font-size: 0.82rem; line-height: 1.4;
+  }
+  #tooltip .tt-title { color: var(--ink-2); margin-bottom: 2px; }
+  #tooltip .tt-row { display: flex; align-items: center; gap: 6px; }
+  #tooltip .tt-row strong { font-variant-numeric: tabular-nums; }
+  #tooltip .tt-key { width: 12px; height: 0; border-top: 2px solid; display: inline-block; }
+  .hit { fill: transparent; }
+  /* Embedded in a tutorial page: the tutorial supplies the title, background and page margins. */
+  .embed body { background: transparent; }
+  .embed main { padding: 4px 0 0; max-width: none; }
+  .embed h1, .embed .lead { display: none; }
+  .block:hover, .block:focus { filter: brightness(1.12); outline: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mosaic explorer</h1>
+  <p class="lead">The tutorial's strain A vs strain B comparison, with ZipStrain's <code>mosaic_regions</code> running live
+    in the page. Five blocks were planted and four are found at the default settings. Move the model sliders, or press
+    <em>Catch R3</em>, to see what it costs to find the fifth.</p>
+
+  <section class="card" aria-label="Parameters">
+    <div class="source">
+      <div class="segmented" role="radiogroup" aria-label="Data">
+        <label><input type="radio" name="source" value="tutorial" checked><span>Tutorial reads</span></label>
+        <label><input type="radio" name="source" value="simulated"><span>Simulated strains</span></label>
+      </div>
+      <div class="hint" id="source-hint"></div>
+    </div>
+    <fieldset class="controls" id="strain-controls">
+      <legend class="group-title">Strains (simulated only, same five blocks)</legend>
+      <div class="control">
+        <label for="divergence">Background ANI <output id="divergence-out"></output></label>
+        <input id="divergence" type="range" min="0" max="1000" step="1">
+        <div class="hint" id="divergence-hint"></div>
+      </div>
+      <div class="control">
+        <label for="imp-divergence">Divergence of the imports I1 and I2 <output id="imp-divergence-out"></output></label>
+        <input id="imp-divergence" type="range" min="0" max="1000" step="1">
+        <div class="hint" id="imp-hint"></div>
+      </div>
+      <div class="control row" style="align-self:end">
+        <button id="redraw" type="button">New random genome</button>
+        <span class="seed" id="seed-out"></span>
+      </div>
+    </fieldset>
+    <div class="controls">
+      <div class="group-title">Model</div>
+      <div class="control">
+        <label for="factor">factor <output id="factor-out"></output></label>
+        <input id="factor" type="range" min="0" max="1000" step="1">
+        <div class="hint">Low and high states have this many times fewer / more mutations</div>
+      </div>
+      <div class="control">
+        <label for="switch">switch_probability <output id="switch-out"></output></label>
+        <input id="switch" type="range" min="0" max="1000" step="1">
+        <div class="hint" id="switch-hint"></div>
+      </div>
+    </div>
+    <div class="row">
+      <button id="preset-default" type="button">Tutorial settings</button>
+      <button id="preset-r3" type="button" class="primary">Catch R3</button>
+      <span class="seed">Catch R3 sets factor 7 and switch_probability 0.13, the cheapest setting that finds R3 in the tutorial reads.</span>
+    </div>
+  </section>
+
+  <section class="tiles" aria-label="Summary" id="tiles"></section>
+  <section class="card warning" id="warning" role="status" hidden>
+    <span aria-hidden="true">⚠</span>
+    <div><strong id="warning-title"></strong><span id="warning-text"></span></div>
+  </section>
+
+  <section class="card">
+    <div class="chart-head">
+      <h2>Planted, detected and false-positive blocks</h2>
+      <div class="legend">
+        <span><i class="key-hatch"></i>Planted</span>
+        <span><i class="swatch" style="background:var(--low)"></i>Low divergence</span>
+        <span><i class="swatch" style="background:var(--high)"></i>High divergence</span>
+        <span><i class="key-line"></i>Divergence per 10 kb</span>
+        <span><i class="key-dash"></i>Model states</span>
+      </div>
+    </div>
+    <svg id="genome" viewBox="0 0 960 440" role="img" aria-label="Planted, detected and false-positive blocks with windowed divergence"></svg>
+    <p class="caption">Top: the five planted blocks (hatched), detected blocks that overlap a planted block of the same
+      kind, and detected blocks that overlap none (false positives). Bottom: divergence in 10 kb windows on a log scale
+      (windows without a mismatch sit at 0); dashed lines are the low, background and high states, which are equally
+      spaced on a log axis. Hover for values.</p>
+  </section>
+
+  <section class="card">
+    <div class="chart-head">
+      <h2>Close-up of each planted block</h2>
+      <div class="legend">
+        <span><i class="key-tick"></i>Mismatch</span>
+        <span><i class="key-hatch"></i>Planted</span>
+        <span><i class="swatch" style="background:var(--muted)"></i>Detected</span>
+      </div>
+    </div>
+    <div class="zooms" id="zooms"></div>
+    <p class="caption">Each tick is a shared position where the two strains differ. A recombined block is called only if
+      its gap in ticks is long enough to pay for switching into the low state and back; an import is called when its
+      ticks are dense enough. Detected blocks run from just after one mismatch to the mismatch that closes them, so
+      their edges snap to the nearest mismatches.</p>
+  </section>
+
+  <section class="card">
+    <div class="chart-head">
+      <h2>Evidence for an identical run</h2>
+      <div class="legend">
+        <span><i class="key-line" style="border-color:var(--low)"></i>Gain of the low state over background</span>
+        <span><i class="key-dash"></i>Cost of entering and leaving a block</span>
+        <span><i class="key-dot"></i>Run holding a planted block (filled when found)</span>
+      </div>
+    </div>
+    <svg id="evidence" viewBox="0 0 960 300" role="img" aria-label="Log-likelihood gain of an identical run versus its length"></svg>
+    <p class="caption">An identical run of <i>g</i> shared positions, closed by a mismatch, fits the low state better than
+      background by <i>g</i>·[ln(1−r<sub>low</sub>) − ln(1−d)] + ln(r<sub>low</sub>/d). A run flanked by background is
+      called only when that gain beats the cost of two switches, 2·[ln(1−s) − ln(s/2)]. Each dot is the run that holds a
+      planted recombined block: the block plus the matches out to the nearest mismatch on each side. A run can still be
+      called below the line when it borders another non-background block, because moving straight from high to low
+      costs one switch, not two; that is how R3 is caught with <em>Catch R3</em>.</p>
+  </section>
+
+  <section class="card">
+    <div class="chart-head"><h2>Detected blocks</h2></div>
+    <div class="table-wrap"><table id="blocks"></table></div>
+  </section>
+</main>
+<div id="tooltip" role="tooltip"></div>
+
+<script src="tutorial_data.js"></script>
+<script id="mosaic-core">
+/* ── Port of zipstrain.compare._decode_mosaics / _viterbi (ZipStrain 2.0.0) ──
+   Positions are all shared, so a position's rank is pos - 1. */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* Mismatch positions (1-based, sorted) for a genome with planted blocks {start, end, rate}. */
+function simulateMismatches(length, background, blocks, seed) {
+  const random = mulberry32(seed);
+  const regions = [];
+  let cursor = 1;
+  for (const block of [...blocks].sort((a, b) => a.start - b.start)) {
+    if (block.end < block.start) continue;
+    if (block.start > cursor) regions.push([cursor, block.start - 1, background]);
+    regions.push([block.start, block.end, block.rate]);
+    cursor = block.end + 1;
+  }
+  if (cursor <= length) regions.push([cursor, length, background]);
+  const positions = [];
+  for (const [start, end, rate] of regions) {
+    if (rate <= 0) continue;
+    const logStay = Math.log1p(-rate);
+    let pos = start - 1;
+    for (;;) {  // geometric gaps between mismatches
+      pos += 1 + Math.floor(Math.log(1 - random()) / logStay);
+      if (pos > end) break;
+      positions.push(pos);
+    }
+  }
+  return positions;
+}
+
+/* Events as zipstrain.compare._mosaic_events returns them for one scaffold. */
+function mosaicEvents(mismatches, length) {
+  const events = [{ rank: -1, pos: 1, kind: 0 }];
+  for (const pos of mismatches) events.push({ rank: pos - 1, pos, kind: 1 });
+  events.push({ rank: length - 1, pos: length, kind: 2 });
+  return events;
+}
+
+function stateRates(rate, factor) {
+  return [1 - Math.pow(1 - rate, 1 / factor), rate, 1 - Math.pow(1 - rate, factor)]
+    .map(r => Math.min(Math.max(r, 1e-12), 1 - 1e-12));
+}
+
+function viterbi(emissions, scaffoldStarts, switchProbability) {
+  const stay = Math.log1p(-switchProbability), move = Math.log(switchProbability / 2);
+  const count = emissions.length;
+  const isStart = new Array(count).fill(false), isEnd = new Array(count).fill(false);
+  const ends = scaffoldStarts.map((s, i) => (i + 1 < scaffoldStarts.length ? scaffoldStarts[i + 1] : count) - 1);
+  scaffoldStarts.forEach(i => { isStart[i] = true; });
+  ends.forEach(i => { isEnd[i] = true; });
+  const argmax = s => (s[0] >= s[1] && s[0] >= s[2] ? 0 : (s[1] >= s[2] ? 1 : 2));
+  const cameFrom = new Array(count).fill(null), final = {};
+  let score = [0, 0, 0];
+  for (let index = 0; index < count; index++) {
+    const row = emissions[index];
+    if (isStart[index]) {
+      score = [move + row[0], stay + row[1], move + row[2]];
+    } else {
+      const best = argmax(score), top = score[best] + move;
+      const back = [], next = [];
+      for (let state = 0; state < 3; state++) {
+        const kept = score[state] + stay;
+        back.push(kept >= top ? state : best);
+        next.push(Math.max(kept, top) + row[state]);
+      }
+      cameFrom[index] = back;
+      score = next;
+    }
+    if (isEnd[index]) final[index] = argmax(score);
+  }
+  const path = new Int8Array(count);
+  scaffoldStarts.forEach((first, i) => {
+    const last = ends[i];
+    let state = final[last];
+    for (let index = last; index >= first; index--) {
+      path[index] = state;
+      if (index > first) state = cameFrom[index][state];
+    }
+  });
+  return path;
+}
+
+const STATES = ["low_divergence", "background", "high_divergence"];
+
+/* Decode events (sorted by rank, kind) into low/high blocks, as _decode_mosaics does. */
+function decodeMosaics(events, factor, switchProbability, maxIterations = 10) {
+  const segments = [];
+  for (let i = 1; i < events.length; i++) {
+    const open = events[i - 1], close = events[i];
+    if (close.kind === 0) continue;
+    const hit = close.kind === 1 ? 1 : 0;
+    const gaps = close.rank - open.rank - hit;
+    segments.push({ hit, gaps, positions: gaps + hit, opensScaffold: open.kind === 0,
+                    start: open.kind === 0 ? open.pos : open.pos + 1, end: close.pos });
+  }
+  const totalHits = segments.reduce((s, x) => s + x.hit, 0);
+  if (!totalHits) return { blocks: [], rate: NaN, segments, path: [], emissions: [], converged: true };
+  const scaffoldStarts = segments.map((s, i) => (s.opensScaffold ? i : -1)).filter(i => i >= 0);
+  let rate = totalHits / segments.reduce((s, x) => s + x.positions, 0);
+  const scores = r => {
+    const rates = stateRates(r, factor);
+    return segments.map(s => rates.map(q => s.gaps * Math.log1p(-q) + s.hit * Math.log(q)));
+  };
+  let converged = false, emptyBackground = false;
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    const path = viterbi(scores(rate), scaffoldStarts, switchProbability);
+    let hits = 0, positions = 0;
+    segments.forEach((s, i) => { if (path[i] === 1) { hits += s.hit; positions += s.positions; } });
+    if (!hits) { emptyBackground = true; break; }
+    const refitted = hits / positions;
+    if (Math.abs(refitted - rate) <= 1e-3 * rate) { rate = refitted; converged = true; break; }
+    rate = refitted;
+  }
+  const emissions = scores(rate);
+  const path = viterbi(emissions, scaffoldStarts, switchProbability);
+  const blocks = [];
+  let current = null;
+  segments.forEach((s, i) => {
+    const newBlock = i === 0 || path[i] !== path[i - 1] || s.opensScaffold;
+    if (newBlock) current = null;
+    if (path[i] === 1) return;
+    const gain = emissions[i][path[i]] - emissions[i][1];
+    if (!current) {
+      current = { state: STATES[path[i]], start: s.start, end: s.end, callable_positions: 0, mismatches: 0,
+                  log_likelihood_ratio: 0 };
+      blocks.push(current);
+    }
+    current.end = s.end;
+    current.callable_positions += s.positions;
+    current.mismatches += s.hit;
+    current.log_likelihood_ratio += gain;
+  });
+  for (const block of blocks) {
+    block.divergence = block.mismatches / block.callable_positions;
+    block.background_divergence = rate;
+  }
+  return { blocks, rate, segments, path, emissions, converged, emptyBackground };
+}
+</script>
+
+<script>
+(() => {
+  const DATA = window.TUTORIAL_DATA || null;
+  const WINDOW = 10_000;
+  // Same layout as the tutorial (data/truth/planted_blocks.tsv), used if tutorial_data.js is missing.
+  const LAYOUT = DATA ? DATA.planted : [
+    { name: "R1", kind: "low_divergence", start: 300001, end: 350000, rate: 0 },
+    { name: "I1", kind: "high_divergence", start: 700001, end: 730000, rate: 0.02 },
+    { name: "R2", kind: "low_divergence", start: 1100001, end: 1120000, rate: 0 },
+    { name: "I2", kind: "high_divergence", start: 1500001, end: 1505000, rate: 0.02 },
+    { name: "R3", kind: "low_divergence", start: 1850001, end: 1855000, rate: 0 },
+  ];
+  const GENOME = DATA ? DATA.genome_length : 2_160_842;
+  const MODEL_DEFAULTS = { factor: 20, switchProbability: 1e-3 };
+  const CATCH_R3 = { factor: 7, switchProbability: 0.13 };
+  const STRAIN_DEFAULTS = { divergence: 0.001, impDivergence: 0.02, seed: 7 };
+  const $ = id => document.getElementById(id);
+  const NS = "http://www.w3.org/2000/svg";
+
+  const logScale = (lo, hi) => ({
+    to: t => lo * Math.pow(hi / lo, t / 1000),
+    from: v => Math.round(1000 * Math.log(v / lo) / Math.log(hi / lo)),
+  });
+  const divScale = logScale(5e-5, 0.01), impScale = logScale(0.002, 0.08);
+  const factorScale = logScale(2, 200), switchScale = logScale(1e-8, 0.6);
+  let state = { source: DATA ? "tutorial" : "simulated", ...STRAIN_DEFAULTS, ...MODEL_DEFAULTS };
+
+  const pct = (v, digits) => `${(v * 100).toFixed(digits)}%`;
+  const smartPct = v => pct(v, v >= 0.01 ? 2 : v >= 0.001 ? 3 : v >= 0.0001 ? 4 : 5);
+  const kb = v => `${(v / 1000).toFixed(v >= 100_000 ? 0 : 1)} kb`;
+  const fmtInt = v => Math.round(v).toLocaleString("en-US");
+  const sci = v => {
+    if (v >= 0.01) return v.toFixed(v >= 0.1 ? 2 : 3);
+    const exponent = Math.floor(Math.log10(v)), mantissa = v / 10 ** exponent;
+    const sup = String(exponent).replace(/./g, c => "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"["-0123456789".indexOf(c)]);
+    return Math.abs(mantissa - 1) < 0.05 ? `10${sup}` : `${mantissa.toFixed(1)}×10${sup}`;
+  };
+
+  const SCALES = { "divergence": ["divergence", divScale], "imp-divergence": ["impDivergence", impScale],
+                   "factor": ["factor", factorScale], "switch": ["switchProbability", switchScale] };
+  function writeControls() {
+    for (const [id, [key, scale]] of Object.entries(SCALES)) $(id).value = scale.from(state[key]);
+    for (const radio of document.querySelectorAll('input[name="source"]')) radio.checked = radio.value === state.source;
+    $("strain-controls").disabled = state.source !== "simulated";
+  }
+
+  // ── data: the tutorial's mismatches, or a simulation of the same five blocks ──
+  function buildDataset() {
+    if (state.source === "tutorial") {
+      return { first: DATA.first, last: DATA.last, pos: DATA.mismatch_pos, rank: DATA.mismatch_rank,
+               windowShared: DATA.window_shared, windowMismatches: DATA.window_mismatches,
+               planted: LAYOUT.map(b => ({ ...b })) };
+    }
+    const planted = LAYOUT.map(b => ({ ...b, rate: b.kind === "high_divergence" ? state.impDivergence : 0 }));
+    const pos = simulateMismatches(GENOME, state.divergence, planted, state.seed);
+    const windows = Math.ceil(GENOME / WINDOW);
+    const windowShared = Array.from({ length: windows }, (_, i) => Math.min(WINDOW, GENOME - i * WINDOW));
+    const windowMismatches = new Array(windows).fill(0);
+    for (const p of pos) windowMismatches[Math.floor((p - 1) / WINDOW)]++;
+    return { first: { rank: -1, pos: 1 }, last: { rank: GENOME - 1, pos: GENOME }, pos, rank: pos.map(p => p - 1),
+             windowShared, windowMismatches, planted };
+  }
+
+  function run() {
+    const data = buildDataset();
+    const events = [{ rank: data.first.rank, pos: data.first.pos, kind: 0 }];
+    data.pos.forEach((p, i) => events.push({ rank: data.rank[i], pos: p, kind: 1 }));
+    events.push({ rank: data.last.rank, pos: data.last.pos, kind: 2 });
+    const result = decodeMosaics(events, state.factor, state.switchProbability);
+    const overlaps = (a, b) => a.start <= b.end && a.end >= b.start;
+    for (const block of result.blocks) {
+      const match = data.planted.find(p => p.kind === block.state && overlaps(p, block));
+      block.planted = match ? match.name : null;
+    }
+    for (const block of data.planted) {
+      block.mismatches = countBetween(data.pos, block.start, block.end);
+      block.found = result.blocks.some(b => b.planted === block.name);
+      block.run = block.kind === "low_divergence" ? identicalRun(data, block) : null;
+    }
+    return { data, result, falsePositives: result.blocks.filter(b => !b.planted) };
+  }
+
+  // Index of the first mismatch at or after pos (binary search).
+  function lowerBound(sorted, value) {
+    let lo = 0, hi = sorted.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] < value) lo = mid + 1; else hi = mid; }
+    return lo;
+  }
+  const countBetween = (sorted, start, end) => lowerBound(sorted, end + 1) - lowerBound(sorted, start);
+  // The identical run that holds a block: shared positions between the mismatches flanking it.
+  function identicalRun(data, block) {
+    const i = lowerBound(data.pos, block.start), j = lowerBound(data.pos, block.end + 1);
+    if (j > i || j >= data.pos.length) return null;
+    const beforeRank = i > 0 ? data.rank[i - 1] : data.first.rank;
+    return { start: i > 0 ? data.pos[i - 1] + 1 : data.first.pos, end: data.pos[j], matches: data.rank[j] - beforeRank - 1 };
+  }
+
+  function evidenceLine(rate, factor) {
+    const [low, bg] = stateRates(rate, factor);
+    return { slope: Math.log1p(-low) - Math.log1p(-bg), intercept: Math.log(low) - Math.log(bg) };
+  }
+  const switchCost = s => 2 * (Math.log1p(-s) - Math.log(s / 2));
+
+  // ── SVG + tooltip helpers ──
+  function node(tag, attrs, parent) {
+    const el = document.createElementNS(NS, tag);
+    for (const [key, value] of Object.entries(attrs || {})) el.setAttribute(key, value);
+    if (parent) parent.appendChild(el);
+    return el;
+  }
+  function text(parent, x, y, content, attrs = {}) {
+    const el = node("text", { x, y, "font-size": 12, fill: "var(--ink-2)", ...attrs }, parent);
+    el.textContent = content;
+    return el;
+  }
+  const tooltip = $("tooltip");
+  function showTip(event, title, rows) {
+    tooltip.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "tt-title";
+    head.textContent = title;
+    tooltip.appendChild(head);
+    for (const [label, value, color] of rows) {
+      const row = document.createElement("div");
+      row.className = "tt-row";
+      if (color) {
+        const key = document.createElement("i");
+        key.className = "tt-key";
+        key.style.borderColor = color;
+        row.appendChild(key);
+      }
+      const strong = document.createElement("strong");
+      strong.textContent = value;
+      const name = document.createElement("span");
+      name.textContent = label;
+      name.style.color = "var(--ink-2)";
+      row.append(strong, name);
+      tooltip.appendChild(row);
+    }
+    tooltip.style.display = "block";
+    const box = tooltip.getBoundingClientRect();
+    tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - box.width - 8)}px`;
+    tooltip.style.top = `${Math.max(8, event.clientY - box.height - 12)}px`;
+  }
+  const hideTip = () => { tooltip.style.display = "none"; };
+  function svgPoint(svg, event) {
+    const point = svg.createSVGPoint();
+    point.x = event.clientX; point.y = event.clientY;
+    return point.matrixTransform(svg.getScreenCTM().inverse());
+  }
+  function hatch(defs, id, kind) {
+    const pattern = node("pattern", { id, width: 5, height: 5, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, defs);
+    node("line", { x1: 0, y1: 0, x2: 0, y2: 5, style: `stroke: var(--${kind}); stroke-width: 1.6` }, pattern);
+  }
+  const kindOf = state => (state === "low_divergence" ? "low" : "high");
+  function niceStep(span, target) {
+    const raw = span / target, power = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 2.5, 5, 10].map(m => m * power).find(s => s >= raw);
+  }
+  function blockTip(block) {
+    return { title: block.state.replace("_", " "), rows: [
+      [`${fmtInt(block.start)}–${fmtInt(block.end)}`, kb(block.end - block.start + 1)],
+      ["mismatches", fmtInt(block.mismatches)],
+      ["divergence", smartPct(block.divergence)],
+      ["log-likelihood ratio", block.log_likelihood_ratio.toFixed(1)],
+      ["matches planted block", block.planted || "none (false positive)"]] };
+  }
+
+  // ── tiles ──
+  function tile(parent, label, value, sub) {
+    const card = document.createElement("div");
+    card.className = "tile";
+    const head = document.createElement("div");
+    head.className = "label";
+    head.textContent = label;
+    const big = document.createElement("div");
+    big.className = "value";
+    big.textContent = value;
+    const small = document.createElement("div");
+    small.className = "sub";
+    small.textContent = sub;
+    card.append(head, big, small);
+    parent.appendChild(card);
+  }
+  function renderTiles({ data, result, falsePositives }, line, cost, rate) {
+    const tiles = $("tiles");
+    tiles.replaceChildren();
+    const found = data.planted.filter(b => b.found), missed = data.planted.filter(b => !b.found);
+    tile(tiles, "Planted blocks found", `${found.length} of ${data.planted.length}`,
+         missed.length ? `missed: ${missed.map(b => b.name).join(", ")}` : "all found");
+    tile(tiles, "False positives", fmtInt(falsePositives.length),
+         falsePositives.length ? `${fmtInt(falsePositives.reduce((s, b) => s + b.end - b.start + 1, 0) / 1000)} kb of genome`
+                               : "detected blocks with no planted block");
+    tile(tiles, "Fitted background", Number.isFinite(result.rate) ? smartPct(result.rate) : "–",
+         state.source === "simulated" ? `true ${smartPct(state.divergence)}` : `${fmtInt(data.pos.length)} mismatches in total`);
+    const minimum = line.slope > 0 ? (cost - line.intercept) / line.slope : Infinity;
+    tile(tiles, "Shortest detectable identical run", Number.isFinite(minimum) && minimum > 0 ? kb(minimum) : "any",
+         Number.isFinite(minimum) && minimum > 0 ? `≈ ${(minimum * rate).toFixed(0)} mismatches expected at background` : "cost below the gain of any run");
+  }
+
+  function renderWarning({ result }) {
+    let background = 0, total = 0;
+    result.segments.forEach((seg, i) => { total += seg.positions; if (result.path[i] === 1) background += seg.positions; });
+    const share = total ? background / total : 1;
+    const box = $("warning");
+    box.hidden = share >= 0.5;
+    if (box.hidden) return;
+    const shown = share < 0.01 ? "Less than 1%" : `Only ${(share * 100).toFixed(0)}%`;
+    $("warning-title").textContent = `${shown} of the genome was labelled background.`;
+    $("warning-text").textContent = ` The background rate was refitted from that small part of the genome and ended at ` +
+      `${smartPct(result.rate)}. This happens when imports hold most of the mismatches, or when switching is so cheap ` +
+      `that the model chops the genome into many short blocks. ZipStrain's mosaic_regions behaves the same way.`;
+  }
+
+  // ── genome chart ──
+  function renderGenome({ data, result, falsePositives }, rate) {
+    const svg = $("genome");
+    svg.replaceChildren();
+    const W = 960, left = 92, right = 118, plotW = W - left - right;
+    const x = pos => left + (pos / GENOME) * plotW;
+    const defs = node("defs", {}, svg);
+    hatch(defs, "g-hatch-low", "low");
+    hatch(defs, "g-hatch-high", "high");
+    const rows = { planted: 40, detected: 74, fp: 106 };
+    for (const [label, y] of [["Planted", rows.planted], ["Detected", rows.detected], ["False positives", rows.fp]]) {
+      node("line", { x1: left, x2: left + plotW, y1: y, y2: y, style: "stroke: var(--grid)" }, svg);
+      text(svg, left - 10, y + 4, label, { "text-anchor": "end", fill: "var(--ink)", "font-size": 12.5 });
+    }
+    const bar = (start, end, y, kind, hatched, tip) => {
+      let x0 = x(start - 1), width = x(end) - x0;
+      if (width < 4) { x0 = (x0 + x(end)) / 2 - 2; width = 4; }
+      const rect = node("rect", { x: x0, y: y - 8, width, height: 16, rx: 3.5, class: "block", tabindex: 0,
+        style: hatched ? `fill: url(#g-hatch-${kind}); stroke: var(--${kind}); stroke-width: 1.4` : `fill: var(--${kind})` }, svg);
+      const hit = node("rect", { x: x0 - 4, y: y - 13, width: width + 8, height: 26, class: "hit" }, svg);
+      for (const target of [rect, hit]) {
+        target.addEventListener("pointermove", e => showTip(e, tip.title, tip.rows));
+        target.addEventListener("pointerleave", hideTip);
+      }
+      rect.addEventListener("focus", () => {
+        const box = rect.getBoundingClientRect();
+        showTip({ clientX: box.right, clientY: box.top }, tip.title, tip.rows);
+      });
+      rect.addEventListener("blur", hideTip);
+    };
+    for (const block of data.planted) {
+      bar(block.start, block.end, rows.planted, kindOf(block.kind), true, { title: `Planted block ${block.name}`, rows: [
+        [`${fmtInt(block.start)}–${fmtInt(block.end)}`, kb(block.end - block.start + 1)],
+        ["mismatches", fmtInt(block.mismatches)],
+        ["found", block.found ? "yes" : "no"]] });
+      text(svg, (x(block.start - 1) + x(block.end)) / 2, rows.planted - 14, block.name,
+           { "text-anchor": "middle", fill: "var(--ink)", "font-size": 11.5, "font-weight": 600 });
+    }
+    for (const block of result.blocks) {
+      bar(block.start, block.end, block.planted ? rows.detected : rows.fp, kindOf(block.state), false, blockTip(block));
+    }
+
+    // windowed divergence
+    const top = 140, bottom = 400;
+    const counts = data.windowMismatches, shared = data.windowShared;
+    const divergence = counts.map((c, i) => (shared[i] ? c / shared[i] : null));
+    const [low, bg, high] = stateRates(rate, state.factor);
+    const floor = Math.min(2e-5, low / 3);
+    const maxDiv = Math.max(...divergence.filter(v => v !== null));
+    const yMin = floor / 1.6, yMax = Math.min(0.6, Math.max(0.05, high * 2, maxDiv * 1.6));
+    const y = v => top + (Math.log10(yMax) - Math.log10(v)) / (Math.log10(yMax) - Math.log10(yMin)) * (bottom - top);
+    for (const block of result.blocks) {
+      node("rect", { x: x(block.start - 1), y: top, width: Math.max(x(block.end) - x(block.start - 1), 1.5),
+        height: bottom - top, style: `fill: var(--${kindOf(block.state)}-tint)` }, svg);
+    }
+    const ticks = [[floor, "0"]];
+    for (let e = -6; e <= 0; e++) {
+      const v = 10 ** e;
+      if (v > floor * 1.8 && v <= yMax) ticks.push([v, `${+(v * 100).toPrecision(1)}%`]);
+    }
+    for (const [v, label] of ticks) {
+      node("line", { x1: left, x2: left + plotW, y1: y(v), y2: y(v), style: "stroke: var(--grid)" }, svg);
+      text(svg, left - 8, y(v) + 4, label, { "text-anchor": "end", fill: "var(--muted)", "font-size": 11.5 });
+    }
+    text(svg, 30, (top + bottom) / 2, "Divergence per 10 kb", { transform: `rotate(-90 30 ${(top + bottom) / 2})`,
+      "text-anchor": "middle", "font-size": 12 });
+    let lastLabelY = -Infinity;
+    for (const [v, label, color] of [[high, "High", "var(--high)"], [bg, "Background", "var(--muted)"], [low, "Low", "var(--low)"]]) {
+      node("line", { x1: left, x2: left + plotW, y1: y(v), y2: y(v),
+        style: `stroke: ${color}; stroke-width: 1.4; stroke-dasharray: 6 4` }, svg);
+      const ly = Math.max(y(v) + 4, lastLabelY + 15);
+      text(svg, left + plotW + 8, ly, `${label} ${smartPct(v)}`, { "font-size": 11.5 });
+      lastLabelY = ly;
+    }
+    let d = "";
+    divergence.forEach((v, i) => {
+      const x0 = x(i * WINDOW), x1 = x(Math.min((i + 1) * WINDOW, GENOME));
+      const yy = y(Math.max(v ?? floor, floor));
+      d += i === 0 ? `M${x0},${yy}H${x1}` : `V${yy}H${x1}`;
+    });
+    node("path", { d, style: "fill: none; stroke: var(--data); stroke-width: 1.6; stroke-linejoin: round" }, svg);
+    node("line", { x1: left, x2: left + plotW, y1: bottom, y2: bottom, style: "stroke: var(--baseline)" }, svg);
+    for (let mb = 0; mb <= GENOME / 1e6; mb += 0.25) {
+      text(svg, x(mb * 1e6), bottom + 18, mb.toFixed(2), { "text-anchor": "middle", fill: "var(--muted)", "font-size": 11.5 });
+    }
+    text(svg, left + plotW / 2, bottom + 36, "Genome position (Mb)", { "text-anchor": "middle" });
+    const cross = node("line", { y1: top, y2: bottom, style: "stroke: var(--ink-2); stroke-width: 1; display: none" }, svg);
+    const area = node("rect", { x: left, y: top, width: plotW, height: bottom - top, class: "hit" }, svg);
+    area.addEventListener("pointermove", e => {
+      const p = svgPoint(svg, e);
+      const i = Math.min(counts.length - 1, Math.max(0, Math.floor(((p.x - left) / plotW) * GENOME / WINDOW)));
+      const cx = x(Math.min(i * WINDOW + WINDOW / 2, GENOME));
+      cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.style.display = "block";
+      showTip(e, `${fmtInt(i * WINDOW + 1)}–${fmtInt(Math.min((i + 1) * WINDOW, GENOME))}`, [
+        ["divergence", divergence[i] === null ? "–" : smartPct(divergence[i]), "var(--data)"],
+        ["mismatches", fmtInt(counts[i])],
+        ["shared positions", fmtInt(shared[i])]]);
+    });
+    area.addEventListener("pointerleave", () => { cross.style.display = "none"; hideTip(); });
+  }
+
+  // ── close-ups ──
+  function renderZooms({ data, result }) {
+    const holder = $("zooms");
+    holder.replaceChildren();
+    for (const block of data.planted) {
+      const kind = kindOf(block.kind);
+      const wrap = document.createElement("div");
+      const h3 = document.createElement("h3");
+      const sw = document.createElement("i");
+      sw.className = "swatch";
+      sw.style.background = `var(--${kind})`;
+      const status = document.createElement("span");
+      status.className = "status";
+      status.textContent = `· ${kb(block.end - block.start + 1)} ${kind === "low" ? "identical" : `at ${smartPct(block.rate)}`} · ${block.found ? "found" : "missed"}`;
+      h3.append(sw, document.createTextNode(block.name), status);
+      const svg = node("svg", { viewBox: "0 0 390 140", role: "img", "aria-label": `Mismatches around block ${block.name}` });
+      wrap.append(h3, svg);
+      holder.appendChild(wrap);
+      drawZoom(svg, block, kind, data, result);
+    }
+  }
+  function drawZoom(svg, block, kind, data, result) {
+    const W = 390, left = 74, right = 12, plotW = W - left - right;
+    const length = block.end - block.start + 1, center = (block.start + block.end) / 2;
+    const span = Math.max(30_000, 3 * length);
+    const from = Math.max(1, Math.round(center - span / 2)), to = Math.min(GENOME, from + span - 1);
+    const x = pos => left + ((pos - from) / (to - from)) * plotW;
+    const clipX = pos => Math.min(left + plotW, Math.max(left, x(pos)));
+    const id = `z-hatch-${block.name}`;
+    hatch(node("defs", {}, svg), id, kind);
+    for (const [label, yy] of [["Mismatches", 26], ["Planted", 62], ["Detected", 90]]) {
+      text(svg, left - 8, yy + 4, label, { "text-anchor": "end", fill: "var(--ink)", "font-size": 12 });
+    }
+    node("line", { x1: left, x2: left + plotW, y1: 40, y2: 40, style: "stroke: var(--baseline)" }, svg);
+    for (let i = lowerBound(data.pos, from); i < data.pos.length && data.pos[i] <= to; i++) {
+      const px = x(data.pos[i]);
+      node("line", { x1: px, x2: px, y1: 14, y2: 40, style: "stroke: var(--data); stroke-width: 1.2" }, svg);
+    }
+    node("rect", { x: x(block.start - 1), y: 54, width: Math.max(x(block.end) - x(block.start - 1), 2), height: 16, rx: 3.5,
+      style: `fill: url(#${id}); stroke: var(--${kind}); stroke-width: 1.4` }, svg);
+    for (const b of result.blocks) {
+      if (b.end < from || b.start > to) continue;
+      node("rect", { x: clipX(b.start - 1), y: 82, width: Math.max(clipX(b.end) - clipX(b.start - 1), 2), height: 16, rx: 3.5,
+        style: `fill: var(--${kindOf(b.state)})${b.planted ? "" : "; opacity: 0.55"}` }, svg);
+    }
+    const tick = niceStep((to - from) / 1000, 4);
+    for (let t = Math.ceil(from / 1000 / tick) * tick; t * 1000 <= to; t += tick) {
+      node("line", { x1: x(t * 1000), x2: x(t * 1000), y1: 104, y2: 108, style: "stroke: var(--baseline)" }, svg);
+      text(svg, x(t * 1000), 122, `${fmtInt(t)} kb`, { "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 });
+    }
+    const cross = node("line", { y1: 10, y2: 102, style: "stroke: var(--ink-2); stroke-width: 1; display: none" }, svg);
+    const area = node("rect", { x: left, y: 8, width: plotW, height: 96, class: "hit" }, svg);
+    area.addEventListener("pointermove", e => {
+      const pos = Math.round(from + ((svgPoint(svg, e).x - left) / plotW) * (to - from));
+      cross.setAttribute("x1", x(pos)); cross.setAttribute("x2", x(pos)); cross.style.display = "block";
+      const j = lowerBound(data.pos, pos + 1);
+      const rows = [];
+      if (j > 0 && j < data.pos.length) {
+        rows.push(["identical shared positions in this run", fmtInt(data.rank[j] - data.rank[j - 1] - 1)]);
+        rows.push(["between mismatches at", `${fmtInt(data.pos[j - 1])} and ${fmtInt(data.pos[j])}`]);
+      }
+      const detected = result.blocks.find(b => b.start <= pos && b.end >= pos);
+      rows.push(["model state", detected ? `${detected.state.replace("_", " ")}${detected.planted ? "" : " (false positive)"}` : "background"]);
+      showTip(e, `Position ${fmtInt(pos)}`, rows);
+    });
+    area.addEventListener("pointerleave", () => { cross.style.display = "none"; hideTip(); });
+  }
+
+  // ── evidence chart ──
+  function renderEvidence({ data }, line, cost, rate) {
+    const svg = $("evidence");
+    svg.replaceChildren();
+    const W = 960, left = 70, right = 118, top = 14, bottom = 246, plotW = W - left - right;
+    const minimum = line.slope > 0 ? (cost - line.intercept) / line.slope : Infinity;
+    const runs = data.planted.filter(b => b.run);
+    const longest = Math.max(0, ...runs.map(b => b.run.matches));
+    const xMax = Math.max(30_000, longest * 1.12, Number.isFinite(minimum) ? minimum * 1.3 : 0);
+    const gain = g => g * line.slope + line.intercept;
+    const yLo = Math.min(line.intercept - 2, -5, cost - 2), yHi = Math.max(cost * 1.6, gain(xMax) * 1.05, 10);
+    const x = g => left + (g / xMax) * plotW;
+    const y = v => bottom - ((v - yLo) / (yHi - yLo)) * (bottom - top);
+    const step = niceStep(xMax / 1000, 6);
+    for (let t = 0; t <= xMax / 1000 + 1e-9; t += step) {
+      node("line", { x1: x(t * 1000), x2: x(t * 1000), y1: top, y2: bottom, style: "stroke: var(--grid)" }, svg);
+      text(svg, x(t * 1000), bottom + 18, `${+t.toFixed(1)}`, { "text-anchor": "middle", fill: "var(--muted)", "font-size": 11.5 });
+    }
+    const yStep = niceStep(yHi - yLo, 5);
+    for (let v = Math.ceil(yLo / yStep) * yStep; v <= yHi; v += yStep) {
+      node("line", { x1: left, x2: left + plotW, y1: y(v), y2: y(v), style: `stroke: var(--${Math.abs(v) < 1e-9 ? "baseline" : "grid"})` }, svg);
+      text(svg, left - 8, y(v) + 4, `${+v.toFixed(1)}`, { "text-anchor": "end", fill: "var(--muted)", "font-size": 11.5 });
+    }
+    text(svg, left + plotW / 2, bottom + 38, "Identical run length (kb of shared positions)", { "text-anchor": "middle" });
+    text(svg, 16, (top + bottom) / 2, "Gain (log-likelihood)", { transform: `rotate(-90 16 ${(top + bottom) / 2})`,
+      "text-anchor": "middle", "font-size": 12 });
+    node("line", { x1: left, x2: left + plotW, y1: y(cost), y2: y(cost),
+      style: "stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 6 4" }, svg);
+    text(svg, left + plotW + 8, y(cost) + 4, `Cost ${cost.toFixed(1)}`, { "font-size": 11.5 });
+    node("line", { x1: x(0), y1: y(gain(0)), x2: x(xMax), y2: y(gain(xMax)),
+      style: "stroke: var(--low); stroke-width: 2; stroke-linecap: round" }, svg);
+    if (minimum > 0 && minimum < xMax) {
+      node("line", { x1: x(minimum), x2: x(minimum), y1: y(cost), y2: bottom,
+        style: "stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 2 3" }, svg);
+      text(svg, x(minimum) + 6, bottom - 8, kb(minimum), { fill: "var(--ink)", "font-size": 12, "font-weight": 600 });
+    }
+    for (const block of runs) {
+      const g = block.run.matches, cx = x(g), cy = y(gain(g));
+      node("circle", { cx, cy, r: 6.5, style: `fill: ${block.found ? "var(--low)" : "var(--surface)"}; stroke: ${
+        block.found ? "var(--surface)" : "var(--low)"}; stroke-width: 2` }, svg);
+      text(svg, cx, cy - 12, block.name, { "text-anchor": "middle", fill: "var(--ink)", "font-size": 12, "font-weight": 600 });
+    }
+    const cross = node("line", { y1: top, y2: bottom, style: "stroke: var(--ink-2); stroke-width: 1; display: none" }, svg);
+    const area = node("rect", { x: left, y: top, width: plotW, height: bottom - top, class: "hit" }, svg);
+    area.addEventListener("pointermove", e => {
+      const g = Math.max(0, Math.min(xMax, ((svgPoint(svg, e).x - left) / plotW) * xMax));
+      cross.setAttribute("x1", x(g)); cross.setAttribute("x2", x(g)); cross.style.display = "block";
+      const near = runs.find(b => Math.abs(x(b.run.matches) - x(g)) < 8);
+      const rows = [["gain", gain(g).toFixed(1), "var(--low)"], ["cost", cost.toFixed(1), "var(--muted)"],
+                    ["mismatches expected at background", (g * rate).toFixed(1)]];
+      if (near) rows.push([`run holding ${near.name}`, `${fmtInt(near.run.start)}–${fmtInt(near.run.end)}`]);
+      showTip(e, `Identical run of ${kb(g)}`, rows);
+    });
+    area.addEventListener("pointerleave", () => { cross.style.display = "none"; hideTip(); });
+  }
+
+  // ── table ──
+  function renderTable({ result }) {
+    const table = $("blocks");
+    table.replaceChildren();
+    const head = table.createTHead().insertRow();
+    for (const h of ["Planted block", "State", "Start", "End", "Length", "Mismatches", "Divergence", "Log-likelihood ratio"]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      head.appendChild(th);
+    }
+    const body = table.createTBody();
+    if (!result.blocks.length) {
+      const cell = body.insertRow().insertCell();
+      cell.colSpan = 8;
+      cell.className = "empty";
+      cell.textContent = "No blocks detected";
+      return;
+    }
+    for (const b of result.blocks) {
+      const row = body.insertRow();
+      const first = row.insertCell();
+      first.textContent = b.planted || "false positive";
+      if (!b.planted) first.className = "fp";
+      const stateCell = row.insertCell();
+      const sw = document.createElement("i");
+      sw.className = "swatch";
+      sw.style.background = `var(--${kindOf(b.state)})`;
+      sw.style.marginRight = "8px";
+      stateCell.append(sw, document.createTextNode(b.state));
+      for (const v of [fmtInt(b.start), fmtInt(b.end), kb(b.end - b.start + 1), fmtInt(b.mismatches),
+                       smartPct(b.divergence), b.log_likelihood_ratio.toFixed(1)]) {
+        row.insertCell().textContent = v;
+      }
+    }
+  }
+
+  function renderLabels(cost) {
+    $("source-hint").textContent = state.source === "tutorial"
+      ? "Every mismatch between samples A and B after mapping reads and profiling, exactly as in the tutorial."
+      : `Mismatches drawn at random over the same ${fmtInt(GENOME)} bp genome and the same five blocks; every position is shared.`;
+    $("divergence-out").textContent = `${(100 * (1 - state.divergence)).toFixed(state.divergence < 1e-3 ? 3 : 2)}%`;
+    $("divergence-hint").textContent = `${smartPct(state.divergence)} divergence, about ${fmtInt(GENOME * state.divergence)} background mismatches`;
+    $("imp-divergence-out").textContent = smartPct(state.impDivergence);
+    $("imp-hint").textContent = `About ${fmtInt(30_000 * state.impDivergence)} mismatches in I1 and ${fmtInt(5_000 * state.impDivergence)} in I2`;
+    $("factor-out").textContent = state.factor >= 10 ? state.factor.toFixed(0) : state.factor.toFixed(1);
+    $("switch-out").textContent = sci(state.switchProbability);
+    $("switch-hint").textContent = `Entering and leaving a block costs about ${cost.toFixed(1)} log-likelihood units`;
+    $("seed-out").textContent = `seed ${state.seed}`;
+  }
+
+  let pending = false;
+  function update() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      const model = run();
+      const rate = Number.isFinite(model.result.rate) ? model.result.rate : state.divergence;
+      const line = evidenceLine(rate, state.factor);
+      const cost = switchCost(state.switchProbability);
+      renderLabels(cost);
+      renderTiles(model, line, cost, rate);
+      renderWarning(model);
+      renderGenome(model, rate);
+      renderZooms(model);
+      renderEvidence(model, line, cost, rate);
+      renderTable(model);
+    });
+  }
+
+  for (const [id, [key, scale]] of Object.entries(SCALES)) {
+    $(id).addEventListener("input", () => { state[key] = scale.to(+$(id).value); update(); });
+  }
+  for (const radio of document.querySelectorAll('input[name="source"]')) {
+    if (!DATA && radio.value === "tutorial") radio.disabled = true;
+    radio.addEventListener("change", () => { state.source = radio.value; writeControls(); update(); });
+  }
+  $("redraw").addEventListener("click", () => { state.seed = Math.floor(Math.random() * 1e6); update(); });
+  const preset = values => { Object.assign(state, values); writeControls(); update(); };
+
+  // Settings from the link, e.g. mosaic_explorer.html#data=tutorial&factor=7&switch=0.13
+  // (data=tutorial|simulated, factor, switch, ani = background ANI in %, imports = import divergence in %, seed).
+  function applyHash() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (![...params.keys()].some(key => ["data", "factor", "switch", "ani", "imports", "seed"].includes(key))) return;
+    // A link is a whole scenario: anything it does not set goes back to the tutorial default.
+    const values = { source: DATA ? "tutorial" : "simulated", ...STRAIN_DEFAULTS, ...MODEL_DEFAULTS };
+    const num = key => (params.has(key) && Number.isFinite(+params.get(key)) ? +params.get(key) : null);
+    if (["tutorial", "simulated"].includes(params.get("data")) && (DATA || params.get("data") === "simulated")) {
+      values.source = params.get("data");
+    }
+    if (num("factor") > 1) values.factor = num("factor");
+    if (num("switch") > 0 && num("switch") < 1) values.switchProbability = num("switch");
+    if (num("ani") > 90 && num("ani") < 100) values.divergence = 1 - num("ani") / 100;
+    if (num("imports") > 0 && num("imports") < 50) values.impDivergence = num("imports") / 100;
+    if (num("seed") !== null) values.seed = Math.round(num("seed"));
+    preset(values);
+  }
+  window.addEventListener("hashchange", applyHash);
+
+  // Inside a tutorial page: tell the page how tall the explorer is so the frame never scrolls.
+  if (new URLSearchParams(location.search).has("embed")) document.documentElement.classList.add("embed");
+  if (window.parent !== window && "ResizeObserver" in window) {
+    const report = () => window.parent.postMessage(
+      { type: "mosaic-explorer-height", height: Math.ceil(document.body.getBoundingClientRect().height) }, "*");
+    new ResizeObserver(report).observe(document.body);
+  }
+  $("preset-default").addEventListener("click", () => preset({ ...MODEL_DEFAULTS }));
+  $("preset-r3").addEventListener("click", () => preset({ ...CATCH_R3 }));
+  writeControls();
+  applyHash();
+  update();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Recombination mosaics - ZipStrain</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../../assets/_mkdocstrings.css" rel="stylesheet" />
+        <link href="../../assets/paramsel.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Recombination mosaics";
+        var mkdocs_page_input_path = "parameter_selection/recombination/index.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> ZipStrain
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Welcome to ZipStrain</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../quickstart/">Quick Start</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../usermanual/">User Manual</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../installation/">Installation</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../plugins/">Plugins</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../v2/">V2 formats and API</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../benchmarks/">Performance benchmarks</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../Tutorial/">Tutorial</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../expected_output/">Expected output</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../downstream/">Downstream Analyses</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Parameter selection guide</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" >Profiling parameters</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../">popANI depth bias</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" >Comparison parameters</a>
+    <ul class="current">
+                <li class="toctree-l2 current"><a class="reference internal current" href="#">Recombination mosaics</a>
+    <ul class="current">
+    <li class="toctree-l3"><a class="reference internal" href="#1-set-up">1. Set up</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#2-build-two-strains-with-known-mosaics">2. Build two strains with known mosaics</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#3-simulate-reads">3. Simulate reads</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#4-map-and-profile">4. Map and profile</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#5-find-mosaic-regions">5. Find mosaic regions</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#how-the-model-works">How the model works</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#6-what-was-found-and-what-was-missed">6. What was found, and what was missed</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#boundaries-snap-to-mismatches">Boundaries snap to mismatches</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#the-detection-limit">The detection limit</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#try-it-yourself-what-does-it-cost-to-find-r3">Try it yourself: what does it cost to find R3?</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#7-identical-stretches-and-their-p-values">7. Identical stretches and their p-values</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#8-mixed-populations-popani-vs-conani">8. Mixed populations: popANI vs conANI</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#9-using-this-on-your-own-data">9. Using this on your own data</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#recommendation">Recommendation</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#references">References</a>
+    </li>
+    </ul>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../api/">API</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">ZipStrain</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Parameter selection guide</li>
+          <li class="breadcrumb-item">Comparison parameters</li>
+      <li class="breadcrumb-item active">Recombination mosaics</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="finding-recombination-mosaics">Finding recombination mosaics</h1>
+<p>Two samples of the same strain differ by only a few mutations, scattered more or less at
+random along the genome. Recombination breaks that pattern. A segment that the two lineages
+exchanged recently looks <strong>too similar</strong>: a long run with almost no differences. A segment
+imported from a more distant lineage looks <strong>too different</strong>: a dense cluster of differences.</p>
+<p>ZipStrain 2.0 has two functions for finding these patterns between two profiled samples:</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>What it finds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>identical_stretches</code></td>
+<td>Runs of shared positions where the two samples never differ, with a p-value for how surprising each run's length is</td>
+</tr>
+<tr>
+<td><code>mosaic_regions</code></td>
+<td>Blocks whose divergence is much <strong>lower</strong> (<code>low_divergence</code>) or much <strong>higher</strong> (<code>high_divergence</code>) than the genome's background</td>
+</tr>
+</tbody>
+</table>
+<p>Both follow ideas developed by Ben Good and colleagues for detecting recombination between
+closely related strains in gut metagenomes (<a href="#references">Garud et al., 2019</a>;
+<a href="#references">Liu &amp; Good, 2024</a>). Comparing pairs of closely related strains, modelling the
+genome as clonal background interrupted by recombined segments, and testing whether a run of
+shared sequence is longer than randomly scattered mutations would allow are all from that
+work. ZipStrain provides simplified versions that work directly on its profiles.</p>
+<p>This guide builds a dataset where the answer is known. It takes a real genome, makes a closely
+related strain with five planted blocks, simulates reads, runs the normal ZipStrain workflow,
+and checks what ZipStrain recovers. The goal is to show how <code>factor</code>, <code>switch_probability</code>,
+<code>min_length</code>, and the ANI method affect what is found. The whole run takes about three minutes
+on a laptop. In <a href="#try-it-yourself-what-does-it-cost-to-find-r3">section 6</a> an interactive
+explorer reruns <code>mosaic_regions</code> on the tutorial's data with your own settings.</p>
+<p><img alt="Planted blocks and the blocks mosaic_regions found, with windowed divergence along the genome" src="figures/fig1_genome_overview.png" /></p>
+<p class="zs-cap">Figure 1. Planted and detected mosaic blocks between samples A and B. (a) The five planted
+blocks (hatched; R = recombined, identical to strain A; I = imported, 2% divergent) and the
+four blocks <code>mosaic_regions</code> found (solid), coloured by state. R3 was not detected. (b) popANI
+divergence in 10 kb windows on a log scale; windows with no mismatch are plotted at 0. Shading
+marks the detected blocks. Dashed lines are the model's three states: the refitted background
+rate (0.098%), the low state with 20× fewer expected mutations (0.0049%) and the high state
+with 20× more (1.93%). On a log axis the three states are equally spaced.</p>
+
+<div class="admonition note">
+<p class="admonition-title">Test data</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Reference</strong></td>
+<td><em>Streptococcus pneumoniae</em> TIGR4 (NCBI <code>NC_003028.3</code>, 2.16 Mb)</td>
+</tr>
+<tr>
+<td><strong>Strains</strong></td>
+<td>Strain A is the reference; strain B differs at 0.1% of positions, with five planted blocks</td>
+</tr>
+<tr>
+<td><strong>Samples</strong></td>
+<td>30× paired 150-bp reads from strain A, strain B, and a 70/30 mix of B and A</td>
+</tr>
+<tr>
+<td><strong>ZipStrain</strong></td>
+<td><code>2.0.0</code>, default profiling and comparison settings</td>
+</tr>
+</tbody>
+</table>
+<p>The scripts that build this dataset and draw every figure are in the ZipStrain repository
+under <a href="https://github.com/OlmLab/ZipStrain/tree/main/docs/parameter_selection/recombination"><code>docs/parameter_selection/recombination</code></a>.
+Strain B and the reads use fixed random seeds, so your numbers should match the tables
+below.</p>
+</div>
+<h2 id="1-set-up">1. Set up</h2>
+<div class="highlight"><pre><span></span><code>conda<span class="w"> </span>create<span class="w"> </span>-n<span class="w"> </span>recombzs<span class="w"> </span>-c<span class="w"> </span>conda-forge<span class="w"> </span>-c<span class="w"> </span>bioconda<span class="w"> </span><span class="nv">python</span><span class="o">=</span><span class="m">3</span>.12<span class="w"> </span>bowtie2<span class="w"> </span>samtools<span class="w"> </span>wgsim<span class="w"> </span>matplotlib
+conda<span class="w"> </span>activate<span class="w"> </span>recombzs
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;zipstrain==2.0.0&quot;</span>
+</code></pre></div>
+<p>Download the tutorial folder from the repository. It contains:</p>
+<div class="highlight"><pre><span></span><code>recombination/
+├── run_all.sh                     # runs every step below
+├── scripts/
+│   ├── 01_make_strains.py         # strain B with planted blocks + truth tables
+│   ├── 02_simulate_reads.sh       # 30x paired-end reads with wgsim
+│   ├── 03_find_mosaics.py         # mosaic_regions + identical_stretches per pair
+│   ├── 04_plot_figures.py         # the figures on this page
+│   └── 05_export_explorer_data.py # data for the interactive explorer
+├── interactive/                   # mosaic_explorer.html + tutorial_data.js
+├── figures/
+├── data/                          # created: genomes, reads, truth tables
+├── mapped/  profiles/             # created by zipstrain map / profile
+└── results/                       # created: one folder of tables per comparison
+</code></pre></div>
+<p>To reproduce everything in one go, run <code>bash run_all.sh</code> inside that folder. The sections
+below go step by step.</p>
+<h2 id="2-build-two-strains-with-known-mosaics">2. Build two strains with known mosaics</h2>
+<p>The reference is <em>Streptococcus pneumoniae</em> TIGR4. The pneumococcus is one of the most
+recombinogenic bacteria known, and its genome is small enough to keep the tutorial fast.</p>
+<div class="highlight"><pre><span></span><code>mkdir<span class="w"> </span>-p<span class="w"> </span>data/reference
+curl<span class="w"> </span>-sSfL<span class="w"> </span>-o<span class="w"> </span>data/reference/TIGR4.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">&quot;https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&amp;id=NC_003028.3&amp;rettype=fasta&amp;retmode=text&quot;</span>
+
+python<span class="w"> </span>scripts/01_make_strains.py<span class="w"> </span>--reference<span class="w"> </span>data/reference/TIGR4.fna<span class="w"> </span>--outdir<span class="w"> </span>data
+</code></pre></div>
+<p><strong>Strain A</strong> is the reference itself. <strong>Strain B</strong> is a copy that differs from A at random
+positions at a rate of 0.1%, so the two strains are about 99.9% identical. That is the range
+<code>mosaic_regions</code> is designed for: roughly 99% to 99.99% popANI. Inside five blocks the
+background rate is replaced:</p>
+<table>
+<thead>
+<tr>
+<th>Block</th>
+<th>Kind</th>
+<th>Position</th>
+<th style="text-align: right;">Length</th>
+<th>Inside the block</th>
+<th style="text-align: right;">Differences planted</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1</td>
+<td>recombination</td>
+<td>300,001–350,000</td>
+<td style="text-align: right;">50 kb</td>
+<td>identical to A</td>
+<td style="text-align: right;">0</td>
+</tr>
+<tr>
+<td>I1</td>
+<td>import</td>
+<td>700,001–730,000</td>
+<td style="text-align: right;">30 kb</td>
+<td>2% divergent</td>
+<td style="text-align: right;">596</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>recombination</td>
+<td>1,100,001–1,120,000</td>
+<td style="text-align: right;">20 kb</td>
+<td>identical to A</td>
+<td style="text-align: right;">0</td>
+</tr>
+<tr>
+<td>I2</td>
+<td>import</td>
+<td>1,500,001–1,505,000</td>
+<td style="text-align: right;">5 kb</td>
+<td>2% divergent</td>
+<td style="text-align: right;">115</td>
+</tr>
+<tr>
+<td>R3</td>
+<td>recombination</td>
+<td>1,850,001–1,855,000</td>
+<td style="text-align: right;">5 kb</td>
+<td>identical to A</td>
+<td style="text-align: right;">0</td>
+</tr>
+</tbody>
+</table>
+<p>The script writes <code>strain_A.fna</code>, <code>strain_B.fna</code>, an STB file that assigns the chromosome to
+genome <code>TIGR4</code>, and the truth tables <code>data/truth/planted_blocks.tsv</code> and
+<code>data/truth/snps.tsv</code>. The block sizes are chosen to span the detection limit, so not every
+block is expected to be found.</p>
+<h2 id="3-simulate-reads">3. Simulate reads</h2>
+<div class="highlight"><pre><span></span><code>bash<span class="w"> </span>scripts/02_simulate_reads.sh<span class="w"> </span>data
+</code></pre></div>
+<p>This simulates 30× coverage of 2×150 bp reads for three samples with
+<a href="https://github.com/lh3/wgsim">wgsim</a>, using a 0.1% sequencing error rate:</p>
+<table>
+<thead>
+<tr>
+<th>Sample</th>
+<th>Reads from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sample_A</code></td>
+<td>strain A</td>
+</tr>
+<tr>
+<td><code>sample_B</code></td>
+<td>strain B</td>
+</tr>
+<tr>
+<td><code>sample_M</code></td>
+<td>a mixed population: 70% strain B, 30% strain A (used in <a href="#8-mixed-populations-popani-vs-conani">section 8</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>wgsim's own mutation and indel options are set to zero, so every difference between the
+samples is one we planted. The script also writes <code>data/reads.csv</code> for <code>zipstrain map</code>.</p>
+<h2 id="4-map-and-profile">4. Map and profile</h2>
+<p>These are the standard ZipStrain commands. All three samples are mapped to strain A.</p>
+<div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>map<span class="w"> </span>-i<span class="w"> </span>data/reads.csv<span class="w"> </span>-o<span class="w"> </span>mapped<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-f<span class="w"> </span>data/strain_A.fna<span class="w"> </span>-s<span class="w"> </span>data/reference.stb<span class="w"> </span>-t<span class="w"> </span><span class="m">4</span>
+
+zipstrain<span class="w"> </span>profile<span class="w"> </span>-i<span class="w"> </span>mapped/samples.txt<span class="w"> </span>-f<span class="w"> </span>data/strain_A.fna<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-s<span class="w"> </span>data/reference.stb<span class="w"> </span>-r<span class="w"> </span>profiles<span class="w"> </span>--threads<span class="w"> </span><span class="m">4</span>
+</code></pre></div>
+<p>Each sample now has a position profile, for example
+<code>profiles/sample_B/sample_B_profile.parquet</code>, holding the A/C/G/T counts at every position.
+Sample B's genome stats report 29.9× coverage and 99.9997% breadth.</p>
+<h2 id="5-find-mosaic-regions">5. Find mosaic regions</h2>
+<p>Everything from here on is Python. <code>PairComparison</code> validates two profiles once and joins
+them on shared positions. Its analyses are lazy, and collecting them together with
+<code>pair.collect</code> runs that join once:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">zipstrain.compare</span><span class="w"> </span><span class="kn">import</span> <span class="n">PairComparison</span>
+
+<span class="n">pair</span> <span class="o">=</span> <span class="n">PairComparison</span><span class="p">(</span>
+    <span class="s2">&quot;profiles/sample_A/sample_A_profile.parquet&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;profiles/sample_B/sample_B_profile.parquet&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">blocks</span><span class="p">,</span> <span class="n">stretches</span> <span class="o">=</span> <span class="n">pair</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span>
+    <span class="n">pair</span><span class="o">.</span><span class="n">mosaic_regions</span><span class="p">(),</span>
+    <span class="n">pair</span><span class="o">.</span><span class="n">identical_stretches</span><span class="p">(</span><span class="n">min_length</span><span class="o">=</span><span class="mi">1_000</span><span class="p">),</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">blocks</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">&quot;start&quot;</span><span class="p">))</span>
+</code></pre></div>
+<p>Sort after collecting, as above, not before. <code>scripts/03_find_mosaics.py</code> runs this for each
+comparison, adds per-window mismatch counts for plotting, and writes everything to
+<code>results/</code>. For samples A and B, <code>mosaic_regions</code> returns four blocks:</p>
+<table>
+<thead>
+<tr>
+<th>state</th>
+<th style="text-align: right;">start</th>
+<th style="text-align: right;">end</th>
+<th style="text-align: right;">callable_positions</th>
+<th style="text-align: right;">mismatches</th>
+<th style="text-align: right;">divergence</th>
+<th style="text-align: right;">background_divergence</th>
+<th style="text-align: right;">log_likelihood_ratio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>low_divergence</td>
+<td style="text-align: right;">293,181</td>
+<td style="text-align: right;">352,311</td>
+<td style="text-align: right;">59,131</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">0.0051%</td>
+<td style="text-align: right;">0.098%</td>
+<td style="text-align: right;">45.9</td>
+</tr>
+<tr>
+<td>high_divergence</td>
+<td style="text-align: right;">699,399</td>
+<td style="text-align: right;">729,995</td>
+<td style="text-align: right;">30,567</td>
+<td style="text-align: right;">597</td>
+<td style="text-align: right;">1.95%</td>
+<td style="text-align: right;">0.098%</td>
+<td style="text-align: right;">1226.7</td>
+</tr>
+<tr>
+<td>low_divergence</td>
+<td style="text-align: right;">1,099,888</td>
+<td style="text-align: right;">1,121,075</td>
+<td style="text-align: right;">21,188</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">0.0047%</td>
+<td style="text-align: right;">0.098%</td>
+<td style="text-align: right;">16.7</td>
+</tr>
+<tr>
+<td>high_divergence</td>
+<td style="text-align: right;">1,500,875</td>
+<td style="text-align: right;">1,505,224</td>
+<td style="text-align: right;">4,334</td>
+<td style="text-align: right;">96</td>
+<td style="text-align: right;">2.2%</td>
+<td style="text-align: right;">0.098%</td>
+<td style="text-align: right;">208.0</td>
+</tr>
+</tbody>
+</table>
+<p>How to read the columns:</p>
+<ul>
+<li><strong><code>state</code></strong> is <code>low_divergence</code> (too few mismatches: a candidate recent recombination) or
+  <code>high_divergence</code> (too many: a candidate import).</li>
+<li><strong><code>callable_positions</code></strong> counts positions covered (at least 5×) in <em>both</em> samples. Positions
+  that are not shared are skipped, not counted as matches.</li>
+<li><strong><code>background_divergence</code></strong> is the genome's mismatch rate after the blocks are excluded. It
+  starts at the genome-wide popANI rate (0.125% here) and is refitted, so the 600 extra
+  mismatches in the import do not inflate it.</li>
+<li><strong><code>log_likelihood_ratio</code></strong> is how much better the block fits its state than the background,
+  in natural-log units. Larger is stronger.</li>
+</ul>
+<h3 id="how-the-model-works">How the model works</h3>
+<p>Mismatches are the only events that matter, so the model steps from one mismatch to the
+next. Each step is a run of <code>g</code> matching positions closed by a mismatch. In a state with
+mismatch rate <code>r</code>, that has likelihood <code>(1 − r)^g · r</code>. There are three states: the
+background rate <code>d</code>, a rate with 20× fewer expected mutations, and one with 20× more
+(<code>factor=20</code>). Viterbi decoding picks the most likely state for every run. The state can
+change only at a mismatch, with probability <code>switch_probability</code> (default <code>1e-3</code>). Because
+the model runs over mismatches rather than positions, a whole genome takes as many steps as
+it has mismatches: about 2,700 here.</p>
+<p>On the log axis of Figure 1b, the three states are equally spaced dashed lines. The windowed
+divergence sits on the background line except where blocks were planted.</p>
+<p>This is a simplified form of the close-pair hidden Markov model (CP-HMM) of
+<a href="#references">Liu &amp; Good (2024)</a>, which moves along the genome between clonal and recombined
+regions. Their model learns how many differences a recombined fragment brings in from the
+observed distribution of local divergence, and its transition rates vary from pair to pair.
+ZipStrain instead uses fixed rates, a factor above and below the background, so it needs no
+training data and also reports unusually <em>similar</em> blocks.</p>
+<h2 id="6-what-was-found-and-what-was-missed">6. What was found, and what was missed</h2>
+<p><code>results/evaluation.tsv</code> matches each planted block with the detected block of the same kind
+that overlaps it most:</p>
+<table>
+<thead>
+<tr>
+<th>Block</th>
+<th>Planted</th>
+<th>Detected</th>
+<th style="text-align: right;">Start offset</th>
+<th style="text-align: right;">End offset</th>
+<th style="text-align: right;">log LR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1 · 50 kb identical</td>
+<td>300,001–350,000</td>
+<td>293,181–352,311</td>
+<td style="text-align: right;">−6,820</td>
+<td style="text-align: right;">+2,311</td>
+<td style="text-align: right;">45.9</td>
+</tr>
+<tr>
+<td>I1 · 30 kb at 2%</td>
+<td>700,001–730,000</td>
+<td>699,399–729,995</td>
+<td style="text-align: right;">−602</td>
+<td style="text-align: right;">−5</td>
+<td style="text-align: right;">1226.7</td>
+</tr>
+<tr>
+<td>R2 · 20 kb identical</td>
+<td>1,100,001–1,120,000</td>
+<td>1,099,888–1,121,075</td>
+<td style="text-align: right;">−113</td>
+<td style="text-align: right;">+1,075</td>
+<td style="text-align: right;">16.7</td>
+</tr>
+<tr>
+<td>I2 · 5 kb at 2%</td>
+<td>1,500,001–1,505,000</td>
+<td>1,500,875–1,505,224</td>
+<td style="text-align: right;">+874</td>
+<td style="text-align: right;">+224</td>
+<td style="text-align: right;">208.0</td>
+</tr>
+<tr>
+<td>R3 · 5 kb identical</td>
+<td>1,850,001–1,855,000</td>
+<td>not detected</td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+</tr>
+</tbody>
+</table>
+<p>There were no false positives: every detected block overlaps a planted one. Figure 2 zooms in
+on each block. The black line counts mismatches from left to right, so its slope is the local
+divergence. Inside an identical block the line goes flat. Inside an import it climbs steeply.</p>
+<p><img alt="Cumulative mismatches around each planted block" src="figures/fig2_block_zooms.png" /></p>
+<p class="zs-cap">Figure 2. Cumulative mismatches between samples A and B around each planted block: R1
+(50 kb, identical), I1 (30 kb, 2% divergent), R2 (20 kb, identical), I2 (5 kb, 2% divergent)
+and R3 (5 kb, identical). The slope of the black line is the local divergence: it goes flat
+inside an identical block and climbs steeply inside an import. The dashed grey line is the
+slope expected at the background rate, anchored where each planted block starts. Dotted lines
+mark the planted edges, and shading marks what <code>mosaic_regions</code> detected. R3 has no shading:
+at the background rate it should hold only about 5 mismatches, too few to stand out.</p>
+
+<h3 id="boundaries-snap-to-mismatches">Boundaries snap to mismatches</h3>
+<p>A recombination edge between two identical sequences leaves no trace, so a block can only
+start or end at a mismatch. In R1, the stretch from about 293 to 300 kb happened to carry only
+2 mismatches in 7 kb, against about 7 expected. The model reasonably absorbed it into the
+block, which is why the detected start is 6.8 kb early. The expected error at an edge is
+roughly the typical distance between mismatches in the neighbouring state: about 1 kb at a
+0.1% background.</p>
+<h3 id="the-detection-limit">The detection limit</h3>
+<p>Finding a block costs something: entering and leaving a state costs about
+<code>2 × ln(2 / switch_probability) ≈ 15</code> log-likelihood units. A low-divergence block repays
+that only if it <strong>should</strong> have contained enough mismatches at the background rate:</p>
+<table>
+<thead>
+<tr>
+<th>Block</th>
+<th style="text-align: right;">Length</th>
+<th style="text-align: right;">Mismatches expected at 0.098%</th>
+<th>Detected?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1</td>
+<td style="text-align: right;">50 kb</td>
+<td style="text-align: right;">49</td>
+<td>yes (log LR 45.9)</td>
+</tr>
+<tr>
+<td>R2</td>
+<td style="text-align: right;">20 kb</td>
+<td style="text-align: right;">20</td>
+<td>yes, only just (log LR 16.7)</td>
+</tr>
+<tr>
+<td>R3</td>
+<td style="text-align: right;">5 kb</td>
+<td style="text-align: right;">5</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition tip">
+<p class="admonition-title">Rule of thumb</p>
+<p><strong>A recombined (identical) block is detectable once it is long enough to have expected
+15–20 background mismatches</strong>, that is about <code>15 / d</code> positions. This matches the criterion
+<a href="#references">Liu &amp; Good (2024)</a> use for a "long" shared segment: length × divergence above
+15. At 99.9% ANI that is about 15–20 kb. Between strains at 99.99% ANI it is about
+150–200 kb. Imports are much easier to find, because every extra mismatch adds evidence
+(about <code>ln 20 ≈ 3</code> units each), so the 5 kb import I2 was detected easily.</p>
+</div>
+<p>You can trade sensitivity against false positives with <code>switch_probability</code>. A larger value
+makes switching cheaper and finds shorter blocks, but also finds more spurious ones.
+<code>factor</code> sets how different the two extra states are from the background. The next section
+lets you try this on the tutorial's data.</p>
+<h3 id="try-it-yourself-what-does-it-cost-to-find-r3">Try it yourself: what does it cost to find R3?</h3>
+<p>The explorer below loads the A-vs-B mismatches from this run (<code>interactive/tutorial_data.js</code>,
+written by <code>scripts/05_export_explorer_data.py</code>) and runs the same decoder as <code>mosaic_regions</code>
+live as you move the <code>factor</code> and <code>switch_probability</code> sliders. At the default settings it
+reproduces the table above exactly: four of five blocks, no false positives. Its JavaScript port
+gives the same blocks, boundaries and log-likelihood ratios as ZipStrain 2.0.0.</p>
+<p>R3 can be found, but only at a price. Its identical run is 5,929 shared positions, where about
+6 background mismatches would be expected, far below the ~15 needed at the defaults. Click
+<strong>show</strong> in a row to load its settings into the explorer:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">factor</th>
+<th style="text-align: right;">switch_probability</th>
+<th>Planted blocks found</th>
+<th style="text-align: right;">False positives</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">0.001 (default)</td>
+<td>R1, I1, R2, I2</td>
+<td style="text-align: right;">0</td>
+<td><a href="interactive/mosaic_explorer.html#data=tutorial&amp;factor=20&amp;switch=0.001">show</a></td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">0.1</td>
+<td>R1, I1, R2, I2</td>
+<td style="text-align: right;">6</td>
+<td><a href="interactive/mosaic_explorer.html#data=tutorial&amp;factor=20&amp;switch=0.1">show</a></td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">0.3</td>
+<td>all five</td>
+<td style="text-align: right;">38</td>
+<td><a href="interactive/mosaic_explorer.html#data=tutorial&amp;factor=20&amp;switch=0.3">show</a></td>
+</tr>
+<tr>
+<td style="text-align: right;">7</td>
+<td style="text-align: right;">0.13 (<em>Catch R3</em> button)</td>
+<td>all five</td>
+<td style="text-align: right;">9</td>
+<td><a href="interactive/mosaic_explorer.html#data=tutorial&amp;factor=7&amp;switch=0.13">show</a></td>
+</tr>
+</tbody>
+</table>
+<p>Even the cheapest setting does not find R3 on its own merit. A chance cluster of four mismatches
+just before R3 is called a (false) high-divergence block, and moving straight from that block into
+the low state costs one switch instead of two. So the low block over R3 is real, but it is found
+through a spurious neighbour, and eight other false blocks come with it. With data like these, a
+5 kb recombined block is below what the method can reliably see. In the explorer, R3's dot on the
+evidence chart stays below the cost line even when it is found, and its close-up shows the false
+block next to it.</p>
+<div class="zs-plotwrap"><iframe class="zs-plot" id="mosaic-explorer" title="Mosaic explorer: mosaic_regions on the tutorial data" src="interactive/mosaic_explorer.html?embed=1" style="width:100%;height:2600px"></iframe></div>
+<p class="zs-cap">Interactive explorer: <code>mosaic_regions</code> rerun on the A-vs-B mismatches with the slider settings. <a href="interactive/mosaic_explorer.html" target="_blank" rel="noopener">Open it in its own tab</a>.</p>
+
+<p>Other things to try:</p>
+<ul>
+<li>Switch to <em>Simulated strains</em> to draw new mismatches over the same genome and the same five
+  blocks. Lower the background ANI towards
+  <a href="interactive/mosaic_explorer.html#data=simulated&amp;ani=99.99&amp;factor=20&amp;switch=0.001">99.99%</a> and the shortest detectable
+  identical run grows to about 200 kb; raise it to
+  <a href="interactive/mosaic_explorer.html#data=simulated&amp;ani=99.5&amp;factor=20&amp;switch=0.001">99.5%</a> and R3 is found at the default
+  settings.</li>
+<li>Push <code>switch_probability</code> towards <a href="interactive/mosaic_explorer.html#data=tutorial&amp;factor=20&amp;switch=0.6">0.6</a> and the genome
+  breaks into hundreds of blocks.</li>
+<li>With a <a href="interactive/mosaic_explorer.html#data=simulated&amp;ani=99.99&amp;imports=8&amp;factor=20&amp;switch=0.001">99.99% background and 8% imports</a>,
+  the imports hold most of the mismatches. The starting background rate is then far too high,
+  most of the genome fits the low state, and the background is never refitted. The explorer
+  flags this; real data with one dominant import can behave the same way.</li>
+</ul>
+<h2 id="7-identical-stretches-and-their-p-values">7. Identical stretches and their p-values</h2>
+<p><code>identical_stretches</code> lists every unbroken run of matching shared positions. A stretch ends at
+a mismatch, at a position that is not covered in both samples, or at the end of a scaffold.
+Each stretch gets a p-value: the chance that a genome with this many mismatches, scattered at
+random, would contain a run at least this long anywhere. The test follows
+<a href="#references">Liu &amp; Good (2024)</a>, who used the longest run of shared ancestry between two
+strains as a test statistic and compared it with runs expected if mutations were randomly
+scattered across the genome.</p>
+<p><img alt="Identical stretch length versus significance" src="figures/fig3_identical_stretches.png" /></p>
+<p class="zs-cap">Figure 3. Length and significance of every identical stretch of at least 1 kb between
+samples A and B (728 stretches). Blue points are the stretches overlapping the planted
+identical blocks R1 (52.6 kb, p = 8 × 10⁻²⁶), R2 (21.2 kb, p = 9 × 10⁻⁹) and R3 (5.9 kb,
+p = 0.8). Grey points are runs that arise by chance between background mismatches; the
+longest of them is 9.9 kb (p = 0.012). The dashed line marks p = 0.001.</p>
+
+<p>The stretches covering R1 (52.6 kb, p = 8 × 10⁻²⁶) and R2 (21.2 kb, p = 9 × 10⁻⁹) stand far
+apart from the rest. R3's stretch (5.9 kb, p = 0.8) cannot be told apart from chance, which is
+the same limit <code>mosaic_regions</code> hit.</p>
+<p>The longest unplanted run is 9.9 kb with p = 0.012. These p-values already account for
+searching the whole genome, but at p &lt; 0.05 you should still expect about one false call in
+twenty genomes. When you scan many genomes or many sample pairs, use a much stricter cutoff
+(the figure shows p = 0.001), or rely on <code>mosaic_regions</code>, which did not call this region.</p>
+<div class="admonition tip">
+<p class="admonition-title">Which function to use?</p>
+<p><code>identical_stretches</code> is simple and exact, but one sequencing error or one shared mutation
+splits a stretch in two. <code>mosaic_regions</code> tolerates a few mismatches inside a block (R1
+holds 3) and also finds imports, which identical stretches cannot see. Use stretches for a
+quick look and <code>mosaic_regions</code> for calls.</p>
+</div>
+<h2 id="8-mixed-populations-popani-vs-conani">8. Mixed populations: popANI vs conANI</h2>
+<p>Metagenomes often contain more than one strain of a species. Sample M is 70% strain B and
+30% strain A. Compared with sample A, it should show the same mosaics as sample B, but
+popANI finds almost nothing:</p>
+<p><img alt="popANI and conANI on a mixed population" src="figures/fig4_mixed_population.png" /></p>
+<p class="zs-cap">Figure 4. A strain mixture hides mosaics from popANI but not from conANI. (a) Base
+frequencies at position 700,002 inside import I1, where strain B carries C instead of the
+reference A, with each sample's depth. Sample A and the mix share base A, so popANI counts a
+match; their majority bases differ (A vs C), so conANI counts a mismatch. The mix was
+simulated at 70% B, and the 58% seen here is sampling noise at 38×. (b) The planted blocks
+(hatched) and the blocks <code>mosaic_regions</code> found when sample A is compared with sample B and
+with the mix under each ANI definition, with the genome-wide mismatch count on the right.
+popANI on the mix finds no blocks.</p>
+
+<p>popANI counts a mismatch only when the two samples share <strong>no</strong> allele. At every planted site
+the mix still carries strain A's base, so it shares an allele with sample A. Instead of
+2,694 mismatches, only 10 remain genome-wide, and <code>mosaic_regions</code> has nothing to work with.
+conANI compares the <strong>majority</strong> base in each sample instead. The mix's majority is strain B's
+base, so 2,614 mismatches come back and all four detectable blocks are recovered.</p>
+<p>Choose the definition with <code>ani_method</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="n">pair</span> <span class="o">=</span> <span class="n">PairComparison</span><span class="p">(</span><span class="n">profile_a</span><span class="p">,</span> <span class="n">profile_mix</span><span class="p">,</span> <span class="n">ani_method</span><span class="o">=</span><span class="s2">&quot;conani&quot;</span><span class="p">)</span>
+</code></pre></div>
+<ul>
+<li>Use <strong>popANI</strong> (the default) when each sample is dominated by one strain. It is robust to
+  low-frequency noise.</li>
+<li>Use <strong>conANI</strong> when a sample may be a mixture. It describes the majority strain, so it
+  becomes unreliable when two strains are close to 50/50. In the panel above, the 70/30 mix
+  reads 58/42 at one 38× site just by sampling noise.</li>
+<li>Compare popANI and conANI genome ANI for a pair (for example from <code>zipstrain compare</code>). A
+  large gap between them is a sign of a strain mixture.</li>
+</ul>
+<h2 id="9-using-this-on-your-own-data">9. Using this on your own data</h2>
+<ol>
+<li><strong>Profile your samples</strong> against a shared reference as usual, then compare them with
+   <code>zipstrain compare</code> to get <code>genome_ani</code> for every pair and genome.</li>
+<li><strong>Pick pairs in the useful range</strong>: popANI between about 99% and 99.99% for the genome of
+   interest. Below 99% almost everything is divergent. Above 99.99% there are too few
+   mismatches to estimate a background, and only very long blocks are detectable (see
+   <a href="#the-detection-limit">the detection limit</a>).</li>
+<li><strong>Make sure both samples have depth</strong>: at least about 10× over the genome. Only positions
+   covered at least 5× in both samples count (<code>min_cov</code>).</li>
+<li>
+<p><strong>Run the pair analyses</strong> for each candidate pair, keeping only the genome you care about:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">zipstrain.compare</span><span class="w"> </span><span class="kn">import</span> <span class="n">PairComparison</span>
+
+<span class="n">pair</span> <span class="o">=</span> <span class="n">PairComparison</span><span class="p">(</span><span class="n">profile_1</span><span class="p">,</span> <span class="n">profile_2</span><span class="p">,</span> <span class="n">ani_method</span><span class="o">=</span><span class="s2">&quot;popani&quot;</span><span class="p">)</span>
+<span class="n">blocks</span><span class="p">,</span> <span class="n">stretches</span> <span class="o">=</span> <span class="n">pair</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">pair</span><span class="o">.</span><span class="n">mosaic_regions</span><span class="p">(),</span> <span class="n">pair</span><span class="o">.</span><span class="n">identical_stretches</span><span class="p">(</span><span class="n">min_length</span><span class="o">=</span><span class="mi">5_000</span><span class="p">))</span>
+<span class="n">blocks</span> <span class="o">=</span> <span class="n">blocks</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;genome&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;my_genome&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">&quot;chrom&quot;</span><span class="p">,</span> <span class="s2">&quot;start&quot;</span><span class="p">)</span>
+</code></pre></div>
+</li>
+<li>
+<p><strong>Check <code>high_divergence</code> blocks carefully</strong> before calling them imports. Reads recruited
+   from another species, multi-copy genes (rRNA operons, transposases, mobile elements) and
+   poorly mapped scaffold ends also concentrate mismatches. Look at depth over the block in
+   both samples: an import has normal depth, while recruited or multi-copy regions usually
+   have raised depth.</p>
+</li>
+<li><strong>Look for hotspots across pairs.</strong> Blocks from a single pair are candidate events.
+   Regions where blocks from many independent pairs overlap are candidate recombination
+   hotspots. Collect the blocks from every pair into one table, then count how many pairs
+   cover each window of the genome. <a href="#references">Liu &amp; Good (2024)</a> built such sharing
+   landscapes across the core genome, scoring each position by the probability that it lies
+   in a long shared segment, and compared them with neutral simulations to find regions
+   shared more often than expected.</li>
+</ol>
+<h2 id="recommendation">Recommendation</h2>
+<div class="admonition tip">
+<p class="admonition-title">Defaults for recombination scans</p>
+<p>Keep the defaults, <strong><code>factor=20</code></strong> and <strong><code>switch_probability=1e-3</code></strong>, for calls. On this
+data they found every block above the detection limit with no false positives. Raising
+<code>switch_probability</code> finds shorter blocks only at the cost of many false ones.</p>
+<p>Use <strong>popANI</strong> when each sample is dominated by one strain and <strong>conANI</strong> when a sample may
+be a mixture. For <code>identical_stretches</code>, use a p-value cutoff much stricter than 0.05 when
+scanning many genomes or pairs.</p>
+<p>Expect to detect a recombined block only when it spans roughly <code>15 / d</code> positions at
+background divergence <code>d</code>. Treat <code>high_divergence</code> blocks as candidates until depth and
+mapping have been checked.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Reproducing this guide</p>
+<p><code>bash run_all.sh</code> regenerates every file from an empty folder. Strain B and the reads use
+fixed random seeds (<code>--seed 7</code> in <code>01_make_strains.py</code>, <code>-S</code> in <code>02_simulate_reads.sh</code>).
+Change the seeds, the background rate (<code>--background-rate</code>) or <code>PLANTED_BLOCKS</code> in
+<code>scripts/01_make_strains.py</code> to explore other scenarios, for example longer or shorter
+blocks, or a different divergence for the imports.</p>
+</div>
+<h2 id="references">References</h2>
+<ul>
+<li>Liu Z, Good BH. (2024). <strong>Dynamics of bacterial recombination in the human gut microbiome.</strong> <em>PLoS Biology</em>, 22(2), e3002472. <a href="https://doi.org/10.1371/journal.pbio.3002472">doi:10.1371/journal.pbio.3002472</a>. The source of the close-pair HMM, the longest-run test for shared ancestry, and the genome-wide sharing landscapes that the ZipStrain functions here follow.</li>
+<li>Garud NR, Good BH, Hallatschek O, Pollard KS. (2019). <strong>Evolutionary dynamics of bacteria in the gut microbiome within and across hosts.</strong> <em>PLoS Biology</em>, 17(1), e3000102. <a href="https://doi.org/10.1371/journal.pbio.3000102">doi:10.1371/journal.pbio.3000102</a>. Within- and across-host comparison of gut bacterial strains from metagenomes, including evidence for widespread recombination within species.</li>
+</ul>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../" class="btn btn-neutral float-left" title="popANI depth bias"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../../api/" class="btn btn-neutral float-right" title="API">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../../api/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../assets/paramsel_tabs.js"></script>
+      <script src="../../assets/benchmark_charts.js"></script>
+      <script src="../../assets/mosaic_explorer.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
