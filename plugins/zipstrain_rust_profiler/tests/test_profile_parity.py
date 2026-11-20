@@ -2,31 +2,72 @@
 
 from importlib.metadata import entry_points
 from pathlib import Path
+import random
 import shutil
 import subprocess
 
 import polars as pl
 import pyarrow.parquet as pq
+from polars.testing import assert_frame_equal
 import pytest
 
 from zipstrain.profile_backends import ProfileRequest, run_profile
+from zipstrain.gene_info import write_gene_info
+from zipstrain_rust_profiler import RustProfileBackend
 
 
 DATA = Path(__file__).parent / "data"
 
 
 @pytest.mark.skipif(
+    not shutil.which("zipstrain-rust-profiler"),
+    reason="The compiled Rust profiler executable is not installed",
+)
+def test_native_outputs_are_gene_free_before_finalization(tmp_path):
+    """The native executable must never materialize per-position gene labels."""
+    request = ProfileRequest(
+        bam_file=DATA / "small.bam",
+        bed_file=DATA / "small.bed",
+        stb_file=DATA / "small.stb",
+        null_model=DATA / "null_model.parquet",
+        # The adapter leaves gene assets to the shared V2 finalizer.
+        gene_range_table=tmp_path / "not_read_by_rust.parquet",
+        output_dir=tmp_path,
+        num_chunks=8,
+        max_concurrency=4,
+    )
+    RustProfileBackend().run(request)
+    actual = pl.read_parquet(tmp_path / "small_profile.parquet")
+    expected = pl.read_parquet(DATA / "expected" / "small_profile.parquet").drop("gene")
+    assert actual.columns == ["chrom", "genome", "pos", "A", "C", "G", "T"]
+    assert actual.equals(expected)
+    assert (tmp_path / "small_genome_stats.parquet").is_file()
+    assert not (tmp_path / "small_gene_stats.parquet").exists()
+
+
+@pytest.fixture
+def catalog(tmp_path):
+    """Adapt the legacy golden fixture's coordinates to a shared V2 catalog."""
+    reference = tmp_path / "reference.fna"
+    reference.write_text(">synthetic\n" + "N"*10000 + "\n")
+    genes = tmp_path / "genes.fna"
+    genes.write_text(">synthetic_1 # 1 # 5000 # 1 # partial=00\n" + "N"*5000 +
+                     "\n>synthetic_2 # 6000 # 9000 # 1 # partial=00\n" + "N"*3001 + "\n")
+    return write_gene_info(reference, genes, DATA / "small.stb", tmp_path / "gene_info.parquet")
+
+
+@pytest.mark.skipif(
     not entry_points(group="zipstrain.profile_backends", name="rust_profiler"),
     reason="The compiled Rust plugin wheel is not installed",
 )
-def test_installed_backend_matches_python_fixture(tmp_path):
+def test_installed_backend_matches_python_fixture(tmp_path, catalog):
     run_profile(
         ProfileRequest(
             bam_file=DATA / "small.bam",
             bed_file=DATA / "small.bed",
             stb_file=DATA / "small.stb",
             null_model=DATA / "null_model.parquet",
-            gene_range_table=DATA / "genes.tsv",
+            gene_range_table=catalog,
             output_dir=tmp_path,
             num_chunks=8,
             max_concurrency=4,
@@ -39,7 +80,7 @@ def test_installed_backend_matches_python_fixture(tmp_path):
     name = "small_profile.parquet"
     actual = pq.ParquetFile(tmp_path / name)
     expected = pq.ParquetFile(DATA / "expected" / name)
-    assert actual.schema_arrow.remove_metadata() == expected.schema_arrow.remove_metadata()
+    assert pl.read_parquet(tmp_path / name).schema == pl.read_parquet(DATA / "expected" / name).drop("gene").schema
     assert actual.metadata.num_rows == expected.metadata.num_rows == 9982
     for key in (
         b"zipstrain_sorted_by",
@@ -49,12 +90,16 @@ def test_installed_backend_matches_python_fixture(tmp_path):
         b"zipstrain_stb_hash",
     ):
         assert actual.metadata.metadata.get(key) == expected.metadata.metadata.get(key)
-    assert actual.read().equals(expected.read())
+    assert pl.read_parquet(tmp_path / name).equals(pl.read_parquet(DATA / "expected" / name).drop("gene"))
 
-    for suffix, keys in (("gene_stats", ["genome", "gene"]), ("genome_stats", ["genome"])):
+    for suffix, keys in (("gene_stats", ["genome", "length"]), ("genome_stats", ["genome"])):
         name = f"small_{suffix}.parquet"
-        got = pl.read_parquet(tmp_path / name).sort(keys)
-        want = pl.read_parquet(DATA / "expected" / name).sort(keys)
+        got = pl.read_parquet(tmp_path / name)
+        want = pl.read_parquet(DATA / "expected" / name)
+        if suffix == "gene_stats":
+            want = want.drop("gene")
+            got = got.select(want.columns)
+        got, want = got.sort(keys), want.sort(keys)
         assert got.columns == want.columns
         assert got.shape == want.shape
         for actual_row, expected_row in zip(got.iter_rows(named=True), want.iter_rows(named=True)):
@@ -70,7 +115,7 @@ def test_installed_backend_matches_python_fixture(tmp_path):
     not entry_points(group="zipstrain.profile_backends", name="rust_profiler"),
     reason="The compiled Rust plugin wheel is not installed",
 )
-def test_installed_backend_builds_missing_bam_index(tmp_path):
+def test_installed_backend_builds_missing_bam_index(tmp_path, catalog):
     bam = tmp_path / "unindexed.bam"
     shutil.copyfile(DATA / "small.bam", bam)
     run_profile(
@@ -79,7 +124,7 @@ def test_installed_backend_builds_missing_bam_index(tmp_path):
             bed_file=DATA / "small.bed",
             stb_file=DATA / "small.stb",
             null_model=DATA / "null_model.parquet",
-            gene_range_table=DATA / "genes.tsv",
+            gene_range_table=catalog,
             output_dir=tmp_path / "out",
             num_chunks=2,
             max_concurrency=2,
@@ -91,12 +136,106 @@ def test_installed_backend_builds_missing_bam_index(tmp_path):
 
 
 @pytest.mark.skipif(
+    not entry_points(group="zipstrain.profile_backends", name="rust_profiler"),
+    reason="The compiled Rust plugin wheel is not installed",
+)
+def test_backends_agree_on_overlapping_mates_and_uncovered_ends(tmp_path):
+    """Mates that disagree need mpileup's extended BAQ; an uncovered scaffold end counts as a gap."""
+    rng = random.Random(11)
+    references = {name: "".join(rng.choices("ACGT", k=length)) for name, length in (("s1", 4000), ("s2", 2500))}
+    (tmp_path/"ref.fa").write_text("".join(f">{n}\n{s}\n" for n, s in references.items()))
+    (tmp_path/"ref.stb").write_text("".join(f"{n}\tgenome\n" for n in references))
+    (tmp_path/"genes.fa").write_text("".join(f">{n}_1 # 1 # 900 # 1 # partial=00\n{s[:900]}\n" for n, s in references.items()))
+    (tmp_path/"regions.bed").write_text("".join(f"{n}\t0\t{len(s)}\n" for n, s in references.items()))
+    catalog = write_gene_info(tmp_path/"ref.fa", tmp_path/"genes.fa", tmp_path/"ref.stb", tmp_path/"gene_info.parquet")
+    pl.DataFrame({"cov": list(range(201)), "max_error_count": [0]*201}).write_parquet(tmp_path/"null.parquet")
+
+    def noisy(reference, start):
+        bases = [base if rng.random() > .03 else rng.choice("ACGT") for base in reference[start:start + 100]]
+        return "".join(bases), "".join(chr(33 + rng.choice((14, 20, 30, 40))) for _ in bases)
+
+    rows = []
+    for index in range(1200):
+        name = rng.choice(list(references))
+        # Reads stop well before each scaffold's end, leaving an uncovered region.
+        first = rng.randrange(0, len(references[name]) - 900)
+        second = first + rng.randint(10, 90)
+        for flag, start, mate in ((99, first, second), (147, second, first)):
+            sequence, quality = noisy(references[name], start)
+            rows.append((name, start, f"r{index}\t{flag}\t{name}\t{start + 1}\t60\t100M\t=\t{mate + 1}\t0\t{sequence}\t{quality}"))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    header = "@HD\tVN:1.6\tSO:coordinate\n" + "".join(f"@SQ\tSN:{n}\tLN:{len(s)}\n" for n, s in references.items())
+    (tmp_path/"reads.sam").write_text(header + "\n".join(row[2] for row in rows) + "\n")
+    subprocess.run(["samtools", "view", "-b", "-o", str(tmp_path/"reads.bam"), str(tmp_path/"reads.sam")], check=True)
+
+    for backend in ("python", "rust_profiler"):
+        run_profile(ProfileRequest(
+            bam_file=tmp_path/"reads.bam", bed_file=tmp_path/"regions.bed", stb_file=tmp_path/"ref.stb",
+            null_model=tmp_path/"null.parquet", reference_fasta=tmp_path/"ref.fa", gene_range_table=catalog,
+            output_dir=tmp_path/backend, num_chunks=2, max_concurrency=2, min_read_ani=None,
+            read_inclusion="all-mapped", collect_codons=True), backend)
+
+    for name, keys in (("profile", ["chrom", "pos"]), ("gene_stats", ["gene_id"]), ("codon_counts", ["gene_id", "codon_index", "codon"])):
+        python, rust = (pl.read_parquet(tmp_path/backend/f"reads_{name}.parquet") for backend in ("python", "rust_profiler"))
+        assert python.height > 0
+        assert_frame_equal(python.sort(keys), rust.select(python.columns).sort(keys))
+    python = tmp_path/"python/reads_genome_stats.parquet"
+    rust = tmp_path/"rust_profiler/reads_genome_stats.parquet"
+    assert_frame_equal(pl.read_parquet(python), pl.read_parquet(rust).select(pl.read_parquet(python).columns), abs_tol=1e-9)
+    assert pl.read_parquet(rust)["fug"][0] < 1
+    expected, actual = pl.read_parquet_metadata(python), pl.read_parquet_metadata(rust)
+    assert {k: v for k, v in actual.items() if k.startswith("zipstrain_")} == {k: v for k, v in expected.items() if k.startswith("zipstrain_")}
+
+
+@pytest.mark.skipif(
     not entry_points(group="zipstrain.profile_backends", name="rust_profiler")
     or not shutil.which("samtools"),
     reason="The compiled Rust plugin and samtools are required",
 )
-@pytest.mark.parametrize(("pairs", "fug_defined"), [(2000, True), (2001, False)])
+def test_backends_report_low_coverage_from_unfiltered_depth(tmp_path):
+    """One read never survives the error filter, but it still counts as coverage and breadth."""
+    from zipstrain import utils
+
+    rng = random.Random(5)
+    reference = "".join(rng.choices("ACGT", k=6000))
+    (tmp_path/"ref.fa").write_text(f">s1\n{reference}\n")
+    (tmp_path/"ref.stb").write_text("s1\tgenome\n")
+    (tmp_path/"regions.bed").write_text("s1\t0\t6000\n")
+    pl.DataFrame(utils.build_null_poisson(0.001, 200, 1e-6), schema=["cov", "max_error_count"],
+                 orient="row").write_parquet(tmp_path/"null.parquet")
+    starts = sorted(rng.randrange(0, 5900) for _ in range(40))
+    rows = [f"r{index}\t0\ts1\t{start + 1}\t60\t100M\t*\t0\t0\t{reference[start:start + 100]}\t{'I' * 100}"
+            for index, start in enumerate(starts)]
+    (tmp_path/"reads.sam").write_text("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:s1\tLN:6000\n" + "\n".join(rows) + "\n")
+    subprocess.run(["samtools", "view", "-b", "-o", str(tmp_path/"reads.bam"), str(tmp_path/"reads.sam")], check=True)
+
+    stats = {}
+    for backend in ("python", "rust_profiler"):
+        run_profile(ProfileRequest(
+            bam_file=tmp_path/"reads.bam", bed_file=tmp_path/"regions.bed", stb_file=tmp_path/"ref.stb",
+            null_model=tmp_path/"null.parquet", reference_fasta=tmp_path/"ref.fa", output_dir=tmp_path/backend,
+            num_chunks=2, max_concurrency=2, min_read_ani=None, read_inclusion="all-mapped"), backend)
+        stats[backend] = pl.read_parquet(tmp_path/backend/"reads_genome_stats.parquet")
+    python, rust = (pl.read_parquet(tmp_path/backend/"reads_profile.parquet") for backend in ("python", "rust_profiler"))
+    assert_frame_equal(python.sort("chrom", "pos"), rust.select(python.columns).sort("chrom", "pos"))
+    assert_frame_equal(stats["python"], stats["rust_profiler"].select(stats["python"].columns), abs_tol=1e-9)
+    depth = python.select(pl.sum_horizontal("A", "C", "G", "T")).to_series()
+    # Keep zero-count positions so comparisons retain low-abundance genomes.
+    assert depth.min() == 0
+    row = stats["python"].row(0, named=True)
+    assert row["coverage"] == pytest.approx(40 * 100 / 6000)
+    assert row["breadth"] > 1.5 * (depth > 0).sum() / 6000
+    assert 0.8 < row["ber"] < 1.4
+
+
+@pytest.mark.skipif(
+    not entry_points(group="zipstrain.profile_backends", name="rust_profiler")
+    or not shutil.which("samtools"),
+    reason="The compiled Rust plugin and samtools are required",
+)
+@pytest.mark.parametrize(("pairs", "fug_defined"), [(1999, True), (2000, False)])
 def test_reads_mapped_survives_zero_expected_gap(tmp_path, pairs, fug_defined):
+    # V2 counts one trailing-gap position per covered scaffold when rounding the spacing.
     genome_length = 1000
     bed, stb = tmp_path / "ref.bed", tmp_path / "ref.stb"
     bed.write_text(f"chr\t0\t{genome_length}\n")

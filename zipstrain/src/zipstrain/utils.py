@@ -9,7 +9,9 @@ import hashlib
 import json
 import os
 import pathlib
+import errno
 import time
+import warnings
 from tempfile import TemporaryDirectory
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -19,20 +21,20 @@ import re
 import pyarrow as pa
 import pyarrow.parquet as pq
 from collections import Counter
-from scipy.stats import poisson
 import subprocess
 import numpy as np
 from typing import TYPE_CHECKING
+from zipstrain import options
 from zipstrain.resource_limits import connect_duckdb
 
 if TYPE_CHECKING:
     import duckdb
 
-NULL_MODEL_ERROR_RATE_DEFAULT = 0.001
-NULL_MODEL_MAX_COVERAGE_DEFAULT = 50_000
-NULL_MODEL_P_THRESHOLD_DEFAULT = 1e-6
+NULL_MODEL_ERROR_RATE_DEFAULT = options.NULL_MODEL_ERROR_RATE
+NULL_MODEL_MAX_COVERAGE_DEFAULT = options.NULL_MODEL_MAX_COVERAGE
+NULL_MODEL_P_THRESHOLD_DEFAULT = options.NULL_MODEL_P_THRESHOLD
 
-CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "gene", "genome", "A", "T", "C", "G"}
+CLASSIC_PROFILE_REQUIRED_COLUMNS = {"chrom", "pos", "genome", "A", "T", "C", "G"}
 REF_BASE_BITMASK_COLUMN = "ref_base_bitmask"
 REF_BASE_BIT_VALUES = {
     "A": 1,
@@ -55,10 +57,7 @@ GENOME_COMPARE_OUTPUT_DTYPES = {
     "total_positions": pl.Int64,
     "share_allele_pos": pl.Int64,
     "genome_ani": pl.Float64,
-    "max_consecutive_length": pl.Int64,
-    "shared_genes_count": pl.Int64,
-    "identical_gene_count": pl.Int64,
-    "perc_id_genes": pl.Float64,
+    "max_identical_stretch": pl.Int64,
     "sample_1": pl.Utf8,
     "sample_2": pl.Utf8,
 }
@@ -110,6 +109,35 @@ def parquet_to_csv(
     return output_path
 
 
+_RETRYABLE_REPLACE_ERRORS = {errno.EAGAIN, errno.EWOULDBLOCK, errno.EBUSY}
+
+
+def replace_file(source: str | pathlib.Path, target: str | pathlib.Path, *, timeout: float = 30.0) -> pathlib.Path:
+    """Atomically move ``source`` onto ``target``, retrying while the filesystem is busy.
+
+    Network filesystems (NFS, GPFS, Lustre) can refuse a rename for a moment with
+    ``EAGAIN`` or ``EBUSY``, typically while another process or node holds ``target`` open.
+    Those errors are retried with backoff for up to ``timeout`` seconds; any other error,
+    or one that outlasts the timeout, is raised with the paths and the likely cause.
+    """
+    delay, deadline = 0.1, time.monotonic() + timeout
+    while True:
+        try:
+            os.replace(source, target)
+            return pathlib.Path(target)
+        except OSError as error:
+            if error.errno not in _RETRYABLE_REPLACE_ERRORS:
+                raise
+            if time.monotonic() + delay > deadline:
+                raise OSError(error.errno, (
+                    f"Could not replace {target} with {source} for {timeout:g} s: {error.strerror}. "
+                    "Another process (a second ZipStrain run, or a job on another node) probably "
+                    "has the file open. Stop it, or use a run directory no other job uses, and rerun."
+                )) from error
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
+
+
 def sha256_file(path: str | pathlib.Path, chunk_size: int = 1024 * 1024) -> str:
     """Return the file-content SHA-256 hex digest for ``path``."""
     digest = hashlib.sha256()
@@ -120,6 +148,23 @@ def sha256_file(path: str | pathlib.Path, chunk_size: int = 1024 * 1024) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def input_fingerprint(path: str | pathlib.Path, *, validate_inputs: bool = True) -> str:
+    """Identify a comparison input by content, or by file attributes in trusted mode.
+
+    Trusted mode reads no file contents. Its cache key includes resolved path, device,
+    inode, size, modification time and change time. It detects ordinary replacements
+    but does not authenticate contents. The ``stat:`` prefix separates trusted cache
+    entries from content-validated results.
+    """
+    if validate_inputs:
+        return sha256_file(path)
+    resolved = pathlib.Path(path).resolve()
+    stat = resolved.stat()
+    identity = [str(resolved), stat.st_dev, stat.st_ino, stat.st_size,
+                stat.st_mtime_ns, stat.st_ctime_ns]
+    return "stat:" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
 def normalize_profile_contract_values(contract: dict[str, str] | None) -> dict[str, str]:
@@ -171,6 +216,12 @@ def _read_custom_parquet_metadata(parquet_file: str | pathlib.Path) -> dict[str,
         return {}
 
 
+V2_COMPARISON_IDENTITY_KEYS = (
+    "zipstrain_profile_schema", "zipstrain_reference_id", "zipstrain_annotation_id",
+    "zipstrain_allele_integration", "zipstrain_selection_method",
+)
+
+
 def _merge_compare_metadata(
     parquet_files: list[pathlib.Path],
     *,
@@ -187,6 +238,9 @@ def _merge_compare_metadata(
     )
     if not compare_keys:
         return {}
+    # V2 comparison tables also carry the identity of what they compared.
+    compare_keys.extend(key for key in V2_COMPARISON_IDENTITY_KEYS
+                        if any(key in metadata for metadata in metadata_by_file))
 
     merged: dict[str, str] = {}
     mismatches: list[str] = []
@@ -299,7 +353,7 @@ def rewrite_parquet_with_metadata(
             compression=compression,
             metadata=metadata,
         )
-        tmp_path.replace(parquet_path)
+        replace_file(tmp_path, parquet_path)
     return parquet_path
 
 
@@ -551,6 +605,8 @@ def build_null_poisson(
         raise ValueError("max_total_reads must be >= 1")
     if not 0.0 < p_threshold < 1.0:
         raise ValueError("p_threshold must be between 0 and 1")
+    # Imported here: scipy.stats takes about half a second to load, and only profiling needs it.
+    from scipy.stats import poisson
 
     coverage = np.arange(1, max_total_reads + 1, dtype=np.int64)
     lambdas = coverage.astype(np.float64) * (error_rate / 3.0)
@@ -569,22 +625,33 @@ def clean_bases(bases: str, indel_re: re.Pattern) -> str:
         bases (str): The bases string from mpileup.
         indel_re (re.Pattern): Compiled regex pattern to match indels and markers.
     
+
+    Every alternative of ``indel_re`` must start with ``^``, ``$``, ``+`` or ``-``: the text
+    between those characters is copied in one slice instead of being matched character by
+    character, and a line without them (most lines) is only uppercased.
     """
+    marker = _MPILEUP_MARKER_RE.search(bases)
+    if marker is None:
+        return bases.upper()
     cleaned = []
     i = 0
-    while i < len(bases):
-        m = indel_re.match(bases, i)
-        if m:
-            if m.group(0).startswith('+') or m.group(0).startswith('-'):
-                # indel length
-                indel_len = int(m.group(1))
-                i = m.end() + indel_len
-            else:
-                i = m.end()
+    while marker is not None:
+        j = marker.start()
+        cleaned.append(bases[i:j])
+        m = indel_re.match(bases, j)
+        if m is None:
+            cleaned.append(bases[j])
+            i = j + 1
+        elif bases[j] in "+-":
+            i = m.end() + int(m.group(1))
         else:
-            cleaned.append(bases[i].upper())
-            i += 1
-    return ''.join(cleaned)
+            i = m.end()
+        marker = _MPILEUP_MARKER_RE.search(bases, i)
+    cleaned.append(bases[i:])
+    return ''.join(cleaned).upper()
+
+
+_MPILEUP_MARKER_RE = re.compile(r"[\^$+-]")
 
 def encode_reference_base_bitmask(base: str) -> int:
     """
@@ -633,18 +700,15 @@ def count_mpileup_bases(bases: str, ref_base: str, indel_re: re.Pattern) -> dict
 
     In samtools mpileup, `.` and `,` indicate a read base matching the reference on
     the forward and reverse strand respectively. This helper resolves those tokens
-    to the provided reference base before counting.
+    to the provided reference base before counting; with a reference base other than
+    A/C/G/T they are dropped.
     """
     cleaned = clean_bases(bases, indel_re)
+    counts = {base: cleaned.count(base) for base in "ACGT"}
     ref_upper = str(ref_base).upper()
-    translated: list[str] = []
-    for base in cleaned:
-        if base in {".", ","}:
-            if ref_upper in REF_BASE_BIT_VALUES:
-                translated.append(ref_upper)
-            continue
-        translated.append(base.upper())
-    return count_bases("".join(translated))
+    if ref_upper in counts:
+        counts[ref_upper] += cleaned.count(".") + cleaned.count(",")
+    return counts
 
 def process_mpileup_function(batch_size, output_file):
     """
@@ -1132,10 +1196,6 @@ def _run_genome_compare_pair(
     genome_scope: str,
     ani_method: str,
     calculate: str | tuple[str, ...],
-    engine: str,
-    duckdb_memory_limit: str | None,
-    duckdb_temp_directory: str | pathlib.Path | None,
-    duckdb_threads: int | None,
 ) -> tuple[pl.DataFrame, float]:
     from zipstrain import compare as cp
 
@@ -1146,27 +1206,14 @@ def _run_genome_compare_pair(
     sample_2 = row["sample_name_2"]
     output_columns = cp.genome_metric_output_columns(calculate) + ["sample_1", "sample_2"]
 
-    profile_1_for_compare = profile_1
-    profile_2_for_compare = profile_2
-    if engine == "polars" and genome_scope != "all":
-        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=profile_1,
-            mpile2=profile_2,
-            genome_scope=genome_scope,
-        )
-
     frame = (
         cp.compare_genomes(
-            mpile_contig_1=profile_1_for_compare,
-            mpile_contig_2=profile_2_for_compare,
+            mpile_contig_1=profile_1,
+            mpile_contig_2=profile_2,
             min_cov=min_cov,
             min_gene_compare_len=min_gene_compare_len,
             genome_scope=genome_scope,
             ani_method=ani_method,
-            duckdb_memory_limit=duckdb_memory_limit,
-            duckdb_temp_directory=duckdb_temp_directory,
-            duckdb_threads=duckdb_threads,
-            engine=engine,
             stb_file=stb_file,
             calculate=calculate,
         )
@@ -1185,15 +1232,11 @@ def chunk_genome_compare(
     output_file: str | pathlib.Path,
     stb_file: str | pathlib.Path | None,
     workers: int | None = None,
-    min_cov: int = 5,
-    min_gene_compare_len: int = 100,
+    min_cov: int = options.COMPARE_MIN_COV,
+    min_gene_compare_len: int = options.MIN_GENE_COMPARE_LEN,
     genome_scope: str = "all",
-    ani_method: str = "popani",
-    calculate: str | tuple[str, ...] = "all",
-    engine: str = "polars",
-    duckdb_memory_limit: str | None = None,
-    duckdb_temp_directory: str | pathlib.Path | None = None,
-    duckdb_threads: int | None = None,
+    ani_method: str = options.ANI_METHOD,
+    calculate: str | tuple[str, ...] = options.CALCULATE,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Run classic genome compare on one pair table using in-process parallel workers."""
@@ -1202,10 +1245,10 @@ def chunk_genome_compare(
 
     if workers is not None and workers < 1:
         raise ValueError("workers must be >= 1")
-    if engine not in {"polars", "duckdb"}:
-        raise ValueError("engine must be one of: polars, duckdb")
 
     calculations = cp.parse_genome_calculations(calculate)
+    if options.requests_all(calculate):
+        warnings.warn("compare-pair --pair-table calculates genome metrics only; skipping gene metrics in 'all'.", stacklevel=2)
     pair_table_path = pathlib.Path(pair_table)
     output_path = pathlib.Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1214,7 +1257,7 @@ def chunk_genome_compare(
         COMPARE_SCOPE_METADATA_KEY: genome_scope,
         COMPARE_MIN_COV_METADATA_KEY: str(min_cov),
         COMPARE_MIN_GENE_COMPARE_LEN_METADATA_KEY: str(min_gene_compare_len),
-        COMPARE_ENGINE_METADATA_KEY: engine,
+        COMPARE_ENGINE_METADATA_KEY: "polars",
         COMPARE_USES_STB_METADATA_KEY: "1" if stb_file is not None else "0",
         COMPARE_ANI_METHOD_METADATA_KEY: ani_method,
         COMPARE_REFERENCE_HASH_METADATA_KEY: COMPARE_METADATA_MISSING_VALUE,
@@ -1237,14 +1280,11 @@ def chunk_genome_compare(
     budget = cpu_budget()
     available_cpus = budget or (os.cpu_count() or 1)
     resolved_workers = max(1, min(workers or available_cpus, available_cpus, max(total_pairs, 1)))
-    if engine == "duckdb" and budget is not None:
-        per_worker_threads = max(1, budget // resolved_workers)
-        duckdb_threads = min(duckdb_threads, per_worker_threads) if duckdb_threads is not None else per_worker_threads
     pair_batch_size = max(1024, resolved_workers * 8)
     start_time = time.perf_counter()
     emit(
         f"chunk_genome_compare: start pairs={total_pairs} "
-        f"workers={resolved_workers} engine={engine} genome={genome_scope}"
+        f"workers={resolved_workers} engine=polars genome={genome_scope}"
     )
 
     if total_pairs == 0:
@@ -1266,7 +1306,7 @@ def chunk_genome_compare(
             "avg_compute_seconds_per_pair": 0.0,
             "avg_seconds_per_genome_row": 0.0,
             "avg_genome_rows_per_pair": 0.0,
-            "engine": engine,
+            "engine": "polars",
             "genome_scope": genome_scope,
         }
 
@@ -1278,17 +1318,36 @@ def chunk_genome_compare(
     next_pair_index = 0
     next_write_index = 0
     pending_results: dict[int, tuple[pl.DataFrame, float]] = {}
-    if engine == "polars":
-        ordered_results: list[pl.DataFrame | None] = [None] * total_pairs
+    output_schema = empty_frame.to_arrow().schema.with_metadata(
+        {str(key).encode(): str(value).encode() for key, value in compare_metadata.items()}
+    )
+    empty_output_table = pa.Table.from_arrays(
+        [pa.array([], type=field.type) for field in output_schema],
+        schema=output_schema,
+    )
+    wrote_any_rows = False
+    with pq.ParquetWriter(output_path, output_schema, compression="zstd") as writer:
         with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
             in_flight: dict[object, int] = {}
+
+            def flush_ready_results() -> None:
+                nonlocal next_write_index, wrote_any_rows
+                while next_write_index in pending_results:
+                    frame, _pair_elapsed = pending_results.pop(next_write_index)
+                    if frame.height:
+                        table = frame.to_arrow()
+                        if table.schema != output_schema:
+                            table = table.cast(output_schema)
+                        writer.write_table(table)
+                        wrote_any_rows = True
+                    next_write_index += 1
 
             def record_completed_futures(done_futures) -> None:
                 nonlocal completed_pairs, total_rows, cumulative_pair_compute_seconds
                 for future in done_futures:
                     idx = in_flight.pop(future)
                     frame, pair_elapsed = future.result()
-                    ordered_results[idx] = frame
+                    pending_results[idx] = (frame, pair_elapsed)
                     completed_pairs += 1
                     total_rows += frame.height
                     cumulative_pair_compute_seconds += pair_elapsed
@@ -1296,11 +1355,12 @@ def chunk_genome_compare(
                         f"chunk_genome_compare: progress pairs={completed_pairs}/{total_pairs} "
                         f"rows={total_rows} elapsed={time.perf_counter() - start_time:.2f}s"
                     )
+                flush_ready_results()
 
             for raw_batch in _iter_pair_table_batches(pair_table_path, pair_batch_size):
                 pair_batch = _normalize_pair_batch(raw_batch)
                 for row in pair_batch.iter_rows(named=True):
-                    while len(in_flight) >= resolved_workers:
+                    while len(in_flight) + len(pending_results) >= resolved_workers:
                         done_futures, _pending = wait(
                             tuple(in_flight.keys()),
                             return_when=FIRST_COMPLETED,
@@ -1315,10 +1375,6 @@ def chunk_genome_compare(
                         genome_scope=genome_scope,
                         ani_method=ani_method,
                         calculate=calculations,
-                        engine=engine,
-                        duckdb_memory_limit=duckdb_memory_limit,
-                        duckdb_temp_directory=duckdb_temp_directory,
-                        duckdb_threads=duckdb_threads,
                     )
                     in_flight[future] = next_pair_index
                     next_pair_index += 1
@@ -1330,96 +1386,10 @@ def chunk_genome_compare(
                 )
                 record_completed_futures(done_futures)
 
-        result_frames = [frame for frame in ordered_results if frame is not None]
-        if result_frames:
-            pl.concat(result_frames, how="vertical_relaxed").write_parquet(
-                output_path,
-                compression="zstd",
-                metadata=compare_metadata,
-            )
-        else:
-            empty_frame.write_parquet(
-                output_path,
-                compression="zstd",
-                metadata=compare_metadata,
-            )
-    else:
-        output_schema = empty_frame.to_arrow().schema.with_metadata(
-            {str(key).encode(): str(value).encode() for key, value in compare_metadata.items()}
-        )
-        empty_output_table = pa.Table.from_arrays(
-            [pa.array([], type=field.type) for field in output_schema],
-            schema=output_schema,
-        )
-        wrote_any_rows = False
-        with pq.ParquetWriter(output_path, output_schema, compression="zstd") as writer:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                in_flight: dict[object, int] = {}
+            flush_ready_results()
 
-                def flush_ready_results() -> None:
-                    nonlocal next_write_index, wrote_any_rows
-                    while next_write_index in pending_results:
-                        frame, _pair_elapsed = pending_results.pop(next_write_index)
-                        if frame.height:
-                            table = frame.to_arrow()
-                            if table.schema != output_schema:
-                                table = table.cast(output_schema)
-                            writer.write_table(table)
-                            wrote_any_rows = True
-                        next_write_index += 1
-
-                def record_completed_futures(done_futures) -> None:
-                    nonlocal completed_pairs, total_rows, cumulative_pair_compute_seconds
-                    for future in done_futures:
-                        idx = in_flight.pop(future)
-                        frame, pair_elapsed = future.result()
-                        pending_results[idx] = (frame, pair_elapsed)
-                        completed_pairs += 1
-                        total_rows += frame.height
-                        cumulative_pair_compute_seconds += pair_elapsed
-                        emit(
-                            f"chunk_genome_compare: progress pairs={completed_pairs}/{total_pairs} "
-                            f"rows={total_rows} elapsed={time.perf_counter() - start_time:.2f}s"
-                        )
-                    flush_ready_results()
-
-                for raw_batch in _iter_pair_table_batches(pair_table_path, pair_batch_size):
-                    pair_batch = _normalize_pair_batch(raw_batch)
-                    for row in pair_batch.iter_rows(named=True):
-                        while len(in_flight) >= resolved_workers:
-                            done_futures, _pending = wait(
-                                tuple(in_flight.keys()),
-                                return_when=FIRST_COMPLETED,
-                            )
-                            record_completed_futures(done_futures)
-                        future = executor.submit(
-                            _run_genome_compare_pair,
-                            row,
-                            stb_file=stb_file,
-                            min_cov=min_cov,
-                            min_gene_compare_len=min_gene_compare_len,
-                            genome_scope=genome_scope,
-                            ani_method=ani_method,
-                            calculate=calculations,
-                            engine=engine,
-                            duckdb_memory_limit=duckdb_memory_limit,
-                            duckdb_temp_directory=duckdb_temp_directory,
-                            duckdb_threads=duckdb_threads,
-                        )
-                        in_flight[future] = next_pair_index
-                        next_pair_index += 1
-
-                while in_flight:
-                    done_futures, _pending = wait(
-                        tuple(in_flight.keys()),
-                        return_when=FIRST_COMPLETED,
-                    )
-                    record_completed_futures(done_futures)
-
-                flush_ready_results()
-
-            if not wrote_any_rows:
-                writer.write_table(empty_output_table)
+        if not wrote_any_rows:
+            writer.write_table(empty_output_table)
 
     elapsed_seconds = time.perf_counter() - start_time
     summary = {
@@ -1433,7 +1403,7 @@ def chunk_genome_compare(
         "avg_compute_seconds_per_pair": cumulative_pair_compute_seconds / max(completed_pairs, 1),
         "avg_seconds_per_genome_row": elapsed_seconds / max(total_rows, 1),
         "avg_genome_rows_per_pair": total_rows / max(completed_pairs, 1),
-        "engine": engine,
+        "engine": "polars",
         "genome_scope": genome_scope,
     }
     emit(
@@ -1606,6 +1576,27 @@ def get_genome_gaps(
 
     return pl.from_arrow(table).lazy()
 
+def _raw_depth_statistics(raw_depth: pl.LazyFrame) -> pl.DataFrame:
+    """Summarize each genome's unfiltered depth histogram (``genome``, ``depth``, ``sites``).
+
+    Return ``genome``, ``raw_sites`` (positions with any read), ``raw_bases`` (their summed
+    depth) and the median and sample standard deviation of depth over those positions.
+    """
+    histogram = (raw_depth.filter(pl.col("depth") > 0).group_by("genome", "depth")
+                 .agg(pl.col("sites").sum()).sort("genome", "depth").collect())
+    rows = []
+    for (genome,), part in histogram.group_by("genome", maintain_order=True):
+        depth, count = part["depth"].to_numpy().astype(np.float64), part["sites"].to_numpy().astype(np.int64)
+        sites, bases = int(count.sum()), float((depth * count).sum())
+        cumulative = np.cumsum(count)
+        at = lambda rank: float(depth[np.searchsorted(cumulative, rank, side="right")])
+        spread = float(np.sqrt(((depth - bases / sites) ** 2 * count).sum() / (sites - 1))) if sites > 1 else None
+        rows.append((str(genome), sites, bases, (at((sites - 1) // 2) + at(sites // 2)) / 2, spread))
+    return pl.DataFrame(rows, orient="row", schema={
+        "genome": pl.String, "raw_sites": pl.Int64, "raw_bases": pl.Float64,
+        "raw_median": pl.Float64, "raw_std": pl.Float64})
+
+
 def get_genome_stats(
     profile:pl.LazyFrame,
     bed: pl.LazyFrame,
@@ -1615,8 +1606,17 @@ def get_genome_stats(
     hetro_min_freq: float = 0.8,
     hetro_min_cov: int = 5,
     ref_ani_min_cov: int = 5,
-    
+    raw_depth: pl.LazyFrame | None = None,
 )->pl.LazyFrame:
+    """Summarize one sample per genome: coverage, breadth, BER, FUG and reference statistics.
+
+    ``raw_depth`` is the unfiltered depth histogram (``genome``, ``depth``, ``sites``) written
+    while profiling. With it, ``coverage``, ``coverage_median``, ``coverage_std``, ``breadth``
+    and ``ber`` describe every position with a read, and a genome whose positions were all
+    removed by the error filter still gets a row. Without it they are taken from the profile's
+    retained counts, which under-report genomes below about 2x coverage. The other columns
+    always use retained counts.
+    """
     include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
     genome_lengths = extract_genome_length(stb, bed)
     scaffold_lengths = extract_scaffold_length(bed)
@@ -1630,12 +1630,22 @@ def get_genome_stats(
     ]
     if include_reference_ani:
         profile_columns.append(pl.col(REF_BASE_BITMASK_COLUMN).cast(pl.UInt8).alias(REF_BASE_BITMASK_COLUMN))
+    raw_stats = _raw_depth_statistics(raw_depth) if raw_depth is not None else None
+    if raw_stats is None:
+        source, key = "profile_stats AS p", "p"
+        bases, sites = "p.covered_bases", "p.total_covered_sites::DOUBLE"
+        median, spread = "p.coverage_median", "p.coverage_std"
+    else:
+        source, key = "raw_src AS r LEFT JOIN profile_stats AS p ON p.genome = r.genome", "r"
+        bases, sites, median, spread = "r.raw_bases", "r.raw_sites::DOUBLE", "r.raw_median", "r.raw_std"
     with TemporaryDirectory(prefix="zipstrain_genome_stats_") as tmp_dir:
         profile_path = pathlib.Path(tmp_dir) / "profile.parquet"
         profile.select(profile_columns).sink_parquet(profile_path, compression="zstd", engine="streaming")
 
         conn = _duckdb_connect_with_temp_dir(tmp_dir)
         try:
+            if raw_stats is not None:
+                conn.register("raw_src", raw_stats.to_arrow())
             conn.register(
                 "genome_length_src",
                 genome_lengths.select("genome", "genome_length").collect().to_arrow(),
@@ -1767,26 +1777,26 @@ def get_genome_stats(
                   GROUP BY genome
                 )
                 SELECT
-                  CAST(p.genome AS VARCHAR) AS genome,
-                  p.covered_bases / gl.genome_length AS coverage,
-                  CAST(p.coverage_median AS DOUBLE) AS coverage_median,
-                  CAST(p.coverage_std AS DOUBLE) AS coverage_std,
-                  p.total_covered_sites::DOUBLE / gl.genome_length AS breadth,
+                  CAST({key}.genome AS VARCHAR) AS genome,
+                  {bases} / gl.genome_length AS coverage,
+                  CAST({median} AS DOUBLE) AS coverage_median,
+                  CAST({spread} AS DOUBLE) AS coverage_std,
+                  {sites} / gl.genome_length AS breadth,
                   CAST(gl.genome_length AS BIGINT) AS genome_length,
                   CAST(gg.gap_mean AS DOUBLE) AS gap_mean,
                   CAST(gg.gap_std AS DOUBLE) AS gap_std,
-                  CAST(p.cov_sites AS BIGINT) AS "{int(comp_min_cov_breadth)}x_cov_sites",
+                  COALESCE(CAST(p.cov_sites AS BIGINT), 0) AS "{int(comp_min_cov_breadth)}x_cov_sites",
                   CAST(p.heterogeneity AS DOUBLE) AS heterogeneity,
-                  (p.total_covered_sites::DOUBLE / gl.genome_length)
-                    / (1 - EXP(-0.883 * (p.covered_bases / gl.genome_length))) AS ber,
+                  ({sites} / gl.genome_length)
+                    / (1 - EXP(-0.883 * ({bases} / gl.genome_length))) AS ber,
                   CAST(gg.fug AS DOUBLE) AS fug,
                   COALESCE(CAST(gg.rn AS BIGINT), 0) AS reads_mapped
                   {ref_select_sql}
-                FROM profile_stats AS p
+                FROM {source}
                 LEFT JOIN genome_length_src AS gl
-                  ON p.genome = CAST(gl.genome AS VARCHAR)
+                  ON {key}.genome = CAST(gl.genome AS VARCHAR)
                 LEFT JOIN genome_gap_src AS gg
-                  ON p.genome = CAST(gg.genome AS VARCHAR)
+                  ON {key}.genome = CAST(gg.genome AS VARCHAR)
                 """
             ).fetch_arrow_table()
         finally:
@@ -1801,6 +1811,11 @@ def get_gene_stats(
     stb: pl.LazyFrame,
     ref_ani_min_cov: int = 5,
 )->pl.LazyFrame:
+    """Summarize legacy profiles carrying a per-position gene label.
+
+    V2 producers use ``gene_info.gene_statistics`` with authenticated interval
+    annotations instead. This function remains for reading existing V1 data.
+    """
     include_reference_ani = REF_BASE_BITMASK_COLUMN in set(profile.collect_schema().names())
     profile_columns = [
         pl.col("genome").cast(pl.Utf8).alias("genome"),

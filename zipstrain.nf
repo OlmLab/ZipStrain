@@ -4,18 +4,19 @@ params.p_threshold=0.000001
 params.mode = null
 params.parallel_mode="batched"
 params.min_cov=5
-params.min_gene_compare_len=200
+params.min_gene_compare_len=1
 params.batch_size=10
-params.compare_duckdb_memory_limit=""
-params.compare_engine="polars"
-// Metrics: max_identical_stretch, gene_ani, genome_ani; join with '+' or use 'all'.
-// The Python comparison commands also accept the legacy ani/ibs/identical_genes names.
+// --mode compare metrics: genome_ani, max_identical_stretch, gene_ani, gene_selection; join
+// with '+' or use 'all'. Any gene metric gives one row per gene. V2 gene metrics require
+// --preprofile_dir; with 1.x profiles, request gene_ani on its own.
+// --compare_scope: 'all', one genome, or GENOME:GENE for gene rows. gene_selection also requires each sample's
+// <sample>_codon_counts.parquet beside its profile, which is staged with it.
 params.compare_calculate="all"
 params.batch_compare_n_parallel=1
 params.publish_mode="symlink"
-params.compare_genome_scope="all"
-params.compare_gene_scope="all:all"
+params.compare_scope="all"
 params.compare_ani_method="popani"
+params.skip_input_validation=false
 params.input_type="profile_table"
 params.bowtie2_non_competitive_mapping=false
 params.min_mapq=0
@@ -24,6 +25,10 @@ params.min_freq=0.01
 params.min_read_ani=0.95
 params.read_inclusion="paired"
 params.profile_backend="python"
+params.collect_codons=false
+params.prepare_dnds=false
+params.allele_integration="consensus"
+params.preprofile_dir=null
 params.sylph_db = null
 params.sylph_db_link="http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb"
 params.genome_db_cache_dir="genome_cache"
@@ -253,7 +258,7 @@ process prepare_profile{
     path stb_file
     output:
     path "genomes_bed_file.bed", emit: genome_bed
-    path "gene_range_table.tsv", emit: gene_range_table
+    tuple path("gene_info.parquet"), path("reference_codons.parquet"), emit: gene_range_table
     path "null_model.parquet", emit: null_model
     path "profiling_contract.json", emit: profiling_contract
     script:
@@ -284,16 +289,18 @@ process profile_bam {
     path reference_fasta
     path bed_file
     path stb_file
-    path gene_range_table
+    tuple path(gene_range_table), path(reference_codons)
     path null_model
     path profiling_contract
     output:
     path "${bamfile.baseName}_profile.parquet", emit: profile
     path "${bamfile.baseName}_genome_stats.parquet", emit: genome_stats
     path "${bamfile.baseName}_gene_stats.parquet", emit: gene_stats
+    path "*_codon_counts.parquet", optional: true, emit: codon_counts
     val sample_name, emit: sample_name
     script:
     def profile_backend_arg = (params.profile_backend == "python") ? "" : "--backend ${params.profile_backend}"
+    def codon_arg = (params.collect_codons || params.prepare_dnds) ? "--collect-codons --allele-integration ${params.allele_integration}" : ""
     """
     export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities profile-single \\
@@ -310,125 +317,87 @@ process profile_bam {
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
-                        --output-dir . ${profile_backend_arg}
+                        --output-dir . ${profile_backend_arg} ${codon_arg}
     """
 }
 
-process compare_genome_fast_profiles_single {
+process compare_pairs_single {
     /*
-    * This process compares fast profiles.
-    * It takes in profile parquets and outputs the comparison results.
+    * Compares one profile pair. --compare_calculate decides genome or gene rows.
     */
     input:
     path profile_location_1
     path profile_location_2
     path stb
     val pair_name
+    path preprofile_assets
+    path codon_tables
     output:
     path "${pair_name}_comparison.parquet", emit: comparison_results
     script:
-    def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, (task.memory.toBytes() * 0.7d).toLong())}B"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
-    def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
-    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
+    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets} --allele-integration ${params.allele_integration}" : ""
+    def validation_arg = params.skip_input_validation ? "--skip-input-validation" : ""
     """
     export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
-    zipstrain utilities single_compare_genome  \
-                        --profile-location-1 ${profile_location_1} \
-                        --profile-location-2 ${profile_location_2} \
+    zipstrain utilities compare-pair ${preprofile_arg} ${validation_arg} \
+                        --profile-1 ${profile_location_1} \
+                        --profile-2 ${profile_location_2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
-                        ${add_compare_engine} \
-                        --duckdb-threads ${task.cpus} \
-                        ${add_calculate} \
-                        ${add_duckdb_memory_limit} \
-                        ${add_genome_scope} \
-                        -o ${pair_name}_comparison.parquet
-
-    """
-}
-process compare_gene_fast_profiles_single {
-    /*
-    * This process compares fast profiles.
-    * It takes in profile parquets and outputs the comparison results.
-    */
-    input:
-    path profile_location_1
-    path profile_location_2
-    path stb
-    val pair_name
-    output:
-    path "${pair_name}_comparison.parquet", emit: comparison_results
-    script:
-    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, (task.memory.toBytes() * 0.7d).toLong())}B"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
-    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
-    """
-    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
-    zipstrain utilities single_compare_gene  \
-                        --profile-location-1 ${profile_location_1} \
-                        --profile-location-2 ${profile_location_2} \
-                        -s ${stb} \
-                        -c ${params.min_cov} \
-                        -l ${params.min_gene_compare_len} \
-                        ${add_compare_engine} \
-                        --duckdb-threads ${task.cpus} \
                         --ani-method ${params.compare_ani_method} \
-                        ${add_duckdb_memory_limit} \
-                        --scope ${params.compare_gene_scope} \
+                        --calculate ${params.compare_calculate} \
+                        --scope ${params.compare_scope} \
                         -o ${pair_name}_comparison.parquet
 
     """
 }
 
 
-process compare_genome_batched {
+process compare_pairs_batched {
     publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
     afterScript """
     rm -rf comps pairs.txt
     rm -f ${profile_locations.collect{t->t.join(' ')}}
+    rm -f ${codon_tables}
     rm -f ${stb}
     """
     input:
     path profile_locations
     val pairs
     path stb
+    path preprofile_assets
+    path codon_tables
 
 
     output:
     path "Batch_*_comparisons.parquet", emit: comparison_results
 
     script:
+    def preprofile_arg = params.preprofile_dir ? "--preprofile-dir ${preprofile_assets} --allele-integration ${params.allele_integration}" : ""
+    def validation_arg = params.skip_input_validation ? "--skip-input-validation" : ""
     def parallel_pairs = params.batch_compare_n_parallel as int
     if (parallel_pairs < 1 || parallel_pairs > task.cpus) {
         error "batch_compare_n_parallel must be between 1 and the compare task CPU allocation (${task.cpus})"
     }
     def threads_per_pair = task.cpus.intdiv(parallel_pairs)
-    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, ((task.memory.toBytes() / parallel_pairs) * 0.7d).toLong())}B"
     pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
     remove_profile_locations = profile_locations.join(' ')
-    def add_genome_scope= (params.compare_genome_scope=="all") ? "" : "-g ${params.compare_genome_scope}"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
-    def add_calculate = params.compare_calculate ? "--calculate ${params.compare_calculate}" : "--calculate all"
-    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
     """
     export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}
     echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities single_compare_genome \
-                        --profile-location-1 {1} \
-                        --profile-location-2 {2} \
+    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities compare-pair ${preprofile_arg} ${validation_arg} \
+                        --profile-1 {1} \
+                        --profile-2 {2} \
                         -s ${stb} \
                         -c ${params.min_cov} \
                         -l ${params.min_gene_compare_len} \
-                        ${add_compare_engine} \
-                        --duckdb-threads ${threads_per_pair} \
-                        ${add_calculate} \
-                        ${add_duckdb_memory_limit} \
-                        -o {1}_{2}_comparison.parquet' ${add_genome_scope}
+                        --ani-method ${params.compare_ani_method} \
+                        --calculate ${params.compare_calculate} \
+                        --scope ${params.compare_scope} \
+                        -o {1}_{2}_comparison.parquet'
     mkdir comps
-    hash=\$(sha1sum pairs.txt | awk '{print \$1}')
+    hash=\$( (sha1sum pairs.txt 2>/dev/null || shasum pairs.txt) | awk '{print \$1}')
     mv *_comparison.parquet comps/
     export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
     zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
@@ -439,57 +408,6 @@ process compare_genome_batched {
     """
 
 
-}
-
-process compare_gene_batched {
-    publishDir "${params.output_dir}/batch_comparisons", mode: params.publish_mode
-    afterScript """
-    rm -rf comps pairs.txt
-    rm -f ${profile_locations.collect{t->t.join(' ')}}
-    rm -f ${stb}
-    """
-    input:
-    path profile_locations
-    val pairs
-    path stb
-    output:
-    path "Batch_*_comparisons.parquet", emit: comparison_results
-    script:
-    def parallel_pairs = params.batch_compare_n_parallel as int
-    if (parallel_pairs < 1 || parallel_pairs > task.cpus) {
-        error "batch_compare_n_parallel must be between 1 and the compare task CPU allocation (${task.cpus})"
-    }
-    def threads_per_pair = task.cpus.intdiv(parallel_pairs)
-    def duckdb_memory_limit = params.compare_duckdb_memory_limit ?: "${Math.max(1L, ((task.memory.toBytes() / parallel_pairs) * 0.7d).toLong())}B"
-    pairs_text = pairs.collect{p-> p.join('\t')}.join('\n')
-    remove_profile_locations = profile_locations.join(' ')
-    def add_gene_scope= (params.compare_gene_scope=="all") ? "" : "--scope ${params.compare_gene_scope}"
-    def add_duckdb_memory_limit = (params.compare_engine == "duckdb") ? "--duckdb-memory-limit ${duckdb_memory_limit}" : ""
-    def add_compare_engine = params.compare_engine ? "--engine ${params.compare_engine}" : "--engine polars"
-    """
-    export ZIPSTRAIN_CPU_BUDGET=${threads_per_pair}
-    echo -e "${pairs_text}" > pairs.txt
-    cat pairs.txt | parallel --tmpdir . --joblog pair_jobs.log --halt soon,fail=1 --colsep '\\t' -j ${parallel_pairs} 'zipstrain utilities single_compare_gene \
-                        --profile-location-1 {1} \
-                        --profile-location-2 {2} \
-                        -s ${stb} \
-                        -c ${params.min_cov} \
-                        -l ${params.min_gene_compare_len} \
-                        ${add_compare_engine} \
-                        --duckdb-threads ${threads_per_pair} \
-                        --ani-method ${params.compare_ani_method} \
-                        ${add_duckdb_memory_limit} \
-                        -o {1}_{2}_comparison.parquet' ${add_gene_scope}
-    mkdir comps
-    hash=\$(sha1sum pairs.txt | awk '{print \$1}')
-    mv *_comparison.parquet comps/
-    export ZIPSTRAIN_CPU_BUDGET=${task.cpus}
-    zipstrain utilities merge_parquet  --input-dir comps --output-file "Batch_\${hash}_comparisons.parquet"
-    rm -rf comps
-    rm -f pairs.txt
-    rm -f ${remove_profile_locations}
-
-    """ 
 }
 
 
@@ -517,7 +435,7 @@ process fromSRAtoProfile{
     path reference_genome
     path index_files
     path bed_file
-    path gene_range_file
+    tuple path(gene_range_file), path(reference_codons)
     path stb_file
     path null_model
     path profiling_contract
@@ -525,9 +443,11 @@ process fromSRAtoProfile{
     path "${sra_id}_profile.parquet", emit: profiles
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
     path "${sra_id}_gene_stats.parquet", emit: gene_stats
+    path "*_codon_counts.parquet", optional: true, emit: codon_counts
     val sra_id, emit: sample_name
     script:
     def profile_backend_arg = (params.profile_backend == "python") ? "" : "--backend ${params.profile_backend}"
+    def codon_arg = (params.collect_codons || params.prepare_dnds) ? "--collect-codons --allele-integration ${params.allele_integration}" : ""
     """
     prefetch --max-size ${params.prefetch_max_size} ${sra_id} 
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -553,7 +473,7 @@ process fromSRAtoProfile{
                         --min-freq ${params.min_freq} \\
                         --min-read-ani ${params.min_read_ani} \\
                         --read-inclusion ${params.read_inclusion} \\
-                        --output-dir . ${profile_backend_arg}
+                        --output-dir . ${profile_backend_arg} ${codon_arg}
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
     """
@@ -567,7 +487,7 @@ process prepare_profile_no_genes{
     path stb_file
     output:
     path "genomes_bed_file.bed", emit: genome_bed
-    path "gene_range_table.tsv", emit: gene_range_table
+    tuple path("gene_info.parquet"), path("reference_codons.parquet"), emit: gene_range_table
     path "null_model.parquet", emit: null_model
     path "profiling_contract.json", emit: profiling_contract
     script:
@@ -593,10 +513,12 @@ process fromSRAtoProfileBuildDb{
     path "${sra_id}_profile.parquet", emit: profiles
     path "${sra_id}_genome_stats.parquet", emit: genome_stats
     path "${sra_id}_gene_stats.parquet", emit: gene_stats
+    path "*_codon_counts.parquet", optional: true, emit: codon_counts
     path "${sra_id}_sylph_abundance.tsv", emit: sylph_abundance
     val sra_id, emit: sample_name
     script:
     def profile_backend_arg = (params.profile_backend == "python") ? "" : "--backend ${params.profile_backend}"
+    def codon_arg = (params.collect_codons || params.prepare_dnds) ? "--collect-codons --allele-integration ${params.allele_integration}" : ""
     """
     prefetch --max-size ${params.prefetch_max_size} ${sra_id}
     fasterq-dump --split-files --outdir ${sra_id} ${sra_id}
@@ -636,6 +558,7 @@ process fromSRAtoProfileBuildDb{
         --reference-fasta reference_genomes.fna \\
         --bed-file genomes_bed_file.bed \\
         --stb-file reference_genomes.stb \\
+        --gene-info-table gene_info.parquet \\
         --null-model null_model.parquet \\
         --profiling-contract profiling_contract.json \\
         --max-concurrency ${task.cpus} \\
@@ -644,7 +567,7 @@ process fromSRAtoProfileBuildDb{
         --min-freq ${params.min_freq} \\
         --min-read-ani ${params.min_read_ani} \\
         --read-inclusion ${params.read_inclusion} \\
-        --output-dir . ${profile_backend_arg}
+        --output-dir . ${profile_backend_arg} ${codon_arg}
 
     rm -rf ${sra_id}
     rm -f ${sra_id}.bam
@@ -653,7 +576,15 @@ process fromSRAtoProfileBuildDb{
 workflow
 {
     if (!params.mode) {
-        error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+        error "Set --mode to one of: map_reads, profile, from_sra_to_profile, compare"
+    }
+
+    if (params.mode in ['compare_genomes', 'compare_genes']) {
+        error "--mode ${params.mode} was replaced by --mode compare. Choose genome or gene metrics with --compare_calculate, and limit rows with --compare_scope."
+    }
+
+    if (params.mode == 'compare' && !params.preprofile_dir) {
+        log.warn "No --preprofile_dir was given. With V2 profiles, compare calculates genome metrics only, and an explicit gene metric fails."
     }
 
     if (params.mode == 'map_reads') {
@@ -764,38 +695,7 @@ workflow
         profile(bamfiles, sample_names, gene_file, reference_genome)
     }
     
-    else if (params.mode =="compare_genes")
-    {
-        input_table = tableToDict(file(params.input_table))
-        
-        if (params.input_type=="profile_table"){
-            profile_locations_list = getProfilesTableColumn(input_table).collect{t->file(t)}
-            sample_names_list = getProfileSampleNamesTableColumn(input_table)
-            profiles=[profile_locations_list,sample_names_list].transpose()
-            def profile_pairs = []
-            (0..<profiles.size()).each { i ->
-                (i+1..<profiles.size()).each { j ->
-                    profile_pairs << (profiles[i] + profiles[j])
-                }
-            }
-            pair_channel=Channel.from(profile_pairs)
-        }
-        else if (params.input_type=="pair_table")
-        {
-            sample_1=input_table['sample_name_1']
-            sample_2=input_table['sample_name_2']
-            profile_1=input_table["profile_location_1"].collect{t->file(t)}
-            profile_2=input_table["profile_location_2"].collect{t->file(t)}
-            profile_pairs=([profile_1]+[sample_1]+[profile_2]+[sample_2]).transpose()
-            pair_channel=Channel.from(profile_pairs)
-
-        }
-        stb = file(params.stb)
-        compare_genes(pair_channel, stb)
-    }
-    
-    
-    else if (params.mode =='compare_genomes') {
+    else if (params.mode == 'compare') {
         input_table = tableToDict(file(params.input_table))
         
         if (params.input_type=="profile_table"){
@@ -821,11 +721,11 @@ workflow
 
         }
         stb = file(params.stb)
-        compare_genomes(pair_channel, stb)
+        compare_pairs(pair_channel, stb)
 
     }
     else if (!(params.mode in ['map_reads', 'from_sra_to_profile'])) {
-        error "Unknown --mode '${params.mode}'. Choose one of: map_reads, profile, from_sra_to_profile, compare_genomes, compare_genes"
+        error "Unknown --mode '${params.mode}'. Choose one of: map_reads, profile, from_sra_to_profile, compare"
     }
 }
 
@@ -854,7 +754,17 @@ workflow profile{
 }
 
 
-workflow compare_genomes
+def siblingCodonTables(profiles) {
+    // A sample's codon table sits beside its profile. Stage those that exist, so
+    // `--compare_calculate all` uses them and an explicit gene_selection can report any gap.
+    if (!params.preprofile_dir) {
+        return []
+    }
+    return profiles.collect { profile -> profile.resolveSibling(profile.name.replaceAll(/_profile\.parquet$/, '_codon_counts.parquet')) }
+                   .findAll { table -> table.name.endsWith('_codon_counts.parquet') && table.exists() }
+}
+
+workflow compare_pairs
 {
     take:
     profile_pairs
@@ -866,9 +776,10 @@ workflow compare_genomes
         profile_1: v[0]
         profile_2: v[2]
         pair_name: v[1]+"_" + v[3]
+        codon_tables: siblingCodonTables([v[0], v[2]])
     }.set{profile_pairs}
-    compare_genome_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name)
-    merge_comparison_tables(compare_genome_fast_profiles_single.out.comparison_results.collect() )
+    compare_pairs_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name, params.preprofile_dir ? file(params.preprofile_dir) : [], profile_pairs.codon_tables)
+    merge_comparison_tables(compare_pairs_single.out.comparison_results.collect() )
     }
     else if (params.parallel_mode=="batched") {
     batch = profile_pairs.collate(params.batch_size)
@@ -876,47 +787,15 @@ workflow compare_genomes
     batch_t.multiMap{ v ->
         unique_profiles: (v[0]+v[2]).unique().sort()
         pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
+        codon_tables: siblingCodonTables((v[0]+v[2]).unique().sort())
     }.set{batch_pairs}
 
-    compare_genome_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb)
-    merge_comparison_tables(compare_genome_batched.out.comparison_results.collect() )
+    compare_pairs_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb, params.preprofile_dir ? file(params.preprofile_dir) : [], batch_pairs.codon_tables)
+    merge_comparison_tables(compare_pairs_batched.out.comparison_results.collect() )
     }
     else {
         error "Set --parallel_mode to either single or batched"
     }
 
-
-}
-
-
-workflow compare_genes{
-    take:
-    profile_pairs
-    stb
-    main:
-    if (params.parallel_mode=="single") {
-
-    profile_pairs.multiMap{ v ->
-        profile_1: v[0]
-        profile_2: v[2]
-        pair_name: v[1]+"_" + v[3]
-    }.set{profile_pairs}
-    compare_gene_fast_profiles_single(profile_pairs.profile_1, profile_pairs.profile_2, stb, profile_pairs.pair_name)
-    merge_comparison_tables(compare_gene_fast_profiles_single.out.comparison_results.collect() )
-    }
-    else if (params.parallel_mode=="batched") {
-    batch = profile_pairs.collate(params.batch_size)
-    batch.map{t->t.transpose()}.set{batch_t}
-    batch_t.multiMap{ v ->
-        unique_profiles: (v[0]+v[2]).unique().sort()
-        pairs: [v[0].collect{t->t.name}, v[2].collect{t->t.name}].transpose()
-    }.set{batch_pairs}
-
-    compare_gene_batched(batch_pairs.unique_profiles, batch_pairs.pairs, stb)
-    merge_comparison_tables(compare_gene_batched.out.comparison_results.collect() )
-    }
-    else {
-        error "Set --parallel_mode to either single or batched"
-    }
 
 }

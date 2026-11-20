@@ -86,14 +86,14 @@ impl BaqReader {
                     if this.record.flags() & 0x704 != 0 || !allowed(&this.record, &this.args) {
                         continue;
                     }
-                    // Apply the same HTSlib BAQ adjustment used by mpileup when a FASTA is supplied.
+                    // Apply the same HTSlib BAQ adjustment as mpileup when a FASTA is supplied: mpileup's default is extended BAQ.
                     unsafe {
                         if let Some(reference) = &this.reference {
                             let result = htslib::sam_prob_realn(
                                 this.record.inner_mut(),
                                 reference.as_ptr(),
                                 reference.as_bytes().len() as i64,
-                                htslib::htsRealnFlags_BAQ_APPLY as i32,
+                                (htslib::htsRealnFlags_BAQ_APPLY | htslib::htsRealnFlags_BAQ_EXTEND) as i32,
                             );
                             if result == -4 {
                                 return -2;

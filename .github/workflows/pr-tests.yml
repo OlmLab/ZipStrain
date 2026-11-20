@@ -43,10 +43,10 @@ jobs:
           cache: "pip"
           cache-dependency-path: zipstrain/pyproject.toml
 
-      - name: Install samtools
+      - name: Install samtools and GNU parallel
         run: |
           sudo apt-get update
-          sudo apt-get install -y samtools
+          sudo apt-get install -y samtools parallel
 
       - name: Set up Java for Nextflow
         uses: actions/setup-java@v4
@@ -121,4 +121,6 @@ jobs:
           python -m pip install --no-deps "$RUNNER_TEMP"/rust-plugin-wheels/*.whl
 
       - name: Test Rust profiler and Python parity
-        run: python -m pytest plugins/zipstrain_rust_profiler/tests -q -rs
+        run: |
+          python -m pytest plugins/zipstrain_rust_profiler/tests -q -rs
+          python -m pytest zipstrain/tests/test_v2.py::test_real_bam_selection_cli_and_collection -q -rs

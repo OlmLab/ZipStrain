@@ -1,5 +1,10 @@
 # Expected output
 
+This development branch writes V2 profiles. See the [V2 guide](v2.md) for
+annotation identities, observed codons, complete selection formulas, and the
+explicit-input Polars comparison path. Legacy 1.x comparison output is described
+where noted below.
+
 This page describes every file ZipStrain writes, the columns in each, and how to read them. Profile outputs are written as parquet. Convert any parquet table to CSV explicitly with `zipstrain utilities parquet-to-csv` when text output is needed. The examples below come from [Tutorial #3](./Tutorial.md) (three replicates of the ZymoBIOMICS standard, Sylph route).
 
 ---
@@ -13,11 +18,12 @@ out_profile/
 ├── SRR12324251/
 │   ├── SRR12324251_profile.parquet        # per-position base counts
 │   ├── SRR12324251_genome_stats.parquet   # per-genome summary
-│   ├── SRR12324251_gene_stats.parquet     # per-gene summary
+│   ├── SRR12324251_gene_stats.parquet     # 15-column per-gene summary
+│   ├── SRR12324251_codon_counts.parquet   # optional observed triplets
 │   ├── SRR12324251_SNVs.parquet           # SNPs vs. reference
 │   └── intermediate_files/                # scratch — safe to ignore
 ├── SRR12324252/ …
-└── profiling_assets/                      # null model, bed, contract, logs
+└── profiling_assets/                      # gene_info + reference_codons Parquets, null model, bed, contract, logs
 ```
 
 ### `<sample>_genome_stats.parquet`
@@ -27,12 +33,12 @@ One row per genome: how well it was covered, whether it is present, and its iden
 | Column | Meaning |
 |--------|---------|
 | `genome` | Genome identifier (a GTDB accession on the Sylph route) |
-| `coverage` | Mean read depth across the genome (over its full length) |
-| `coverage_median`, `coverage_std` | Median and std. dev. of depth across covered positions |
-| `breadth` | Fraction of the genome covered by ≥ 1 read |
+| `coverage` | A/C/G/T depth before allele error/frequency filtering, summed over the genome and divided by its full length |
+| `coverage_median`, `coverage_std` | Median and sample standard deviation of pre-allele-filter depth across positions with positive depth |
+| `breadth` | Fraction of the genome with positive A/C/G/T depth before allele filtering |
 | `genome_length` | Genome length (bp) |
 | `gap_mean`, `gap_std` | Mean / std. dev. of the gap length between consecutive mapped reads |
-| `5x_cov_sites` | Number of positions covered ≥ 5× |
+| `5x_cov_sites` | Number of positions with retained allele depth ≥ 5× |
 | `heterogeneity` | Mean per-site nucleotide diversity (within-sample microdiversity) |
 | `ber` | Breadth-error ratio: observed breadth ÷ breadth expected at this coverage (~1 for an evenly-covered genome) |
 | `fug` | Read-distribution uniformity (fraction of non-excess gaps); ~0.632 under a random distribution |
@@ -52,6 +58,12 @@ GCF_000006945.2  380.34    0.9211   0.9211  0.6467  6579418       99.09    prese
 
 Here breadth ≈ 0.92 at 380× coverage and `presence = present` — a genuine member of the community. Trace genomes appear with breadth < 0.05 and `presence = absent`.
 
+Starting with core `2.0.0b2` and Rust profiler `0.2.0b2`, genome coverage,
+breadth and BER use depth before allele filtering. Read inclusion, mapping-quality,
+base-quality and BAQ filtering still apply. Re-profile BAMs to update older statistics;
+the discarded depth cannot be reconstructed from retained profile counts. Gene
+statistics continue to use retained counts, so their depth can differ deliberately.
+
 ### `<sample>_gene_stats.parquet`
 
 One row per gene, populated only when gene annotations are supplied (`profile --gene-fasta`, or a gene FASTA on the Sylph route). Empty otherwise.
@@ -59,11 +71,18 @@ One row per gene, populated only when gene annotations are supplied (`profile --
 | Column | Meaning |
 |--------|---------|
 | `genome` | Genome the gene belongs to |
-| `gene` | Gene identifier |
+| `gene_id` | Content-derived gene identifier in the shared catalog |
+| `chrom`, `start`, `end` | Scaffold and inclusive gene interval |
 | `length` | Gene length (bp) |
-| `breadth` | Fraction of the gene covered by ≥ 1 read |
-| `coverage` | Mean read depth across the gene |
-| `ref_ani` | ANI of the sample to the reference for this gene (%) |
+| `breadth` | Fraction of the gene with positive retained allele depth |
+| `coverage` | Retained allele depth summed over the gene and divided by gene length |
+| `ref_ani` | Population ANI to the reference for this gene (%); null without callable reference evidence |
+| `dN`, `dS`, `dN_dS` | SNS nonsynonymous/synonymous rates and their ratio |
+| `pN`, `pS`, `pN_pS` | SNV nonsynonymous/synonymous rates and their ratio |
+
+Selection fields are null unless codon preparation was enabled. The exact
+SNS/SNV definitions, opportunity denominators, consensus/weighted integration,
+and null behavior are specified in the [V2 selection method](v2.md#selection-method-retained-from-gene-overlap).
 
 ### `<sample>_profile.parquet`
 
@@ -73,7 +92,6 @@ The core output: one row per reference position with the observed base counts. T
 |--------|---------|
 | `chrom` | Scaffold / contig name |
 | `genome` | Genome the scaffold belongs to (`NA` if unbinned) |
-| `gene` | Gene at this position (`NA` if none / unannotated) |
 | `pos` | Position on the scaffold (**1-based**) |
 | `A`, `C`, `G`, `T` | Read counts that pass both the Poisson error ceiling and `--min-freq` allele-frequency filter |
 | `ref_base_bitmask` | Reference base as a bitmask: **A = 1, C = 2, G = 4, T = 8** (`0` = reference base unknown). Only present when `--reference-fasta` was used |
@@ -81,9 +99,9 @@ The core output: one row per reference position with the observed base counts. T
 Example:
 
 ```text
-chrom                    genome           gene  pos      A   C   G   T   ref_base_bitmask
-GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892095  0   51  0   0   0
-GCA_016925055.1__CP0704… GCA_016925055.1  NA    3892097  51  0   0   0   0
+chrom                    genome           pos      A   C   G   T   ref_base_bitmask
+GCA_016925055.1__CP0704… GCA_016925055.1  3892095  0   51  0   0   0
+GCA_016925055.1__CP0704… GCA_016925055.1  3892097  51  0   0   0   0
 ```
 
 The null model stores the largest count still compatible with sequencing error, so an allele survives only when its count is strictly greater than that ceiling. `--min-freq` is applied against the original A+C+G+T depth before any allele is removed and defaults to `0.01` (1%); set it to `0` to disable frequency filtering. The generated model supports coverage through 50,000 by default; profiling raises an error instead of silently altering a position when its depth exceeds the model.
@@ -94,7 +112,7 @@ Every covered position that is **divergent** from the reference — either polym
 
 | Column | Meaning |
 |--------|---------|
-| `chrom`, `genome`, `gene`, `pos` | Location (`pos` is 1-based) |
+| `chrom`, `genome`, `pos` | Location (`pos` is 1-based) |
 | `position_coverage` | Total (error-adjusted) depth at the position |
 | `allele_count` | Number of passing alleles (bases with count > 0) |
 | `ref_base`, `con_base`, `var_base` | Reference, consensus (majority), and top variant base |
@@ -119,11 +137,17 @@ Monomorphic reference matches are not emitted. The per-genome `SNS_count` and `S
 
 ## `zipstrain compare`
 
-Both methods (standard and matrix) write a single comparison table at the top of the run directory: `all_comparisons.parquet` (+ `.csv`), or `all_gene_comparisons.parquet` with `--compare-genes`.
+Legacy comparison routes write a selected comparison table at the top of the run directory: `all_comparisons.parquet` (+ `.csv`), or `all_gene_comparisons.parquet` with `--calculate gene_ani`.
+
+V2 writes one `all_comparisons.parquet`. Genome-only runs have one row per
+`(sample_1, sample_2, genome)`. Requesting a gene metric adds `gene_id` to the
+key and produces one row per qualifying gene. When both levels are requested,
+genome metrics repeat across each genome's gene rows. Use `--force-csv` to
+export an additional CSV copy. See the [V2 comparison guide](v2.md#comparison-inputs-and-commands).
 
 ### `all_comparisons.parquet`
 
-One row per genome, per pair of samples.
+In a genome-only run, each row represents one genome and sample pair.
 
 | Column | Meaning |
 |--------|---------|
@@ -132,9 +156,9 @@ One row per genome, per pair of samples.
 | `total_positions` | Positions covered in **both** samples (≥ `--min-cov`) — the basis of the comparison |
 | `share_allele_pos` | Of those, positions that match under the selected ANI method |
 | `genome_ani` | Genome-wide ANI (%) = `share_allele_pos` / `total_positions` × 100. The parquet metadata key `zipstrain_compare_ani_method` records whether this is `popani`, `conani`, or `cosani_<threshold>` |
-| `max_consecutive_length` | Longest run of shared alleles at adjacent coordinates on one scaffold (an identical-by-state / IBS measure); a missing or uncovered coordinate breaks the run |
+| `max_identical_stretch` | Longest run of shared alleles at adjacent coordinates on one scaffold (an identical-by-state / IBS measure); a missing or uncovered coordinate breaks the run |
 
-With gene ranges available, genome-level gene identity summary columns are also added by the default `--calculate all`: `shared_genes_count`, `identical_gene_count`, `perc_id_genes`.
+Row order is not guaranteed, so join or sort by the key columns rather than relying on position.
 
 !!! note "ANI method is stored in the parquet header"
     `--ani-method conani` or `--ani-method cosani_<threshold>` changes how the ANI match indicator is computed, but it does not add method-specific output columns. Check `zipstrain_compare_ani_method` in the parquet metadata to know what `genome_ani` represents. Both standard and matrix comparison support `popani`, `conani`, and `cosani_<threshold>`.
@@ -142,7 +166,7 @@ With gene ranges available, genome-level gene identity summary columns are also 
 Example (same-strain replicates → 100% popANI):
 
 ```text
-sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_consecutive_length
+sample_1     sample_2     genome           total_positions  share_allele_pos  genome_ani  max_identical_stretch
 SRR12324251  SRR12324252  GCA_031316495.1  3983156          3983156           100.0           768237
 ```
 

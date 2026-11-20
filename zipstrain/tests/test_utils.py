@@ -426,3 +426,88 @@ def test_estimate_genome_presence_makes_sense():
     assert result_dict["genome1"]["coverage"] == (num_reads_genome1 * read_length) / genome_lengths["genome1"]
     assert result_dict["genome2"]["coverage"] == (num_reads_genome2 * read_length) / genome_lengths["genome2"]
     assert result_dict["genome1"]["ber"] > result_dict["genome2"]["ber"] 
+
+
+def test_replace_file_retries_a_busy_filesystem(tmp_path, monkeypatch):
+    import errno, os
+    source, target = tmp_path / "a.part", tmp_path / "a"
+    source.write_text("new")
+    real, calls = os.replace, []
+
+    def busy_twice(src, dst):
+        calls.append(src)
+        if len(calls) <= 2:
+            raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+        real(src, dst)
+
+    monkeypatch.setattr(utils.os, "replace", busy_twice)
+    monkeypatch.setattr(utils.time, "sleep", lambda seconds: None)
+    utils.replace_file(source, target)
+    assert len(calls) == 3 and target.read_text() == "new" and not source.exists()
+
+
+def test_replace_file_explains_a_lasting_lock_and_keeps_other_errors(tmp_path, monkeypatch):
+    import errno
+    def busy(src, dst):
+        raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+    monkeypatch.setattr(utils.os, "replace", busy)
+    monkeypatch.setattr(utils.time, "sleep", lambda seconds: None)
+    with pytest.raises(OSError, match="probably has the file open") as raised:
+        utils.replace_file(tmp_path / "a.part", tmp_path / "a", timeout=0.5)
+    assert raised.value.errno == errno.EAGAIN
+    monkeypatch.undo()
+    with pytest.raises(FileNotFoundError):
+        utils.replace_file(tmp_path / "missing", tmp_path / "a")
+
+
+def test_input_fingerprint_detects_preserved_timestamp_replacement(tmp_path, monkeypatch):
+    """Trusted cache keys notice ordinary replacement without reading file contents."""
+    import os
+    path = tmp_path / "input"
+    path.write_bytes(b"AAA")
+    checked = utils.input_fingerprint(path)
+    assert checked == utils.sha256_file(path)
+    original = utils.input_fingerprint(path, validate_inputs=False)
+    before = path.stat()
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"TTT")
+    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+    replacement.replace(path)
+    def unexpected_hash(*args):
+        raise AssertionError("Stat fingerprint read file contents")
+    monkeypatch.setattr(utils, "sha256_file", unexpected_hash)
+    changed = utils.input_fingerprint(path, validate_inputs=False)
+    assert changed.startswith("stat:") and changed != original and changed != checked
+    assert changed == utils.input_fingerprint(str(path), validate_inputs=False)
+
+
+def test_raw_depth_statistics_matches_expanded_depths():
+    """Histograms across chunks give the exact covered-site median and sample SD."""
+    histogram = pl.DataFrame({"genome": ["a", "a", "a", "b", "c"],
+                              "depth": [1, 3, 1, 5, 0], "sites": [2, 2, 1, 1, 99]})
+    actual = utils._raw_depth_statistics(histogram.lazy()).rows_by_key("genome", unique=True, named=True)
+    assert set(actual) == {"a", "b"}
+    assert actual["a"]["raw_sites"] == 5
+    assert actual["a"]["raw_bases"] == 9
+    assert actual["a"]["raw_median"] == np.median([1, 1, 1, 3, 3])
+    assert actual["a"]["raw_std"] == pytest.approx(np.std([1, 1, 1, 3, 3], ddof=1))
+    assert actual["b"]["raw_median"] == 5 and actual["b"]["raw_std"] is None
+    assert utils._raw_depth_statistics(histogram.head(0).lazy()).is_empty()
+
+
+def test_genome_stats_use_raw_depth_when_every_allele_was_filtered():
+    """Low-depth coverage and breadth survive a wholly uncallable retained profile."""
+    positions = pl.DataFrame({"chrom": ["chr1"] * 3, "genome": ["g"] * 3, "pos": [1, 2, 3],
+                              "A": [0] * 3, "C": [0] * 3, "G": [0] * 3, "T": [0] * 3}).lazy()
+    result = utils.get_genome_stats(
+        profile=positions, bed=pl.DataFrame({"scaffold": ["chr1"], "start": [0], "end": [10]}).lazy(),
+        stb=pl.DataFrame({"scaffold": ["chr1"], "genome": ["g"]}).lazy(),
+        read_loc_table=pl.DataFrame({"scaffold": ["chr1"], "loc": [0]}).lazy(),
+        raw_depth=pl.DataFrame({"genome": ["g"], "depth": [1], "sites": [3]}).lazy(),
+    ).collect().row(0, named=True)
+    assert result["genome"] == "g"
+    assert result["coverage"] == pytest.approx(0.3)
+    assert result["breadth"] == pytest.approx(0.3)
+    assert result["coverage_median"] == 1 and result["coverage_std"] == 0
+    assert result["ber"] == pytest.approx(0.3 / (1 - np.exp(-0.883 * 0.3)))
+    assert result["5x_cov_sites"] == 0

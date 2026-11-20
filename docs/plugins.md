@@ -41,17 +41,21 @@ It is most useful for large or deeply sequenced BAMs, large sample sets, and mem
 
 The Rust profiler reads a coordinate-sorted BAM and writes the same three core Parquet outputs as Python profiling: `<sample>_profile.parquet`, `<sample>_gene_stats.parquet`, and `<sample>_genome_stats.parquet`. If the BAM has no BAI or CSI index, the profiler creates a `.bam.bai` beside it before starting workers. The BAM directory must be writable in that case; pre-index BAMs stored read-only. When you use the high-level `zipstrain profile` command, ZipStrain still prepares profiling assets and performs its usual output finalization after the plugin finishes. The comparison commands do not change.
 
+With `--collect-codons`, the plugin also extracts observed codons in Rust, with counts identical to Python extraction. Older plugin builds fall back to Python for this step.
+
 The plugin is optional: installing ZipStrain alone does not install it, and leaving out `--backend` keeps the Python behavior.
 
-### Install from PyPI
+### Install the Rust profiler
 
-In a Python 3.12+ environment, install the plugin with pip:
+For ZipStrain `2.0.0`, install `zipstrain-rust-profiler==0.2.0` (see the [V2 plugin instructions](v2.md#observed-codon-evidence)). Both backends now calculate genome coverage, breadth and BER from depth before allele filtering; re-profile BAMs for corrected low-coverage statistics.
+
+To keep an existing ZipStrain 1.x installation, pin the compatible plugin:
 
 ```bash
-python -m pip install zipstrain_rust_profiler
+python -m pip install "zipstrain<2" "zipstrain-rust-profiler==0.1.2"
 ```
 
-This also installs ZipStrain 1.2.0 or newer if needed. On a supported platform, pip downloads a prebuilt wheel, so Rust is not needed at installation time. Building from source requires a Rust toolchain and native build prerequisites, including libclang on Linux.
+Plugin 0.2.0 requires ZipStrain `>=2.0.0,<3`. On a supported platform, pip downloads a prebuilt wheel, so Rust is not needed at installation time. Building from source requires a Rust toolchain and native build prerequisites, including libclang on Linux.
 
 If using the high-level `profile` workflow, keep `samtools` available as described in [Installation](installation.md). The Rust profiler reads and indexes the BAM directly through HTSlib, without invoking `samtools index` itself.
 
@@ -68,7 +72,7 @@ zipstrain profile \
   --backend rust_profiler
 ```
 
-`mapped/samples.txt` is the same CSV used by Python profiling, with `sample_name,bamfile` columns. Keep the BAMs coordinate-sorted. `--num-procs` controls the maximum Rust workers per sample; the plugin also respects ZipStrain's detected CPU allocation. Existing profiling filters such as `--min-baseq`, `--min-read-ani`, and `--read-inclusion` are passed through.
+`mapped/samples.txt` is the same CSV used by Python profiling, with `sample_name,bamfile` columns. Keep the BAMs coordinate-sorted. `--threads` caps the CPUs for the whole run, and each sample's Rust workers get their share of it; the plugin also respects ZipStrain's detected CPU allocation. Existing profiling filters such as `--min-baseq`, `--min-read-ani`, and `--read-inclusion` are passed through.
 
 For one BAM with already prepared assets, use `zipstrain utilities profile-single`:
 
@@ -82,7 +86,7 @@ zipstrain utilities profile-single \
   --backend rust_profiler
 ```
 
-This command requires an indexed BAM, BED file, STB file, and null-model Parquet. `--reference-fasta`, `--gene-range-table`, and `--profiling-contract` remain optional; provide the reference FASTA if you want `ref_base_bitmask` in the profile. Its worker limit is `--max-concurrency`.
+This command requires an indexed BAM, BED file, STB file, and null-model Parquet. `--reference-fasta`, `--gene-range-table`, and `--profiling-contract` remain optional; provide the reference FASTA if you want `ref_base_bitmask` in the profile. Its CPU limit is `--threads`.
 
 ### Select it in Nextflow
 

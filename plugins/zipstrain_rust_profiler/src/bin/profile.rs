@@ -10,7 +10,7 @@ use parquet::format::KeyValue;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::bam::{self, Read};
 use rust_htslib::faidx;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
@@ -21,6 +21,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+#[path = "../codons.rs"]
+mod codons;
 #[path = "../profiler_baq.rs"]
 mod baq;
 #[path = "../profiler_stats.rs"]
@@ -41,7 +43,6 @@ struct Args {
     bed: PathBuf,
     stb: PathBuf,
     null_model: PathBuf,
-    gene_range: Option<PathBuf>,
     reference: Option<PathBuf>,
     contract: Option<PathBuf>,
     output_dir: PathBuf,
@@ -62,7 +63,6 @@ fn parse_args() -> AnyResult<Args> {
         "--bed",
         "--stb",
         "--null-model",
-        "--gene-range",
         "--reference",
         "--profiling-contract",
         "--output-dir",
@@ -96,18 +96,12 @@ fn parse_args() -> AnyResult<Args> {
     let parse = |key: &str, default: &str| -> AnyResult<String> {
         Ok(a.get(key).cloned().unwrap_or_else(|| default.to_owned()))
     };
-    let read_inclusion = match parse("--read-inclusion", "all-mapped")?.as_str() {
-        "all-mapped" => Inclusion::AllMapped,
-        "paired" => Inclusion::Paired,
-        "proper-pairs" => Inclusion::ProperPairs,
-        v => return Err(format!("invalid --read-inclusion: {v}").into()),
-    };
+    let read_inclusion = parse_inclusion(&parse("--read-inclusion", "all-mapped")?)?;
     let args = Args {
         bam: required("--bam")?,
         bed: required("--bed")?,
         stb: required("--stb")?,
         null_model: required("--null-model")?,
-        gene_range: a.get("--gene-range").map(PathBuf::from),
         reference: a.get("--reference").map(PathBuf::from),
         contract: a.get("--profiling-contract").map(PathBuf::from),
         output_dir: required("--output-dir")?,
@@ -138,17 +132,10 @@ struct Region {
     start: i64,
     end: i64,
 }
-#[derive(Clone)]
-struct Gene {
-    name: String,
-    start: i32,
-    end: i32,
-}
 struct Inputs {
     tasks: Vec<Vec<Region>>,
     regions: HashMap<String, Vec<Region>>,
     genome: HashMap<String, String>,
-    genes: HashMap<String, Vec<Gene>>,
     null: Vec<i64>,
     genome_lengths: HashMap<String, i64>,
 }
@@ -233,30 +220,6 @@ fn load_stb(path: &Path) -> AnyResult<HashMap<String, String>> {
     Ok(map)
 }
 
-fn load_genes(path: Option<&Path>) -> AnyResult<HashMap<String, Vec<Gene>>> {
-    let mut map: HashMap<String, Vec<Gene>> = HashMap::new();
-    let Some(path) = path else { return Ok(map) };
-    for line in BufReader::new(File::open(path)?).lines() {
-        let line = line?;
-        let cols: Vec<_> = line.split('\t').map(str::trim).collect();
-        if cols.len() < 4 {
-            continue;
-        }
-        let (Ok(start), Ok(end)) = (cols[2].parse::<i32>(), cols[3].parse::<i32>()) else {
-            continue;
-        };
-        map.entry(cols[1].to_owned()).or_default().push(Gene {
-            name: cols[0].to_owned(),
-            start,
-            end,
-        });
-    }
-    for rows in map.values_mut() {
-        rows.sort_by_key(|g| g.start);
-    }
-    Ok(map)
-}
-
 fn int_at(array: &dyn Array, i: usize) -> AnyResult<i64> {
     if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
         return Ok(a.value(i));
@@ -301,7 +264,6 @@ fn load_null(path: &Path) -> AnyResult<Vec<i64>> {
 fn load_inputs(args: &Args) -> AnyResult<Inputs> {
     let bed = read_bed(&args.bed)?;
     let genome = load_stb(&args.stb)?;
-    let genes = load_genes(args.gene_range.as_deref())?;
     let null = load_null(&args.null_model)?;
     let tasks = split_tasks(&bed, args.num_chunks);
     let mut regions: HashMap<String, Vec<Region>> = HashMap::new();
@@ -315,17 +277,20 @@ fn load_inputs(args: &Args) -> AnyResult<Inputs> {
         tasks,
         regions,
         genome,
-        genes,
         null,
         genome_lengths,
     })
 }
 
 fn allowed(record: &bam::Record, args: &Args) -> bool {
-    if record.is_unmapped() || record.mapq() < args.min_mapq {
+    read_passes(record, args.min_mapq, args.read_inclusion, args.min_read_ani)
+}
+
+fn read_passes(record: &bam::Record, min_mapq: u8, read_inclusion: Inclusion, min_read_ani: Option<f64>) -> bool {
+    if record.is_unmapped() || record.mapq() < min_mapq {
         return false;
     }
-    match args.read_inclusion {
+    match read_inclusion {
         Inclusion::AllMapped => (),
         Inclusion::Paired if record.is_paired() => {
             if record.is_mate_unmapped() || record.mtid() != record.tid() {
@@ -339,7 +304,7 @@ fn allowed(record: &bam::Record, args: &Args) -> bool {
         }
         _ => (),
     }
-    if let Some(min_ani) = args.min_read_ani {
+    if let Some(min_ani) = min_read_ani {
         let nm = match record.aux(b"NM") {
             Ok(Aux::I8(v)) => Some(v as i64),
             Ok(Aux::U8(v)) => Some(v as i64),
@@ -380,7 +345,6 @@ fn profile_schema(with_ref: bool) -> Arc<Schema> {
     let mut fields = vec![
         Field::new("chrom", DataType::LargeUtf8, true),
         Field::new("genome", DataType::LargeUtf8, true),
-        Field::new("gene", DataType::LargeUtf8, true),
         Field::new("pos", DataType::Int32, true),
         Field::new("A", DataType::Int32, true),
         Field::new("C", DataType::Int32, true),
@@ -397,7 +361,6 @@ fn profile_schema(with_ref: bool) -> Arc<Schema> {
 struct ProfileBatch {
     chrom: Vec<String>,
     genome: Vec<String>,
-    gene: Vec<String>,
     pos: Vec<i32>,
     a: Vec<i32>,
     c: Vec<i32>,
@@ -421,7 +384,6 @@ impl ProfileBatch {
         let mut arrays: Vec<ArrayRef> = vec![
             Arc::new(LargeStringArray::from_iter_values(self.chrom.drain(..))),
             Arc::new(LargeStringArray::from_iter_values(self.genome.drain(..))),
-            Arc::new(LargeStringArray::from_iter_values(self.gene.drain(..))),
             Arc::new(Int32Array::from(std::mem::take(&mut self.pos))),
             Arc::new(Int32Array::from(std::mem::take(&mut self.a))),
             Arc::new(Int32Array::from(std::mem::take(&mut self.c))),
@@ -488,14 +450,18 @@ fn reference_base(
     ))
 }
 
+/// Unfiltered depth histogram of each genome: depth -> positions with that many reads.
+type RawDepth = HashMap<String, BTreeMap<i32, i64>>;
+
 fn run_task(
     index: usize,
     args: &Args,
     inputs: &Inputs,
     schema: &Arc<Schema>,
     tmp: &Path,
-) -> AnyResult<PathBuf> {
+) -> AnyResult<(PathBuf, RawDepth)> {
     let path = tmp.join(format!("chunk_{index:05}.parquet"));
+    let mut raw_depth = RawDepth::new();
     let mut output = writer(&path, schema.clone(), vec![])?;
     let mut batch = ProfileBatch::default();
     let mut bam = baq::BaqReader::new(args)?;
@@ -560,6 +526,16 @@ fn run_task(
             if null_limit == i64::MIN {
                 return Err(format!("null model lacks coverage {depth}").into());
             }
+            let genome = inputs.genome.get(chrom).map(String::as_str).unwrap_or("NA");
+            // The error filter can remove a position's only allele, so coverage and breadth
+            // are counted here, from the unfiltered depth.
+            if depth > 0 {
+                let histogram = match raw_depth.get_mut(genome) {
+                    Some(histogram) => histogram,
+                    None => raw_depth.entry(genome.to_owned()).or_default(),
+                };
+                *histogram.entry(i32::try_from(depth)?).or_default() += 1;
+            }
             for count in &mut counts {
                 if i64::from(*count) <= null_limit
                     || f64::from(*count) < depth as f64 * args.min_freq
@@ -567,24 +543,8 @@ fn run_task(
                     *count = 0;
                 }
             }
-            let gene = inputs
-                .genes
-                .get(chrom)
-                .and_then(|genes| {
-                    let at = genes.partition_point(|g| g.start <= pos);
-                    (at > 0 && pos <= genes[at - 1].end).then(|| genes[at - 1].name.as_str())
-                })
-                .unwrap_or("NA");
             batch.chrom.push(chrom.to_owned());
-            batch.genome.push(
-                inputs
-                    .genome
-                    .get(chrom)
-                    .map(String::as_str)
-                    .unwrap_or("NA")
-                    .to_owned(),
-            );
-            batch.gene.push(gene.to_owned());
+            batch.genome.push(genome.to_owned());
             batch.pos.push(pos);
             batch.a.push(counts[0]);
             batch.c.push(counts[1]);
@@ -602,7 +562,7 @@ fn run_task(
     }
     batch.flush(&mut output, schema, reference.is_some())?;
     output.close()?;
-    Ok(path)
+    Ok((path, raw_depth))
 }
 
 fn run_workers(
@@ -610,13 +570,14 @@ fn run_workers(
     inputs: &Inputs,
     schema: &Arc<Schema>,
     tmp: &Path,
-) -> AnyResult<Vec<PathBuf>> {
+) -> AnyResult<(Vec<PathBuf>, RawDepth)> {
     let next = AtomicUsize::new(0);
     let mut paths: Vec<Option<PathBuf>> = vec![None; inputs.tasks.len()];
+    let mut raw_depth = RawDepth::new();
     thread::scope(|scope| -> AnyResult<()> {
         let mut jobs = Vec::new();
         for _ in 0..args.threads.min(inputs.tasks.len()) {
-            jobs.push(scope.spawn(|| -> AnyResult<Vec<(usize, PathBuf)>> {
+            jobs.push(scope.spawn(|| -> AnyResult<Vec<(usize, (PathBuf, RawDepth))>> {
                 let mut completed = Vec::new();
                 loop {
                     let id = next.fetch_add(1, Ordering::Relaxed);
@@ -629,16 +590,23 @@ fn run_workers(
             }));
         }
         for job in jobs {
-            for (id, path) in job.join().map_err(|_| "profile worker panicked")?? {
+            for (id, (path, depths)) in job.join().map_err(|_| "profile worker panicked")?? {
                 paths[id] = Some(path);
+                for (genome, histogram) in depths {
+                    let total = raw_depth.entry(genome).or_default();
+                    for (depth, sites) in histogram {
+                        *total.entry(depth).or_default() += sites;
+                    }
+                }
             }
         }
         Ok(())
     })?;
-    paths
+    let paths = paths
         .into_iter()
         .map(|p| p.ok_or_else(|| "missing chunk output".into()))
-        .collect()
+        .collect::<AnyResult<Vec<PathBuf>>>()?;
+    Ok((paths, raw_depth))
 }
 
 fn metadata(args: &Args) -> AnyResult<Vec<KeyValue>> {
@@ -690,7 +658,7 @@ fn merge_chunks(
                 .downcast_ref::<LargeStringArray>()
                 .ok_or("chrom type")?;
             let pos = batch
-                .column(3)
+                .column(2)
                 .as_any()
                 .downcast_ref::<Int32Array>()
                 .ok_or("pos type")?;
@@ -728,7 +696,46 @@ fn ensure_bam_index(bam_path: &Path) -> AnyResult<()> {
     Ok(())
 }
 
+fn parse_inclusion(value: &str) -> AnyResult<Inclusion> {
+    match value {
+        "all-mapped" => Ok(Inclusion::AllMapped),
+        "paired" => Ok(Inclusion::Paired),
+        "proper-pairs" => Ok(Inclusion::ProperPairs),
+        v => Err(format!("invalid --read-inclusion: {v}").into()),
+    }
+}
+
+/// `codons --bam B --genes TSV --output P --threads N --min-baseq Q --min-mapq Q
+/// --read-inclusion I [--min-read-ani F]`
+fn run_codons() -> AnyResult<()> {
+    let mut options = HashMap::new();
+    let mut it = env::args().skip(2);
+    while let Some(key) = it.next() {
+        if !["--bam", "--genes", "--output", "--threads", "--min-baseq", "--min-mapq", "--read-inclusion", "--min-read-ani"]
+            .contains(&key.as_str())
+        {
+            return Err(format!("unknown option: {key}").into());
+        }
+        options.insert(key.clone(), it.next().ok_or_else(|| format!("missing value for {key}"))?);
+    }
+    let required = |key: &str| -> AnyResult<&String> { Ok(options.get(key).ok_or_else(|| format!("missing {key}"))?) };
+    let min_mapq: u8 = required("--min-mapq")?.parse()?;
+    let inclusion = parse_inclusion(required("--read-inclusion")?)?;
+    let min_read_ani: Option<f64> = options.get("--min-read-ani").map(|v| v.parse()).transpose()?;
+    codons::extract(
+        &PathBuf::from(required("--bam")?),
+        &PathBuf::from(required("--genes")?),
+        &PathBuf::from(required("--output")?),
+        required("--threads")?.parse()?,
+        required("--min-baseq")?.parse()?,
+        |record| read_passes(record, min_mapq, inclusion, min_read_ani),
+    )
+}
+
 fn main() -> AnyResult<()> {
+    if env::args().nth(1).as_deref() == Some("codons") {
+        return run_codons();
+    }
     let start = Instant::now();
     let args = parse_args()?;
     ensure_bam_index(&args.bam)?;
@@ -756,10 +763,11 @@ fn main() -> AnyResult<()> {
         args.threads
     );
     let workers_start = Instant::now();
-    let paths = run_workers(&args, &inputs, &schema, &tmp)?;
+    let (paths, raw_depth) = run_workers(&args, &inputs, &schema, &tmp)?;
     eprintln!("Workers: {:.2}s", workers_start.elapsed().as_secs_f64());
     let merge_start = Instant::now();
     let mut acc = merge_chunks(&paths, &args, &schema, &out)?;
+    acc.set_raw_depth(raw_depth);
     eprintln!("Merge: {:.2}s", merge_start.elapsed().as_secs_f64());
     let stats_start = Instant::now();
     acc.write_stats(&args, &inputs, &stem)?;
@@ -776,6 +784,67 @@ fn main() -> AnyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_batches_round_trip_without_gene_columns() -> AnyResult<()> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let tmp = env::temp_dir().join(format!("zipstrain-profile-{}-{stamp}", std::process::id()));
+        fs::create_dir(&tmp)?;
+        for with_ref in [false, true] {
+            let schema = profile_schema(with_ref);
+            let mut names = vec!["chrom", "genome", "pos", "A", "C", "G", "T"];
+            if with_ref {
+                names.push("ref_base_bitmask");
+            }
+            assert_eq!(
+                schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().as_str())
+                    .collect::<Vec<_>>(),
+                names
+            );
+            let path = tmp.join(format!("{with_ref}.parquet"));
+            let mut output = writer(&path, schema.clone(), vec![])?;
+            let mut batch = ProfileBatch {
+                chrom: vec!["chr1".into()],
+                genome: vec!["genome1".into()],
+                pos: vec![7],
+                a: vec![8],
+                c: vec![0],
+                g: vec![2],
+                t: vec![0],
+                reference: if with_ref { vec![1] } else { vec![] },
+            };
+            batch.flush(&mut output, &schema, with_ref)?;
+            assert_eq!(batch.len(), 0);
+            output.close()?;
+            let restored = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?
+                .build()?
+                .next()
+                .ok_or("missing position batch")??;
+            assert_eq!(restored.schema().fields(), schema.fields());
+            assert_eq!(int_at(restored.column(2).as_ref(), 0)?, 7);
+            assert_eq!(int_at(restored.column(3).as_ref(), 0)?, 8);
+            assert_eq!(int_at(restored.column(5).as_ref(), 0)?, 2);
+            if with_ref {
+                assert_eq!(
+                    restored
+                        .column(7)
+                        .as_any()
+                        .downcast_ref::<UInt8Array>()
+                        .ok_or("wrong reference type")?
+                        .value(0),
+                    1
+                );
+            }
+            stats::Accumulator::default().add_batch(&restored, with_ref)?;
+        }
+        fs::remove_dir_all(tmp)?;
+        Ok(())
+    }
 
     #[test]
     fn tasks_preserve_disjoint_lexicographic_intervals() {

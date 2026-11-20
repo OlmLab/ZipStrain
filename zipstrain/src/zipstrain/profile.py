@@ -8,7 +8,7 @@ import pathlib
 import polars as pl
 from typing import Generator, Optional
 from dataclasses import dataclass
-from zipstrain import utils
+from zipstrain import options, utils
 import asyncio
 import json
 import os
@@ -16,36 +16,33 @@ import signal
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
-from zipstrain.resource_limits import connect_duckdb, cpu_budget
+from zipstrain.resource_limits import connect_duckdb, cpu_budget, job_pool
 import tempfile
 import subprocess
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-PROFILE_SORTED_METADATA_KEY = "zipstrain_sorted_by"
-PROFILE_SORTED_METADATA_VALUE = "chrom,pos"
+PROFILE_SORTED_METADATA_KEY = options.PROFILE_SORTED_METADATA_KEY
+PROFILE_SORTED_METADATA_VALUE = options.PROFILE_SORTED_METADATA_VALUE
 PROFILE_WRITE_BATCH_SIZE = 10_000
 MPILEUP_ASYNCIO_STREAM_LIMIT_BYTES = 10 * 1024 * 1024
 PROFILE_CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
-PROFILE_MIN_MAPQ_DEFAULT = 0
-PROFILE_MIN_BASEQ_DEFAULT = 13
-PROFILE_MIN_FREQ_DEFAULT = 0.01
+PROFILE_MIN_MAPQ_DEFAULT = options.PROFILE_MIN_MAPQ
+PROFILE_MIN_BASEQ_DEFAULT = options.PROFILE_MIN_BASEQ
+PROFILE_MIN_FREQ_DEFAULT = options.PROFILE_MIN_FREQ
 # Read-ANI floor applied by default so low-identity (typically mis-mapped) reads
 # do not inflate SNV calls; matches inStrain's default of 0.95.
-PROFILE_MIN_READ_ANI_DEFAULT = 0.95
+PROFILE_MIN_READ_ANI_DEFAULT = options.PROFILE_MIN_READ_ANI
 READ_INCLUSION_ALL_MAPPED = "all-mapped"
 READ_INCLUSION_PAIRED = "paired"
 READ_INCLUSION_PROPER_PAIRS = "proper-pairs"
-PROFILE_READ_INCLUSION_CHOICES = (
-    READ_INCLUSION_PROPER_PAIRS,
-    READ_INCLUSION_PAIRED,
-    READ_INCLUSION_ALL_MAPPED,
-)
+PROFILE_READ_INCLUSION_CHOICES = options.PROFILE_READ_INCLUSION_CHOICES
+assert PROFILE_READ_INCLUSION_CHOICES == (READ_INCLUSION_PROPER_PAIRS, READ_INCLUSION_PAIRED, READ_INCLUSION_ALL_MAPPED)
 # Default eligibility: for paired reads keep only those whose mate maps to the same
 # scaffold (matching inStrain's default "paired_only": drops half-mapped orphans and
 # cross-scaffold pairs), while keeping genuinely single-end reads.
-PROFILE_READ_INCLUSION_DEFAULT = READ_INCLUSION_PAIRED
+PROFILE_READ_INCLUSION_DEFAULT = options.PROFILE_READ_INCLUSION
 SAM_FLAG_PAIRED = 0x1
 SAM_FLAG_PROPER_PAIR = 0x2
 SAM_FLAG_UNMAP = 0x4
@@ -93,7 +90,6 @@ RAW_PROFILE_PARQUET_FIELDS = [
 PROFILE_PARQUET_BASE_FIELDS = [
     ("chrom", pa.string()),
     ("genome", pa.string()),
-    ("gene", pa.string()),
     ("pos", pa.int32()),
     ("A", pa.int32()),
     ("C", pa.int32()),
@@ -438,16 +434,10 @@ def empty_gene_range_table() -> pl.LazyFrame:
 
 def empty_gene_stats_table(include_ref_ani: bool = False) -> pl.LazyFrame:
     """Return an empty gene-stats LazyFrame with the expected schema."""
-    schema = {
-        "genome": pl.Utf8,
-        "gene": pl.Utf8,
-        "length": pl.Int64,
-        "breadth": pl.Float64,
-        "coverage": pl.Float64,
-    }
-    if include_ref_ani:
-        schema["ref_ani"] = pl.Float64
-    return pl.DataFrame(schema=schema).lazy()
+    from zipstrain import gene_info as gi
+    schema = {name: gi.GENE_SCHEMA[name] for name in gi.GENE_STATS_COLUMNS if name in gi.GENE_SCHEMA}
+    schema.update({name: pl.Float64 for name in gi.GENE_STATS_COLUMNS if name not in schema})
+    return pl.DataFrame(schema=schema).select(gi.GENE_STATS_COLUMNS).lazy()
 
 
 def normalize_gene_range_table_path(
@@ -504,34 +494,30 @@ def _write_sorted_profile_with_metadata(
     tmp_dir: pathlib.Path,
     metadata: Optional[dict[str, str]] = None,
 ) -> None:
-    """Write the final profile parquet and only fall back to sorting when needed."""
+    """Write the final profile once with its metadata, and sort it only when needed.
+
+    Chunks are already sorted and usually concatenated in order, so the profile is
+    written directly and checked; only out-of-order input pays for a sorted rewrite.
+    """
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    candidate_path = tmp_dir / f"{output_file.stem}.candidate.parquet"
-    candidate_path.unlink(missing_ok=True)
-
-    profile_lf.sink_parquet(
-        candidate_path,
-        compression="zstd",
-        engine="streaming",
-    )
-
     output_metadata = dict(metadata or {})
     output_metadata[PROFILE_SORTED_METADATA_KEY] = PROFILE_SORTED_METADATA_VALUE
-
-    if _parquet_rows_are_coordinate_sorted(candidate_path):
-        pl.scan_parquet(candidate_path).sink_parquet(
-            output_file,
-            compression="zstd",
-            engine="streaming",
-            metadata=output_metadata,
-        )
-    else:
+    profile_lf.sink_parquet(
+        output_file,
+        compression="zstd",
+        engine="streaming",
+        metadata=output_metadata,
+    )
+    if not _parquet_rows_are_coordinate_sorted(output_file):
+        candidate_path = tmp_dir / f"{output_file.stem}.candidate.parquet"
+        utils.replace_file(output_file, candidate_path)
         _sort_existing_profile_parquet(
             input_file=candidate_path,
             output_file=output_file,
             tmp_dir=tmp_dir,
             metadata=output_metadata,
         )
+        candidate_path.unlink(missing_ok=True)
 
 
 def _sort_existing_profile_parquet(
@@ -605,7 +591,7 @@ def sort_profile_parquet_in_place(
         metadata = pl.read_parquet_metadata(rewritten_path)
         if metadata.get(PROFILE_SORTED_METADATA_KEY) != PROFILE_SORTED_METADATA_VALUE:
             raise RuntimeError("Failed to attach sortedness metadata to rewritten profile parquet.")
-        os.replace(rewritten_path, profile_path)
+        utils.replace_file(rewritten_path, profile_path)
 
 
 def _profile_parquet_is_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
@@ -617,26 +603,20 @@ def _profile_parquet_is_coordinate_sorted(profile_parquet: pathlib.Path) -> bool
 
 
 def _parquet_rows_are_coordinate_sorted(profile_parquet: pathlib.Path) -> bool:
-    """Check row order without materializing the full parquet in memory."""
-    check_expr = (
-        pl.when(pl.col("chrom").shift(1).is_null())
-        .then(True)
-        .otherwise(
-            (pl.col("chrom") > pl.col("chrom").shift(1))
-            | (
-                (pl.col("chrom") == pl.col("chrom").shift(1))
-                & (pl.col("pos") >= pl.col("pos").shift(1))
-            )
-        )
-        .all()
-        .alias("is_sorted")
-    )
-    return bool(
-        pl.scan_parquet(profile_parquet)
-        .select(check_expr)
-        .collect(engine="streaming")
-        .item()
-    )
+    """Check (chrom, pos) row order over streamed batches, carrying one row between them."""
+    ordered = (
+        (pl.col("chrom") > pl.col("chrom").shift(1))
+        | ((pl.col("chrom") == pl.col("chrom").shift(1)) & (pl.col("pos") >= pl.col("pos").shift(1)))
+    ).fill_null(True).all()
+    previous = None
+    for batch in pl.scan_parquet(profile_parquet).select("chrom", "pos").collect_batches(engine="streaming"):
+        if not batch.height:
+            continue
+        rows = batch if previous is None else pl.concat([previous, batch])
+        if not rows.select(ordered).item():
+            return False
+        previous = batch.tail(1)
+    return True
 
 
 def _stream_profile_mpileup_chunk_to_parquet(
@@ -771,13 +751,27 @@ def _process_raw_profile_chunk_with_polars(
     gene_range: pl.LazyFrame,
     include_reference_base: bool = True,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
+    depth_parquet: pathlib.Path | None = None,
 ) -> None:
-    """Adjust and annotate one coordinate-sorted raw chunk using Polars."""
+    """Adjust and annotate one coordinate-sorted raw chunk using Polars.
+
+    The error filter also removes a position's only allele when too few reads support it
+    (a single read, with the default model), so genome coverage and breadth cannot be read
+    from the filtered counts. ``depth_parquet`` receives the chunk's unfiltered depth
+    histogram (``genome``, ``depth``, ``sites``) for those statistics.
+    """
     raw_columns = ["chrom", "pos", "A", "C", "G", "T"]
     if include_reference_base:
         raw_columns.append(utils.REF_BASE_BITMASK_COLUMN)
 
     raw_lf = pl.scan_parquet(raw_parquet).set_sorted(["chrom", "pos"])
+    if depth_parquet is not None:
+        add_genome_info_to_mpileup(
+            mpileup_df=pl.scan_parquet(raw_parquet).select(
+                "chrom", pl.sum_horizontal("A", "C", "G", "T").cast(pl.Int64).alias("depth")),
+            scaffold_to_genome=scaffold_to_genome,
+        ).filter(pl.col("depth") > 0).group_by("genome", "depth").agg(pl.len().cast(pl.Int64).alias("sites")) \
+            .sink_parquet(depth_parquet, compression="zstd", engine="streaming")
     adjusted = adjust_for_sequence_errors(
         raw_lf,
         null_model,
@@ -788,32 +782,9 @@ def _process_raw_profile_chunk_with_polars(
         scaffold_to_genome=scaffold_to_genome,
     )
 
-    gene_schema_names = gene_range.collect_schema().names()
-    if gene_schema_names:
-        annotated = (
-            with_genome.set_sorted(["chrom", "pos"])
-            .join_asof(
-                gene_range,
-                left_on="pos",
-                right_on="start",
-                by_left="chrom",
-                by_right="scaffold",
-                strategy="backward",
-                check_sortedness=False,
-            )
-            .with_columns(
-                pl.when(pl.col("pos") <= pl.col("end"))
-                .then(pl.col("gene"))
-                .otherwise(pl.lit("NA"))
-                .alias("gene")
-            )
-            .drop(["start", "end"])
-            .set_sorted(["chrom", "pos"])
-        )
-    else:
-        annotated = with_genome.with_columns(pl.lit("NA").alias("gene")).set_sorted(["chrom", "pos"])
-
-    final_columns = ["chrom", "genome", "gene", "pos", "A", "C", "G", "T"]
+    # Gene membership is resolved from shared intervals, never embedded per position.
+    annotated = with_genome.set_sorted(["chrom", "pos"])
+    final_columns = ["chrom", "genome", "pos", "A", "C", "G", "T"]
     if include_reference_base:
         final_columns.append(utils.REF_BASE_BITMASK_COLUMN)
 
@@ -1115,7 +1086,7 @@ def get_reference_snps(
         )
         .filter(pl.col("class").is_not_null())
     )
-    return prepared.select(SNV_TABLE_COLUMNS).sort(["chrom", "pos"])
+    return prepared.select([name for name in SNV_TABLE_COLUMNS if name in prepared.collect_schema().names()]).sort(["chrom", "pos"])
 
 
 
@@ -1208,7 +1179,7 @@ def write_reference_snps(
             output_file=rendered_vcf,
             min_cov=min_cov,
         )
-        os.replace(rendered_vcf, output_path)
+        utils.replace_file(rendered_vcf, output_path)
     return output_path
 
 
@@ -1224,21 +1195,26 @@ def _profile_chunk_task(
     min_mapq: int,
     min_baseq: int,
     min_freq: float,
+    parser=None,
 )->None:
+    """Profile one BED chunk into its final chunk parquet and read-location parquet.
+
+    ``parser`` is an optional process pool for the mpileup parse, which is pure Python and
+    would otherwise hold the interpreter lock that every chunk thread shares.
+    """
     include_reference_base = reference_fasta is not None
     raw_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.parquet"
     raw_sorted_path = output_dir / f"{bam_file.stem}_{chunk_id}.raw.sorted.parquet"
     candidate_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.candidate.parquet"
+    depth_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.depth.parquet"
     final_chunk_path = output_dir / f"{bam_file.stem}_{chunk_id}.parquet"
 
-    _stream_profile_mpileup_chunk_to_parquet(
-        bed_file=bed_file,
-        bam_file=bam_file,
-        reference_fasta=reference_fasta,
-        output_parquet=raw_chunk_path,
-        min_mapq=min_mapq,
-        min_baseq=min_baseq,
-    )
+    parse = dict(bed_file=bed_file, bam_file=bam_file, reference_fasta=reference_fasta,
+                 output_parquet=raw_chunk_path, min_mapq=min_mapq, min_baseq=min_baseq)
+    if parser is None:
+        _stream_profile_mpileup_chunk_to_parquet(**parse)
+    else:
+        parser.submit(_stream_profile_mpileup_chunk_to_parquet, **parse).result()
     raw_for_processing = raw_chunk_path
     if not _parquet_rows_are_coordinate_sorted(raw_chunk_path):
         _sort_existing_profile_parquet(
@@ -1257,9 +1233,10 @@ def _profile_chunk_task(
         gene_range=gene_range,
         include_reference_base=include_reference_base,
         min_freq=min_freq,
+        depth_parquet=depth_chunk_path,
     )
     if _parquet_rows_are_coordinate_sorted(candidate_chunk_path):
-        os.replace(candidate_chunk_path, final_chunk_path)
+        utils.replace_file(candidate_chunk_path, final_chunk_path)
     else:
         _sort_existing_profile_parquet(
             input_file=candidate_chunk_path,
@@ -1297,6 +1274,85 @@ def _ensure_faidx(reference_fasta: pathlib.Path) -> None:
         raise Exception(f"samtools faidx failed: {result.stderr.decode().strip()}")
 
 
+def profile_output_metadata(existing, gene_info_file=None, *, min_mapq=0, min_baseq=13,
+                            min_read_ani=PROFILE_MIN_READ_ANI_DEFAULT,
+                            read_inclusion=PROFILE_READ_INCLUSION_DEFAULT, min_freq=0.01,
+                            reference_id=None) -> dict[str, str]:
+    """Return the V2 profile metadata: ``existing`` plus schema, filters and catalog identities.
+
+    Reject a profile whose recorded reference or annotation identity differs from the catalog.
+    """
+    from zipstrain import gene_info as gi
+
+    metadata = dict(existing)
+    metadata[gi.SCHEMA_KEY] = "2"
+    if reference_id is not None:
+        metadata[gi.REFERENCE_ID] = reference_id
+    metadata["zipstrain_profile_filters"] = json.dumps({"min_mapq": min_mapq,
+        "min_baseq": min_baseq, "min_read_ani": min_read_ani,
+        "read_inclusion": read_inclusion, "min_freq": min_freq}, sort_keys=True)
+    metadata["zipstrain_selection_method"] = "not_calculated"
+    if gene_info_file is not None:
+        gi.read_gene_info(gene_info_file)
+        catalog_metadata = pl.read_parquet_metadata(gene_info_file)
+        for key in (gi.REFERENCE_ID, gi.ANNOTATION_ID):
+            if metadata.get(key) is not None and metadata[key] != catalog_metadata[key]:
+                raise ValueError(f"Profile and gene catalog have incompatible {key}")
+        metadata.update({key: catalog_metadata[key] for key in (gi.REFERENCE_ID, gi.ANNOTATION_ID)})
+    return metadata
+
+
+def finish_profile_outputs(profile_file, gene_info_file=None, *, bam_file=None,
+                           collect_codons=False, min_mapq=0, min_baseq=13,
+                           min_read_ani=PROFILE_MIN_READ_ANI_DEFAULT, read_inclusion=PROFILE_READ_INCLUSION_DEFAULT, min_freq=0.01,
+                           allele_integration="consensus", reference_id=None, codon_extractor=None):
+    """Finalize V2 profile identity, gene statistics, and optional codon evidence.
+
+    Strip legacy gene labels, preserve existing Parquet metadata, and attach the
+    authenticated preprofile identities. Write the agreed 15-column gene table.
+    With ``collect_codons``, require a BAM and catalog, write observed triplets,
+    and calculate the gene-overlap SNS/SNV reference selection
+    metrics. Shared by Python profiling and the optional backend adapter.
+    """
+    from zipstrain import codons, gene_info as gi
+
+    profile_file = pathlib.Path(profile_file)
+    existing = utils._read_custom_parquet_metadata(profile_file)
+    metadata = profile_output_metadata(existing, gene_info_file, min_mapq=min_mapq,
+        min_baseq=min_baseq, min_read_ani=min_read_ani, read_inclusion=read_inclusion,
+        min_freq=min_freq, reference_id=reference_id)
+    if collect_codons and (bam_file is None or gene_info_file is None):
+        raise ValueError("Observed codons require a BAM and preprofile gene_info.parquet")
+    source = pl.scan_parquet(profile_file)
+    names = source.collect_schema().names()
+    columns = [name for name in names if name not in ("gene", "gene_id")]
+    # Python profiling writes the final metadata and no gene labels up front, so the
+    # profile is rewritten only for native backends and legacy files.
+    if columns != names or existing != metadata:
+        rewritten = profile_file.with_suffix(".v2.parquet")
+        source.select(columns).sink_parquet(rewritten, compression="zstd", metadata=metadata)
+        utils.replace_file(rewritten, profile_file)
+    selection = None
+    if collect_codons:
+        codon_file = profile_file.with_name(profile_file.name.replace("_profile.parquet", "_codon_counts.parquet"))
+        if codon_file == profile_file:
+            codon_file = profile_file.with_name(profile_file.stem+"_codon_counts.parquet")
+        codons.write_codon_counts(bam_file, profile_file, gene_info_file, codon_file,
+            min_baseq=min_baseq, min_mapq=min_mapq, min_read_ani=min_read_ani,
+            read_inclusion=read_inclusion, extractor=codon_extractor)
+        selection = codons.reference_selection(codon_file, gene_info_file, allele_integration=allele_integration)
+        metadata["zipstrain_selection_method"] = codons.METHOD
+        metadata["zipstrain_allele_integration"] = allele_integration
+    stats = (gi.gene_statistics(pl.scan_parquet(profile_file), gene_info_file, selection=selection,
+                                coordinates_sorted=metadata.get(PROFILE_SORTED_METADATA_KEY) == PROFILE_SORTED_METADATA_VALUE)
+             if gene_info_file is not None else empty_gene_stats_table())
+    stats_file = profile_file.with_name(profile_file.name.replace("_profile.parquet", "_gene_stats.parquet"))
+    if stats_file == profile_file:
+        stats_file = profile_file.with_name(profile_file.stem+"_gene_stats.parquet")
+    table_metadata = {key: value for key, value in metadata.items() if key != PROFILE_SORTED_METADATA_KEY}
+    stats.sink_parquet(stats_file, compression="zstd", metadata=table_metadata)
+
+
 def profile_bam_in_chunks(
     bed_file:str,
     bam_file:str,
@@ -1310,9 +1366,11 @@ def profile_bam_in_chunks(
     profile_contract: Optional[dict[str, str]] = None,
     min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
     min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
-    min_read_ani: float | None = None,
-    read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
+    min_read_ani: float | None = PROFILE_MIN_READ_ANI_DEFAULT,
+    read_inclusion: str = PROFILE_READ_INCLUSION_DEFAULT,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
+    collect_codons: bool = False,
+    allele_integration: str = "consensus",
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1336,6 +1394,8 @@ def profile_bam_in_chunks(
     reference_fasta = pathlib.Path(reference_fasta) if reference_fasta is not None else None
     include_reference_base = reference_fasta is not None
     gene_range_table_path = normalize_gene_range_table_path(gene_range_table)
+    if collect_codons and gene_range_table_path is None:
+        raise ValueError("Observed codons require preprofile gene_info.parquet")
     _validate_profile_filter_settings(
         min_mapq=min_mapq,
         min_baseq=min_baseq,
@@ -1343,6 +1403,24 @@ def profile_bam_in_chunks(
         read_inclusion=read_inclusion,
         min_freq=min_freq,
     )
+
+    bed_lf = pl.scan_csv(
+        bed_file, has_header=False, separator="\t", new_columns=["scaffold", "start", "end"]
+    )
+    from zipstrain import gene_info as gi
+    runtime_reference_id = gi.reference_identity(reference_fasta, stb) if reference_fasta is not None else None
+    if gene_range_table_path is None:
+        gene_range_lf = empty_gene_range_table()
+    else:
+        gene_range_lf = gi.read_gene_info(gene_range_table_path).lazy().select(
+            "gene", pl.col("chrom").alias("scaffold"), "start", "end")
+        if runtime_reference_id is not None and runtime_reference_id != pl.read_parquet_metadata(gene_range_table_path)[gi.REFERENCE_ID]:
+            raise ValueError("Profiling reference/STB do not match gene_info.parquet")
+    if collect_codons:
+        reference_codons = pathlib.Path(gene_range_table_path).resolve().with_name("reference_codons.parquet")
+        gi.validate_profile_assets([reference_codons], gene_range_table_path)
+        if utils.sha256_file(reference_codons) != pl.read_parquet_metadata(gene_range_table_path).get("zipstrain_reference_codons_sha256"):
+            raise ValueError("Reference codon contents do not match the preprofile catalog")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir/"tmp").mkdir(exist_ok=True)
@@ -1362,19 +1440,6 @@ def profile_bam_in_chunks(
             read_inclusion=read_inclusion,
         )
         effective_bam_file = filtered_bam_file
-    bed_lf = pl.scan_csv(
-        bed_file, has_header=False, separator="\t", new_columns=["scaffold", "start", "end"]
-    )
-    if gene_range_table_path is None:
-        gene_range_lf = empty_gene_range_table()
-    else:
-        gene_range_lf = pl.scan_csv(
-            gene_range_table_path,
-            has_header=False,
-            separator="\t",
-            new_columns=["gene", "scaffold", "start", "end"],
-        )
-        gene_range_lf = gene_range_lf.sort(["scaffold", "start"]).set_sorted(["scaffold", "start"])
     bed_chunks=utils.split_lf_to_chunks(bed_lf, num_chunks)
     bed_chunk_files=[]
     for chunk_id, bed_file in enumerate(bed_chunks):
@@ -1396,7 +1461,9 @@ def profile_bam_in_chunks(
     if budget is not None:
         # Chunk subprocesses and the process-wide Polars pool share one allocation.
         requested_workers = min(requested_workers, max(1, budget - pl.thread_pool_size()))
-    with ThreadPoolExecutor(max_workers=requested_workers) as executor:
+    # The mpileup parse runs in a spawned process pool of the same size: it is pure Python,
+    # so in threads the chunks would take turns on one interpreter lock.
+    with job_pool(requested_workers, 1) as parser, ThreadPoolExecutor(max_workers=requested_workers) as executor:
         futures = [
             executor.submit(
                 _profile_chunk_task,
@@ -1411,6 +1478,7 @@ def profile_bam_in_chunks(
                 min_mapq=min_mapq,
                 min_baseq=min_baseq,
                 min_freq=min_freq,
+                parser=parser,
             )
             for chunk_id, bed_chunk_file in enumerate(bed_chunk_files)
         ]
@@ -1434,25 +1502,20 @@ def profile_bam_in_chunks(
             profile_lf=mpileup_df,
             output_file=output_dir / f"{bam_file.stem}_profile.parquet",
             tmp_dir=output_dir / "tmp",
-            metadata=utils.profile_contract_metadata_from_values(profile_contract),
+            # Final V2 metadata up front, so the finalizer need not rewrite the profile.
+            metadata=profile_output_metadata(
+                utils.profile_contract_metadata_from_values(profile_contract), gene_range_table_path,
+                min_mapq=min_mapq, min_baseq=min_baseq, min_read_ani=min_read_ani,
+                read_inclusion=read_inclusion, min_freq=min_freq, reference_id=runtime_reference_id),
         )
-        if gene_range_table_path is None:
-            empty_gene_stats_table(include_ref_ani=include_reference_base).sink_parquet(
-                output_dir/f"{bam_file.stem}_gene_stats.parquet",
-                compression='zstd',
-                engine='streaming',
-            )
-        else:
-            utils.get_gene_stats(
-                profile=mpileup_df,
-                gene_bed=gene_range_lf,
-                stb=stb,
-            ).sink_parquet(
-                output_dir/f"{bam_file.stem}_gene_stats.parquet",
-                compression='zstd',
-                engine='streaming',
-            )
-    
+        finish_profile_outputs(
+            output_dir / f"{bam_file.stem}_profile.parquet", gene_range_table_path,
+            bam_file=bam_file, collect_codons=collect_codons, min_mapq=min_mapq,
+            min_baseq=min_baseq, min_read_ani=min_read_ani,
+            read_inclusion=read_inclusion, min_freq=min_freq, allele_integration=allele_integration,
+            reference_id=runtime_reference_id,
+        )
+
     if read_loc_pfs:
         read_loc_df = pl.concat(read_loc_pfs).rename(
             {
@@ -1462,12 +1525,18 @@ def profile_bam_in_chunks(
     )
 
     if mpile_container and read_loc_pfs:
+        depth_files = [path for chunk_id in range(len(bed_chunk_files))
+                       if (path := output_dir/"tmp"/f"{effective_bam_file.stem}_{chunk_id}.depth.parquet").exists()]
         utils.get_genome_stats(
             profile=mpileup_df,
             read_loc_table=read_loc_df,
             stb=stb,
             bed=bed_lf,
-        ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming')
+            raw_depth=pl.scan_parquet(depth_files) if depth_files else None,
+        ).sink_parquet(output_dir/f"{bam_file.stem}_genome_stats.parquet", compression='zstd', engine='streaming',
+                       metadata={key: value for key, value in
+                                 utils._read_custom_parquet_metadata(output_dir/f"{bam_file.stem}_profile.parquet").items()
+                                 if key != PROFILE_SORTED_METADATA_KEY})
     
     
     shutil.rmtree(output_dir / "tmp", ignore_errors=True)
@@ -1485,9 +1554,11 @@ def profile_bam(
     profile_contract: Optional[dict[str, str]] = None,
     min_mapq: int = PROFILE_MIN_MAPQ_DEFAULT,
     min_baseq: int = PROFILE_MIN_BASEQ_DEFAULT,
-    min_read_ani: float | None = None,
-    read_inclusion: str = READ_INCLUSION_ALL_MAPPED,
+    min_read_ani: float | None = PROFILE_MIN_READ_ANI_DEFAULT,
+    read_inclusion: str = PROFILE_READ_INCLUSION_DEFAULT,
     min_freq: float = PROFILE_MIN_FREQ_DEFAULT,
+    collect_codons: bool = False,
+    allele_integration: str = "consensus",
 )->None:
     """
     Profile a BAM file in chunks using provided BED files.
@@ -1520,6 +1591,8 @@ def profile_bam(
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
         min_freq=min_freq,
+        collect_codons=collect_codons,
+        allele_integration=allele_integration,
     )
 
 
@@ -1534,7 +1607,7 @@ def profile_bam(
 # File names used inside the profiling-assets directory. These match the names
 # produced by the `prepare_profiling` utility so the two paths are compatible.
 ASSET_BED_FILENAME = "genomes_bed_file.bed"
-ASSET_GENE_RANGE_FILENAME = "gene_range_table.tsv"
+ASSET_GENE_RANGE_FILENAME = "gene_info.parquet"
 ASSET_GENOME_LENGTH_FILENAME = "genome_lengths.parquet"
 ASSET_NULL_MODEL_FILENAME = "null_model.parquet"
 ASSET_CONTRACT_FILENAME = "profiling_contract.json"
@@ -1596,14 +1669,8 @@ def prepare_profiling_assets(
     bed_df.write_csv(bed_path, separator="\t", include_header=False)
 
     gene_range_path = output_dir / ASSET_GENE_RANGE_FILENAME
-    if gene_fasta is None:
-        empty_gene_range_table().sink_csv(
-            gene_range_path, separator="\t", include_header=False
-        )
-    else:
-        build_gene_range_table(pathlib.Path(gene_fasta)).write_csv(
-            gene_range_path, separator="\t", include_header=False
-        )
+    from zipstrain.gene_info import write_gene_info
+    write_gene_info(reference_fasta, gene_fasta, stb_file, gene_range_path)
 
     stb = read_stb(stb_file)
     genome_length_path = output_dir / ASSET_GENOME_LENGTH_FILENAME
@@ -1658,6 +1725,8 @@ def _build_cache_manifest(
 ) -> dict[str, object]:
     """Build the cache manifest describing the inputs used to generate assets."""
     return {
+        "profile_schema": "2",
+        "annotation_id_policy": "sha256-u64-v1",
         "reference": _file_signature(reference_fasta),
         "stb": _file_signature(stb_file),
         "gene": _file_signature(gene_fasta) if gene_fasta is not None else None,
@@ -1699,6 +1768,7 @@ def _cached_assets_are_valid(
         for path in (
             assets.bed_file,
             assets.gene_range_table,
+            assets.gene_range_table.with_name("reference_codons.parquet"),
             assets.genome_length_file,
             assets.null_model_file,
             assets.profiling_contract_file,

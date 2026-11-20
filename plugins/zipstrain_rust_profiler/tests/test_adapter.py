@@ -61,11 +61,12 @@ def test_adapter_passes_optional_inputs(tmp_path, monkeypatch):
     command = commands[0]
     for flag, expected in (
         ("--reference", request.reference_fasta),
-        ("--gene-range", request.gene_range_table),
         ("--profiling-contract", request.profiling_contract),
         ("--min-read-ani", 0.95),
     ):
         assert command[command.index(flag) + 1] == str(expected)
+    # Gene assets are consumed by ZipStrain's shared V2 finalizer, not Rust.
+    assert "--gene-range" not in command
 
 
 def test_adapter_respects_cpu_budget(tmp_path, monkeypatch):

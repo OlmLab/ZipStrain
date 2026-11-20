@@ -1,4 +1,4 @@
-use super::{allowed, writer, AnyResult, Args, Inputs};
+use super::{allowed, writer, AnyResult, Args, Inputs, RawDepth};
 use arrow_array::{
     ArrayRef, Float64Array, Int32Array, Int64Array, LargeStringArray, RecordBatch, UInt8Array,
 };
@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 #[derive(Default)]
 struct Counts {
+    // Positions with any read, their summed depth and its histogram, before the error
+    // filter. Every other field counts retained alleles.
     sites: i64,
     bases: i64,
     depth_histogram: BTreeMap<i32, i64>,
@@ -23,20 +25,15 @@ struct Counts {
 }
 
 impl Counts {
-    fn add(&mut self, bases: [i32; 4], reference: Option<u8>, genome: bool) {
+    fn add(&mut self, bases: [i32; 4], reference: Option<u8>) {
         let depth: i32 = bases.iter().sum();
-        self.sites += 1;
-        self.bases += i64::from(depth);
-        if genome {
-            *self.depth_histogram.entry(depth).or_default() += 1;
-            if depth >= 5 {
-                self.deep_sites += 1;
-            }
-            if depth > 5 {
-                self.hetero_denominator += 1;
-                if (*bases.iter().max().unwrap_or(&0) as f64 / depth as f64) <= 0.8 {
-                    self.hetero_sites += 1;
-                }
+        if depth >= 5 {
+            self.deep_sites += 1;
+        }
+        if depth > 5 {
+            self.hetero_denominator += 1;
+            if (*bases.iter().max().unwrap_or(&0) as f64 / depth as f64) <= 0.8 {
+                self.hetero_sites += 1;
             }
         }
         if let Some(mask) = reference {
@@ -55,14 +52,12 @@ impl Counts {
                 if bases[idx] == *bases.iter().max().unwrap_or(&0) {
                     self.ref_consensus_shared += 1;
                 }
-                if genome {
-                    let n = bases.iter().filter(|v| **v > 0).count();
-                    if n == 1 && bases[idx] == 0 {
-                        self.sns += 1;
-                    }
-                    if n >= 2 {
-                        self.snv += 1;
-                    }
+                let n = bases.iter().filter(|v| **v > 0).count();
+                if n == 1 && bases[idx] == 0 {
+                    self.sns += 1;
+                }
+                if n >= 2 {
+                    self.snv += 1;
                 }
             }
         }
@@ -106,7 +101,6 @@ impl Counts {
 #[derive(Default)]
 pub(super) struct Accumulator {
     genomes: HashMap<String, Counts>,
-    genes: HashMap<(String, String), Counts>,
 }
 
 impl Accumulator {
@@ -126,15 +120,14 @@ impl Accumulator {
                 .ok_or_else(|| "wrong integer column".into())
         };
         let genomes = strings(1)?;
-        let genes = strings(2)?;
-        let a = ints(4)?;
-        let c = ints(5)?;
-        let g = ints(6)?;
-        let t = ints(7)?;
+        let a = ints(3)?;
+        let c = ints(4)?;
+        let g = ints(5)?;
+        let t = ints(6)?;
         let reference = if with_ref {
             Some(
                 batch
-                    .column(8)
+                    .column(7)
                     .as_any()
                     .downcast_ref::<UInt8Array>()
                     .ok_or("wrong reference column")?,
@@ -148,15 +141,22 @@ impl Accumulator {
             self.genomes
                 .entry(genomes.value(i).to_owned())
                 .or_default()
-                .add(bases, mask, true);
-            if genes.value(i) != "NA" {
-                self.genes
-                    .entry((genomes.value(i).to_owned(), genes.value(i).to_owned()))
-                    .or_default()
-                    .add(bases, mask, false);
-            }
+                .add(bases, mask);
         }
         Ok(())
+    }
+
+    /// Record each genome's unfiltered depth, which gives its coverage, breadth and BER.
+    pub(super) fn set_raw_depth(&mut self, raw_depth: RawDepth) {
+        for (genome, histogram) in raw_depth {
+            let counts = self.genomes.entry(genome).or_default();
+            counts.sites = histogram.values().sum();
+            counts.bases = histogram
+                .iter()
+                .map(|(depth, sites)| i64::from(*depth) * sites)
+                .sum();
+            counts.depth_histogram = histogram;
+        }
     }
 
     pub(super) fn write_stats(
@@ -165,63 +165,7 @@ impl Accumulator {
         inputs: &Inputs,
         stem: &str,
     ) -> AnyResult<()> {
-        self.write_gene_stats(args, inputs, stem)?;
         self.write_genome_stats(args, inputs, stem)?;
-        Ok(())
-    }
-
-    fn write_gene_stats(&self, args: &Args, inputs: &Inputs, stem: &str) -> AnyResult<()> {
-        let with_ref = args.reference.is_some();
-        let mut fields = vec![
-            Field::new("genome", DataType::LargeUtf8, true),
-            Field::new("gene", DataType::LargeUtf8, true),
-            Field::new("length", DataType::Int64, true),
-            Field::new("breadth", DataType::Float64, true),
-            Field::new("coverage", DataType::Float64, true),
-        ];
-        if with_ref {
-            fields.push(Field::new("ref_ani", DataType::Float64, true));
-        }
-        let schema = Arc::new(Schema::new(fields));
-        let mut seen = BTreeMap::new();
-        for (chrom, genes) in &inputs.genes {
-            let genome = inputs.genome.get(chrom).map(String::as_str).unwrap_or("NA");
-            for gene in genes {
-                seen.insert(
-                    (genome.to_owned(), gene.name.clone()),
-                    i64::from(gene.end - gene.start + 1),
-                );
-            }
-        }
-        let mut genome = Vec::new();
-        let mut gene = Vec::new();
-        let mut length = Vec::new();
-        let mut breadth = Vec::new();
-        let mut coverage = Vec::new();
-        let mut ref_ani = Vec::new();
-        for ((g, n), len) in seen {
-            let counts = self.genes.get(&(g.clone(), n.clone()));
-            genome.push(g);
-            gene.push(n);
-            length.push(len);
-            breadth.push(counts.map_or(0.0, |c| c.sites as f64 / len as f64));
-            coverage.push(counts.map_or(0.0, |c| c.bases as f64 / len as f64));
-            ref_ani.push(counts.and_then(Counts::ref_ani));
-        }
-        let mut arrays: Vec<ArrayRef> = vec![
-            Arc::new(LargeStringArray::from(genome)),
-            Arc::new(LargeStringArray::from(gene)),
-            Arc::new(Int64Array::from(length)),
-            Arc::new(Float64Array::from(breadth)),
-            Arc::new(Float64Array::from(coverage)),
-        ];
-        if with_ref {
-            arrays.push(Arc::new(Float64Array::from(ref_ani)));
-        }
-        let output = args.output_dir.join(format!("{stem}_gene_stats.parquet"));
-        let mut w = writer(&output, schema.clone(), vec![])?;
-        w.write(&RecordBatch::try_new(schema, arrays)?)?;
-        w.close()?;
         Ok(())
     }
 
@@ -345,18 +289,42 @@ struct GapStats {
 struct GapScan {
     rn: i64,
     n_gaps: i64,
+    scaffolds: i64,
     sum: f64,
     sum_sq: f64,
     excess: f64,
 }
 
+impl GapScan {
+    /// Reads plus one end-of-scaffold position for each covered scaffold share the genome.
+    fn expected_gap(&self, genome_length: f64) -> f64 {
+        (genome_length / (self.rn + self.scaffolds) as f64).round()
+    }
+
+    fn add_gap(&mut self, pass: usize, gap: i64, genome_length: i64) {
+        let gap = gap as f64;
+        if pass == 0 {
+            self.n_gaps += 1;
+            self.sum += gap;
+            self.sum_sq += gap.powi(2);
+        } else {
+            let delta = self.expected_gap(genome_length as f64);
+            if gap > delta {
+                self.excess += gap - delta;
+            }
+        }
+    }
+}
+
 fn scan_read_gaps(args: &Args, inputs: &Inputs) -> AnyResult<HashMap<String, GapStats>> {
-    // Two scans avoid retaining every read start or gap in memory.
+    // Two scans avoid retaining every read start or gap in memory. Each covered scaffold also
+    // gains a final gap from its last read to its end, so a trailing uncovered region counts.
     let mut scans: HashMap<String, GapScan> = HashMap::new();
-    for pass in 0..2 {
+    for pass in 0..2_usize {
         let mut reader = bam::Reader::from_path(&args.bam)?;
         let header = reader.header().to_owned();
         let mut previous: HashMap<String, i64> = HashMap::new();
+        let mut scaffold_ends: HashMap<String, i64> = HashMap::new();
         for rec in reader.records() {
             let rec = rec?;
             if rec.flags() & 0x84 != 0 || !allowed(&rec, args) {
@@ -373,30 +341,32 @@ fn scan_read_gaps(args: &Args, inputs: &Inputs) -> AnyResult<HashMap<String, Gap
                 continue;
             }
             let genome = inputs.genome.get(chrom).map(String::as_str).unwrap_or("NA");
+            scaffold_ends.entry(chrom.to_owned()).or_insert_with(|| regions.iter().map(|r| r.end - r.start).sum());
             let gap = previous
                 .insert(chrom.to_owned(), left + 1)
                 .map(|p| left + 1 - p);
             let scan = scans.entry(genome.to_owned()).or_default();
             if pass == 0 {
                 scan.rn += 1;
-                if let Some(g) = gap {
-                    scan.n_gaps += 1;
-                    scan.sum += g as f64;
-                    scan.sum_sq += (g as f64).powi(2);
-                }
-            } else if let Some(g) = gap {
-                let len = *inputs.genome_lengths.get(genome).unwrap_or(&0) as f64;
-                let delta = (len / scan.rn as f64).round();
-                if (g as f64) > delta {
-                    scan.excess += g as f64 - delta;
-                }
             }
+            if let Some(g) = gap {
+                scan.add_gap(pass, g, *inputs.genome_lengths.get(genome).unwrap_or(&0));
+            }
+        }
+        for (chrom, last) in previous {
+            let genome = inputs.genome.get(&chrom).map(String::as_str).unwrap_or("NA");
+            let scan = scans.entry(genome.to_owned()).or_default();
+            if pass == 0 {
+                scan.scaffolds += 1;
+            }
+            let end = scaffold_ends[&chrom];
+            scan.add_gap(pass, end - last, *inputs.genome_lengths.get(genome).unwrap_or(&0));
         }
     }
     let mut out = HashMap::new();
     for (genome, scan) in scans {
         let length = *inputs.genome_lengths.get(&genome).unwrap_or(&0) as f64;
-        let delta = (length / scan.rn as f64).round();
+        let delta = scan.expected_gap(length);
         let mean = (scan.n_gaps > 0).then(|| scan.sum / scan.n_gaps as f64);
         let std = if scan.n_gaps > 1 {
             let variance =
@@ -405,8 +375,8 @@ fn scan_read_gaps(args: &Args, inputs: &Inputs) -> AnyResult<HashMap<String, Gap
         } else {
             None
         };
-        let fug = if scan.excess > 0.0 && scan.rn > 1 && delta > 0.0 {
-            Some(1.0 - scan.excess / (scan.rn - 1) as f64 / delta)
+        let fug = if scan.excess > 0.0 && delta > 0.0 {
+            Some(1.0 - scan.excess / scan.n_gaps as f64 / delta)
         } else {
             None
         };

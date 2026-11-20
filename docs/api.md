@@ -69,6 +69,10 @@ For usage patterns and examples, see the [Tutorial](./Tutorial.md) and the [CLI 
 
 ## Task Manager
 
+The [V2 development guide](./v2.md) documents the new annotation, observed-codon,
+gene-statistics, and explicit-input comparison functions, their schemas,
+selection formulas, and corresponding tests.
+
 For more advanced users, custom workflows can also be assembled through the task manager layer:
 
 :::zipstrain.task_manager

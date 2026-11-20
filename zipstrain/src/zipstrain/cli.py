@@ -1,30 +1,59 @@
 """
-zipstrain.utils
+zipstrain.cli
 ========================
 This module contains the command-line interface (CLI) implementation for the zipstrain application.
+
+Building the CLI imports only ``options`` and the libraries every command shares. Each
+ZipStrain module below loads the first time a command uses it, so a comparison job never
+loads the profiling, mapping or database code. Option defaults therefore come from
+:mod:`zipstrain.options`, never from those modules.
 """
-from zipstrain.resource_limits import configure_cli_threads
+from __future__ import annotations
+
+import importlib.util
+import sys
+
+from zipstrain.resource_limits import configure_cli_threads, available_cpus, batch_share
 
 configure_cli_threads()
 
 import click as click
-from zipstrain import __version__
-import zipstrain.utils as ut
-import zipstrain.compare as cp
-import zipstrain.profile as pf
-import zipstrain.profile_backends as profile_backends
-import zipstrain.task_manager as tm
-import zipstrain.database as db
-import zipstrain.build_db as bdb
-import zipstrain.matrix_pairs as mp
-import zipstrain.healthcheck as hc
-import zipstrain.mapping as mapping
-import zipstrain.matrix_workflow as matrix_workflow
+from zipstrain import __version__, options
+
+
+def _lazy_module(name: str):
+    """Return module ``name``, executing it only when one of its attributes is first used."""
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.find_spec(name)
+    spec.loader = importlib.util.LazyLoader(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    parent, _, child = name.rpartition(".")
+    setattr(sys.modules[parent], child, module)
+    return module
+
+
+ut = _lazy_module("zipstrain.utils")
+cp = _lazy_module("zipstrain.compare")
+pf = _lazy_module("zipstrain.profile")
+profile_backends = _lazy_module("zipstrain.profile_backends")
+tm = _lazy_module("zipstrain.task_manager")
+db = _lazy_module("zipstrain.database")
+bdb = _lazy_module("zipstrain.build_db")
+mp = _lazy_module("zipstrain.matrix_pairs")
+hc = _lazy_module("zipstrain.healthcheck")
+mapping = _lazy_module("zipstrain.mapping")
+matrix_workflow = _lazy_module("zipstrain.matrix_workflow")
 from zipstrain.run_logger import RunLogger
 import polars as pl
+import contextlib
+import math
+import os
 import pathlib
 import shutil
-import sys
+import tempfile
 import time
 from rich.console import Console
 from rich.panel import Panel
@@ -33,6 +62,42 @@ from rich import box
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn, TaskProgressColumn
 
 DEFAULT_CONTAINER_REPOSITORY = "parsaghadermazi/zipstrain"
+
+
+THREADS_HELP = ("Maximum CPUs this command uses in total, shared out internally. "
+                "Defaults to the Slurm allocation, or every CPU on this machine.")
+
+
+def threads_option(function):
+    """Add ``--threads``, which :func:`configure_cli_threads` already read before Polars loaded."""
+    return click.option("--threads", type=click.IntRange(min=1), default=None, help=THREADS_HELP)(function)
+
+
+def _load_slurm_config(path, threads=None):
+    """Load a Slurm config; ``--threads`` fills in ``cpus-per-task`` when the config has none."""
+    config = tm.SlurmConfig.from_json(path)
+    if threads is not None:
+        config.additional_params.setdefault("cpus-per-task", str(threads))
+    return config
+
+
+@contextlib.contextmanager
+def _local_batch_budget(execution_mode, max_concurrent_batches):
+    """While batches run, give each concurrent local batch an equal share of the budget
+    through the environment its scripts inherit, then restore it. Slurm jobs keep the budget
+    as is: each job has its own allocation."""
+    if execution_mode != "local":
+        yield
+        return
+    saved = os.environ.get("ZIPSTRAIN_CPU_BUDGET")
+    os.environ["ZIPSTRAIN_CPU_BUDGET"] = str(batch_share(max_concurrent_batches))
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("ZIPSTRAIN_CPU_BUDGET", None)
+        else:
+            os.environ["ZIPSTRAIN_CPU_BUDGET"] = saved
 
 
 class SectionedCommand(click.Command):
@@ -241,7 +306,7 @@ def _finalize_profile_outputs(
             )
         if taxonomy is not None and "genome_taxonomy" not in stats.columns:
             stats = stats.join(taxonomy, on="genome", how="left")
-        stats.write_parquet(genome_stats_path)
+        stats.write_parquet(genome_stats_path, metadata=ut._read_custom_parquet_metadata(genome_stats_path))
 
     # Call SNPs/SNVs relative to the reference for each profile (needs a reference).
     if emit_snvs:
@@ -255,7 +320,7 @@ def _finalize_profile_outputs(
                     )
                 continue
             snv_path = profile_path.with_name(profile_path.name.replace("_profile.parquet", "_SNVs.parquet"))
-            pf.get_reference_snps(profile_lf, min_cov=snv_min_cov).sink_parquet(snv_path, compression="zstd")
+            pf.get_reference_snps(profile_lf, min_cov=snv_min_cov).sink_parquet(snv_path, compression="zstd", metadata=ut._read_custom_parquet_metadata(profile_path))
 
 
 def _default_container_address(engine_kind: str) -> str:
@@ -384,9 +449,9 @@ def _build_null_model_frame(error_rate: float, max_total_reads: int, p_threshold
     return pf._build_null_model_frame(error_rate, max_total_reads, p_threshold, model_type)
 
 @utilities.command("build-null-model")
-@click.option('--error-rate', '-e', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate for the sequencing technology.")
-@click.option('--max-total-reads', '-m', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage to consider for a base")
-@click.option('--p-threshold', '-p', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold for the Poisson distribution.")
+@click.option('--error-rate', '-e', default=options.NULL_MODEL_ERROR_RATE, show_default=True, help="Error rate for the sequencing technology.")
+@click.option('--max-total-reads', '-m', default=options.NULL_MODEL_MAX_COVERAGE, show_default=True, help="Maximum coverage to consider for a base")
+@click.option('--p-threshold', '-p', default=options.NULL_MODEL_P_THRESHOLD, show_default=True, help="Significance threshold for the Poisson distribution.")
 @click.option('--output-file', '-o', required=True, help="Path to save the output Parquet file.")
 @click.option('--model-type', '-t', default="poisson", type=click.Choice(['poisson']), help="Type of null model to build.")
 def build_null_model(error_rate, max_total_reads, p_threshold, output_file, model_type):
@@ -460,7 +525,7 @@ def parquet_to_csv(input_file, output_file, separator, no_header):
 @utilities.command("adjust-sequence-errors")
 @click.option('--profile-parquet', '-p', required=True, help="Input profile parquet file.")
 @click.option('--null-model', '-n', required=True, help="Null model parquet file.")
-@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
+@click.option('--min-freq', default=options.PROFILE_MIN_FREQ, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
 @click.option('--output-file', '-o', required=True, help="Path to save the sequence-adjusted profile parquet.")
 def adjust_sequence_errors(profile_parquet, null_model, min_freq, output_file):
     """
@@ -533,7 +598,7 @@ def merge_stat_tables(stat_table, output_file):
 @click.option('--output-file', '-o', required=True, help="Output parquet file with all non-redundant profile pairs.")
 @click.option('--write-batch-size', type=int, default=100000, show_default=True, help="How many pairs to buffer before writing a parquet row group.")
 def generate_sample_pair(profile_dir, output_file, write_batch_size):
-    """Generate a sample-pair table ready for chunk-genome-compare or other compare utilities."""
+    """Generate a sample-pair table ready for `utilities compare-pair --pair-table`."""
     def _emit_progress(message: str) -> None:
         click.echo(message, err=True)
         sys.stderr.flush()
@@ -551,53 +616,6 @@ def generate_sample_pair(profile_dir, output_file, write_batch_size):
     )
 
 
-@utilities.command("chunk-genome-compare")
-@click.option('--pair-table', '-p', required=True, help="Pair table parquet/csv/tsv with profile locations.")
-@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
-@click.option('--output-file', '-o', required=True, help="Path to save the merged genome comparison parquet.")
-@click.option('--workers', '-w', type=int, default=None, help="Parallel workers inside this compare chunk. Defaults to CPU count capped by pair count.")
-@click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=100, show_default=True, help="Minimum gene length to consider for comparison.")
-@click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
-@click.option('--ani-method', '-a', default="popani", show_default=True, help="ANI calculation method to use.")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all.")
-@click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
-@click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (for scoped filtering or duckdb engine).")
-@click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
-@click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def chunk_genome_compare(pair_table, stb_file, output_file, workers, min_cov, min_gene_compare_len, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
-    """Run classic genome compare over one pair-table chunk using Python-side parallel workers."""
-    def _emit_progress(message: str) -> None:
-        click.echo(message, err=True)
-        sys.stderr.flush()
-
-    summary = ut.chunk_genome_compare(
-        pair_table=pair_table,
-        output_file=output_file,
-        stb_file=stb_file,
-        workers=workers,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        genome_scope=genome,
-        ani_method=ani_method,
-        calculate=calculate,
-        engine=engine,
-        duckdb_memory_limit=duckdb_memory_limit,
-        duckdb_temp_directory=duckdb_temp_directory,
-        duckdb_threads=duckdb_threads,
-        progress_callback=_emit_progress,
-    )
-    click.echo(
-        f"wrote={summary['output_file']} "
-        f"pairs={summary['pairs']} "
-        f"rows={summary['rows']} "
-        f"workers={summary['workers']} "
-        f"elapsed_s={summary['elapsed_seconds']:.2f} "
-        f"avg_wall_s_per_pair={summary['avg_wall_seconds_per_pair']:.4f} "
-        f"avg_compute_s_per_pair={summary['avg_compute_seconds_per_pair']:.4f} "
-        f"avg_s_per_genome_row={summary['avg_seconds_per_genome_row']:.4f} "
-        f"avg_genome_rows_per_pair={summary['avg_genome_rows_per_pair']:.2f}"
-    )
 @utilities.command("get-snp-reference")
 @click.option('--profile-file', '-p', required=True, help="Path to the profile Parquet file.")
 @click.option('--min-cov', '-c', default=5, show_default=True, help="Minimum coverage required for a site to contribute.")
@@ -639,20 +657,20 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
 @click.option('--genome', '-g', default="all", show_default=True, help="Optional genome scope.")
 @click.option('--bed-file', '-b', required=True, help="BED file defining scaffold extents for the matrix contract.")
 @click.option('--stb-file', '-s', required=True, help="STB file defining scaffold-to-genome mapping for the matrix contract.")
-@click.option('--gene-range-table', default=None, help="Optional headerless TSV of gene, scaffold, start, end to store gene-coordinate ranges for gene ANI.")
+@click.option('--gene-info-table', '--gene-range-table', 'gene_range_table', default=None, help="Optional headerless TSV of gene, scaffold, start, end to store gene-coordinate ranges for gene ANI.")
 @click.option(
     '--storage-mode',
-    type=click.Choice(mp.MATRIX_STORAGE_MODES),
+    type=click.Choice(options.MATRIX_STORAGE_MODES),
     default=None,
     help="Storage representation. Omitted uses bitmask, unless --count-dtype is supplied for compatibility with older count-store commands.",
 )
 @click.option(
     '--count-dtype',
-    type=click.Choice(mp.MATRIX_COUNT_DTYPE_CHOICES),
+    type=click.Choice(options.MATRIX_COUNT_DTYPE_CHOICES),
     default=None,
     help="Count dtype for --storage-mode counts. auto selects uint16 or uint32 after checking all profiles.",
 )
-@click.option('--min-cov', type=int, default=mp.MATRIX_BUILD_MIN_COV, show_default=True, help="Build-time minimum coverage. Positions below it are stored as zero.")
+@click.option('--min-cov', type=int, default=options.COMPARE_MIN_COV, show_default=True, help="Build-time minimum coverage. Positions below it are stored as zero.")
 @click.option(
     '--memory-limit-gb',
     type=float,
@@ -663,7 +681,7 @@ def build_profile_db(profile_db_csv, output_file, allow_mismatch):
 @click.option(
     '--export-batch-mb',
     type=float,
-    default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    default=options.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB,
     show_default=True,
     help="Approximate matrix-store sample-axis chunk target size, in MiB.",
 )
@@ -773,7 +791,7 @@ def build_matrix_db(profile_dir, output_file, genome, bed_file, stb_file, gene_r
 @click.option(
     '--export-batch-mb',
     type=float,
-    default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    default=options.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB,
     show_default=True,
     help="Approximate matrix-store sample-axis chunk target size, in MiB, used when rewriting the store.",
 )
@@ -881,17 +899,17 @@ _COMPARE_KERNEL_HELP = (
 @click.option('--memory-limit-gb', type=float, default=16.0, show_default=True, help="Approximate memory budget for compare.")
 @click.option('--anchor-queue-size', type=int, default=1, show_default=True, help="Host-side torch anchor queue size. Only one anchor is transferred to the GPU at a time.")
 @click.option('--target-queue-size', type=int, default=1, show_default=True, help="Host-side torch target queue size. `1` keeps the current synchronous target-load behavior.")
-@click.option('--result-transfer-batch-size', type=int, default=mp.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE_DEFAULT, show_default=True, help="Maximum Torch compare units per transfer of genome/gene counts and requested IBS masks; capped at 16 units. Larger batches use more memory.")
+@click.option('--result-transfer-batch-size', type=int, default=options.MATRIX_COMPARE_RESULT_TRANSFER_BATCH_SIZE, show_default=True, help="Maximum Torch compare units per transfer of genome/gene counts and requested IBS masks; capped at 16 units. Larger batches use more memory.")
 @click.option(
     '--loader-executor',
-    type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
+    type=click.Choice(options.MATRIX_IO_EXECUTOR_KINDS),
     default="thread",
     show_default=True,
     help="Executor used for torch loader prefetch work.",
 )
 @click.option(
     '--writer-executor',
-    type=click.Choice(mp.MATRIX_IO_EXECUTOR_KINDS),
+    type=click.Choice(options.MATRIX_IO_EXECUTOR_KINDS),
     default="thread",
     show_default=True,
     help="Executor used for torch result writing/checkpoint work.",
@@ -899,14 +917,14 @@ _COMPARE_KERNEL_HELP = (
 @click.option('--calculate', default="all", show_default=True, help="Matrix metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all. All includes gene_ani when the matrix store has gene annotations.")
 @click.option(
     '--backend',
-    type=click.Choice(mp.MATRIX_PAIR_BACKENDS),
+    type=click.Choice(options.MATRIX_PAIR_BACKENDS),
     default="numpy",
     show_default=True,
     help="Compute backend. Torch backends use CPU/CUDA/MPS depending on selection.",
 )
 @click.option(
     '--compare-kernel',
-    default=mp.MATRIX_COMPARE_KERNEL_ANCHOR,
+    default=options.MATRIX_COMPARE_KERNEL_ANCHOR,
     show_default=True,
     metavar="[anchor|block]",
     callback=_normalize_compare_kernel_option,
@@ -1022,7 +1040,7 @@ def matrix_compare(
 @click.option(
     '--export-batch-mb',
     type=float,
-    default=mp.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB_DEFAULT,
+    default=options.MATRIX_HDF5_EXPORT_TARGET_BATCH_MB,
     show_default=True,
     help="Approximate target batch size, in MiB, for streaming sample matrices from DuckDB into HDF5.",
 )
@@ -1124,7 +1142,7 @@ def matrix_compare_export(matrix_compare_db_file, output_file, result_table):
 
 
 @utilities.command("build-genome-db")
-@click.option('--tool', '-t', required=True, type=click.Choice(sorted(bdb.ADAPTERS.keys())), help="Abundance tool format to parse (for example, sylph).")
+@click.option('--tool', '-t', required=True, type=click.Choice(options.ABUNDANCE_TOOLS), help="Abundance tool format to parse (for example, sylph).")
 @click.option('--abundance-table', '-a', required=True, help="Path to abundance table (csv/tsv/parquet).")
 @click.option('--cache-dir', '-c', required=True, help="Genome cache directory. Reuses already-downloaded genomes.")
 @click.option('--output-dir', '-o', required=True, help="Directory where concatenated reference FASTA and STB are written.")
@@ -1303,8 +1321,8 @@ def to_complete_table(profile_db, comp_db_file, output_file):
         profile_db=db.ProfileDatabase(pathlib.Path(profile_db)),
         config=db.GenomeComparisonConfig(
             scope="all",
-            min_cov=5,
-            min_gene_compare_len=100,
+            min_cov=options.COMPARE_MIN_COV,
+            min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
             stb_file_loc=None,
         ),
         comp_db_loc=comp_db_file,
@@ -1396,6 +1414,211 @@ def generate_stb(genomes_dir_file, output_file, extension):
     
 
 
+_SKIP_INPUT_VALIDATION_HELP = (
+    "Trust input contents: skip content hashing and codon-row validation. "
+    "Schema and metadata compatibility checks remain. Resume uses file attributes instead of content hashes."
+)
+
+
+def _write_v2_pair(profile_1, profile_2, preprofile_dir, output_file, *, calculate, ani_method, min_cov,
+                   min_gene_compare_len, codon_counts_1=None, codon_counts_2=None,
+                   allele_integration=options.ALLELE_INTEGRATION, sample_1=None, sample_2=None,
+                   genome="all", gene="all", validate_inputs=True):
+    """Compare one V2 pair and write its table atomically, for every command that runs a pair.
+
+    Codon tables default to the ``<sample>_codon_counts.parquet`` beside each profile.
+    ``gene`` limits gene rows to one gene name or ID.
+    """
+    from zipstrain import codons, gene_info as gi
+
+    def codon_table(explicit, profile):
+        if explicit is not None:
+            return explicit
+        sibling = codons.sibling_codon_table(profile)
+        return sibling if sibling is not None and sibling.exists() else None
+
+    try:
+        result = cp.compare_profiles(profile_1, profile_2, preprofile_dir=preprofile_dir,
+            calculate=calculate, ani_method=ani_method, min_cov=min_cov,
+            min_gene_compare_len=min_gene_compare_len,
+            codon_counts_1=codon_table(codon_counts_1, profile_1),
+            codon_counts_2=codon_table(codon_counts_2, profile_2),
+            sample_1=sample_1, sample_2=sample_2, allele_integration=allele_integration,
+            validate_inputs=validate_inputs)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if genome != "all":
+        result = result.filter(pl.col("genome") == genome)
+    gene_rows = "gene_id" in result.collect_schema()
+    if gene != "all":
+        if not gene_rows:
+            raise click.UsageError("A GENOME:GENE scope needs a gene metric in --calculate.")
+        ids = gi.read_gene_info(pathlib.Path(preprofile_dir)/"gene_info.parquet").filter(
+            (pl.col("gene") == gene) | (pl.col("gene_id").cast(pl.String) == gene))["gene_id"]
+        result = result.filter(pl.col("gene_id").is_in(ids.implode()))
+    calculated = cp.metrics_in_frame(result)
+    selection_method = codons.METHOD if "gene_selection" in calculated else "not_calculated"
+    metadata = {gi.SCHEMA_KEY: "2", "zipstrain_compare_ani_method": ani_method,
+                "zipstrain_allele_integration": allele_integration, "zipstrain_selection_method": selection_method}
+    if preprofile_dir is not None:
+        metadata.update(gi.validate_profile_assets([profile_1, profile_2], pathlib.Path(preprofile_dir)/"gene_info.parquet"))
+    metadata.update({"zipstrain_compare_reference_id": metadata.get(gi.REFERENCE_ID, "NA"),
+                     "zipstrain_compare_annotation_id": metadata.get(gi.ANNOTATION_ID, "NA"),
+                     "zipstrain_compare_min_cov": str(min_cov),
+                     "zipstrain_compare_min_gene_compare_len": str(min_gene_compare_len) if gene_rows else "NA",
+                     "zipstrain_compare_allele_integration": allele_integration,
+                     "zipstrain_compare_selection_method": selection_method,
+                     "zipstrain_compare_calculate": "+".join(calculated),
+                     ut.COMPARE_ENGINE_METADATA_KEY: "table",
+                     "zipstrain_compare_kind": "gene" if gene_rows else "genome"})
+    output = pathlib.Path(output_file)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output.parent) as staging:
+        temporary = pathlib.Path(staging) / output.name
+        result.sink_parquet(temporary, engine="streaming", compression="zstd", metadata=metadata)
+        temporary.replace(output)
+
+
+def _split_scope(scope):
+    """Return ``(genome, gene)`` from 'all', 'GENOME', or 'GENOME:GENE'."""
+    genome, _, gene = scope.partition(":")
+    return genome or "all", gene or "all"
+
+
+def _write_v1_pair(profile_1, profile_2, output_file, *, calculate, scope, stb_file, min_cov,
+                   min_gene_compare_len, ani_method, sample_1=None, sample_2=None):
+    """Compare one pair of 1.x profiles, or V2 profiles without shared assets (genome rows only).
+
+    With 1.x profiles, ``gene_ani`` on its own gives the legacy per-gene table.
+    """
+    try:
+        cp.require_same_profile_generation((profile_1, profile_2))
+        named = options.explicit_metrics(calculate)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    genome_scope, gene_scope = _split_scope(scope)
+    names = (sample_1 or ut.infer_sample_name_from_profile(profile_1),
+             sample_2 or ut.infer_sample_name_from_profile(profile_2))
+    gene_route = bool(set(named) & set(options.GENE_METRICS)) and not cp.profile_is_gene_free(profile_1)
+    if gene_route:
+        if named != ("gene_ani",):
+            raise click.UsageError("With 1.x profiles, gene_ani writes a separate per-gene table. "
+                                   "Request it on its own; gene_selection needs V2 profiles and --preprofile-dir.")
+        first, second = profile_1, profile_2
+        if genome_scope != "all" or gene_scope != "all":
+            first, second = cp.polars_prefilter_by_scope(mpile1=profile_1, mpile2=profile_2,
+                                                         genome_scope=genome_scope, gene_scope=gene_scope)
+        frame = cp.compare_genes(mpile_contig_1=first, mpile_contig_2=second, min_cov=min_cov,
+                                 min_gene_compare_len=min_gene_compare_len, genome_scope=genome_scope,
+                                 gene_scope=gene_scope, ani_method=ani_method,
+        ).with_columns(sample_1=pl.lit(names[0]), sample_2=pl.lit(names[1])).select(
+            "genome", "gene", "total_positions", "share_allele_pos", "ani", "sample_1", "sample_2")
+        kind, recorded_scope = "gene", f"{genome_scope}:{gene_scope}"
+    else:
+        if gene_scope != "all":
+            raise click.UsageError("A GENOME:GENE scope needs a gene metric in --calculate.")
+        try:
+            frame = cp.compare_genomes(mpile_contig_1=profile_1, mpile_contig_2=profile_2, min_cov=min_cov,
+                                       min_gene_compare_len=min_gene_compare_len, genome_scope=genome_scope,
+                                       ani_method=ani_method, stb_file=stb_file, calculate=calculate,
+            ).with_columns(sample_1=pl.lit(names[0]), sample_2=pl.lit(names[1]))
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+        kind, recorded_scope = "genome", genome_scope
+    metadata = ut.build_single_compare_metadata(
+        profile_1, profile_2, compare_kind=kind, scope=recorded_scope, min_cov=min_cov,
+        min_gene_compare_len=min_gene_compare_len, engine="polars", uses_stb=stb_file is not None,
+        ani_method=ani_method)
+    frame.sink_parquet(output_file, engine="streaming", compression="zstd", metadata=metadata)
+
+
+def _write_pair_table(pair_table, output_file, *, calculate, scope, stb_file, workers, min_cov,
+                      min_gene_compare_len, ani_method):
+    """Compare every pair in a table in one process, with Python-side workers (genome rows only)."""
+    def _emit_progress(message: str) -> None:
+        click.echo(message, err=True)
+        sys.stderr.flush()
+
+    genome_scope, gene_scope = _split_scope(scope)
+    if gene_scope != "all":
+        raise click.UsageError("--pair-table compares genomes, so --scope takes a genome, not GENOME:GENE.")
+    try:
+        summary = ut.chunk_genome_compare(
+            pair_table=pair_table, output_file=output_file, stb_file=stb_file, workers=workers,
+            min_cov=min_cov, min_gene_compare_len=min_gene_compare_len, genome_scope=genome_scope,
+            ani_method=ani_method, calculate=calculate, progress_callback=_emit_progress)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    click.echo(
+        f"wrote={summary['output_file']} "
+        f"pairs={summary['pairs']} "
+        f"rows={summary['rows']} "
+        f"workers={summary['workers']} "
+        f"elapsed_s={summary['elapsed_seconds']:.2f} "
+        f"avg_wall_s_per_pair={summary['avg_wall_seconds_per_pair']:.4f} "
+        f"avg_compute_s_per_pair={summary['avg_compute_seconds_per_pair']:.4f} "
+        f"avg_s_per_genome_row={summary['avg_seconds_per_genome_row']:.4f} "
+        f"avg_genome_rows_per_pair={summary['avg_genome_rows_per_pair']:.2f}"
+    )
+
+
+@utilities.command("compare-pair")
+@click.option("--skip-input-validation", is_flag=True, help=_SKIP_INPUT_VALIDATION_HELP)
+@click.option('--profile-1', '--profile-location-1', 'profile_1', default=None, type=click.Path(exists=True), help="First profile parquet.")
+@click.option('--profile-2', '--profile-location-2', 'profile_2', default=None, type=click.Path(exists=True), help="Second profile parquet.")
+@click.option('--pair-table', '-p', default=None, type=click.Path(exists=True), help="Instead of one pair, compare every pair in this parquet/csv/tsv (sample_name_1, sample_name_2, profile_location_1, profile_location_2) in one process. Genome metrics only.")
+@click.option('--output-file', '-o', required=True, help="Comparison parquet to write.")
+@click.option('--calculate', default=options.CALCULATE, show_default=True, help=options.CALCULATE_HELP + " Any gene metric gives one row per gene.")
+@click.option('--scope', '-g', default="all", show_default=True, help="'all', one genome, or GENOME:GENE to limit gene rows (for example genomeA:all).")
+@click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="V2 shared profiling_assets directory. Required for V2 gene metrics.")
+@click.option('--stb-file', '-s', default=None, help="Scaffold-to-genome mapping, used without --preprofile-dir: every genome in it gets a row, where otherwise only genomes with comparable loci do. With --preprofile-dir the catalog lists the genomes.")
+@click.option('--min-cov', '-c', default=options.COMPARE_MIN_COV, show_default=True, type=click.IntRange(min=1), help="Minimum coverage to consider a position.")
+@click.option('--min-gene-compare-len', '-l', default=options.MIN_GENE_COMPARE_LEN, show_default=True, type=click.IntRange(min=1), help=options.MIN_GENE_COMPARE_LEN_HELP)
+@click.option('--ani-method', '-a', default=options.ANI_METHOD, show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option('--codon-counts-1', default=None, type=click.Path(exists=True), help="V2 codon table for the first sample. Defaults to the <sample>_codon_counts.parquet beside the profile.")
+@click.option('--codon-counts-2', default=None, type=click.Path(exists=True), help="V2 codon table for the second sample. Defaults to the <sample>_codon_counts.parquet beside the profile.")
+@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
+@click.option('--sample-name-1', default=None, help="Sample label. Defaults to the name in the first profile's filename.")
+@click.option('--sample-name-2', default=None, help="Sample label. Defaults to the name in the second profile's filename.")
+@threads_option
+@click.option('--workers', '-w', type=click.IntRange(min=1), default=None, hidden=True, help="Advanced, with --pair-table: pairs compared at once. Defaults to what --threads allows.")
+def compare_pair(profile_1, profile_2, pair_table, output_file, calculate, scope, preprofile_dir, stb_file,
+                 min_cov, min_gene_compare_len, ani_method, codon_counts_1, codon_counts_2, allele_integration,
+                 sample_name_1, sample_name_2, threads, workers, skip_input_validation):
+    """Compare one sample pair and write its comparison Parquet.
+
+    This is the unit ``zipstrain compare``, Slurm, and Nextflow schedule.
+    ``--calculate`` decides the rows: one per genome, or one per qualifying
+    gene when any gene metric is requested. V2 profiles use ``--preprofile-dir``
+    for gene metrics; 1.x profiles take ``gene_ani`` on its own.
+    """
+    if pair_table is not None:
+        single_only = {"--profile-1": profile_1, "--profile-2": profile_2, "--preprofile-dir": preprofile_dir,
+                       "--codon-counts-1": codon_counts_1, "--codon-counts-2": codon_counts_2,
+                       "--sample-name-1": sample_name_1, "--sample-name-2": sample_name_2}
+        if given := [name for name, value in single_only.items() if value is not None]:
+            raise click.UsageError(f"{', '.join(given)} cannot be combined with --pair-table.")
+        _write_pair_table(pair_table, output_file, calculate=calculate, scope=scope, stb_file=stb_file,
+                          workers=workers, min_cov=min_cov, min_gene_compare_len=min_gene_compare_len,
+                          ani_method=ani_method)
+        return
+    if profile_1 is None or profile_2 is None:
+        raise click.UsageError("Give --profile-1 and --profile-2, or --pair-table.")
+    if workers is not None:
+        raise click.UsageError("--workers applies to --pair-table only.")
+    if preprofile_dir is not None:
+        genome_scope, gene_scope = _split_scope(scope)
+        _write_v2_pair(profile_1, profile_2, preprofile_dir, output_file, calculate=calculate,
+                       ani_method=ani_method, min_cov=min_cov, min_gene_compare_len=min_gene_compare_len,
+                       codon_counts_1=codon_counts_1, codon_counts_2=codon_counts_2,
+                       allele_integration=allele_integration, sample_1=sample_name_1, sample_2=sample_name_2,
+                       genome=genome_scope, gene=gene_scope, validate_inputs=not skip_input_validation)
+        return
+    _write_v1_pair(profile_1, profile_2, output_file, calculate=calculate, scope=scope, stb_file=stb_file,
+                   min_cov=min_cov, min_gene_compare_len=min_gene_compare_len, ani_method=ani_method,
+                   sample_1=sample_name_1, sample_2=sample_name_2)
+
+
 @utilities.command("gene-range-table")
 @click.option('--gene-file', '-g', required=True, help="location of gene file. Prodigal's nucleotide fasta output")
 @click.option('--output-file', '-o', required=True, help="location to save output tsv file")
@@ -1411,210 +1634,13 @@ def get_gene_range_table(gene_file, output_file):
     gene_locs.write_csv(pathlib.Path(output_file), separator="\t", include_header=False)
 
 
-@utilities.command("single_compare_genome")
-@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
-@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
-@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. When provided, all genomes from the mapping appear in the output; otherwise only genomes with comparable loci are reported.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
-@click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
-@click.option('--genome', '-g', default="all", help="If provided, do the comparison only for the specified genome.")
-@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--calculate', default="all", show_default=True, help="Genome metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all.")
-@click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
-@click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
-@click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
-@click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_genome(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, genome, ani_method, calculate, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
-    """
-    Compare two profile parquets and calculate genome-level comparison statistics.
-    
-    Args:
-    profile_location_1 (str): Path to the first profile parquet.
-    profile_location_2 (str): Path to the second profile parquet.
-    min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    output_file (str): Path to save the parquet file.
-    genome (str): If provided, do the comparison only for the specified genome.
-    stb_file (str): Optional path to the scaffold to genome mapping file.
-    """
-    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
-    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
-    if duckdb_threads is not None and duckdb_threads < 1:
-        raise ValueError("--duckdb-threads must be >= 1")
-    calculations = cp.parse_genome_calculations(calculate)
-    output_cols = cp.genome_metric_output_columns(calculations)
-    compare_metadata = ut.build_single_compare_metadata(
-        profile_location_1,
-        profile_location_2,
-        compare_kind="genome",
-        scope=genome,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        engine=engine,
-        uses_stb=stb_file is not None,
-        ani_method=ani_method,
-    )
-
-    profile_1_for_compare = profile_location_1
-    profile_2_for_compare = profile_location_2
-    if engine == "polars" and genome != "all":
-        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
-            genome_scope=genome,
-        )
-
-    if engine == "duckdb":
-        cp.duckdb_compare_genomes_to_parquet(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
-            output_file=output_file,
-            stb_file=stb_file,
-            sample_1_name=profile_1_name,
-            sample_2_name=profile_2_name,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            genome_scope=genome,
-            ani_method=ani_method,
-            calculate=calculations,
-            memory_limit=duckdb_memory_limit,
-            temp_directory=duckdb_temp_directory,
-            threads=duckdb_threads,
-        )
-        ut.rewrite_parquet_with_metadata(output_file, compare_metadata)
-        return
-
-    comp = cp.compare_genomes(
-        mpile_contig_1=profile_1_for_compare,
-        mpile_contig_2=profile_2_for_compare,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        genome_scope=genome,
-        ani_method=ani_method,
-        duckdb_memory_limit=duckdb_memory_limit,
-        duckdb_temp_directory=duckdb_temp_directory,
-        duckdb_threads=duckdb_threads,
-        engine="polars",
-        stb_file=stb_file,
-        calculate=calculations,
-    ).with_columns(
-        sample_1=pl.lit(profile_1_name),
-        sample_2=pl.lit(profile_2_name),
-    ).select(output_cols + ["sample_1", "sample_2"])
-    comp.sink_parquet(output_file, compression='zstd', metadata=compare_metadata)
-
-@utilities.command("single_compare_gene")
-@click.option('--profile-location-1', '--profile-1', required=True, help="Path to the first profile parquet.")
-@click.option('--profile-location-2', '--profile-2', required=True, help="Path to the second profile parquet.")
-@click.option('--stb-file', '-s', required=False, default=None, help="Optional scaffold-to-genome mapping file. Currently unused for gene compare, and accepted for workflow consistency.")
-@click.option('--min-cov', '-c', default=5, help="Minimum coverage to consider a position.")
-@click.option('--min-gene-compare-len', '-l', default=100, help="Minimum gene length to consider for comparison.")
-@click.option('--output-file', '-o', required=True, help="Path to save the parquet file.")
-@click.option('--scope', '-g', default="all:all", help="If provided, do the comparison only for the specified genome-gene pair.")
-@click.option('--ani-method', '-a', default="popani", help="ANI calculation method to use (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option('--engine', type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Execution engine for compare.")
-@click.option('--duckdb-memory-limit', default=None, help="DuckDB memory limit (e.g., 2GB, 1024MB).")
-@click.option('--duckdb-temp-directory', default=None, help="Directory DuckDB can use for spill files.")
-@click.option('--duckdb-threads', type=int, default=None, help="Number of DuckDB worker threads.")
-def single_compare_gene(profile_location_1, profile_location_2, stb_file, min_cov, min_gene_compare_len, output_file, scope, ani_method, engine, duckdb_memory_limit, duckdb_temp_directory, duckdb_threads):
-    """
-    Compare two profile parquets and calculate gene-level comparison statistics.
-    
-    Args:
-    profile_location_1 (str): Path to the first profile parquet.
-    profile_location_2 (str): Path to the second profile parquet.
-    stb_file (str | None): Optional path to the scaffold to genome mapping file.
-    min_cov (int): Minimum coverage to consider a position.
-    min_gene_compare_len (int): Minimum gene length to consider for comparison.
-    output_file (str): Path to save the parquet file.
-    scope (str): If provided, do the comparison only for the specified genome-gene pair.
-    ani_method (str): ANI calculation method to use.
-    """
-
-    profile_1_name = ut.infer_sample_name_from_profile(profile_location_1)
-    profile_2_name = ut.infer_sample_name_from_profile(profile_location_2)
-    if duckdb_threads is not None and duckdb_threads < 1:
-        raise ValueError("--duckdb-threads must be >= 1")
-
-    _ = stb_file
-    if ":" not in scope:
-        raise ValueError("scope must be in 'GENOME:GENE' format (e.g., all:all).")
-    genome_scope, gene_scope = scope.split(":", 1)
-    compare_metadata = ut.build_single_compare_metadata(
-        profile_location_1,
-        profile_location_2,
-        compare_kind="gene",
-        scope=scope,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        engine=engine,
-        uses_stb=stb_file is not None,
-        ani_method=ani_method,
-    )
-
-    profile_1_for_compare = profile_location_1
-    profile_2_for_compare = profile_location_2
-    if engine == "polars" and (genome_scope != "all" or gene_scope != "all"):
-        profile_1_for_compare, profile_2_for_compare = cp.polars_prefilter_by_scope(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-        )
-
-    if engine == "duckdb":
-        cp.duckdb_compare_genes_to_parquet(
-            mpile1=profile_location_1,
-            mpile2=profile_location_2,
-            output_file=output_file,
-            sample_1_name=profile_1_name,
-            sample_2_name=profile_2_name,
-            min_cov=min_cov,
-            min_gene_compare_len=min_gene_compare_len,
-            genome_scope=genome_scope,
-            gene_scope=gene_scope,
-            ani_method=ani_method,
-            memory_limit=duckdb_memory_limit,
-            temp_directory=duckdb_temp_directory,
-            threads=duckdb_threads,
-        )
-        ut.rewrite_parquet_with_metadata(output_file, compare_metadata)
-        return
-
-    gene_comp = cp.compare_genes(
-        mpile_contig_1=profile_1_for_compare,
-        mpile_contig_2=profile_2_for_compare,
-        min_cov=min_cov,
-        min_gene_compare_len=min_gene_compare_len,
-        genome_scope=genome_scope,
-        gene_scope=gene_scope,
-        ani_method=ani_method,
-        duckdb_memory_limit=duckdb_memory_limit,
-        duckdb_temp_directory=duckdb_temp_directory,
-        duckdb_threads=duckdb_threads,
-        engine="polars",
-    ).with_columns(
-        sample_1=pl.lit(profile_1_name),
-        sample_2=pl.lit(profile_2_name),
-    ).select(
-        "genome",
-        "gene",
-        "total_positions",
-        "share_allele_pos",
-        "ani",
-        "sample_1",
-        "sample_2",
-    )
-    gene_comp.sink_parquet(output_file, compression='zstd', metadata=compare_metadata)
-
 @utilities.command("prepare_profiling", help="Prepare the files needed for profiling bam files and save them in the specified output directory.")
 @click.option('--reference-fasta', '-r', required=True, help="Path to the reference genome in FASTA format.")
 @click.option('--gene-fasta', '-g', default=None, help="Optional path to the gene annotations in FASTA format.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
-@click.option('--error-rate', '-e', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate for the sequencing technology when building the null model.")
-@click.option('--max-total-reads', '-m', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage to consider when building the null model.")
-@click.option('--p-threshold', '-p', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold for the null model.")
+@click.option('--error-rate', '-e', default=options.NULL_MODEL_ERROR_RATE, show_default=True, help="Error rate for the sequencing technology when building the null model.")
+@click.option('--max-total-reads', '-m', default=options.NULL_MODEL_MAX_COVERAGE, show_default=True, help="Maximum coverage to consider when building the null model.")
+@click.option('--p-threshold', '-p', default=options.NULL_MODEL_P_THRESHOLD, show_default=True, help="Significance threshold for the null model.")
 @click.option('--model-type', '-t', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Type of null model to build.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling database.")
 def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_total_reads, p_threshold, model_type, output_dir):
@@ -1642,18 +1668,21 @@ def prepare_profiling(reference_fasta, gene_fasta, stb_file, error_rate, max_tot
 @click.option('--bam-file', '-a', required=True, help="Path to the BAM file to be profiled.")
 @click.option('--stb-file', '-s', required=True, help="Path to the scaffold-to-genome mapping file.")
 @click.option('--null-model', '-m', required=True, help="Path to the null model parquet file.") 
-@click.option('--gene-range-table', '-g', default=None, help="Optional path to the gene range table.")
+@click.option('--gene-info-table', '--gene-range-table', '-g', 'gene_range_table', default=None, help="Optional preprofile gene_info.parquet catalog.")
 @click.option('--profiling-contract', default=None, help="Optional profiling_contract.json from prepare_profiling. When provided, its hashes are written into the profile parquet metadata.")
 @click.option('--num-chunks', '-n', default=24, show_default=True, help="Number of BED chunks to create for profiling.")
-@click.option('--max-concurrency', '-c', default=4, show_default=True, help="Maximum number of profiling chunks to run concurrently.")
-@click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
-@click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
-@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
-@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
+@threads_option
+@click.option('--max-concurrency', '-c', type=click.IntRange(min=1), default=None, hidden=True, help="Advanced: profiling chunks run at once. Defaults to what --threads allows.")
+@click.option('--min-mapq', default=options.PROFILE_MIN_MAPQ, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
+@click.option('--min-baseq', default=options.PROFILE_MIN_BASEQ, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-freq', default=options.PROFILE_MIN_FREQ, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
+@click.option('--min-read-ani', default=options.PROFILE_MIN_READ_ANI, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=options.PROFILE_READ_INCLUSION, show_default=True, type=click.Choice(options.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--output-dir', '-o', required=True, help="Directory to save the profiling output.")
+@click.option('--collect-codons', '--prepare-dnds', 'collect_codons', is_flag=True, default=False, help="Write observed read-phased codon counts and reference dN/dS and pN/pS in gene statistics.")
+@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default='consensus', show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
 @click.option('--backend', default='python', show_default=True, help="Profiling backend: python or an installed entry-point plugin (for example, rust_profiler).")
-def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, output_dir, backend):
+def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, gene_range_table, profiling_contract, num_chunks, threads, max_concurrency, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, output_dir, backend, collect_codons, allele_integration):
     """
     Profile a single BAM file using the provided BED file and optional gene range table.
     
@@ -1667,13 +1696,15 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
         null_model=pathlib.Path(null_model),
         profiling_contract=pathlib.Path(profiling_contract) if profiling_contract is not None else None,
         num_chunks=num_chunks,
-        max_concurrency=max_concurrency,
+        max_concurrency=max_concurrency or available_cpus(),
         min_mapq=min_mapq,
         min_baseq=min_baseq,
         min_freq=min_freq,
         min_read_ani=min_read_ani,
         read_inclusion=read_inclusion,
         output_dir=pathlib.Path(output_dir),
+        collect_codons=collect_codons,
+        allele_integration=allele_integration,
     )
     try:
         profile_backends.run_profile(request, backend_name=backend)
@@ -1686,7 +1717,7 @@ def profile_single(reference_fasta, bed_file, bam_file, stb_file, null_model, ge
 @click.option('--reference-fasta', '-f', default=None, help="Reference FASTA to map against. If omitted, Sylph automatically picks and builds a reference from the reads.")
 @click.option('--stb-file', '-s', default=None, help="Scaffold-to-genome mapping file. Required when --reference-fasta is provided.")
 @click.option('--sylph-db', default=None, help="Path to the Sylph database. Used when no --reference-fasta is given; downloaded from --sylph-db-url if the path does not exist.")
-@click.option('--sylph-db-url', default=mapping.DEFAULT_SYLPH_DB_URL, show_default=True, help="URL to download the Sylph database from when --sylph-db is missing.")
+@click.option('--sylph-db-url', default=options.SYLPH_DB_URL, show_default=True, help="URL to download the Sylph database from when --sylph-db is missing.")
 @click.option('--genome-cache-dir', default=None, help="Directory that caches genome FASTAs downloaded during Sylph-based reference building. Required when no --reference-fasta is given.")
 @click.option('--predict-genes', is_flag=True, default=False, show_default=True, help="Also run prodigal to emit a gene FASTA (for gene-level profiling via `profile --gene-fasta`).")
 @click.option('--non-competitive', is_flag=True, default=False, show_default=True, help="Pass -a to Bowtie2 for non-competitive mapping (report all alignments).")
@@ -1784,22 +1815,23 @@ map_command.option_sections = {
 @click.option('--run-dir', '-r', required=True, help="Directory to save the run data (sample outputs, profiling_assets, and logs).")
 @click.option('--null-model', '-u', default=None, help="Pre-built null model parquet file. Auto-generated into <run-dir>/profiling_assets if not provided.")
 @click.option('--gene-fasta', default=None, help="Gene FASTA. When provided, a gene range table is auto-generated from it for gene-level profiling.")
-@click.option('--gene-range-table', '-g', default=None, help="Pre-built gene range table file. Overrides --gene-fasta auto-generation.")
+@click.option('--gene-info-table', '--gene-range-table', '-g', 'gene_range_table', default=None, help="Pre-built gene_info.parquet catalog. Overrides --gene-fasta auto-generation.")
 @click.option('--profiling-contract', default=None, help="Pre-built profiling_contract.json. When provided, its hashes are written into each profile parquet metadata. Auto-generated otherwise.")
 @click.option('--bed-file', '-b', default=None, help="Pre-built BED file for profiling regions. Auto-generated into <run-dir>/profiling_assets if not provided.")
 @click.option('--genome-length-file', '-l', default=None, help="Pre-built genome length file. Auto-generated into <run-dir>/profiling_assets if not provided.")
-@click.option('--error-rate', default=ut.NULL_MODEL_ERROR_RATE_DEFAULT, show_default=True, help="Error rate used when auto-generating the null model.")
-@click.option('--max-total-reads', default=ut.NULL_MODEL_MAX_COVERAGE_DEFAULT, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
-@click.option('--p-threshold', default=ut.NULL_MODEL_P_THRESHOLD_DEFAULT, show_default=True, help="Significance threshold used when auto-generating the null model.")
+@click.option('--error-rate', default=options.NULL_MODEL_ERROR_RATE, show_default=True, help="Error rate used when auto-generating the null model.")
+@click.option('--max-total-reads', default=options.NULL_MODEL_MAX_COVERAGE, show_default=True, help="Maximum coverage considered when auto-generating the null model.")
+@click.option('--p-threshold', default=options.NULL_MODEL_P_THRESHOLD, show_default=True, help="Significance threshold used when auto-generating the null model.")
 @click.option('--model-type', default="poisson", show_default=True, type=click.Choice(['poisson']), help="Null model type used when auto-generating the null model.")
 @click.option('--force-prepare', is_flag=True, default=False, show_default=True, help="Regenerate all auto-generated profiling assets even if valid cached copies exist.")
-@click.option('--min-mapq', default=pf.PROFILE_MIN_MAPQ_DEFAULT, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
-@click.option('--min-baseq', default=pf.PROFILE_MIN_BASEQ_DEFAULT, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
-@click.option('--min-freq', default=pf.PROFILE_MIN_FREQ_DEFAULT, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
-@click.option('--min-read-ani', default=pf.PROFILE_MIN_READ_ANI_DEFAULT, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
-@click.option('--read-inclusion', default=pf.PROFILE_READ_INCLUSION_DEFAULT, show_default=True, type=click.Choice(pf.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
+@click.option('--min-mapq', default=options.PROFILE_MIN_MAPQ, show_default=True, type=int, help="Minimum mapping quality for a read to be used during profiling.")
+@click.option('--min-baseq', default=options.PROFILE_MIN_BASEQ, show_default=True, type=int, help="Minimum base quality for a base to be counted during profiling.")
+@click.option('--min-freq', default=options.PROFILE_MIN_FREQ, show_default=True, type=float, help="Minimum within-position allele frequency to retain after null-model filtering.")
+@click.option('--min-read-ani', default=options.PROFILE_MIN_READ_ANI, show_default=True, type=float, help="Minimum read ANI (from the NM tag / aligned span) to use a read; filters low-identity/mis-mapped reads. Reads lacking an NM tag are kept. Pass 0 to disable.")
+@click.option('--read-inclusion', default=options.PROFILE_READ_INCLUSION, show_default=True, type=click.Choice(options.PROFILE_READ_INCLUSION_CHOICES), help="Which mapped reads are eligible: 'paired' (inStrain-style paired_only) keeps a paired read only if its mate maps to the same scaffold, dropping half-mapped orphans and cross-scaffold pairs, while keeping genuinely single-end reads; 'proper-pairs' keeps only proper pairs; 'all-mapped' keeps every mapped read.")
 @click.option('--backend', default='python', show_default=True, help="Profiling backend: python or an installed entry-point plugin (for example, rust_profiler).")
-@click.option('--num-procs', '-n', default=8, show_default=True, help="Number of processors to use for each profiling task.")
+@threads_option
+@click.option('--num-procs', '-n', type=click.IntRange(min=1), default=None, hidden=True, help="Advanced: CPUs for each profiling task. Defaults to --threads shared between concurrent batches.")
 @click.option('--max-concurrent-batches', '-m', default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option('--poll-interval', '-p', default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
 @click.option('--task-per-batch', '-t', default=10, show_default=True, help="Number of tasks to include in each batch.")
@@ -1813,8 +1845,10 @@ map_command.option_sections = {
 @click.option('--presence-fug', default=1.0, show_default=True, help="FUG threshold for the present/absent call at low coverage. A genome is present when fug/0.632 exceeds this (fug ~ 0.632 under uniform coverage, so 1.0 means at least as uniform as random).")
 @click.option('--presence-min-cov-use-fug', default=2.0, show_default=True, help="Coverage above which the present/absent call uses BER alone (below it, FUG is also required).")
 @click.option('--presence-min-coverage', default=0.1, show_default=True, help="Minimum mean coverage required to call a genome present.")
+@click.option('--collect-codons', '--prepare-dnds', 'collect_codons', is_flag=True, default=False, help="Write observed read-phased codon counts and reference dN/dS and pN/pS in gene statistics.")
+@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default='consensus', show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
 @click.option('--genome-taxonomy', default=None, help="Optional genome->taxonomy TSV to add a genome_taxonomy column to genome_stats. Auto-discovered next to the reference/STB when produced by `zipstrain map` (Sylph route).")
-def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, backend, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy):
+def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene_range_table, profiling_contract, bed_file, genome_length_file, error_rate, max_total_reads, p_threshold, model_type, force_prepare, run_dir, threads, num_procs, max_concurrent_batches, poll_interval, execution_mode, slurm_config, container_engine, container_address, task_per_batch, min_mapq, min_baseq, min_freq, min_read_ani, read_inclusion, backend, no_snvs, snv_min_cov, presence_ber, presence_fug, presence_min_cov_use_fug, presence_min_coverage, genome_taxonomy, collect_codons, allele_integration):
     """
     Run BAM file profiling in batches using the specified execution mode and container engine.
 
@@ -1841,7 +1875,14 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
         if execution_mode == "slurm":
             if slurm_config is None:
                 raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+            slurm_conf = _load_slurm_config(slurm_config, threads)
+            # Each job's budget is capped by its own allocation, so this only needs to be large enough.
+            share = num_procs or threads or int(slurm_conf.additional_params.get("cpus-per-task", 1))
+        else:
+            samples = bams_lf.select(pl.len()).collect().item()
+            share = batch_share(max_concurrent_batches, math.ceil(samples / max(1, task_per_batch)))
+            share = min(num_procs, share) if num_procs else share
+        num_procs = share
 
         run_log.step("Resolving profiling assets")
         assets = pf.resolve_profiling_assets(
@@ -1882,6 +1923,8 @@ def profile(input_table, reference_fasta, stb_file, null_model, gene_fasta, gene
             min_read_ani=min_read_ani,
             read_inclusion=read_inclusion,
             backend=backend,
+            collect_codons=collect_codons,
+            allele_integration=allele_integration,
             tasks_per_batch=task_per_batch,
             max_concurrent_batches=max_concurrent_batches,
             poll_interval=poll_interval,
@@ -1932,6 +1975,8 @@ profile.option_sections = {
         "min_read_ani",
         "read_inclusion",
         "backend",
+        "collect_codons",
+        "allele_integration",
     ],
     "SNV calling and presence": [
         "no_snvs",
@@ -1943,7 +1988,7 @@ profile.option_sections = {
         "genome_taxonomy",
     ],
     "Running parameters": [
-        "num_procs",
+        "threads",
         "max_concurrent_batches",
         "poll_interval",
         "task_per_batch",
@@ -1966,14 +2011,16 @@ def _run_matrix_compare_method(
     backend,
     memory_limit_gb,
     min_cov,
-    compare_genes,
     ani_method,
-    calculate="all",
-    compare_kernel=mp.MATRIX_COMPARE_KERNEL_ANCHOR,
+    calculate=options.CALCULATE,
+    compare_kernel=options.MATRIX_COMPARE_KERNEL_ANCHOR,
+    min_gene_compare_len=options.MIN_GENE_COMPARE_LEN,
+    allele_integration=options.ALLELE_INTEGRATION,
     no_csv=False,
     force_csv=False,
     run_log=None,
     progress_interval_seconds=30.0,
+    validate_inputs=True,
 ):
     """Drive the matrix-store comparison route with progress + a summary panel."""
     profiles = [
@@ -2015,7 +2062,7 @@ def _run_matrix_compare_method(
     try:
         hint = matrix_workflow.block_kernel_hint(
             compare_kernel,
-            calculate=matrix_workflow.resolve_calculate(calculate, compare_genes=compare_genes),
+            calculate=calculate,
             ani_method=ani_method,
         )
     except ValueError as exc:
@@ -2036,11 +2083,13 @@ def _run_matrix_compare_method(
             memory_limit_gb=memory_limit_gb,
             min_cov=min_cov,
             ani_method=ani_method,
-            compare_genes=compare_genes,
             calculate=calculate,
             compare_kernel=compare_kernel,
+            min_gene_compare_len=min_gene_compare_len,
+            allele_integration=allele_integration,
             progress_callback=_on_step,
             compare_progress_callback=_on_compare_progress,
+            validate_inputs=validate_inputs,
         )
     except ModuleNotFoundError as exc:
         raise click.UsageError(
@@ -2050,7 +2099,8 @@ def _run_matrix_compare_method(
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
         raise click.UsageError(str(exc)) from exc
 
-    _maybe_write_csv(output, no_csv=no_csv, force_csv=force_csv, console=console)
+    v2 = ut._read_custom_parquet_metadata(output).get("zipstrain_profile_schema") == "2"
+    _maybe_write_csv(output, no_csv=no_csv or (v2 and not force_csv), force_csv=force_csv, console=console)
 
     elapsed = time.monotonic() - start
     elapsed_str = f"{int(elapsed // 3600)}:{int(elapsed % 3600 // 60):02d}:{int(elapsed % 60):02d}"
@@ -2073,27 +2123,75 @@ def _run_matrix_compare_method(
     )
 
 
+def _run_scheduled_v2_compare(profile_database, rows, run_dir, preprofile_dir, *, calculate, ani_method, min_cov,
+                              min_gene_compare_len, allele_integration, execution_mode, slurm_config,
+                              container_engine, container_address, max_concurrent_batches, poll_interval,
+                              task_per_batch, threads=None, validate_inputs=True):
+    """Run V2 pairs as scheduled jobs. Every job gets the same resolved metrics and inputs."""
+    try:
+        plan = cp.resolve_collection_metrics(
+            [(row["profile_name"], pathlib.Path(row["profile_location"])) for row in rows], preprofile_dir, calculate)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    calculations, codon_paths = plan[1], plan[2]
+    slurm_conf = None
+    if execution_mode == "slurm":
+        if slurm_config is None:
+            raise click.UsageError("SLURM configuration file must be provided when execution mode is 'slurm'.")
+        slurm_conf = _load_slurm_config(slurm_config, threads)
+    # A finished run with these exact inputs and settings is reused, and any other is refused.
+    # Extending a table across scheduled jobs is not supported, because nothing here can prove
+    # earlier rows came from the same inputs.
+    from zipstrain import gene_info as gi
+    identity = gi.content_digest({
+        "profiles": {row["profile_name"]: ut.input_fingerprint(row["profile_location"], validate_inputs=validate_inputs) for row in rows},
+        "codons": {name: ut.input_fingerprint(path, validate_inputs=validate_inputs) for name, path in codon_paths.items()} if "gene_selection" in calculations else {},
+        "calculate": calculations, "ani_method": ani_method, "min_cov": min_cov,
+        "min_gene_compare_len": min_gene_compare_len, "allele_integration": allele_integration,
+        "annotation": pl.read_parquet_metadata(pathlib.Path(preprofile_dir)/"gene_info.parquet")[gi.ANNOTATION_ID],
+    })
+    finished = run_dir / ".v2_scheduled_run_id"
+    if (run_dir / "all_comparisons.parquet").exists():
+        if finished.exists() and finished.read_text() == identity:
+            return
+        raise click.UsageError("This --run-dir holds a comparison from other inputs or settings. Use a new --run-dir.")
+    comparisons = db.GenomeComparisonDatabase(
+        profile_db=profile_database,
+        config=db.GenomeComparisonConfig(scope="all", min_cov=min_cov, min_gene_compare_len=min_gene_compare_len),
+    )
+    with _local_batch_budget(execution_mode, max_concurrent_batches):
+        tm.lazy_run_compares(
+            comps_db=comparisons, container_engine=_build_container_engine(container_engine, container_address),
+            run_dir=run_dir, max_concurrent_batches=max_concurrent_batches, execution_mode=execution_mode,
+            slurm_config=slurm_conf, ani_method=ani_method, calculate="+".join(calculations),
+            tasks_per_batch=task_per_batch, poll_interval=poll_interval, preprofile_dir=preprofile_dir,
+            allele_integration=allele_integration, codon_tables=codon_paths if "gene_selection" in calculations else None,
+            validate_inputs=validate_inputs,
+        )
+    if (run_dir / "all_comparisons.parquet").exists():
+        finished.write_text(identity)
+
+
+
 @cli.command("compare", cls=SectionedCommand, short_help="Compare samples (genomes or genes).")
+@click.option("--skip-input-validation", is_flag=True, help=_SKIP_INPUT_VALIDATION_HELP)
 @click.option("--profile-db", required=True, help="Profiles to compare: either a CSV with 'profile_name,profile_location' columns (built in memory, no build-profile-db needed) or a pre-built profile-database parquet.")
 @click.option("--run-dir", "-r", required=True, help="Directory to save the run data.")
-@click.option("--method", type=click.Choice(["standard", "matrix"]), default="standard", show_default=True, help="Comparison engine: 'standard' (direct pairwise) or 'matrix' (reusable matrix store, good for repeated all-vs-all).")
-@click.option("--compare-genes", is_flag=True, default=False, show_default=True, help="Compare genes instead of genomes.")
+@click.option("--method", type=click.Choice(["table", "matrix"]), default="table", show_default=True, help="Comparison method: 'table' (direct pairwise in Polars) or 'matrix' (reusable matrix store).")
 @click.option("--scope", default=None, help="Comparison scope. Defaults to 'all' for genomes and 'all:all' for genes.")
-@click.option("--min-cov", default=5, show_default=True, help="Minimum coverage to consider a position.")
-@click.option("--min-gene-compare-len", default=100, show_default=True, help="Minimum gene length to consider for comparison.")
+@click.option("--min-cov", default=options.COMPARE_MIN_COV, show_default=True, help="Minimum coverage to consider a position.")
+@click.option("--min-gene-compare-len", default=options.MIN_GENE_COMPARE_LEN, show_default=True, help=options.MIN_GENE_COMPARE_LEN_HELP)
 @click.option("--stb-file", default=None, help="Scaffold-to-genome mapping file. Required for --method matrix.")
-@click.option("--comp-db-file", default=None, help="Optional existing comparison parquet to resume/extend (standard method). Auto-detected from --run-dir if omitted.")
+@click.option("--comp-db-file", default=None, help="Optional existing comparison parquet to resume/extend (table method). Auto-detected from --run-dir if omitted.")
 @click.option("--allow-mismatch", is_flag=True, default=False, show_default=True, help="Skip profile contract validation when building the profile database from a CSV.")
-@click.option("--ani-method", "-a", default="popani", show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
-@click.option("--engine", type=click.Choice(["polars", "duckdb"]), default="polars", show_default=True, help="Comparison engine for standard compare tasks.")
-@click.option("--calculate", default="all", show_default=True, help="Metrics to compute: max_identical_stretch, gene_ani, genome_ani. Combine with '+', or use all. Use genome_ani for ANI only with the selected --ani-method. Use --compare-genes for per-gene output; standard gene mode always computes gene ANI.")
+@click.option("--ani-method", "-a", default=options.ANI_METHOD, show_default=True, help="ANI calculation method (e.g., 'popani', 'conani', 'cosani_0.4').")
+@click.option("--calculate", default=options.CALCULATE, show_default=True, help=options.CALCULATE_HELP + " Any gene metric selects per-gene rows.")
 @click.option("--bed-file", default=None, help="BED file for the matrix store (--method matrix). Auto-discovered from profiling_assets if omitted.")
-@click.option("--gene-range-table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
-@click.option("--backend", type=click.Choice(mp.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
-@click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for --method matrix.")
-@click.option("--compare-kernel", default=mp.MATRIX_COMPARE_KERNEL_ANCHOR, show_default=True, metavar="[anchor|block]", callback=_normalize_compare_kernel_option, help=_COMPARE_KERNEL_HELP + " Applies to --method matrix.")
-@click.option("--duckdb-memory-limit", "-d", default=None, help="DuckDB memory limit for compare tasks (e.g., 2GB).")
-@click.option("--duckdb-threads", type=int, default=None, help="Number of DuckDB worker threads for compare tasks.")
+@click.option("--gene-info-table", "--gene-range-table", "gene_range_table", default=None, help="Gene range table for gene ANI (--method matrix). Auto-discovered from profiling_assets if omitted.")
+@click.option("--backend", type=click.Choice(options.MATRIX_PAIR_BACKENDS), default="numpy", show_default=True, help="Compute backend for --method matrix (numpy, or torch on CPU/CUDA/MPS).")
+@click.option("--memory-limit-gb", type=float, default=16.0, show_default=True, help="Approximate memory budget for the comparison.")
+@threads_option
+@click.option("--compare-kernel", default=options.MATRIX_COMPARE_KERNEL_ANCHOR, show_default=True, metavar="[anchor|block]", callback=_normalize_compare_kernel_option, help=_COMPARE_KERNEL_HELP + " Applies to --method matrix.")
 @click.option("--max-concurrent-batches", "-m", default=5, show_default=True, help="Maximum number of concurrent batches to run.")
 @click.option("--poll-interval", "-p", default=1, show_default=True, help="Polling interval in seconds to check the status of batches.")
 @click.option("--task-per-batch", "-t", default=10, show_default=True, help="Number of tasks to include in each batch.")
@@ -2102,24 +2200,68 @@ def _run_matrix_compare_method(
 @click.option("--container-engine", "-c", default="local", show_default=True, help="Container engine to use: 'local', 'docker' or 'apptainer'.")
 @click.option("--container-address", default=None, help="Optional container image/address override. Defaults to the current ZipStrain version tag for docker/apptainer.")
 @click.option("--no-csv", is_flag=True, default=False, show_default=True, help="Do not write a companion .csv next to the comparison parquet.")
-@click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Write the companion .csv even when the estimated size exceeds 100 MB.")
-def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, engine, calculate, bed_file, gene_range_table, backend, memory_limit_gb, compare_kernel, duckdb_memory_limit, duckdb_threads, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv):
+@click.option("--force-csv", is_flag=True, default=False, show_default=True, help="Also write a companion .csv. V2 exports Parquet by default.")
+@click.option('--preprofile-dir', default=None, type=click.Path(exists=True, file_okay=False), help="Shared V2 profiling_assets directory for gene and selection comparisons.")
+@click.option('--allele-integration', type=click.Choice(['consensus', 'weighted']), default=options.ALLELE_INTEGRATION, show_default=True, help="SNS/SNV consequence integration: strongest differing allele choice with ties averaged, or frequency-weighted choices.")
+def compare(profile_db, run_dir, method, scope, min_cov, min_gene_compare_len, stb_file, comp_db_file, allow_mismatch, ani_method, calculate, bed_file, gene_range_table, backend, memory_limit_gb, threads, compare_kernel, max_concurrent_batches, poll_interval, task_per_batch, execution_mode, slurm_config, container_engine, container_address, no_csv, force_csv, preprofile_dir, allele_integration, skip_input_validation):
     """
-    Compare profiled samples at the genome level (default) or gene level (--compare-genes).
+    Compare profiled samples at the genome level, or per gene when a gene metric is requested.
 
     ``--profile-db`` may be a CSV of ``profile_name,profile_location`` rows, so
     there is no need to run ``zipstrain utilities build-profile-db`` first; a
     pre-built profile-database parquet is also accepted.
 
-    Both methods write ``<run-dir>/all_comparisons.parquet``. Re-running with the
+    V2 writes ``<run-dir>/all_comparisons.parquet`` with one row per genome or
+    one row per qualifying gene when any gene metric is requested. Re-running with the
     same ``--run-dir`` and a profiles table that includes new samples extends the
     existing comparison, computing only the new pairs.
     """
+    try:
+        named_metrics = options.explicit_metrics(calculate)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     run_dir = pathlib.Path(run_dir)
     with RunLogger(run_dir, command="compare", argv=sys.argv) as run_log:
         run_log.step("Loading profile database")
         profile_database = _load_profile_database(profile_db, allow_mismatch=allow_mismatch)
 
+        rows = profile_database.db.collect().to_dicts()
+        is_v2 = any(ut._read_custom_parquet_metadata(row["profile_location"]).get("zipstrain_profile_schema") == "2" for row in rows)
+        if is_v2 and preprofile_dir is None:
+            catalog = matrix_workflow.discover_gene_range_table([row["profile_location"] for row in rows])
+            if catalog is not None and catalog.suffix == ".parquet":
+                preprofile_dir = catalog.parent
+        if (preprofile_dir is not None or is_v2) and method == "table":
+            if scope not in (None, "all", "all:all") or comp_db_file is not None:
+                raise click.UsageError("V2 collection comparison currently uses all genomes/genes and its own per-pair cache; use a separate run directory.")
+            if execution_mode != "local" or container_engine != "local":
+                _run_scheduled_v2_compare(
+                    profile_database, rows, run_dir, preprofile_dir, calculate=calculate, ani_method=ani_method,
+                    min_cov=min_cov, min_gene_compare_len=min_gene_compare_len,
+                    allele_integration=allele_integration, execution_mode=execution_mode,
+                    slurm_config=slurm_config, container_engine=container_engine,
+                    container_address=container_address, max_concurrent_batches=max_concurrent_batches,
+                    poll_interval=poll_interval, task_per_batch=task_per_batch, threads=threads,
+                    validate_inputs=not skip_input_validation,
+                )
+                _maybe_write_csv(run_dir / "all_comparisons.parquet", no_csv=no_csv or not force_csv, force_csv=force_csv)
+                run_log.step("Exported V2 comparison table")
+                return
+            try:
+                output = cp.compare_profile_collection(
+                    [(row["profile_name"], row["profile_location"]) for row in rows],
+                    run_dir, preprofile_dir=preprofile_dir, calculate=calculate,
+                    ani_method=ani_method, min_cov=min_cov,
+                    min_gene_compare_len=min_gene_compare_len, allele_integration=allele_integration,
+                    memory_limit_gb=memory_limit_gb, workers="auto", validate_inputs=not skip_input_validation,
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                raise click.UsageError(str(exc)) from exc
+            _maybe_write_csv(output, no_csv=no_csv or not force_csv, force_csv=force_csv)
+            run_log.step("Exported V2 comparison table")
+            return
+        if preprofile_dir is not None and gene_range_table is None:
+            gene_range_table = str(pathlib.Path(preprofile_dir)/"gene_info.parquet")
         if method == "matrix":
             _run_matrix_compare_method(
                 profile_database=profile_database,
@@ -2131,25 +2273,31 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
                 backend=backend,
                 memory_limit_gb=memory_limit_gb,
                 min_cov=min_cov,
-                compare_genes=compare_genes,
                 ani_method=ani_method,
                 calculate=calculate,
                 compare_kernel=compare_kernel,
+                min_gene_compare_len=min_gene_compare_len,
+                allele_integration=allele_integration,
                 no_csv=no_csv,
                 force_csv=force_csv,
                 run_log=run_log,
+                validate_inputs=not skip_input_validation,
             )
             return
 
-        if duckdb_threads is not None and duckdb_threads < 1:
-            raise ValueError("--duckdb-threads must be >= 1")
+        if "gene_selection" in named_metrics:
+            raise click.UsageError("gene_selection requires V2 profiles with preprofile gene annotations")
+        if "gene_ani" in named_metrics and len(named_metrics) > 1:
+            raise click.UsageError("With 1.x profiles, gene_ani writes a separate per-gene table. Request it on its own.")
+        compare_genes = "gene_ani" in named_metrics
+
         slurm_conf = None
         if execution_mode == "slurm":
             if slurm_config is None:
                 raise ValueError("SLURM configuration file must be provided when execution mode is 'slurm'.")
-            slurm_conf = tm.SlurmConfig.from_json(slurm_config)
+            slurm_conf = _load_slurm_config(slurm_config, threads)
 
-        # Standard method: auto-resume from a prior run in the same run-dir when the
+        # Table method: auto-resume from a prior run in the same run-dir when the
         # user did not pass an explicit comparison to extend.
         if comp_db_file is None:
             existing_output = run_dir / ("all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet")
@@ -2158,62 +2306,57 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
 
         container_engine_obj = _build_container_engine(container_engine, container_address)
 
-        if compare_genes:
-            resolved_scope = scope if scope is not None else "all:all"
-            comps_db = db.GeneComparisonDatabase(
-                profile_db=profile_database,
-                config=db.GeneComparisonConfig(
-                    scope=resolved_scope,
-                    min_cov=min_cov,
-                    min_gene_compare_len=min_gene_compare_len,
-                    stb_file_loc=stb_file,
-                ),
-                comp_db_loc=comp_db_file,
-            )
-            run_log.step("Comparing genes across sample pairs")
-            tm.lazy_run_gene_compares(
-                comps_db=comps_db,
-                container_engine=container_engine_obj,
-                run_dir=run_dir,
-                max_concurrent_batches=max_concurrent_batches,
-                execution_mode=execution_mode,
-                slurm_config=slurm_conf,
-                compare_engine=engine,
-                tasks_per_batch=task_per_batch,
-                poll_interval=poll_interval,
-                ani_method=ani_method,
-                duckdb_memory_limit=duckdb_memory_limit,
-                duckdb_threads=duckdb_threads,
-            )
-        else:
-            resolved_scope = scope if scope is not None else "all"
-            cp.parse_genome_calculations(calculate)
-            comps_db = db.GenomeComparisonDatabase(
-                profile_db=profile_database,
-                config=db.GenomeComparisonConfig(
-                    scope=resolved_scope,
-                    min_cov=min_cov,
-                    min_gene_compare_len=min_gene_compare_len,
-                    stb_file_loc=stb_file,
-                ),
-                comp_db_loc=comp_db_file,
-            )
-            run_log.step("Comparing genomes across sample pairs")
-            tm.lazy_run_compares(
-                comps_db=comps_db,
-                container_engine=container_engine_obj,
-                run_dir=run_dir,
-                max_concurrent_batches=max_concurrent_batches,
-                execution_mode=execution_mode,
-                slurm_config=slurm_conf,
-                ani_method=ani_method,
-                compare_engine=engine,
-                calculate=calculate,
-                duckdb_memory_limit=duckdb_memory_limit,
-                duckdb_threads=duckdb_threads,
-                tasks_per_batch=task_per_batch,
-                poll_interval=poll_interval,
-            )
+        with _local_batch_budget(execution_mode, max_concurrent_batches):
+            if compare_genes:
+                resolved_scope = scope if scope is not None else "all:all"
+                comps_db = db.GeneComparisonDatabase(
+                    profile_db=profile_database,
+                    config=db.GeneComparisonConfig(
+                        scope=resolved_scope,
+                        min_cov=min_cov,
+                        min_gene_compare_len=min_gene_compare_len,
+                        stb_file_loc=stb_file,
+                    ),
+                    comp_db_loc=comp_db_file,
+                )
+                run_log.step("Comparing genes across sample pairs")
+                tm.lazy_run_gene_compares(
+                    comps_db=comps_db,
+                    container_engine=container_engine_obj,
+                    run_dir=run_dir,
+                    max_concurrent_batches=max_concurrent_batches,
+                    execution_mode=execution_mode,
+                    slurm_config=slurm_conf,
+                    tasks_per_batch=task_per_batch,
+                    poll_interval=poll_interval,
+                    ani_method=ani_method,
+                )
+            else:
+                resolved_scope = scope if scope is not None else "all"
+                cp.parse_genome_calculations(calculate)
+                comps_db = db.GenomeComparisonDatabase(
+                    profile_db=profile_database,
+                    config=db.GenomeComparisonConfig(
+                        scope=resolved_scope,
+                        min_cov=min_cov,
+                        min_gene_compare_len=min_gene_compare_len,
+                        stb_file_loc=stb_file,
+                    ),
+                    comp_db_loc=comp_db_file,
+                )
+                run_log.step("Comparing genomes across sample pairs")
+                tm.lazy_run_compares(
+                    comps_db=comps_db,
+                    container_engine=container_engine_obj,
+                    run_dir=run_dir,
+                    max_concurrent_batches=max_concurrent_batches,
+                    execution_mode=execution_mode,
+                    slurm_config=slurm_conf,
+                    ani_method=ani_method,
+                    calculate=calculate,
+                    tasks_per_batch=task_per_batch,
+                    poll_interval=poll_interval,
+                )
 
         run_log.step("Writing comparison outputs")
         output_name = "all_gene_comparisons.parquet" if compare_genes else "all_comparisons.parquet"
@@ -2223,19 +2366,21 @@ def compare(profile_db, run_dir, method, compare_genes, scope, min_cov, min_gene
 compare.option_sections = {
     "Required inputs": [
         "profile_db",
+        "preprofile_dir",
         "run_dir",
     ],
     "Comparison parameters": [
         "method",
-        "compare_genes",
         "scope",
         "min_cov",
         "min_gene_compare_len",
         "stb_file",
         "ani_method",
         "calculate",
+        "allele_integration",
         "comp_db_file",
         "allow_mismatch",
+        "skip_input_validation",
     ],
     "Matrix method (--method matrix)": [
         "bed_file",
@@ -2248,10 +2393,10 @@ compare.option_sections = {
         "no_csv",
         "force_csv",
     ],
-    "Standard method / engine": [
-        "engine",
-        "duckdb_memory_limit",
-        "duckdb_threads",
+    "Resources": [
+        "threads",
+    ],
+    "Table method (--method table)": [
         "max_concurrent_batches",
         "poll_interval",
         "task_per_batch",

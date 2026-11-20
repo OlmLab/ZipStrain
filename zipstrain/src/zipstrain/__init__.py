@@ -8,6 +8,8 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 import tomllib
 
+from zipstrain.resource_limits import set_threads
+
 
 def _resolve_version() -> str:
     pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"

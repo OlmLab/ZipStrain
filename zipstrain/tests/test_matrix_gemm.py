@@ -105,7 +105,7 @@ def _load(compare_db: Path):
             conn.execute(
                 """
                 SELECT sample_idx_1, sample_idx_2, sample_1, sample_2, genome_idx, genome,
-                       total_positions, share_allele_pos, genome_ani, max_consecutive_length
+                       total_positions, share_allele_pos, genome_ani, max_identical_stretch
                 FROM matrix_compare_results
                 ORDER BY sample_idx_1, sample_idx_2, genome_idx
                 """
@@ -137,7 +137,7 @@ def _assert_same(actual_db: Path, expected_db: Path) -> None:
 
 def _reference(matrix: Path, tmp_path: Path, ani_method: str = "popani") -> Path:
     out = tmp_path / f"pairwise_{ani_method}.duckdb"
-    mp.matrix_compare(matrix, out, backend="numpy", ani_method=ani_method, calculate="ani", memory_limit_gb=1)
+    mp.matrix_compare(matrix, out, backend="numpy", ani_method=ani_method, calculate="genome_ani", memory_limit_gb=1)
     return out
 
 
@@ -181,7 +181,7 @@ def test_gemm_matches_pairwise_on_accelerators(tmp_path, monkeypatch, backend):
         expected = _reference(matrix, tmp_path, ani_method)
         monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(6, 50))
         out = tmp_path / f"gemm_{ani_method}.duckdb"
-        mp.matrix_compare(matrix, out, backend=backend, ani_method=ani_method, calculate="ani",
+        mp.matrix_compare(matrix, out, backend=backend, ani_method=ani_method, calculate="genome_ani",
                           memory_limit_gb=1, compare_kernel="block")
         _assert_same(out, expected)
 
@@ -190,7 +190,7 @@ def test_gemm_default_planner_matches_pairwise(tmp_path):
     matrix = _build_store(tmp_path, storage_mode="bitmask")
     expected = _reference(matrix, tmp_path)
     out = tmp_path / "gemm.duckdb"
-    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
+    mp.matrix_compare(matrix, out, calculate="genome_ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
 
 
@@ -210,7 +210,7 @@ def test_gemm_exact_accumulator_flushes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mg._ExactAccumulator, "flush", counting_flush)
     out = tmp_path / "gemm.duckdb"
-    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
+    mp.matrix_compare(matrix, out, calculate="genome_ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
     assert flushes > 100
 
@@ -238,15 +238,15 @@ def test_gemm_resumes_after_interruption(tmp_path, monkeypatch):
     monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(4, 50))
     out = tmp_path / "gemm.duckdb"
     with pytest.raises(_Interrupt):
-        mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block",
+        mp.matrix_compare(matrix, out, calculate="genome_ani", memory_limit_gb=1, compare_kernel="block",
                           progress_callback=_interrupt_after(9))
     partial, partial_completed = _load(out)
     assert 0 < len(partial_completed) < len(_load(expected)[1])
-    summary = mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
+    summary = mp.matrix_compare(matrix, out, calculate="genome_ani", memory_limit_gb=1, compare_kernel="block")
     assert summary.written_rows + partial.height == _load(expected)[0].height
     _assert_same(out, expected)
     # A third run has nothing left to do.
-    assert mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1,
+    assert mp.matrix_compare(matrix, out, calculate="genome_ani", memory_limit_gb=1,
                              compare_kernel="block").requested_pairs == 0
 
 
@@ -256,20 +256,20 @@ def test_gemm_resumes_partial_pairwise_run(tmp_path, monkeypatch):
     expected = _reference(matrix, tmp_path, "conani")
     out = tmp_path / "mixed.duckdb"
     with pytest.raises(_Interrupt):
-        mp.matrix_compare(matrix, out, ani_method="conani", calculate="ani", memory_limit_gb=1,
+        mp.matrix_compare(matrix, out, ani_method="conani", calculate="genome_ani", memory_limit_gb=1,
                           progress_callback=_interrupt_after(7))
     assert 0 < len(_load(out)[1])
     monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(5, 30))
-    mp.matrix_compare(matrix, out, ani_method="conani", calculate="ani", memory_limit_gb=1, compare_kernel="block")
+    mp.matrix_compare(matrix, out, ani_method="conani", calculate="genome_ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
 
 
 def test_gemm_genome_scope(tmp_path):
     matrix = _build_store(tmp_path, storage_mode="bitmask")
     expected = tmp_path / "pairwise_g2.duckdb"
-    mp.matrix_compare(matrix, expected, genome="genome2", calculate="ani", memory_limit_gb=1)
+    mp.matrix_compare(matrix, expected, genome="genome2", calculate="genome_ani", memory_limit_gb=1)
     out = tmp_path / "gemm_g2.duckdb"
-    mp.matrix_compare(matrix, out, genome="genome2", calculate="ani", memory_limit_gb=1, compare_kernel="block")
+    mp.matrix_compare(matrix, out, genome="genome2", calculate="genome_ani", memory_limit_gb=1, compare_kernel="block")
     _assert_same(out, expected)
     assert set(_load(out)[0]["genome"].to_list()) == {"genome2"}
 
@@ -279,8 +279,8 @@ def test_gemm_genome_scope(tmp_path):
     [
         ({"calculate": "all"}, "calculate='genome_ani'"),
         ({"calculate": "genome_ani+max_identical_stretch"}, "calculate='genome_ani'"),
-        ({"calculate": "ani", "ani_method": "cosani_0.4"}, "popani or conani"),
-        ({"calculate": "ani", "compare_kernel": "fast"}, "compare_kernel must be one of"),
+        ({"calculate": "genome_ani", "ani_method": "cosani_0.4"}, "popani or conani"),
+        ({"calculate": "genome_ani", "compare_kernel": "fast"}, "compare_kernel must be one of"),
     ],
 )
 def test_gemm_rejects_unsupported_requests(tmp_path, kwargs, match):
@@ -466,7 +466,7 @@ def test_gemm_appends_only_new_comparisons(tmp_path, storage, ani_method):
     matrix = _build_store(tmp_path, storage_mode=storage, sample_count=4)
     output = tmp_path / "incremental.duckdb"
     mp.matrix_compare(
-        matrix, output, ani_method=ani_method, calculate="ani", memory_limit_gb=1,
+        matrix, output, ani_method=ani_method, calculate="genome_ani", memory_limit_gb=1,
         compare_kernel="block",
     )
     before, completed_before = _load(output)
@@ -476,7 +476,7 @@ def test_gemm_appends_only_new_comparisons(tmp_path, storage, ani_method):
         (extra / f"sample_{index:02d}.parquet").unlink()
     mp.append_matrix_hdf5(extra, matrix, memory_limit_gb=1)
     summary = mp.matrix_compare(
-        matrix, output, ani_method=ani_method, calculate="ani", memory_limit_gb=1,
+        matrix, output, ani_method=ani_method, calculate="genome_ani", memory_limit_gb=1,
         compare_kernel="block",
     )
     after, completed_after = _load(output)
@@ -497,15 +497,15 @@ def test_gemm_resumes_after_matrix_reorder(tmp_path, monkeypatch, first_kernel):
     monkeypatch.setattr(mg, "_plan_gemm_blocks", _small_plan(5, 40))
     out = tmp_path / "compare.duckdb"
     with pytest.raises(_Interrupt):
-        mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel=first_kernel,
+        mp.matrix_compare(matrix, out, calculate="genome_ani", memory_limit_gb=1, compare_kernel=first_kernel,
                           progress_callback=_interrupt_after(6))
     before = _load(out)[1]
     assert 0 < len(before) < 506
     order = list(np.random.default_rng(7).permutation(23))
     _reorder_matrix(matrix, order, swap_genomes=True)
-    mp.matrix_compare(matrix, out, calculate="ani", memory_limit_gb=1, compare_kernel="block")
+    mp.matrix_compare(matrix, out, calculate="genome_ani", memory_limit_gb=1, compare_kernel="block")
     fresh = tmp_path / "fresh.duckdb"
-    mp.matrix_compare(matrix, fresh, calculate="ani", memory_limit_gb=1)
+    mp.matrix_compare(matrix, fresh, calculate="genome_ani", memory_limit_gb=1)
     resumed, completed = _load(out)
     expected, expected_completed = _load(fresh)
     assert set(before) <= set(completed)
@@ -546,7 +546,7 @@ def test_gemm_cli_accepts_deprecated_name(tmp_path):
             "--matrix-db-file", str(matrix),
             "--output-file", str(out),
             "--memory-limit-gb", "1",
-            "--calculate", "ani",
+            "--calculate", "genome_ani",
             "--compare-kernel", "gemm",
         ],
     )

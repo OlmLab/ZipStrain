@@ -27,7 +27,7 @@ All GEMMs run in float32, which is exact for integer sums below ``2**24``;
 partial sums are flushed into int64 host accumulators before that bound
 can be reached. Results are bit-identical to the anchor kernel.
 
-Only genome-level ANI is produced; IBS (``max_consecutive_length``) and
+Only genome-level ANI is produced; IBS (``max_identical_stretch``) and
 gene-level ANI depend on position order or per-gene masks and must use the
 anchor kernel.
 """

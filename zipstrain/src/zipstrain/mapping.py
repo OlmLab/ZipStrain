@@ -25,7 +25,7 @@ from typing import Callable
 
 import polars as pl
 
-from zipstrain import build_db as bdb
+from zipstrain import build_db as bdb, options
 
 
 # A callback invoked with a short human-readable message as each step starts.
@@ -38,7 +38,7 @@ def _notify(callback: ProgressCallback | None, message: str) -> None:
 
 
 # The GTDB Sylph database used by the bundled Nextflow pipeline.
-DEFAULT_SYLPH_DB_URL = "http://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c200-dbv1.syldb"
+DEFAULT_SYLPH_DB_URL = options.SYLPH_DB_URL
 
 REFERENCE_FASTA_NAME = "reference_genomes.fna"
 REFERENCE_STB_NAME = "reference_genomes.stb"

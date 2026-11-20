@@ -3,6 +3,7 @@ from importlib.metadata import EntryPoints
 
 from click.testing import CliRunner
 import pytest
+import polars as pl
 
 from zipstrain import cli, profile_backends
 
@@ -23,8 +24,10 @@ class _Backend:
 
     def run(self, request):
         self.requests.append(request)
-        for suffix in ("profile", "gene_stats", "genome_stats"):
-            (request.output_dir / f"{request.bam_file.stem}_{suffix}.parquet").touch()
+        for suffix in ("profile", "genome_stats"):
+            frame = pl.DataFrame(schema={"chrom": pl.String, "genome": pl.String, "pos": pl.Int64,
+                                         "A": pl.Int64, "C": pl.Int64, "G": pl.Int64, "T": pl.Int64})
+            frame.write_parquet(request.output_dir / f"{request.bam_file.stem}_{suffix}.parquet")
 
 
 def _request(tmp_path):
@@ -65,6 +68,8 @@ def test_plugin_receives_request_and_required_outputs_are_checked(tmp_path, monk
     request = _request(tmp_path)
     profile_backends.run_profile(request, "rust_profiler")
     assert backend.requests == [request]
+    assert (request.output_dir / "sample_gene_stats.parquet").is_file()
+    assert "gene" not in pl.read_parquet_schema(request.output_dir / "sample_profile.parquet")
 
     request = profile_backends.ProfileRequest(**{
         **request.__dict__, "output_dir": tmp_path / "missing",
