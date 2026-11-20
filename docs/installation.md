@@ -31,15 +31,15 @@ Profiling and comparison need only ZipStrain + samtools. The aligners (bowtie2, 
 
 ### Install ZipStrain
 
-#### Try the 2.0 beta
+#### Install the stable 2.0 release
 
-In a Python 3.12 or newer environment, install the beta with:
+In a Python 3.12 or newer environment, install the stable release with:
 
 ```bash
-python -m pip install "zipstrain==2.0.0b2"
+python -m pip install "zipstrain==2.0.0"
 ```
 
-Use `zipstrain[matrix]==2.0.0b2` to include the matrix dependencies. Install
+Use `zipstrain[matrix]==2.0.0` to include the matrix dependencies. Install
 `samtools` separately for profiling. The [V2 guide](v2.md) describes the profile
 and comparison formats and has instructions for the optional Rust profiler.
 
@@ -236,7 +236,7 @@ The pipeline runs each step inside a ZipStrain container, so you need one of:
 The repo ships a `nextflow.config` that enables **Docker by default**, so a laptop run needs no profile — you can run the pipeline straight from GitHub:
 
 ```bash
-nextflow run OlmLab/ZipStrain -r v2.0.0b2 --mode ... --input_table ... --output_dir ... -resume
+nextflow run OlmLab/ZipStrain -r v2.0.0 --mode ... --input_table ... --output_dir ... -resume
 ```
 
 On a cluster, keep site-specific SLURM profiles in a local ignored config such as `conf.local.config`, then run with `-c conf.local.config -profile <name>`. The public config only ships generic Docker/Apptainer profiles and uses the published image tag from `nextflow.config`.
@@ -247,7 +247,7 @@ On a cluster, keep site-specific SLURM profiles in a local ignored config such a
 |---|---|
 | Nextflow | 24.10.0 |
 | Java (JDK) | 17+ |
-| ZipStrain beta container | `parsaghadermazi/zipstrain:2.0.0b2` |
+| ZipStrain container | `parsaghadermazi/zipstrain:2.0.0` |
 
 ZipStrain's continuous integration runs the pipeline against **Nextflow 24.10.0**, so that is the confirmed-working version. Pin it with `export NXF_VER=24.10.0` before running to match CI exactly. Newer Nextflow releases (26.x) tightened DSL syntax — the bundled `zipstrain.nf` is kept compatible, but pin to a tested version if you hit parse errors.
 

@@ -1,5 +1,14 @@
 # Rust profiler plugin changelog
 
+## 0.2.0
+
+Stable companion for ZipStrain 2.0.0, requiring core `>=2.0.0,<3`.
+Profiling behavior is unchanged from 0.2.0b2.
+
+- Write gene-free position Parquets and extract read-phased codon evidence natively; the shared V2 finalizer produces gene statistics and selection metrics.
+- Match Python for BAQ, overlapping mates, trailing scaffold gaps, and coverage/breadth/BER before allele filtering. Preserve mapped-read counts when gap uniformity is undefined.
+- Publish Linux x86_64 and macOS x86_64/arm64 wheels plus a source distribution. Re-profile older BAMs for corrected low-coverage statistics. Keep plugin 0.1.2 for ZipStrain 1.x.
+
 ## 0.2.0b2
 
 - Fixed: genome `coverage`, `coverage_median`, `coverage_std`, `breadth` and `ber` are counted from the depth before the error filter, matching ZipStrain. The filter removes a position's only allele when too few reads support it, so the old values under-reported genomes below about 2x coverage.

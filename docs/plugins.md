@@ -47,15 +47,15 @@ The plugin is optional: installing ZipStrain alone does not install it, and leav
 
 ### Install the Rust profiler
 
-For ZipStrain `2.0.0b2`, install `zipstrain-rust-profiler==0.2.0b2` (see the [V2 plugin instructions](v2.md#observed-codon-evidence)). Both backends now calculate genome coverage, breadth and BER from depth before allele filtering; re-profile BAMs for corrected low-coverage statistics.
+For ZipStrain `2.0.0`, install `zipstrain-rust-profiler==0.2.0` (see the [V2 plugin instructions](v2.md#observed-codon-evidence)). Both backends now calculate genome coverage, breadth and BER from depth before allele filtering; re-profile BAMs for corrected low-coverage statistics.
 
-For ZipStrain 1.x, install the published plugin in a Python 3.12 or newer environment:
+To keep an existing ZipStrain 1.x installation, pin the compatible plugin:
 
 ```bash
-python -m pip install zipstrain_rust_profiler
+python -m pip install "zipstrain<2" "zipstrain-rust-profiler==0.1.2"
 ```
 
-This also installs ZipStrain 1.2.0 or newer if needed. On a supported platform, pip downloads a prebuilt wheel, so Rust is not needed at installation time. Building from source requires a Rust toolchain and native build prerequisites, including libclang on Linux.
+Plugin 0.2.0 requires ZipStrain `>=2.0.0,<3`. On a supported platform, pip downloads a prebuilt wheel, so Rust is not needed at installation time. Building from source requires a Rust toolchain and native build prerequisites, including libclang on Linux.
 
 If using the high-level `profile` workflow, keep `samtools` available as described in [Installation](installation.md). The Rust profiler reads and indexes the BAM directly through HTSlib, without invoking `samtools index` itself.
 

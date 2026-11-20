@@ -35,7 +35,7 @@ Full documentation available at [https://olmlab.github.io/ZipStrain/](https://ol
 
 ## Install
 
-To try the 2.0 beta, use `python -m pip install "zipstrain==2.0.0b2"`. See the [changelog](changelog.md#200b1) for the migration from 1.x.
+Install ZipStrain 2.0 with `python -m pip install "zipstrain==2.0.0"`. See the [changelog](changelog.md#200) for the migration from 1.x.
 
 ```bash
 # Conda (recommended — bundles samtools and the map aligners)

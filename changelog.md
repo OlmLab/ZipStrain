@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.0.0
+
+First stable ZipStrain 2 release, consolidating both public betas. Core analysis
+behavior and file formats are unchanged from 2.0.0b2. Install with
+`python -m pip install "zipstrain==2.0.0"`; the matching optional Rust profiler is
+`zipstrain-rust-profiler==0.2.0`. Nextflow and container examples now pin the
+stable release. Python 3.12 or newer is required.
+
+### Profile formats and selection metrics
+
+- Position profiles contain nucleotide counts without a gene column. Shared preprofile assets now include `gene_info.parquet` and `reference_codons.parquet`, with stable content-derived gene IDs, coordinates, strand, length, and reference/annotation fingerprints.
+- Per-sample gene statistics contain gene and genome identifiers, coordinates, length, coverage, breadth, reference ANI, and `dN`, `dS`, `dN_dS`, `pN`, `pS`, `pN_pS`. Overlapping genes are counted independently.
+- `--collect-codons` produces observed, read-phased codon counts and enables selection metrics against the reference and between samples. Consensus and weighted integration are available; overlapping mates count once. See the [selection method](docs/v2.md) for formulas, denominators, filtering, and exclusions.
+- Genome coverage, breadth, and BER use depth before allele error/frequency filtering, after read/base-quality and BAQ filtering. Median and sample standard deviation describe covered positions. Zero-count profile rows preserve the genome inventory. Re-profile old BAMs to obtain corrected low-coverage statistics; discarded depth cannot be recovered from existing profiles.
+
+### Comparisons and Python analysis
+
+- `--method table` uses Polars throughout; the selectable DuckDB comparison engine is removed. Sorted profile metadata enables streaming merge joins without rescanning each pair to verify sortedness.
+- Table and matrix methods support genome ANI, gene ANI, maximum identical stretch, and gene selection. Matrix `anchor` supports all metrics; `block` supports genome-level popANI/conANI only. NumPy and Torch backends remain available.
+- One comparison Parquet contains all requested columns. Genome-only rows are keyed by sample pair and genome; any gene metric adds `gene_id`, with requested genome metrics repeated on gene rows. Comparison tables store `dN`, `dS`, `pN`, `pS`; derive ratios with `gene_info.with_selection_ratios`.
+- Collection comparisons validate samples once and reuse compatible completed pairs when resuming or appending samples. `--skip-input-validation` optionally skips content hashes, codon/profile SHA checks, and extra codon-row scans for trusted inputs, while retaining schema, catalog, and metadata checks. Trusted and validated caches are separate.
+- `PairComparison` exposes aligned positions and reusable lazy analyses. `identical_stretches` provides genomic coordinates and significance estimates, preserving interval order on Polars 1.x and 2.x. `mosaic_regions` identifies regions of unusually low or high divergence. Downstream IBS and identical-gene summaries use per-gene comparison rows.
+
+### Rust, execution, and Nextflow
+
+- Rust profiler 0.2.0 writes gene-free position tables and extracts observed codons natively. The shared Python/Polars finalizer builds gene statistics and selection metrics. Python/Rust parity includes BAQ, overlapping mates, trailing scaffold gaps, low-depth coverage, and mapped-read counts when gap uniformity is undefined.
+- Python uses direct codon slicing for ungapped reads, streaming gene aggregation, and parallel mpileup parsing. `--threads` bounds local workers and native thread pools; Slurm and Nextflow propagate CPU budgets.
+- Nextflow uses `--mode compare`, supports explicit pair tables and single/batched execution, and passes codon evidence, ANI methods, and `--skip_input_validation` through to comparison. Default Docker/Apptainer images are pinned to 2.0.0; CPU, CUDA 11.8, and CUDA 12.4 images are published separately.
+- Output replacement retries transient busy-file errors on shared filesystems. Comparison caching remains one streaming Parquet per pair; sharding and a separate work/output directory interface are not included.
+
+### Migration from 1.x
+
+- Use `--calculate genome_ani`, `max_identical_stretch`, `gene_ani`, or `gene_selection`, joined with `+`. `all` selects metrics supported by the inputs and warns about omissions. Replace `--compare-genes` and `--dnds` with the corresponding calculations; old metric aliases are removed.
+- Replace `single_compare_genome`, `single_compare_gene`, and `chunk-genome-compare` with `utilities compare-pair`. Its `--pair-table` option supports genome metrics; Nextflow pair tables also support gene metrics. The top-level collection and matrix CLI do not accept predefined pairs.
+- Use Nextflow `--mode compare` and `--compare_scope` instead of the former separate genome/gene modes. Comparison output is Parquet by default; request a companion CSV with `--force-csv`. The output column `max_consecutive_length` is renamed `max_identical_stretch`.
+- Compatible 1.x profiles can still be compared together, but mixed 1.x/V2 inputs are rejected. V2 gene selection requires shared V2 assets and profiles generated with `--collect-codons`. Keep plugin 0.1.2 for a pinned 1.x environment; plugin 0.2.0 requires core `>=2.0.0,<3`.
+- Replace removed Python helpers `add_contiguity_info`, `get_longest_consecutive_blocks`, and `calculate_pop_ani` with `PairComparison` and `identical_stretches`. See the [V2 formats and API guide](docs/v2.md).
+
+### Validation and release benchmarks
+
+- Tests cover Polars 1.x and 2.x, profile schemas, codon calculations, table/matrix parity, trusted input mode, Nextflow single/batched runs, and the optional Rust backend.
+- Every core release runs 12 benchmark workloads before PyPI publication: single/multiple genomes, genome/gene metrics, table/matrix selection, and consensus/weighted integration. Reports include runtime and peak resident memory for complete collections and isolated pairs, with three repetitions.
+- Raw benchmark reports and runner details are archived on the `benchmark-results` branch; the [documentation charts](https://olmlab.github.io/ZipStrain/benchmarks/) track release history.
+
 ## 2.0.0b2
 
 Second beta of ZipStrain 2.0. Install with `python -m pip install "zipstrain==2.0.0b2"`; the matching optional Rust profiler is `zipstrain-rust-profiler==0.2.0b2`. Nextflow users should select `-r v2.0.0b2`; the default Docker and Apptainer images are pinned to `parsaghadermazi/zipstrain:2.0.0b2`.
