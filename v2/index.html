@@ -224,10 +224,10 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="zipstrain-v2-profiling-and-comparison-formats">ZipStrain V2 profiling and comparison formats</h1>
-<p>This page describes ZipStrain <code>2.0.0b2</code>. Install it with
-<code>python -m pip install "zipstrain==2.0.0b2"</code> or use the container image
-<code>parsaghadermazi/zipstrain:2.0.0b2</code>. For Nextflow, select the matching pipeline
-with <code>-r v2.0.0b2</code>.</p>
+<p>This page describes ZipStrain <code>2.0.0</code>. Install it with
+<code>python -m pip install "zipstrain==2.0.0"</code> or use the container image
+<code>parsaghadermazi/zipstrain:2.0.0</code>. For Nextflow, select the matching pipeline
+with <code>-r v2.0.0</code>.</p>
 <h2 id="shared-preprofile-assets">Shared preprofile assets</h2>
 <div class="highlight"><pre><span></span><code>zipstrain<span class="w"> </span>utilities<span class="w"> </span>prepare_profiling<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--reference-fasta<span class="w"> </span>reference.fna<span class="w"> </span><span class="se">\</span>
@@ -375,10 +375,10 @@ create gene statistics. The shared Python/Polars finalizer uses the preprofile
 catalog to create the same gene table. When requested, the Rust executable
 extracts observed codons in an additional BAM pass and the shared finalizer
 calculates the six selection metrics. To use the optional V2 plugin, install
-ZipStrain <code>2.0.0b2</code> in your environment first. The core beta wheel is also
-available from the <a href="https://github.com/OlmLab/ZipStrain/releases/tag/v2.0.0b2">GitHub prerelease</a>.
-Then install the profiler beta and select it with <code>--backend rust_profiler</code>.</p>
-<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;zipstrain-rust-profiler==0.2.0b2&quot;</span>
+ZipStrain <code>2.0.0</code> in your environment first. The core wheel is also
+available from the <a href="https://github.com/OlmLab/ZipStrain/releases/tag/v2.0.0">GitHub release</a>.
+Then install the profiler and select it with <code>--backend rust_profiler</code>.</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;zipstrain-rust-profiler==0.2.0&quot;</span>
 </code></pre></div>
 <p>These are <strong>observed full triplets</strong>, not combinations inferred by multiplying
 three marginal nucleotide frequencies. Every retained observation:</p>

@@ -1463,13 +1463,13 @@ zipstrain<span class="w"> </span><span class="nb">test</span><span class="w"> </
 <p>You do not need to clone the repository — Nextflow can pull and run the pipeline straight from GitHub. The repo ships a <code>nextflow.config</code> that:</p>
 <ul>
 <li>enables <strong>Docker by default</strong> (with <code>--platform linux/amd64</code> for Apple Silicon), so a laptop run needs no <code>-profile</code>;</li>
-<li>sets the beta container to <code>parsaghadermazi/zipstrain:2.0.0b2</code>;</li>
+<li>sets the container to <code>parsaghadermazi/zipstrain:2.0.0</code>;</li>
 <li>declares <code>zipstrain.nf</code> as the main script (so <code>-main-script</code> is not needed);</li>
 <li><code>includeConfig</code>s <code>conf.config</code>, which holds per-process CPU/memory/time requests and generic Docker/Apptainer profiles.</li>
 </ul>
 <p>For a cluster, keep site-specific SLURM profiles in an ignored local config such as <code>conf.local.config</code>, then run with <code>-c conf.local.config -profile &lt;name&gt;</code>. The public <code>conf.config</code> intentionally avoids lab- or cluster-specific paths.</p>
 <h3 id="general-running-pattern">General running pattern</h3>
-<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0b2<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mode<span class="w"> </span>&lt;mode&gt;<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_table<span class="w"> </span>&lt;path/to/input.csv&gt;<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--output_dir<span class="w"> </span>&lt;path/to/output_dir&gt;<span class="w"> </span><span class="se">\</span>
@@ -1478,7 +1478,7 @@ zipstrain<span class="w"> </span><span class="nb">test</span><span class="w"> </
 <p>Conventions used by every example below:</p>
 <ul>
 <li><strong>Docker is the default</strong>, so no <code>-profile</code> is shown. On a cluster, pass a site-specific config with <code>-c conf.local.config -profile &lt;name&gt;</code>.</li>
-<li>The examples pin the beta with <code>-r v2.0.0b2</code>. Use <code>-r &lt;revision&gt;</code> to select another tag, branch, or commit.</li>
+<li>The examples pin the release with <code>-r v2.0.0</code>. Use <code>-r &lt;revision&gt;</code> to select another tag, branch, or commit.</li>
 <li>If you have <strong>cloned the repo</strong>, replace <code>OlmLab/ZipStrain</code> with <code>zipstrain.nf</code> and run from the repo root.</li>
 <li><code>-resume</code> reuses completed steps from a previous run in the same working directory.</li>
 </ul>
@@ -1551,7 +1551,7 @@ SRR12345678
 SRR12345679
 </code></pre></div>
 <p><strong>Option A — map against an existing reference:</strong></p>
-<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0b2<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mode<span class="w"> </span>map_reads<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_type<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_table<span class="w"> </span>reads.csv<span class="w"> </span><span class="se">\</span>
@@ -1562,7 +1562,7 @@ SRR12345679
 </code></pre></div>
 <p>Optional: <code>--index_files</code> to reuse an existing Bowtie2 index; <code>--bowtie2_non_competitive_mapping true</code> to pass <code>-a</code> to Bowtie2.</p>
 <p><strong>Option B — build the reference automatically with Sylph</strong> (when <code>--reference_genome</code> is omitted): the pipeline runs per-sample <code>sylph profile</code>, merges the abundance tables, builds a reference with <code>zipstrain utilities build-genome-db</code>, predicts genes with prodigal, indexes with Bowtie2, and maps.</p>
-<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0b2<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mode<span class="w"> </span>map_reads<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_type<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_table<span class="w"> </span>reads.csv<span class="w"> </span><span class="se">\</span>
@@ -1584,7 +1584,7 @@ SRR12345679
 S1,/data/S1.bam
 S2,/data/S2.bam
 </code></pre></div>
-<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0b2<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mode<span class="w"> </span>profile<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_table<span class="w"> </span>bams.csv<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--reference_genome<span class="w"> </span>reference_genomes.fna<span class="w"> </span><span class="se">\</span>
@@ -1596,7 +1596,7 @@ S2,/data/S2.bam
 <p>Outputs: <code>&lt;output_dir&gt;/*_profile.parquet</code>, <code>*_genome_stats.parquet</code>, <code>*_gene_stats.parquet</code>. Because these modes pass a reference FASTA into profiling, the profiles include <code>ref_base_bitmask</code> and the stat tables include <code>ref_ani</code> (see <a href="../expected_output/">Expected output</a>).</p>
 <h3 id="command-3-sra-to-profile-end-to-end-mode-from_sra_to_profile">Command 3: SRA to profile, end to end (<code>--mode from_sra_to_profile</code>)</h3>
 <p>Input table is one SRA accession per row (<code>Run</code> column). This mode downloads the reads, maps, and profiles in one go.</p>
-<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0b2<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mode<span class="w"> </span>from_sra_to_profile<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_table<span class="w"> </span>sra.csv<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--reference_genome<span class="w"> </span>reference_genomes.fna<span class="w"> </span><span class="se">\</span>
@@ -1617,7 +1617,7 @@ S2,/profiles/S2_profile.parquet
 sample_name_1,sample_name_2,profile_location_1,profile_location_2
 S1,S2,/profiles/S1_profile.parquet,/profiles/S2_profile.parquet
 </code></pre></div>
-<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0b2<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code>nextflow<span class="w"> </span>run<span class="w"> </span>OlmLab/ZipStrain<span class="w"> </span>-r<span class="w"> </span>v2.0.0<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mode<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_type<span class="w"> </span>profile_table<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--input_table<span class="w"> </span>profiles.csv<span class="w"> </span><span class="se">\</span>
